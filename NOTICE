@@ -1,0 +1,7 @@
+HomersLab
+Copyright 2026 Arjun Rachith
+
+Licensed under the Apache License, Version 2.0 (LICENSE).
+
+The apps HomersLab will install, and the software it will build on (Authentik, Kanidm, Caddy, NetBird, Tailscale,
+Docker, Podman, restic, age and the others), are not in this repository; each keeps its own licence.
