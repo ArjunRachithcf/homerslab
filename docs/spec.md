@@ -69,8 +69,9 @@ such as a NAS or a GPU box. It is private by default and never needs a router po
    that the strongest sign-in is there from the first minute.
 4. As a prospective household admin, I want to choose the household's identity provider (Authentik or Kanidm) from a
    plain-language comparison, so that I pick what fits my hardware.
-5. As a prospective household admin, I want to choose the mesh (NetBird, Tailscale or both; cloud or self-hosted)
-   and give its token once, so that HomersLab joins machines and devices without sending me to a dashboard again.
+5. As a prospective household admin, I want to choose the mesh and give its token once, so that HomersLab joins
+   machines and devices without sending me to a dashboard again. The choice is NetBird, Tailscale or Headscale, or
+   NetBird together with one of the other two.
 6. As a prospective household admin, I want to give my domain and its DNS provider's token once, or with Tailscale
    skip the domain, so that every app gets a name and a certificate automatically.
 7. As a prospective household admin, I want to give a mail account once, so that invites, passkey resets and alerts
@@ -168,8 +169,8 @@ such as a NAS or a GPU box. It is private by default and never needs a router po
     A storage location is a local folder or a NAS share over the mesh, read-only by default for media.
 49. As a household admin, I want nodes to be ordinary Linux machines on x86_64 or arm64, a Raspberry Pi 5 included,
     so that I can use what I have.
-50. As a household admin, I want to use NetBird and Tailscale at the same time, with every node on each, so that
-    people can use whichever app they already have.
+50. As a household admin, I want to use NetBird together with Tailscale or Headscale, with every node on each mesh in
+    use, so that people can use whichever app they already have.
 
 ### Updates
 
@@ -285,7 +286,8 @@ such as a NAS or a GPU box. It is private by default and never needs a router po
     unprivileged user per app. It runs compose projects through Docker's Compose SDK, pinned.
   - **Host apps**: the vendor's repository and package, per distro.
   - **The firewall table**: no published ports, mesh-only listeners, the LAN kept out, drift corrected.
-  - **The mesh clients**: NetBird and Tailscale. Per-app tsnet nodes serve households without a domain, and Funnel.
+  - **The mesh clients**: NetBird, and Tailscale's client, which also serves Headscale. Per-app tsnet nodes serve
+    Tailscale households without a domain, and Funnel.
   - **The edge's configuration**: through Caddy's admin API on a Unix socket.
   - **Secrets**: systemd credentials sealed to the TPM, decrypted at service start, handed to containers as files.
   - **Storage locations**: local folders, and network shares over the mesh.
@@ -323,7 +325,7 @@ such as a NAS or a GPU box. It is private by default and never needs a router po
 | Kind | Implementations | Must provide |
 |---|---|---|
 | Identity provider | Authentik; Kanidm with oauth2-proxy | See below |
-| Mesh | NetBird, Tailscale; cloud or self-hosted | See below |
+| Mesh | NetBird (cloud or self-hosted); Tailscale (cloud); Headscale (self-hosted, with Tailscale's clients) | See below |
 | DNS provider | libdns providers | Create and clean up ACME DNS challenge records |
 | Container engine | Docker; Podman rootful; Podman rootless | Run, stop and inspect a compose project; logs and health; device and capability extras; GPUs (NVIDIA through CDI, Intel through its render devices) |
 | Backup target | Disk, SFTP, S3, B2 (restic); Proton Drive (official CLI, as a copy target) | Store, list and prune; immutable where the target supports it |
@@ -345,6 +347,26 @@ such as a NAS or a GPU box. It is private by default and never needs a router po
 - policies per role;
 - a public path, where the mesh has one: NetBird's reverse proxy in TLS passthrough, or Funnel;
 - a report of what it can do, for example "no public path" on Headscale.
+
+**The mesh implementations**, against that contract:
+
+| | NetBird | Tailscale | Headscale |
+|---|---|---|---|
+| Control plane | Cloud, or self-hosted | Tailscale's cloud | The household's own server |
+| A node joins with | A setup key, by API | A tagged, pre-approved auth key from an OAuth client | A pre-auth key with tags, by API |
+| A person's device | A setup key where the app takes one, otherwise the mesh's sign-in | Signs in to the tailnet | Signs in with the household account (Headscale's OIDC login, against the household's identity provider) |
+| Per-app names | Wildcard records in its DNS zones, by API | Split DNS to the primary's resolver, by API; without a domain, one tsnet node per app | Split DNS to the primary's resolver, set once in Headscale's configuration during first-time setup |
+| Policies | By API | By API (the policy file) | By API (the policy kept in its database) |
+| Public path | Its reverse proxy, TLS passthrough, own domain | Funnel, on `*.ts.net` | None |
+| Domain | Required | Optional | Required |
+
+- **Where self-hosted control planes run.** Self-hosted NetBird and Headscale run on a server reachable from the
+  internet, outside the household's machines, because HomersLab never opens a router port. HomersLab reaches them by
+  URL and API key.
+- **Combining meshes.** A household may use NetBird together with Tailscale or Headscale, but only one of Tailscale
+  and Headscale at a time.
+- **Headscale is held to the contract.** It passes the same mesh contract suite as the others, and CI runs it in a
+  container.
 
 **The sign-in method.** An app lists its sign-in methods in order of preference, and the manager uses the first one
 the chosen identity provider provides. Every provider provides all three (OIDC, LDAP, guarded), so no app depends on
@@ -409,6 +431,9 @@ The manager refuses an app definition unless:
 - **With a domain**, every app is `<name>.<domain>` on the mesh, resolving to its node.
   - NetBird: wildcard records in its DNS zones.
   - Tailscale: split DNS to a resolver on the primary.
+  - Headscale: split DNS to the same resolver, configured once in Headscale.
+- **Headscale always needs a domain.** Its support for `tailscale cert` was merged into its main branch on 2026-10-18
+  but isn't in a release yet (v0.29.7). Even then it would need a DNS provider for the household's domain.
 - **On Tailscale without a domain**, every app is its own tagged tsnet node, named `<name>.<tailnet>.ts.net`, with
   Tailscale's certificate. The free plan allows 50 tagged devices, so this is chosen over Tailscale Services, which
   allows 10.
@@ -515,6 +540,10 @@ The manager refuses an app definition unless:
 4. **Pinning the Compose SDK.** Minor releases have broken its library APIs.
 5. **Per-app tsnet nodes**, and the tagged-device limits.
 6. **A Tailscale OAuth client**, created from a one-time token.
+7. **Headscale**:
+   - split DNS to the primary's resolver;
+   - OIDC login against Authentik and against Kanidm;
+   - `tailscale cert`, once it ships in a release.
 
 ### Name
 
@@ -594,3 +623,4 @@ Every answer of the grilling (2026-11-09) and where it lives:
 | 60 | A private catalog for the maintainer's own apps | Further Notes |
 | 61 | Eject is the way out; the platform stays HomersLab's | ADR 0012 |
 | 62 | Secrets as TPM-sealed systemd credentials | ADR 0011 |
+| 63 | Headscale named in the mesh contract (added after the grilling) | ADR 0005; Adapter contracts |

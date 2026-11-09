@@ -15,7 +15,7 @@ A polished, security-first app manager for a household's self-hosted apps, on th
   - Kids see only what's for them.
 - **Private by default.**
   - No port on the router, ever.
-  - Apps are reached over the household's mesh (NetBird or Tailscale).
+  - Apps are reached over the household's mesh (NetBird, Tailscale or Headscale).
   - A public app still has its TLS end at home.
 - **Update to tested versions**, with a snapshot first and an automatic rollback if the app comes back unhealthy.
 - **One machine or several.** A primary, plus optional nodes such as a NAS or a GPU box; each app runs on one of

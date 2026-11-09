@@ -8,7 +8,7 @@
 - **Versions**: client [v1.104.5](https://github.com/tailscale/tailscale/releases/tag/v1.104.5) (2026-11-03),
   Headscale [v0.29.7](https://github.com/juanfont/headscale/releases/tag/v0.29.7) (2026-10-30).
 - **"Spec"** below means the live [OpenAPI spec](https://api.tailscale.com/api/v2?outputOpenapiSchema=true).
-- **Outcome**: [ADR 0005](../adr/0005-two-meshes-tls-ends-at-home.md).
+- **Outcome**: [ADR 0005](../adr/0005-three-meshes-one-contract-tls-ends-at-home.md).
 
 **Verdict**:
 - **Per-app names**: yes.
@@ -90,6 +90,16 @@
     ([#1040](https://github.com/juanfont/headscale/issues/1040));
   - Services ([#2845](https://github.com/juanfont/headscale/issues/2845));
   - wildcard MagicDNS ([#3322](https://github.com/juanfont/headscale/issues/3322)).
+- **Sign-in with the household's identity provider**: OIDC login with an issuer, PKCE, and filters by domain, user or
+  group ([oidc.md, v0.29.7](https://github.com/juanfont/headscale/blob/v0.29.7/docs/ref/oidc.md)).
+- **Split DNS**: `dns.nameservers.split` in its configuration file, next to `extra_records` and `extra_records_path`
+  ([config-example.yaml, v0.29.7](https://github.com/juanfont/headscale/blob/v0.29.7/config-example.yaml)). It is not
+  in the API.
+- **HTTPS certificates** (`tailscale cert`, and HTTPS in `tailscale serve`):
+  - implemented in [PR #3554](https://github.com/juanfont/headscale/pull/3554), merged into `main` on 2026-10-18;
+  - not in v0.29.7, whose release branch had diverged from that commit;
+  - Headscale sets the ACME TXT records for its `base_domain` through libdns, so it needs a domain and a DNS provider
+    ([tracking issue #2527](https://github.com/juanfont/headscale/issues/2527)).
 
 ## Plans
 
@@ -128,3 +138,12 @@ certificate. That is chosen over Services because of the free plan's limits: 50 
 - Funnel on ts.net names, with TLS ending on the node.
 - There is no own-domain public path with Tailscale.
 - Headscale households have no public path at all.
+
+**Headscale as its own implementation of the mesh contract**:
+- **Joining**: nodes join with pre-auth keys by API.
+- **Policy**: by API, with the policy kept in the database.
+- **Sign-in**: people's devices sign in with the household account through Headscale's OIDC login.
+- **Names**: split DNS to the primary's resolver, configured once.
+- **Public path**: none.
+- **Domain**: required.
+- **Where it runs**: off-site, on a server reachable from the internet, so HomersLab never needs a router port.
