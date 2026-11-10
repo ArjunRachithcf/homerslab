@@ -1,0 +1,179 @@
+<!doctype html>
+<!-- PROTOTYPE, throwaway. The way into HomersLab's clickable prototypes (round 2, on the design system; design/ here is a copy of the repository’s design/):
+     every screen, what round 1 decided, and the questions still open. -->
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="light dark">
+  <meta name="theme-color" content="#f5f5f7" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)">
+  <title>Prototypes · HomersLab</title>
+  <link rel="icon" href="icons/favicon.svg" type="image/svg+xml">
+  <link rel="icon" href="icons/favicon.ico" sizes="32x32">
+  <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+  <link rel="stylesheet" href="design/tokens.css">
+  <link rel="stylesheet" href="design/components.css">
+  <link rel="stylesheet" href="assets/proto.css">
+  <style>
+    .hub-hello { padding: 48px 0 28px; display: grid; gap: 14px; }
+    .hub-hello h1 { font-size: var(--fs-large-title); line-height: var(--lh-title); font-weight: var(--weight-bold); letter-spacing: var(--tracking-large); max-width: 26ch; }
+    .hub-hello h1 .fact { color: var(--text-2); }
+    .hub-lead { font-size: var(--fs-headline); line-height: 1.45; max-width: 70ch; }
+    .hub-surfaces { align-items: start; }
+    .hub-sec { margin-top: 48px; }
+    .hub-sec > h2 { font-size: var(--fs-title); line-height: 1.2; font-weight: var(--weight-bold); letter-spacing: var(--tracking-title); margin: 0 0 6px; }
+    .hub-sec > p { color: var(--text-2); max-width: 72ch; margin-bottom: 14px; }
+    .hub-q { display: grid; gap: 4px; }
+    .hub-q .try { display: flex; flex-wrap: wrap; gap: 4px 14px; margin-top: 4px; font-size: var(--fs-sub); }
+    .hub-q .try a { color: var(--accent); text-decoration: none; }
+    .hub-q .try a:hover { text-decoration: underline; text-underline-offset: 3px; }
+    .hub-n { display: inline-grid; place-items: center; width: 24px; height: 24px; border-radius: 50%; background: var(--fill); font-size: var(--fs-sub); font-weight: var(--weight-semibold); flex: none; }
+    .hub-foot { display: grid; gap: 6px; margin-top: 56px; padding: 20px 0 40px; border-top: var(--hairline) solid var(--separator); color: var(--text-2); font-size: var(--fs-sub); }
+    kbd { font: 500 12px/18px var(--font); padding: 0 5px; border-radius: 5px; background: var(--fill); }
+  </style>
+</head>
+<body class="has-wallpaper">
+  <div class="wallpaper wallpaper-quiet" aria-hidden="true"></div>
+  <header class="topbar" id="top"><div class="page"><div class="topbar-inner">
+    <span class="brand" id="brand"></span><span class="topbar-title" aria-hidden="true">Prototypes</span>
+    <div class="topbar-end"><a class="btn btn-plain btn-sm" href="design/index.html">Design system</a></div>
+  </div></div></header>
+  <main class="page" id="main">
+    <section class="hub-hello" aria-labelledby="h-hub">
+      <h1 id="h-hub">HomersLab prototypes. <span class="fact">The last design round.</span></h1>
+      <p class="hub-lead">Clickable screens to try before any code exists, on the design system, now with today’s Apple glass and motion: first-time setup as a setup assistant, the Store, asking for apps, an install plan, an app’s page, people and invites, nodes, backups and restore, and Home. One invented household, the Ferreira household, with fake data. Nothing leaves the page and nothing is saved: reload to start again.</p>
+    </section>
+
+    <div class="grid hub-surfaces" aria-label="The three surfaces">
+      <section class="span-6" aria-labelledby="s-setup"><div class="group-head"><h2 id="s-setup">First-time setup</h2></div>
+        <div class="group" data-links>
+          <a class="row row-link" href="setup.html"><span class="row-main"><span class="row-title">From the one-time link</span><span class="row-sub wrap">One question per screen, defaults chosen; eleven screens in two halves</span></span>›</a>
+          <a class="row row-link" href="setup.html?resume=yes"><span class="row-main"><span class="row-title">Coming back after a break</span><span class="row-sub wrap">Welcome back; it resumes at your private network</span></span>›</a>
+          <a class="row row-link" href="setup.html?resume=yes#/network"><span class="row-main"><span class="row-title">A token, with help</span><span class="row-sub wrap">NetBird chosen; “Where do I find this?”; the rest behind More options</span></span>›</a>
+          <a class="row row-link" href="setup.html?resume=end#/kit"><span class="row-main"><span class="row-title">The recovery kit</span><span class="row-sub wrap">Made in this browser; printed and saved</span></span>›</a>
+          <a class="row row-link" href="setup.html?resume=end&amp;browser=primary#/kit"><span class="row-main"><span class="row-title">The kit, on the primary itself</span><span class="row-sub wrap">Refused: it is made on another device</span></span>›</a>
+          <a class="row row-link" href="setup.html?resume=end#/join"><span class="row-main"><span class="row-title">The second half: join the mesh</span><span class="row-sub wrap">A QR code for the phone, a one-time key for this laptop</span></span>›</a>
+          <a class="row row-link" href="setup.html?resume=end&amp;onmesh=yes#/join"><span class="row-main"><span class="row-title">Already on the mesh</span><span class="row-sub wrap">On to the passkey at auth.ferreira.family; the listener closes</span></span>›</a>
+        </div></section>
+      <section class="span-6" aria-labelledby="s-home"><div class="group-head"><h2 id="s-home">Home</h2></div>
+        <div class="group" data-links>
+          <a class="row row-link" href="home.html"><span class="row-main"><span class="row-title">Tomás, an adult</span><span class="row-sub wrap">His apps on glass; Jellyfin and Plex side by side</span></span>›</a>
+          <a class="row row-link" href="home.html?as=ines"><span class="row-main"><span class="row-title">Inês, the admin</span><span class="row-sub wrap">Plus the one thing that needs a look in Admin</span></span>›</a>
+          <a class="row row-link" href="home.html?as=rita"><span class="row-main"><span class="row-title">Rita, 12, a kid</span><span class="row-sub wrap">Her own layout: big tiles that say what each is for</span></span>›</a>
+          <a class="row row-link" href="home.html?where=away"><span class="row-main"><span class="row-title">Away from the mesh</span><span class="row-sub wrap">Mesh-only apps dimmed: “Needs the mesh”, and How to connect</span></span>›</a>
+          <a class="row row-link" href="home.html?apps=down"><span class="row-main"><span class="row-title">An app not working</span><span class="row-sub wrap">Said once, in plain words</span></span>›</a>
+          <a class="row row-link" href="home.html#/ask"><span class="row-main"><span class="row-title">Ask for an app</span><span class="row-sub wrap">The Store’s look, read-only: Ask for it, or say what you need</span></span>›</a>
+          <a class="row row-link" href="home.html?as=lucia#/ask/requests"><span class="row-main"><span class="row-title">Lúcia’s requests</span><span class="row-sub wrap">Waiting, with Withdraw; approved and on her Home</span></span>›</a>
+          <a class="row row-link" href="home.html?as=rita#/ask"><span class="row-main"><span class="row-title">Rita asks</span><span class="row-sub wrap">Kids see only apps with a kid view, or fine for kids</span></span>›</a>
+          <a class="row row-link" href="home.html?as=duarte"><span class="row-main"><span class="row-title">Duarte hears “Not now”</span><span class="row-sub wrap">With Inês’s reason, on his Home</span></span>›</a>
+          <a class="row row-link" href="home.html"><span class="row-main"><span class="row-title">Hide one of two apps</span><span class="row-sub wrap">Jellyfin and Plex: “Hide one”, on Tomás’s Home only</span></span>›</a>
+          <a class="row row-link" href="home.html?theme=dark"><span class="row-main"><span class="row-title">In dark mode</span><span class="row-sub wrap">Apple’s true black</span></span>›</a>
+        </div></section>
+      <section class="span-12" aria-labelledby="s-admin" style="margin-top:8px"><div class="group-head"><h2 id="s-admin">Admin</h2></div>
+        <div class="grid">
+          <div class="group span-6" data-links>
+          <a class="row row-link" href="admin.html#/apps"><span class="row-main"><span class="row-title">Apps</span><span class="row-sub wrap">Working, backed up every hour, restore-tested</span></span>›</a>
+          <a class="row row-link" href="admin.html#/store"><span class="row-main"><span class="row-title">Store</span><span class="row-sub wrap">Discover: a featured app, collections, purposes, a search</span></span>›</a>
+          <a class="row row-link" href="admin.html#/store/requests"><span class="row-main"><span class="row-title">Requests</span><span class="row-sub wrap">Tomás and Rita asked for one app; Lúcia in her own words</span></span>›</a>
+          <a class="row row-link" href="admin.html#/store/updates"><span class="row-main"><span class="row-title">Updates</span><span class="row-sub wrap">Tested versions, ready; no passkey</span></span>›</a>
+          <a class="row row-link" href="admin.html#/store/app/immich"><span class="row-main"><span class="row-title">An app’s page: Immich</span><span class="row-sub wrap">Get, screenshots, what’s new, information, how it’s wired</span></span>›</a>
+          <a class="row row-link" href="admin.html#/store/app/calibreweb"><span class="row-main"><span class="row-title">An app beside one you have</span><span class="row-sub wrap">“You already have Kavita for books; you can add Calibre-Web too”</span></span>›</a>
+          <a class="row row-link" href="admin.html#/store/app/immich/get"><span class="row-main"><span class="row-title">Install plan: Immich</span><span class="row-sub wrap">Its own page; one passkey at Install for the GPU</span></span>›</a>
+          <a class="row row-link" href="admin.html#/store/app/homeassistant/get"><span class="row-main"><span class="row-title">Install plan: Home Assistant</span><span class="row-sub wrap">Two extras, a second sign-in</span></span>›</a>
+          <a class="row row-link" href="admin.html#/apps/paperless"><span class="row-main"><span class="row-title">An app’s page: Paperless-ngx</span><span class="row-sub wrap">A failed restore test, public, updates, eject</span></span>›</a>
+          <a class="row row-link" href="admin.html#/apps/mealie"><span class="row-main"><span class="row-title">A removed app: Mealie</span><span class="row-sub wrap">Delete data: type its name, then your passkey</span></span>›</a>
+          <a class="row row-link" href="admin.html#/settings"><span class="row-main"><span class="row-title">Settings</span><span class="row-sub wrap">As first-time setup left them</span></span>›</a>
+          </div>
+          <div class="group span-6" data-links>
+          <a class="row row-link" href="admin.html#/people"><span class="row-main"><span class="row-title">People and invites</span><span class="row-sub wrap">Roles, devices, sign-up</span></span>›</a>
+          <a class="row row-link" href="admin.html#/people/tomas"><span class="row-main"><span class="row-title">A person: Tomás</span><span class="row-sub wrap">Devices to revoke, passkeys, role</span></span>›</a>
+          <a class="row row-link" href="admin.html#/people/invite"><span class="row-main"><span class="row-title">Invite someone</span><span class="row-sub wrap">An adult or a kid needs no passkey</span></span>›</a>
+          <a class="row row-link" href="admin.html#/nodes"><span class="row-main"><span class="row-title">Nodes</span><span class="row-sub wrap">Resources, apps, storage locations</span></span>›</a>
+          <a class="row row-link" href="admin.html#/nodes/disks"><span class="row-main"><span class="row-title">Disks</span><span class="row-sub wrap">Health, use, mirrors; a disk with SMART warnings, a media pool at 91%</span></span>›</a>
+          <a class="row row-link" href="admin.html?disk=failed#/disks/an-apps/replace"><span class="row-main"><span class="row-title">A failed disk in a mirror</span><span class="row-sub wrap">Which disk to pull, then the rebuild; the apps stay up</span></span>›</a>
+          <a class="row row-link" href="admin.html#/disks/sp-new/prepare"><span class="row-main"><span class="row-title">Prepare a new disk</span><span class="row-sub wrap">Encrypted, btrfs, mirrored with the Data disk; your passkey</span></span>›</a>
+          <a class="row row-link" href="admin.html#/disks/sp-usb/erase"><span class="row-main"><span class="row-title">Erase a disk, or adopt it</span><span class="row-sub wrap">What is on it; its serial typed, then your passkey</span></span>›</a>
+          <a class="row row-link" href="admin.html#/analyzer"><span class="row-main"><span class="row-title">The disk analyzer</span><span class="row-sub wrap">A space map, duplicates, recently deleted; 10 minutes with your passkey</span></span>›</a>
+          <a class="row row-link" href="admin.html#/apps/jellyfin/move"><span class="row-main"><span class="row-title">Move an app’s data</span><span class="row-sub wrap">A plan, progress, 7 days to roll back</span></span>›</a>
+          <a class="row row-link" href="admin.html#/nodes/study-pc/encrypt"><span class="row-main"><span class="row-title">Encrypt the system disk</span><span class="row-sub wrap">Its preconditions, and legacy BIOS explained</span></span>›</a>
+          <a class="row row-link" href="admin.html#/nodes/uptime"><span class="row-main"><span class="row-title">Uptime and incidents</span><span class="row-sub wrap">A year per app, node and the public path; the power cut</span></span>›</a>
+          <a class="row row-link" href="admin.html#/settings/alerts"><span class="row-main"><span class="row-title">Alerts and notifications</span><span class="row-sub wrap">Channels per level, quiet hours, the digest, the maintenance window</span></span>›</a>
+          <a class="row row-link" href="admin.html#/settings/domains"><span class="row-main"><span class="row-title">Domains</span><span class="row-sub wrap">Records HomersLab owns; add a domain; rename the main one</span></span>›</a>
+          <a class="row row-link" href="admin.html#/apps/memos"><span class="row-main"><span class="row-title">A feedstock app: Memos</span><span class="row-sub wrap">Built by HomersLab with one sign-in change; try State › Memos › Guarded</span></span>›</a>
+          <a class="row row-link" href="admin.html#/nodes/add"><span class="row-main"><span class="row-title">Add a node</span><span class="row-sub wrap">A join code, with your passkey</span></span>›</a>
+          <a class="row row-link" href="admin.html#/backups"><span class="row-main"><span class="row-title">Backups</span><span class="row-sub wrap">Every hour; twelve Sundays of restore tests; the archive</span></span>›</a>
+          <a class="row row-link" href="admin.html#/backups/restore?app=paperless"><span class="row-main"><span class="row-title">Restore an app</span><span class="row-sub wrap">Hourly points; your passkey</span></span>›</a>
+          </div></div></section>
+    </div>
+
+    <section class="hub-sec" aria-labelledby="h-decided">
+      <h2 id="h-decided">What rounds 1 to 4 decided, now in the screens</h2>
+      <p>The look is Apple’s, on a design system of its own: <a class="link" href="design/index.html">the gallery</a> shows every component, the glass and the motion.</p>
+      <div class="group lead-sm">
+        <div class="row is-top"><span class="row-lead" data-i="disk"></span><span class="row-main"><span class="row-title">Disks, uptime, alerts and domains (round 4)</span><span class="row-sub wrap">Each node’s disks: health, use, growth, scrubs, encryption, mirrors; prepare, adopt, erase, replace a failed disk, move an app’s data, encrypt the system disk; the disk analyzer behind your passkey. Uptime and incidents for a year. Alerts per admin and level, quiet hours, a morning digest, the maintenance window. Domains: only HomersLab’s own records, every domain equal, sign-in on the main one. Memos as a feedstock, with its guarded fallback. On Home, hide one of two same-purpose apps. No wallpaper choice; setup’s defaults and Admin’s motion stay.</span></span></div>
+        <div class="row is-top"><span class="row-lead" data-i="store"></span><span class="row-main"><span class="row-title">The Store, and asking for apps (round 3)</span><span class="row-sub wrap">Admin’s catalog is now a Store: Discover with a featured app, collections that scroll sideways, the purposes and a search; an app’s page with Get, Open or Update; Updates and Requests beside Discover; the catalogs you trust in its account sheet. Get still opens the install plan, and one passkey at Install approves it. Members ask for apps on Home, from the same Store, read-only, or in their own words; the admin approves (which only opens the plan, with them in its audience) or says Not now, and they hear the answer on Home.</span></span></div>
+        <div class="row is-top"><span class="row-lead" data-i="sparkle"></span><span class="row-main"><span class="row-title">The glass is adjustable (round 3)</span><span class="row-sub wrap">One level drives every glass surface: Clear, Balanced (the default), Frosted, or Solid, with a fine slider between Clear and Frosted. Choose it in Admin’s Settings › Appearance, in Home’s person menu (each person, each browser), or in the prototype bar’s “Glass level” for review. It glides on a spring; the device’s reduced transparency always wins; words keep AA at every level, their ink growing stronger as the glass clears.</span></span></div>
+        <div class="row is-top"><span class="row-lead" data-i="moon"></span><span class="row-main"><span class="row-title">Admin dark first; light glass that is glass (round 3)</span><span class="row-sub wrap">Admin opens dark on every device, in Home’s dark look; Settings › Appearance offers Dark, Light or System, kept per browser. Light glass is now see-through, over a wallpaper with teal, sky and sage blooms, and content tints the bars as it scrolls under them; every word still meets AA against the pixels behind it.</span></span></div>
+        <div class="row is-top"><span class="row-lead" data-i="sparkle"></span><span class="row-main"><span class="row-title">Glass and motion (round 2)</span><span class="row-sub wrap">Today’s Apple glass on the bars, the floating sidebar and tab bar, sheets, menus, toasts and Home’s panels, with a specular rim and depth; Home sits on a calm wallpaper. Screens push and pop, an app’s icon flies to its page, Install grows into its progress, lists close their gaps. Reduced transparency turns glass solid; reduced motion leaves cross-fades only (try both: State).</span></span></div>
+        <div class="row is-top"><span class="row-lead" data-i="mesh"></span><span class="row-main"><span class="row-title">A lean first-time setup (round 2)</span><span class="row-sub wrap">One question per screen with the default chosen (the sign-in from the machine’s memory, NetBird, the domain from your mail address, its DNS provider from its name servers); the rest behind More options; progress dots; a token’s “Where do I find this?”; an illustration per screen.</span></span></div>
+        <div class="row is-top"><span class="row-lead" data-i="apps"></span><span class="row-main"><span class="row-title">An app store (round 2)</span><span class="row-sub wrap">Admin names apps by product. The catalog groups them by purpose; a household may run several for one purpose (Jellyfin and Plex here), and Home shows both.</span></span></div>
+        <div class="row is-top"><span class="row-lead" data-i="bell"></span><span class="row-main"><span class="row-title">An admin’s Home (round 2)</span><span class="row-sub wrap">It says when something needs a look in Admin, such as a failed restore test. Replacing a mesh token and making a new recovery kit ask for the passkey.</span></span></div>
+        <div class="row is-top"><span class="row-lead" data-i="sparkle"></span><span class="row-main"><span class="row-title">The look</span><span class="row-sub wrap">The system font (SF; Inter elsewhere), Apple’s neutrals, inset grouped lists, widgets. Teal accent (Classic teal, from the logo kit); status in iOS green, orange and red, green for what works. The logo is the kit’s Harbour H.</span></span></div>
+        <div class="row is-top"><span class="row-lead" data-i="link"></span><span class="row-main"><span class="row-title">The install plan is its own page</span><span class="row-sub wrap">Its address carries the plan’s id (#/plans/p-…). Change anything and it is a new plan with a new address.</span></span></div>
+        <div class="row is-top"><span class="row-lead" data-i="key"></span><span class="row-main"><span class="row-title">One passkey per plan</span><span class="row-sub wrap">A single step-up at Install approves the whole plan, the extras listed in plain words above the button.</span></span></div>
+        <div class="row is-top"><span class="row-lead" data-i="shield"></span><span class="row-main"><span class="row-title">Risky changes</span><span class="row-sub wrap">Deleting data, nodes, roles, sign-in settings, anything public, extras, restoring an app, eject, trusting a catalog, a join code. Updates, audiences, Remove, revoking a device and inviting an adult or a kid only confirm.</span></span></div>
+        <div class="row is-top"><span class="row-lead" data-i="home"></span><span class="row-main"><span class="row-title">Home</span><span class="row-sub wrap">Product names with their own icons; a kid’s own layout of big tiles; away from the mesh, “Needs the mesh” and How to connect.</span></span></div>
+        <div class="row is-top"><span class="row-lead" data-i="backups"></span><span class="row-main"><span class="row-title">Backups every hour</span><span class="row-sub wrap">Restore points: every hour for 2 days, every day for a month, then Sundays for 3 months.</span></span></div>
+        <div class="row is-top"><span class="row-lead" data-i="lock"></span><span class="row-main"><span class="row-title">First-time setup in two halves</span><span class="row-sub wrap">The one-time link up to “mesh connected, certificate issued”; then this device joins the mesh, the passkey is made at auth.ferreira.family, and the home-network listener closes at the first sign-in over the mesh.</span></span></div>
+        <div class="row is-top"><span class="row-lead" data-i="check"></span><span class="row-main"><span class="row-title">Defaults</span><span class="row-sub wrap">The recovery kit is refused in a browser on the primary; a failed first health check undoes the whole install (try it: State, then “Fails its first health check”).</span></span></div>
+      </div>
+    </section>
+
+    <section class="hub-sec" aria-labelledby="h-bar">
+      <h2 id="h-bar">The prototype bar</h2>
+      <p>The dark bar at the bottom of every screen is not part of the design.</p>
+      <div class="group">
+        <div class="row is-top"><span class="row-main"><span class="row-title">State</span><span class="row-sub wrap">What is in memory after each step (plans and their ids, passkey approvals, installs), and the household’s situation: its meshes, who is looking, on the mesh or away, how the next install ends.</span></span></div>
+        <div class="row is-top"><span class="row-main"><span class="row-title">Theme</span><span class="row-sub wrap">Follows the system, or forces light or dark. Add <span class="host">?bar=0</span> to any address to hide the bar.</span></span></div>
+        <div class="row is-top"><span class="row-main"><span class="row-title">Motion and transparency</span><span class="row-sub wrap">In State: “Reduced” shows what the system’s reduce-motion and reduce-transparency settings do (cross-fades only; solid surfaces). <span class="host">?motion=reduce</span> and <span class="host">?transparency=reduce</span> do the same.</span></span></div>
+        <div class="row is-top"><span class="row-main"><span class="row-title">Variants</span><span class="row-sub wrap">Where a screen still has an open question, the arrows (or <kbd>←</kbd> <kbd>→</kbd>) switch between answers. Round 1 settled the plan and the kid’s Home, so none is open now.</span></span></div>
+      </div>
+    </section>
+
+    <section class="hub-sec" aria-labelledby="h-q">
+      <h2 id="h-q">Your answers to round 3’s questions</h2>
+      <ol class="group" data-qs>
+        <li class="row is-top"><span class="hub-n">1</span><span class="row-main hub-q"><span class="row-title wrap">No wallpaper choice: every household gets HomersLab’s own.</span></span></li>
+        <li class="row is-top"><span class="hub-n">2</span><span class="row-main hub-q"><span class="row-title wrap">Yes, a person may hide one of two same-purpose apps, on their own Home only.</span><span class="try"><a href="home.html">Tomás’s Home</a></span></span></li>
+        <li class="row is-top"><span class="hub-n">3</span><span class="row-main hub-q"><span class="row-title wrap">Setup’s defaults stay: NetBird alone, the domain from the admin’s mail, the DNS provider from its name servers.</span></span></li>
+        <li class="row is-top"><span class="hub-n">4</span><span class="row-main hub-q"><span class="row-title wrap">Admin’s motion stays: push, pop and icons that fly, always in answer to a click.</span></span></li>
+      </ol>
+      <p>Nothing is open. The engineers’ handoff is in <span class="host">prototypes/HANDOFF.md</span>.</p>
+    </section>
+
+    <footer class="hub-foot">
+      <span>Prototypes, round 4, the last design round · 10 Nov 2026 · on <a class="link" href="design/index.html">the design system</a>.</span>
+      <span>Type: SF on Apple devices; Inter elsewhere (design/fonts, SIL Open Font License 1.1).</span>
+      <span>App icons: selfh.st/icons, CC BY 4.0 (icons/apps/ATTRIBUTION.md); the apps’ names and logos are their owners’ trademarks. The Bill tracker’s icon is drawn for the prototype.</span>
+      <span>Screen recordings of the motion: screenshots/motion/.</span>
+      <span>The logo: the Harbour H from the logo kit (brand/kit), in Classic teal; the wordmark is Figtree, outlined.</span>
+    </footer>
+  </main>
+  <script src="design/icons.js"></script>
+  <script src="design/motion.js"></script>
+  <script src="assets/proto.js"></script>
+  <script>
+    (() => {
+      document.querySelector('#brand').innerHTML = LOCKUP;
+      for (const a of document.querySelectorAll('[data-links] a')) a.lastChild.replaceWith(document.createRange().createContextualFragment(I('chevronRight', 'icon row-chev')));
+      for (const el of document.querySelectorAll('[data-i]')) el.innerHTML = I(el.dataset.i, 'icon icon-md');
+      const bar = document.querySelector('#top');
+      const onScroll = () => bar.classList.toggle('is-scrolled', scrollY > 4);
+      addEventListener('scroll', onScroll, { passive: true }); onScroll();
+      if ('IntersectionObserver' in window) new IntersectionObserver((es) => bar.classList.toggle('is-titled', !es[0].isIntersecting), { rootMargin: '-52px 0px 0px 0px' }).observe(document.querySelector('#h-hub'));
+      Proto.start();
+    })();
+  </script>
+</body>
+</html>

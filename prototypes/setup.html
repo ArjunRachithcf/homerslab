@@ -1,0 +1,43 @@
+<!doctype html>
+<!-- PROTOTYPE, throwaway. HomersLab first-time setup, as a setup assistant (round 2): one question per screen in plain
+     words, a sensible default already chosen, everything else behind "More options", progress dots, and a calm
+     illustration per step. Two halves: the one-time link (this machine or its home network, 30 minutes) covers
+     everything up to "mesh connected, certificate issued"; then this device joins the mesh, the admin's passkey is made
+     at the sign-in's own address, and the home-network listener closes at the first sign-in over the mesh.
+     On the design system: design/ here is a copy of the repository's design/. Fake data, no network. -->
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="light dark">
+  <meta name="theme-color" content="#eef3f2" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#040707" media="(prefers-color-scheme: dark)">
+  <title>First-time setup · HomersLab</title>
+  <link rel="icon" href="icons/favicon.svg" type="image/svg+xml">
+  <link rel="icon" href="icons/favicon.ico" sizes="32x32">
+  <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+  <link rel="stylesheet" href="design/tokens.css">
+  <link rel="stylesheet" href="design/components.css">
+  <link rel="stylesheet" href="assets/proto.css">
+  <link rel="stylesheet" href="assets/setup.css">
+  <script>document.documentElement.classList.add('js');</script>
+</head>
+<body class="has-wallpaper">
+  <div class="wallpaper" aria-hidden="true"></div>
+  <a class="sr-only" href="#s-main">Skip to the question</a>
+  <div class="as-page">
+    <header class="as-top" id="s-top"></header>
+    <main class="as-main vt-screen" id="s-main" tabindex="-1"></main>
+    <footer class="as-foot" id="s-foot"></footer>
+  </div>
+  <article class="kit-print" id="kit-print" aria-hidden="true"></article>
+  <div class="toast-host" role="status" aria-live="polite"></div>
+  <script src="design/icons.js"></script>
+  <script src="design/motion.js"></script>
+  <script src="design/illos.js"></script>
+  <script src="assets/data.js"></script>
+  <script src="assets/ui.js"></script>
+  <script src="assets/proto.js"></script>
+  <script src="assets/setup.js"></script>
+</body>
+</html>

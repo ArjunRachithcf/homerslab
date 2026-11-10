@@ -1,0 +1,43 @@
+# WCAG 2.2 contrast, 2026-11-10. AA: 4.5:1 for text, 3:1 for large text and UI/graphics.
+
+## Classic teal (recommended): light #1B6E66, dark #5FB3A9
+   6.05:1  AA text           White text on the accent (light mode)  (#FFFFFF on #1B6E66)
+   6.05:1  AA text           Accent on white (links, icons; light mode)  (#1B6E66 on #FFFFFF)
+   5.56:1  AA text           Accent on Ground #F5F5F7  (#1B6E66 on #F5F5F7)
+   8.51:1  AA text           Dark-mode accent on black  (#5FB3A9 on #000000)
+   6.89:1  AA text           Dark-mode accent on Card #1C1C1E  (#5FB3A9 on #1C1C1E)
+   8.51:1  AA text           Black text on the dark-mode accent  (#000000 on #5FB3A9)
+   2.47:1  fails             White text on the dark-mode accent (avoid)  (#FFFFFF on #5FB3A9)
+   3.47:1  AA large/UI only  Light accent on black (avoid: use the dark-mode accent)  (#1B6E66 on #000000)
+   2.47:1  fails             Dark-mode accent on white (avoid)  (#5FB3A9 on #FFFFFF)
+   4.89:1  graphic ok (3:1)  16 px favicon, dark teal on Chrome's dark tab
+   4.06:1  graphic ok (3:1)  16 px favicon, dark teal on Firefox's dark tab
+   1.99:1  graphic weak (<3:1) 16 px favicon, light teal on Chrome's dark tab (ICO/PNG fallback)
+   1.85:1  graphic weak (<3:1) 16 px favicon, light teal on Safari's dark tab (ICO/PNG fallback)
+   6.05:1  graphic ok (3:1)  16 px favicon, light teal on a light tab
+   4.62:1  graphic ok (3:1)  16 px favicon, light teal on Chrome's light tab strip
+
+## Blue teal: light #186C78, dark #5DB0BE
+   6.08:1  AA text           White text on the accent (light mode)  (#FFFFFF on #186C78)
+   6.08:1  AA text           Accent on white (links, icons; light mode)  (#186C78 on #FFFFFF)
+   5.58:1  AA text           Accent on Ground #F5F5F7  (#186C78 on #F5F5F7)
+   8.42:1  AA text           Dark-mode accent on black  (#5DB0BE on #000000)
+   6.82:1  AA text           Dark-mode accent on Card #1C1C1E  (#5DB0BE on #1C1C1E)
+   8.42:1  AA text           Black text on the dark-mode accent  (#000000 on #5DB0BE)
+   2.49:1  fails             White text on the dark-mode accent (avoid)  (#FFFFFF on #5DB0BE)
+   3.46:1  AA large/UI only  Light accent on black (avoid: use the dark-mode accent)  (#186C78 on #000000)
+   2.49:1  fails             Dark-mode accent on white (avoid)  (#5DB0BE on #FFFFFF)
+   4.84:1  graphic ok (3:1)  16 px favicon, dark teal on Chrome's dark tab
+   4.02:1  graphic ok (3:1)  16 px favicon, dark teal on Firefox's dark tab
+   1.99:1  graphic weak (<3:1) 16 px favicon, light teal on Chrome's dark tab (ICO/PNG fallback)
+   1.84:1  graphic weak (<3:1) 16 px favicon, light teal on Safari's dark tab (ICO/PNG fallback)
+   6.08:1  graphic ok (3:1)  16 px favicon, light teal on a light tab
+   4.64:1  graphic ok (3:1)  16 px favicon, light teal on Chrome's light tab strip
+
+## Neutrals
+  15.46:1  Text on Ground (light) (#1D1D1F on #F5F5F7)
+   4.66:1  Muted on Ground (light) (#6E6E73 on #F5F5F7)
+   5.07:1  Muted on Card (light) (#6E6E73 on #FFFFFF)
+  19.29:1  Text on Ground (dark) (#F5F5F7 on #000000)
+   7.31:1  Muted on Ground (dark) (#98989D on #000000)
+   5.93:1  Muted on Card (dark) (#98989D on #1C1C1E)

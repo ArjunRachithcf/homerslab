@@ -1,0 +1,77 @@
+/* HomersLab first-time setup prototype, as a setup assistant (round 2). PROTOTYPE, throwaway.
+   The assistant itself (the card, dots, More options, help, illustrations) is the design system's; this file places
+   it on the page: where the page answers from at the top, one card in the middle, a line about stopping below. */
+
+.as-page { min-height: 100vh; min-height: 100dvh; display: grid; grid-template-rows: auto 1fr auto; }
+.as-top { display: flex; align-items: center; justify-content: space-between; gap: 12px; max-width: 1100px; width: 100%; margin: 0 auto; padding: 14px 24px; }
+.as-where {
+  position: relative; display: inline-flex; align-items: center; gap: 8px; min-width: 0; height: 36px; padding: 0 14px; border-radius: var(--radius-pill); font-size: var(--fs-sub); white-space: nowrap; overflow: hidden;
+  background-color: var(--mat-thick); background-image: var(--mat-sheen); -webkit-backdrop-filter: var(--mat-blur); backdrop-filter: var(--mat-blur);
+  box-shadow: inset 0 0 0 0.5px var(--mat-edge), 0 1px 2px rgba(0, 0, 0, 0.05), 0 6px 16px -8px rgba(0, 0, 0, 0.2);
+}
+.as-where .icon { width: 14px; height: 14px; color: var(--text-2); flex: none; }
+.as-where .host { background: none; padding: 0; font-size: 12.5px; white-space: nowrap; }
+.as-top .brand-m { display: none; }
+.as-where .sep { color: var(--text-2); }
+.as-where .dot { flex: none; }
+:is([data-transparency="reduce"], [data-glass="solid"]) .as-where { background-color: var(--mat-solid-thick); background-image: none; -webkit-backdrop-filter: none; backdrop-filter: none; }
+@media (prefers-reduced-transparency: reduce) { .as-where { background-color: var(--mat-solid-thick); background-image: none; -webkit-backdrop-filter: none; backdrop-filter: none; } }
+
+.as-main { display: grid; align-content: start; justify-items: center; padding: 8px 16px 24px; }
+.as-main:focus { outline: none; }
+.as-foot { max-width: 56ch; margin: 0 auto; padding: 0 16px 32px; text-align: center; font-size: var(--fs-sub); color: var(--text-2); }
+
+/* a step's own pieces */
+.as-check { display: flex; align-items: flex-start; gap: 10px; padding: 12px 14px; border-radius: var(--radius-inner); background: var(--pill-green-bg); color: var(--pill-green-ink); text-align: left; }
+.as-check .icon { flex: none; margin-top: 2px; }
+.as-check b { font-weight: var(--weight-semibold); }
+.as-row { display: flex; align-items: center; gap: 12px; padding: 12px 14px; border-radius: var(--radius-inner); background: var(--surface); box-shadow: inset 0 0 0 var(--hairline) var(--separator); text-align: left; }
+.as-row > .icon { color: var(--accent); flex: none; }
+.as-row .row-main { flex: 1; min-width: 0; display: grid; gap: 1px; }
+.as-two { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.as-two .btn { height: 48px; }
+.as-two .btn[aria-pressed="true"] { background: var(--pill-green-bg); color: var(--pill-green-ink); }
+.as-steps { display: grid; padding: 4px 0; }
+.as-steps li { display: grid; grid-template-columns: 28px minmax(0, 1fr); gap: 10px; align-items: start; padding: 10px 14px; }
+.as-steps li + li { border-top: var(--hairline) solid var(--separator); }
+.as-steps .n { display: grid; place-items: center; width: 24px; height: 24px; border-radius: 50%; background: var(--accent-tint); color: var(--accent); font: var(--weight-semibold) 13px/1 var(--font); }
+.as-steps small { display: block; color: var(--text-2); font-size: var(--fs-sub); }
+.as-wait { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; padding: 4px 2px; }
+.as-wait > span { display: inline-flex; align-items: center; gap: 10px; color: var(--text-2); }
+.as-qr { display: flex; gap: 16px; align-items: center; flex-wrap: wrap; }
+.as-qr p { flex: 1; min-width: 160px; }
+.as-kit { display: grid; border-radius: var(--radius-inner); background: var(--surface); box-shadow: inset 0 0 0 var(--hairline) var(--separator); }
+.as-kit > div { display: grid; grid-template-columns: 150px minmax(0, 1fr); gap: 12px; padding: 10px 14px; }
+.as-kit > div + div { border-top: var(--hairline) solid var(--separator); }
+.as-kit > div > span:first-child { color: var(--text-2); font-size: var(--fs-sub); }
+.kit-key { display: block; font-family: var(--mono); font-size: 12.5px; line-height: 19px; word-break: break-all; }
+.as-account { display: flex; align-items: center; gap: 12px; padding: 12px 14px; border-radius: var(--radius-inner); background: var(--surface); box-shadow: inset 0 0 0 var(--hairline) var(--separator); }
+.as-account .row-main { display: grid; gap: 1px; min-width: 0; }
+.as-account .row-sub { white-space: normal; }
+.as-closed { display: flex; align-items: flex-start; gap: 12px; padding: 14px; border-radius: var(--radius-inner); background: var(--surface); box-shadow: inset 0 0 0 var(--hairline) var(--separator); }
+.as-closed .s-x { display: grid; place-items: center; width: 36px; height: 36px; flex: none; border-radius: 50%; background: var(--green); color: #ffffff; }
+.as-closed .s-x .icon { width: 18px; height: 18px; stroke-width: 2.4; }
+.as-closed p { color: var(--text-2); font-size: var(--fs-sub); margin-top: 2px; }
+.more-body .group { box-shadow: inset 0 0 0 var(--hairline) var(--separator); }
+.assistant .notice { text-align: left; }
+.assistant .secret-saved { text-align: left; }
+@media (max-width: 640px) {
+  .as-top { padding: 10px 12px; }
+  .as-where .long { display: none; }
+  .as-top .brand-l { display: none; }
+  .as-top .brand-m { display: inline-flex; }
+  .as-top .brand-m .mark-glyph { width: 28px; height: 28px; }
+  .as-main { padding: 4px 8px 16px; }
+  .as-kit > div { grid-template-columns: minmax(0, 1fr); gap: 2px; }
+  .as-two { grid-template-columns: minmax(0, 1fr); }
+}
+
+/* the recovery kit prints on its own */
+.kit-print { display: none; }
+@media print {
+  body > *:not(.kit-print) { display: none !important; }
+  .kit-print { display: block; padding: 24px; color: #000; font: 12pt/1.5 var(--font); }
+  .kit-print h1 { font-size: 18pt; margin-bottom: 12pt; }
+  .kit-print dl { display: grid; grid-template-columns: 160px 1fr; gap: 6pt 12pt; }
+  .kit-print dd { margin: 0; font-family: var(--mono); word-break: break-all; }
+}

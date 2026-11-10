@@ -1,0 +1,62 @@
+<!doctype html>
+<!-- PROTOTYPE, throwaway. HomersLab Admin: the household admin's web app (mesh only), on the design system (design/ here is a copy of the repository’s design/),
+     with fake data and no network. One static page, hash routes, state in memory. The install plan is a page of its own
+     whose address carries the plan's id (#/plans/p-…). -->
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="dark light">
+  <meta name="theme-color" content="#000000">
+  <script>
+    // Admin opens dark on every device (round 3); Settings › Appearance changes it, remembered in this browser only.
+    window.HL_THEME_DEFAULT = () => { let t = 'dark'; try { t = localStorage.getItem('hl-admin-theme') || 'dark'; } catch (e) {} return t === 'system' ? null : t === 'light' ? 'light' : 'dark'; };
+    // the glass level, also chosen in Settings › Appearance and kept in this browser; Balanced unless chosen
+    window.HL_GLASS_DEFAULT = () => { try { return localStorage.getItem('hl-admin-glass') || 'balanced'; } catch (e) { return 'balanced'; } };
+    (() => { const g = new URLSearchParams(location.search).get('glass') || window.HL_GLASS_DEFAULT(); if (/^(clear|balanced|frosted|solid)$/.test(g)) document.documentElement.dataset.glass = g; else if (!isNaN(+g)) { document.documentElement.dataset.glass = 'custom'; document.documentElement.style.setProperty('--glass', g); } })();
+    (() => { const q = new URLSearchParams(location.search).get('theme'); const t = q === 'light' || q === 'dark' ? q : window.HL_THEME_DEFAULT(); if (t) document.documentElement.dataset.theme = t; })();
+  </script>
+  <title>Admin · HomersLab</title>
+  <link rel="icon" href="icons/favicon.svg" type="image/svg+xml">
+  <link rel="icon" href="icons/favicon.ico" sizes="32x32">
+  <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+  <link rel="stylesheet" href="design/tokens.css">
+  <link rel="stylesheet" href="design/components.css">
+  <link rel="stylesheet" href="assets/proto.css">
+  <link rel="stylesheet" href="assets/admin.css">
+</head>
+<body class="has-wallpaper">
+  <div class="wallpaper" aria-hidden="true"></div>
+  <a class="sr-only" href="#main">Skip to the content</a>
+  <div class="a-shell">
+    <aside class="sidebar glass a-side vt-side" id="side" aria-label="Admin"></aside>
+    <div class="a-canvas">
+      <header class="topbar a-top vt-bar" id="top"><div class="topbar-inner a-top-inner" id="bar"></div></header>
+      <main class="a-main vt-screen" id="main" tabindex="-1"></main>
+    </div>
+  </div>
+  <nav class="tabbar a-tabs vt-tabs" id="tabs" aria-label="Admin" style="--n:5"></nav>
+  <div class="menu a-results" id="results" role="listbox" aria-label="Search results"></div>
+  <div class="menu" id="me-menu" role="dialog" aria-label="Your account"></div>
+  <div class="toast-host" role="status" aria-live="polite"></div>
+  <script src="design/icons.js"></script>
+  <script src="design/motion.js"></script>
+  <script src="design/charts.js"></script>
+  <script src="assets/data.js"></script>
+  <script src="assets/data-ops.js"></script>
+  <script src="assets/ui.js"></script>
+  <script src="assets/store.js"></script>
+  <script src="assets/proto.js"></script>
+  <script src="assets/admin-core.js"></script>
+  <script src="assets/admin-apps.js"></script>
+  <script src="assets/admin-catalog.js"></script>
+  <script src="assets/admin-people.js"></script>
+  <script src="assets/admin-nodes.js"></script>
+  <script src="assets/admin-backups.js"></script>
+  <script src="assets/admin-settings.js"></script>
+  <script src="assets/admin-disks.js"></script>
+  <script src="assets/admin-analyzer.js"></script>
+  <script src="assets/admin-uptime.js"></script>
+  <script src="assets/admin-domains.js"></script>
+</body>
+</html>

@@ -1,0 +1,109 @@
+{
+  "brand": "HomersLab",
+  "tagline": "An app manager for your household's own machines",
+  "deck_title": "logo concepts, round 1",
+  "brief": "HomersLab installs and looks after a household's self-hosted apps on the household's own Linux machines: one household account for every app, private by default with no router ports, backups with a restore test every week, and kids see only kid-safe apps. Open source (Apache-2.0). Named after Homer's Odyssey, the long journey home. It is for the household admin who sets it up and for the family who open their apps every day.",
+  "adjectives": [
+    "calm",
+    "warm",
+    "trustworthy",
+    "polished",
+    "simple"
+  ],
+  "criteria": "Success: recognisable at 16 px; works in one colour and reversed; works as a rounded app icon; one primary colour plus a neutral, light and dark. Never: Homer Simpson, a donut, a cyber-security shield. Clearly apart from the Homer dashboard's donut, Home Assistant's house, Runtipi's tipi and Umbrel's umbrella.",
+  "mockups": [
+    "app-icon",
+    "favicon-tab",
+    "website",
+    "readme",
+    "terminal",
+    "social"
+  ],
+  "nav": [
+    "Catalog",
+    "Docs",
+    "Source"
+  ],
+  "brand_color": "#B04E2E",
+  "tile_color": "#B04E2E",
+  "greyscale": false,
+  "round": 1,
+  "date": "2026-11-09",
+  "concepts": [
+    {
+      "name": "Homeward",
+      "symbol": "../color/a-homeward-clay.svg",
+      "lockup": "../color/a-homeward-lockup-light.svg",
+      "stacked": "../color/a-homeward-stacked-light.svg",
+      "symbol_on_dark": "../color/a-homeward-clay-dark.svg",
+      "lockup_on_dark": "../color/a-homeward-lockup-dark.svg",
+      "idea": "The Odyssey's ship, whose yard and square sail form a little house: home, sailing home.",
+      "rationale": [
+        "Answers direction 1: one silhouette reads as a ship and as a house",
+        "Square-rigged like the ships on Greek vases; no one in the category has a ship",
+        "Friendly and calm as an app icon, nothing like a security badge",
+        "Risk: at 16 px the roof greys out; some may read a houseboat or an ark"
+      ],
+      "symbol_on_tile": "../color/a-homeward-white.svg",
+      "stacked_on_tile": "../color/a-homeward-stacked-white.svg"
+    },
+    {
+      "name": "Lyre",
+      "symbol": "../color/b-lyre-clay.svg",
+      "lockup": "../color/b-lyre-lockup-light.svg",
+      "stacked": "../color/b-lyre-stacked-light.svg",
+      "symbol_on_dark": "../color/b-lyre-clay-dark.svg",
+      "lockup_on_dark": "../color/b-lyre-lockup-dark.svg",
+      "idea": "Homer's lyre, calm and round. In the Odyssey the master proves he is home by stringing his bow as easily as a bard strings a lyre.",
+      "rationale": [
+        "The most direct tie to Homer; no app manager uses a lyre",
+        "The bow-and-lyre scene gives sign-in a meaning without a shield",
+        "Elegant from 32 px up",
+        "Risks: among photo and media apps it reads as a music app; at 16 px it becomes a cup with horns"
+      ],
+      "symbol_on_tile": "../color/b-lyre-white.svg",
+      "stacked_on_tile": "../color/b-lyre-stacked-white.svg"
+    },
+    {
+      "name": "Harbour H",
+      "symbol": "../color/c-harbour-clay.svg",
+      "lockup": "../color/c-harbour-lockup-light.svg",
+      "stacked": "../color/c-harbour-stacked-light.svg",
+      "symbol_on_dark": "../color/c-harbour-clay-dark.svg",
+      "lockup_on_dark": "../color/c-harbour-lockup-dark.svg",
+      "idea": "An H for Home, Homer and Harbour: the crossbar is a hull and a sail rises in the counter. The ship, safe home.",
+      "rationale": [
+        "Answers direction 3: an H built from a hull and a sail; its lower counter is a doorway",
+        "Strongest small: a crisp H at 16 px that becomes a boat from 24 px",
+        "Works as a monogram, an app icon and a pattern (hull, sail, H)",
+        "Risk: letter marks need exposure; the sail is the one detail that makes it ours"
+      ],
+      "symbol_on_tile": "../color/c-harbour-white.svg",
+      "stacked_on_tile": "../color/c-harbour-stacked-white.svg"
+    },
+    {
+      "name": "Wordmark",
+      "symbol": "../color/d-monogram-clay.svg",
+      "lockup": "../color/d-wordmark-light.svg",
+      "stacked": "../color/d-stacked-light.svg",
+      "symbol_on_dark": "../color/d-monogram-clay-dark.svg",
+      "lockup_on_dark": "../color/d-wordmark-dark.svg",
+      "idea": "HomersLab in a calm literary serif; the r carries a small sail, which also reads as the apostrophe of Homer's.",
+      "rationale": [
+        "Answers direction 5: the name does the work, nothing new to learn",
+        "A serif stands apart among the category's geometric sans wordmarks; warm and bookish, like the poet",
+        "Risk: weakest small; the favicon falls back to a plain serif H",
+        "Risk: the sail-apostrophe may lead people to write Homer's Lab"
+      ],
+      "symbol_on_tile": "../color/d-monogram-white.svg",
+      "stacked_on_tile": "../color/d-stacked-white.svg"
+    }
+  ],
+  "recommendation": "C, Harbour H. It is the strongest at 16 px and as an app icon, it is ownable (the letter people already link to the name, plus a sail nobody else has), and it carries both halves of the story: home (the H, its doorway) and the journey (hull and sail). Pair it with the Figtree lockup, or with D's serif wordmark for a more literary voice. If you would rather lead with a picture, A is the best answer to 'a ship that reads as a house'.",
+  "next_steps": [
+    "Choose a direction, or name what you like in each.",
+    "Refine it: optical corrections, a 16 px cut, the custom wordmark, colour (Clay and a warm neutral, light and dark).",
+    "Kit: lockups, favicon, PWA and app icons, a one-page usage guide.",
+    "Before the name goes public: trademark search (EUIPO, Swissreg, USPTO) for the name and the mark."
+  ]
+}

@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <rect x="32" y="32" width="48" height="192" rx="12"/>
+  <rect x="176" y="32" width="48" height="192" rx="12"/>
+  <!-- hull: deck y=132, ends 16 deep at the stems, keel arc r=52 down to y=180 -->
+  <path d="M76 132 H180 V148 H176 A52 52 0 0 1 80 148 H76 Z"/>
+  <!-- sail: luff x=112, foot y=116, leech arc r=88 -->
+  <path d="M112 44 A88 88 0 0 1 160 116 H112 Z"/>
+</svg>

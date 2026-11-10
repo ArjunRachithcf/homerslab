@@ -1,0 +1,723 @@
+<!doctype html>
+<!-- HomersLab design system: the gallery. Every component live, in light and dark, with when to use it.
+     Products link tokens.css and components.css (and icons.js for the outline set); gallery.css and gallery.js are this
+     page's own. Fake data: the Ferreira household of the prototypes. -->
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="light dark">
+  <meta name="theme-color" content="#f5f5f7" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)">
+  <title>Design system · HomersLab</title>
+  <link rel="icon" href="logo/favicon.svg" type="image/svg+xml">
+  <link rel="icon" href="logo/favicon.ico" sizes="32x32">
+  <link rel="apple-touch-icon" href="logo/apple-touch-icon.png">
+  <link rel="stylesheet" href="tokens.css">
+  <link rel="stylesheet" href="components.css">
+  <link rel="stylesheet" href="gallery.css">
+  <script>
+    try { var t = localStorage.getItem('hl-theme'); if (t === 'light' || t === 'dark') document.documentElement.dataset.theme = t; } catch (e) {}
+    document.documentElement.classList.add('js');
+  </script>
+</head>
+<body class="has-wallpaper">
+  <div class="wallpaper wallpaper-quiet" aria-hidden="true"></div>
+  <a class="sr-only" href="#main">Skip to the content</a>
+  <header class="topbar" id="top">
+    <div class="ds-shell" style="display:block">
+      <div class="topbar-inner">
+        <a class="brand" href="#main" aria-label="HomersLab design system, to the top"><span data-lockup></span></a>
+        <span class="topbar-title" aria-hidden="true">Design system</span>
+        <div class="topbar-end">
+          <div class="segmented" role="radiogroup" aria-label="Appearance" style="--n:3" data-theme-switch>
+            <span class="segmented-thumb" aria-hidden="true"></span>
+            <button type="button" role="radio" aria-checked="true" data-theme-set="auto">Auto</button>
+            <button type="button" role="radio" aria-checked="false" data-theme-set="light">Light</button>
+            <button type="button" role="radio" aria-checked="false" data-theme-set="dark">Dark</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <div class="ds-shell">
+    <nav class="ds-toc" aria-label="Contents">
+      <p class="nav-group">Foundations</p>
+      <div class="nav">
+        <a class="nav-item" href="#colour">Colour</a><a class="nav-item" href="#type">Type</a><a class="nav-item" href="#space">Space and radii</a>
+        <a class="nav-item" href="#materials">Materials: glass</a><a class="nav-item" href="#motion">Motion</a><a class="nav-item" href="#mark">The logo and app icons</a>
+      </div>
+      <p class="nav-group">Components</p>
+      <div class="nav">
+        <a class="nav-item" href="#buttons">Buttons</a><a class="nav-item" href="#lists">Inset grouped lists</a><a class="nav-item" href="#widgets">Widgets and cards</a>
+        <a class="nav-item" href="#bars">Bars and the sidebar</a><a class="nav-item" href="#sheets">Sheets and the step-up</a><a class="nav-item" href="#plan">The install plan</a><a class="nav-item" href="#store">The Store and requests</a><a class="nav-item" href="#ops">Disks, uptime and alerts</a>
+        <a class="nav-item" href="#status">Status</a><a class="nav-item" href="#apps">App tiles</a><a class="nav-item" href="#forms">Forms</a>
+        <a class="nav-item" href="#feedback">Empty, toasts, progress</a><a class="nav-item" href="#people">People, names and codes</a><a class="nav-item" href="#assistant">The setup assistant</a>
+      </div>
+    </nav>
+
+    <main class="ds-main" id="main" tabindex="-1">
+      <section class="ds-hero" aria-labelledby="h-ds">
+        <h1 id="h-ds">Design system. <span class="fact">One look for Home and Admin.</span></h1>
+        <p class="ds-lead">Tokens, components and live examples for HomersLab's two surfaces, in Apple's current style: the system font, Apple's neutrals, inset grouped lists and widgets, glass for everything that floats, and motion on springs. The accent is teal; status is green, orange and red.</p>
+        <div class="ds-use">
+          <div class="card"><h2 class="card-title">Link two files</h2><p class="muted">Tokens first, then the components. <code>icons.js</code> adds the outline set and the mark; <code>motion.js</code> screen changes and shared elements.</p>
+            <pre>&lt;link rel="stylesheet" href="tokens.css"&gt;
+&lt;link rel="stylesheet" href="components.css"&gt;</pre></div>
+          <div class="card"><h2 class="card-title">Follow the device</h2><p class="muted">Light and dark follow the system. <code>data-theme</code> on <code>&lt;html&gt;</code> forces one; on any element it themes that part alone.</p>
+            <pre>&lt;html data-theme="dark"&gt;
+&lt;div data-theme="light"&gt;…&lt;/div&gt;</pre></div>
+          <div class="card"><h2 class="card-title">One accent, from the logo kit</h2><p class="muted">Classic teal, <code>#1B6E66</code> and <code>#5FB3A9</code>. To move to the kit’s other teal, change <code>--brand-accent-light</code> and <code>--brand-accent-dark</code>: every tint, hover and focus ring follows.</p>
+            <div class="ds-accents" aria-hidden="true"><span style="background:var(--brand-accent-light)"></span><span style="background:var(--brand-accent-dark)"></span></div></div>
+        </div>
+      </section>
+
+      <!-- ===================================================================== colour -->
+      <section class="ds-section" id="colour" aria-labelledby="h-colour">
+        <h2 id="h-colour">Colour</h2>
+        <p class="ds-when"><b>When to use.</b> The ground holds the page; cards, inset groups and widgets sit on it in the surface colour, one step lighter, with no line. The accent marks the one primary action, a link, a chosen chip and the data that matters, and never a status. Status is iOS green, orange and red: full strength for dots and bars, a darker variant for words, a pale tint for pills.</p>
+        <div class="ds-pair">
+          <div data-theme="light"><p class="ds-pair-name">Light</p><div class="ds-swatches" data-swatches></div></div>
+          <div data-theme="dark"><p class="ds-pair-name">Dark</p><div class="ds-swatches" data-swatches></div></div>
+        </div>
+        <ul class="ds-notes">
+          <li><b>Words</b> are <code>--text</code> or <code>--text-2</code>, both at least 4.5:1 on every surface they sit on, fills included. <code>--text-3</code> is for chevrons and the used part of a meter, never words.</li>
+          <li><b>Controls</b> take <code>--control-border</code> (3.6:1), so a field or an off switch reads as a control. On is <code>--switch-on</code>, a green: a state, not the brand.</li>
+          <li><b>Dark</b> is Apple's true black: elevation is lightness (black, then <code>#1c1c1e</code>, then <code>#2c2c2e</code>), and shadows go.</li>
+        </ul>
+      </section>
+
+      <!-- ===================================================================== type -->
+      <section class="ds-section" id="type" aria-labelledby="h-type">
+        <h2 id="h-type">Type</h2>
+        <p class="ds-when"><b>When to use.</b> One family: SF on Apple devices, Inter elsewhere (bundled, OFL). Three sizes do most of the work: a large title, the 15px body and the 13px subline. Every figure is tabular, so numbers keep their width as they change. Monospace is for real ids only: a plan id, a name on the mesh, a command.</p>
+        <div class="ds-example on-surface">
+          <div class="ds-type">
+            <div class="ds-type-row"><span>Large title · 34/700 · 28 on a phone</span><span class="large-title">Good afternoon, Inês.</span></div>
+            <div class="ds-type-row"><span>Value · 28/700</span><span style="font-size:var(--fs-value);font-weight:700;letter-spacing:var(--tracking-large)">7 of 7</span></div>
+            <div class="ds-type-row"><span>Title · 22/700</span><span class="title">Restore tests</span></div>
+            <div class="ds-type-row"><span>Headline · 17/600</span><span class="headline">What it creates</span></div>
+            <div class="ds-type-row"><span>Body · 15/400</span><span>Every app arrives wired: sign-in, a name, backups and health.</span></div>
+            <div class="ds-type-row"><span>Subhead · 13/400</span><span class="subhead">Health checked every minute</span></div>
+            <div class="ds-type-row"><span>Footnote · 12/400</span><span class="footnote">Sun 8 Nov, 04:12</span></div>
+            <div class="ds-type-row"><span>Mono · ids only</span><span><span class="plan-id">p-74b5f0</span> <span class="host">photos.ferreira.family</span></span></div>
+          </div>
+        </div>
+        <p class="ds-classes"><code>.large-title</code> <code>.title</code> <code>.headline</code> <code>.subhead</code> <code>.footnote</code> <code>.mono</code> · tokens <code>--fs-*</code>, <code>--weight-*</code>, <code>--tracking-*</code></p>
+      </section>
+
+      <!-- ===================================================================== space -->
+      <section class="ds-section" id="space" aria-labelledby="h-space">
+        <h2 id="h-space">Space and radii</h2>
+        <p class="ds-when"><b>When to use.</b> A 4px base, and one gutter (16px) across and down. A desktop page is a centred 1100px column of twelve 77px columns, so cards in different rows share their edges. Radii are soft and decided once: 22px for anything that holds content, 14px inside it, full round for buttons, pills and chips.</p>
+        <div class="ds-cols">
+          <div class="ds-example on-surface"><div class="ds-space" data-space></div></div>
+          <div class="ds-example"><div class="ds-radii">
+            <div><i style="border-radius:var(--radius-card)"></i>card 22</div><div><i style="border-radius:var(--radius-menu)"></i>menu 18</div>
+            <div><i style="border-radius:var(--radius-inner)"></i>inner 14</div><div><i style="border-radius:var(--radius-field)"></i>field 12</div>
+            <div><i style="border-radius:var(--radius-icon)"></i>icon 22.5%</div><div><i style="border-radius:var(--radius-pill)"></i>pill</div>
+          </div></div>
+        </div>
+      </section>
+
+      <!-- ===================================================================== materials -->
+      <section class="ds-section" id="materials" aria-labelledby="h-materials">
+        <h2 id="h-materials">Materials: glass</h2>
+        <p class="ds-when"><b>When to use.</b> Glass holds what floats above the page and what you steer it with: the top bar once the page moves, the bar's buttons, the sidebar, the tab bar, sheets, menus, toasts, and Home's panels and widgets. What you read and work on in Admin (lists, tables, forms) stays on opaque cards, so it reads the same over anything. Each glass is a tint over a blur of what is behind it, a sheen at the top, a specular rim brightest at the top left, and a shadow.</p>
+        <div class="ds-example ds-glass-stage wall">
+          <div class="ds-glass-behind" aria-hidden="true">
+            <span class="ds-blob" style="--x:38%"></span><span class="ds-blob b" style="--x:88%"></span>
+            <img src="examples/apps/immich.svg" alt="" style="--x:26%"><img src="examples/apps/jellyfin.svg" alt="" style="--x:51%"><img src="examples/apps/navidrome.svg" alt="" style="--x:76%"><img src="examples/apps/home-assistant.svg" alt="" style="--x:97%">
+          </div>
+          <div class="ds-glass-row">
+            <figure><div class="ds-glass-sample glass-clear"></div><figcaption><b>Clear</b><span>Illustrations only; never under words</span></figcaption></figure>
+            <figure><div class="ds-glass-sample glass"></div><figcaption><b>Regular</b><span>Home's panels, widgets, the sidebar: over the wallpaper</span></figcaption></figure>
+            <figure><div class="ds-glass-sample glass-thick"></div><figcaption><b>Thick</b><span>Sheets, menus, toasts, the tab bar: words over anything</span></figcaption></figure>
+            <figure><div class="ds-glass-sample ds-bar-sample"></div><figcaption><b>Bar</b><span>The top bar, once the page scrolls under it</span></figcaption></figure>
+          </div>
+        </div>
+        <h3 class="ds-sub" id="h-glass-level">The glass level: one setting for every glass surface</h3>
+        <p class="ds-when">A single number, <code>--glass</code> (0 Clear, 0.5 Balanced, 1 Frosted), sets the tint, blur, saturation and sheen of every glass surface: the bars, the sidebar, panels, sheets, menus, toasts and the tab bar. Solid is a separate choice, the look of reduced transparency, and the device’s reduced-transparency setting always wins. People choose it in Admin’s Settings › Appearance and in Home’s person menu (each person, each browser); a change glides there on the smooth spring.</p>
+        <div class="ds-example ds-levels">
+            <figure class="ds-level" data-glass="clear"><div class="ds-level-stage wall" aria-hidden="true"><span class="ds-blob" style="--x:30%"></span><img src="examples/apps/immich.svg" alt="" style="--x:24%"><img src="examples/apps/jellyfin.svg" alt="" style="--x:74%"></div>
+              <div class="ds-level-ui"><div class="ds-level-bar glass-thick"><span class="ds-level-dot"></span><b>Apps</b></div>
+                <div class="ds-level-panel glass"><b>Watch, listen, read</b><span>Jellyfin · Films</span><span>Navidrome · Music</span></div></div>
+              <figcaption><b>Clear</b><span>The most see-through: the wallpaper and what scrolls under it show most. Words get stronger ink and a denser plate.</span></figcaption></figure>
+            <figure class="ds-level" data-glass="balanced"><div class="ds-level-stage wall" aria-hidden="true"><span class="ds-blob" style="--x:30%"></span><img src="examples/apps/immich.svg" alt="" style="--x:24%"><img src="examples/apps/jellyfin.svg" alt="" style="--x:74%"></div>
+              <div class="ds-level-ui"><div class="ds-level-bar glass-thick"><span class="ds-level-dot"></span><b>Apps</b></div>
+                <div class="ds-level-panel glass"><b>Watch, listen, read</b><span>Jellyfin · Films</span><span>Navidrome · Music</span></div></div>
+              <figcaption><b>Balanced</b><span>The default: about half white in light, a smoked tint in dark.</span></figcaption></figure>
+            <figure class="ds-level" data-glass="frosted"><div class="ds-level-stage wall" aria-hidden="true"><span class="ds-blob" style="--x:30%"></span><img src="examples/apps/immich.svg" alt="" style="--x:24%"><img src="examples/apps/jellyfin.svg" alt="" style="--x:74%"></div>
+              <div class="ds-level-ui"><div class="ds-level-bar glass-thick"><span class="ds-level-dot"></span><b>Apps</b></div>
+                <div class="ds-level-panel glass"><b>Watch, listen, read</b><span>Jellyfin · Films</span><span>Navidrome · Music</span></div></div>
+              <figcaption><b>Frosted</b><span>Denser: the colour behind shows, its shapes hardly.</span></figcaption></figure>
+            <figure class="ds-level" data-glass="solid"><div class="ds-level-stage wall" aria-hidden="true"><span class="ds-blob" style="--x:30%"></span><img src="examples/apps/immich.svg" alt="" style="--x:24%"><img src="examples/apps/jellyfin.svg" alt="" style="--x:74%"></div>
+              <div class="ds-level-ui"><div class="ds-level-bar glass-thick"><span class="ds-level-dot"></span><b>Apps</b></div>
+                <div class="ds-level-panel glass"><b>Watch, listen, read</b><span>Jellyfin · Films</span><span>Navidrome · Music</span></div></div>
+              <figcaption><b>Solid</b><span>No transparency: the same as the device’s reduced transparency.</span></figcaption></figure>
+        </div>
+        <div class="ds-example ds-level-try"><p class="ds-label" id="ds-glass-l">Try a level on this whole page</p><div class="ds-level-ctl" aria-labelledby="ds-glass-l" data-ds-glass></div></div>
+        <div class="ds-example ds-depths">
+          <figure class="ds-depth"><div class="ds-depth-chip" style="box-shadow:var(--shadow-card)"></div><figcaption><b>A card at rest</b><code>--shadow-card</code></figcaption></figure>
+          <figure class="ds-depth"><div class="ds-depth-chip" style="box-shadow:var(--shadow-lift);transform:translateY(-2px)"></div><figcaption><b>Lifted, under the pointer</b><code>--shadow-lift</code></figcaption></figure>
+          <figure class="ds-depth"><div class="ds-depth-chip glass"></div><figcaption><b>A glass panel</b><code>--mat-depth</code></figcaption></figure>
+          <figure class="ds-depth"><div class="ds-depth-chip glass-thick"></div><figcaption><b>Floating: sheets, menus, toasts</b><code>--mat-depth-high</code></figcaption></figure>
+        </div>
+        <ul class="ds-notes">
+          <li><b>Light glass is see-through:</b> regular is about half white, thick about two thirds, the bar about 60%, on a 30–40px blur with extra saturation, a faint inner light and the specular rim; the wallpaper’s teal, sky and sage blooms show through, and what scrolls under a bar tints it.</li>
+          <li><b>Contrast</b> is checked against the real pixels behind each word, glass and all (AA in both themes). On a wallpaper page secondary text is one step darker (<code>--text-2-on-wall</code>), so the blooms can carry colour. Where a surface can’t promise AA by itself, the words sit on a denser plate (<code>.plate</code>, <code>--mat-plate</code>) rather than making the whole surface opaque.</li>
+          <li><b>Admin opens dark</b> on every device, in Home’s dark look (true black, the wallpaper’s glow behind glass panels); its Settings offer Dark, Light or System, remembered per browser. Home follows the device.</li>
+          <li><b>Reduced transparency</b> turns every material into its solid (white, or dark mode's elevations) and drops the blur; the rims and shadows stay, so the shapes still read. <button type="button" class="btn btn-sm" data-try="transparency" aria-pressed="false">Try it on this page</button></li>
+          <li><b>The level:</b> <code>data-glass="clear|balanced|frosted|solid"</code> on <code>&lt;html&gt;</code> (or on any part, as above), or <code>--glass</code> set to a number for the slider; <code>HL.glass(v)</code> applies it and <code>HL.glassControl()</code> draws the control. The plate under words runs the other way: denser as the glass gets clearer, so words keep AA at every level.</li>
+          <li><b>Never:</b> glass on glass, glass under a table or a form, or clear glass under words.</li>
+        </ul>
+        <p class="ds-classes"><code>.glass</code> <code>.glass-thick</code> <code>.glass-clear</code> <code>.plate</code> <code>.glass-react</code> (Home: light follows the pointer) <code>.wallpaper</code> <code>.wallpaper-quiet</code> <code>.wall</code> · tokens <code>--mat-clear|regular|thick|bar</code> <code>--mat-solid-*</code> <code>--mat-blur</code> <code>--mat-rim</code> <code>--mat-depth</code> <code>--wall-*</code> · <code>data-transparency="reduce"</code> · level <code>data-glass="clear|balanced|frosted|solid"</code> <code>--glass</code> <code>HL.glass()</code> <code>HL.glassControl()</code> <code>.glass-control</code></p>
+      </section>
+
+      <!-- ===================================================================== motion -->
+      <section class="ds-section" id="motion" aria-labelledby="h-motion">
+        <h2 id="h-motion">Motion</h2>
+        <p class="ds-when"><b>When to use.</b> Motion answers the person. A press goes down in 100ms and springs back; a toggle, a thumb and the tab bar's lens snap; a sheet, a menu and a toast spring from where they were asked for; a screen pushes in from the side it lives on and pops back; an app's icon flies from its row to its page; a list closes the gap a row leaves; progress fills. Home also rises on entry; Admin never moves by itself.</p>
+        <div class="ds-example on-surface">
+          <div class="stack">
+            <div><p class="ds-label">--spring-snappy · 418ms · toggles, presses, the tab bar's lens</p><div class="ds-track" data-motion><span class="ds-knob k-snappy"></span></div></div>
+            <div><p class="ds-label">--spring-smooth · 558ms · screens, shared elements, lists</p><div class="ds-track" data-motion><span class="ds-knob k-smooth"></span></div></div>
+            <div><p class="ds-label">--spring-bouncy · 687ms · sheets, menus, toasts, illustrations</p><div class="ds-track" data-motion><span class="ds-knob k-bouncy"></span></div></div>
+            <div><p class="ds-label">--ease-out · 700ms · fills, counts, Home's rise</p><div class="ds-track" data-motion><span class="ds-knob ease"></span></div></div>
+            <div class="btn-row"><button type="button" class="btn" data-play>Play</button><button type="button" class="btn btn-primary">Press me</button><label class="cluster subhead" style="gap:10px"><input type="checkbox" class="switch" checked>Hold the switch: its knob stretches</label></div>
+          </div>
+        </div>
+        <div class="ds-cols">
+          <div class="ds-example"><p class="ds-label">A screen and a shared element: open an app, then go back</p><div class="ds-mini wall" data-mini></div></div>
+          <div class="ds-example"><p class="ds-label">A list gains and loses rows; a job makes progress</p>
+            <div class="group lead-md" data-demo-list></div>
+            <div class="btn-row" style="margin-top:10px"><button type="button" class="btn btn-sm" data-list-add>Add a device</button></div>
+            <div class="stack" style="gap:12px;margin-top:22px" data-demo-progress></div>
+          </div>
+        </div>
+        <ul class="ds-notes">
+          <li><b>Springs</b> are Apple's: a response and a damping ratio, sampled into <code>linear()</code>. Classic's <code>--spring</code> (450ms, a little overshoot) stays for presses springing back and thumbs.</li>
+          <li><b>Screens</b> change through the View Transitions API in <code>motion.js</code>: <code>HL.run(update, {type})</code> with push, pop or fade; <code>HL.morph</code> for a shared element; <code>HL.list</code> for rows. The bars, the sidebar and the tab bar stay still. Without the API the change simply happens.</li>
+          <li><b>Durations:</b> press 100 · colour 200 · fade 300 · snappy 418 · screen 480 · smooth 558 · bouncy 687 · reveal 700ms; a 45ms stagger between things that rise together.</li>
+          <li><b>Layers:</b> sticky bar 10 · tab bar 20 · menu 40 · scrim 50 · sheet 51 · toast 70 · the browser's own prompt 80 · the prototype bar 100.</li>
+          <li><b>Reduced motion:</b> screens cross-fade in 160ms; nothing slides, flies, bounces or loops; Home doesn't rise. <button type="button" class="btn btn-sm" data-try="motion" aria-pressed="false">Try it on this page</button></li>
+          <li><b>Never:</b> movement nobody asked for in Admin, a bounce on data, a moving colour.</li>
+        </ul>
+        <p class="ds-classes"><code>--spring</code> <code>--spring-snappy|smooth|bouncy</code> <code>--dur-*</code> <code>.rise</code> <code>.vt-screen</code> <code>.vt-bar</code> <code>.vt-side</code> <code>.vt-tabs</code> <code>[data-row]</code> · <code>HL.run</code> <code>HL.morph</code> <code>HL.list</code> <code>HL.lens</code> · <code>data-motion="reduce"</code></p>
+      </section>
+
+      <!-- ===================================================================== mark -->
+      <section class="ds-section" id="mark" aria-labelledby="h-mark">
+        <h2 id="h-mark">The logo and app icons</h2>
+        <p class="ds-when"><b>When to use.</b> The logo comes from the kit (<code>brand/kit</code>; its runtime files are in <code>logo/</code>). Where the product needs its name, use the horizontal lockup, never the name retyped: the wordmark is Figtree, outlined. Beside a title of its own (Home’s household, a phone’s bar), the mark stands alone. In the interface it is inlined from <code>icons.js</code> and coloured by the accent. Each app keeps its product name and its own icon, on a white squircle in both themes, so a family recognises Immich by sight.</p>
+        <div class="ds-cols">
+          <div class="ds-example on-surface"><div class="stack" style="gap:22px">
+            <div class="ds-row" style="gap:28px;align-items:flex-end"><span data-mark-large></span><span data-lockup-lg></span></div>
+            <div class="ds-row" style="gap:20px;align-items:flex-end">
+              <span class="stack" style="gap:6px;justify-items:center"><span data-mark16></span><span class="footnote">16 cut</span></span>
+              <span class="stack" style="gap:6px;justify-items:center"><span data-mark></span><span class="footnote">24 master</span></span>
+              <span class="stack" style="gap:6px;justify-items:center"><span data-mark32></span><span class="footnote">32 cut</span></span>
+              <span class="stack" style="gap:6px;justify-items:center"><img src="logo/icon-192.png" alt="The Home app’s icon" width="56" height="56" style="border-radius:22.5%"><span class="footnote">PWA</span></span>
+              <span class="stack" style="gap:6px;justify-items:center"><img class="logo-l" src="logo/app-icon-light-128.png" alt="The desktop family app’s icon" width="64" height="64"><img class="logo-d" src="logo/app-icon-dark-128.png" alt="The desktop family app’s icon" width="64" height="64"><span class="footnote">Desktop app</span></span>
+            </div>
+            <p class="footnote">Each size has its own drawing: the 16 and 32 px cuts are hand-fitted, the master lands on whole pixels at 24 and 48 px, and at 64 px and up a dark background gets the reversed cut, one unit thinner. Keep one stem of clear space, a quarter of the mark’s height, on every side.</p>
+          </div></div>
+          <div class="ds-example"><div class="ds-row" style="gap:16px;align-items:flex-end">
+            <img class="app-icon app-icon-sm" src="examples/apps/immich.svg" alt="Immich">
+            <img class="app-icon app-icon-md" src="examples/apps/immich.svg" alt="Immich">
+            <img class="app-icon" src="examples/apps/immich.svg" alt="Immich">
+            <img class="app-icon app-icon-lg" src="examples/apps/immich.svg" alt="Immich">
+            <img class="app-icon app-icon-xl" src="examples/apps/immich.svg" alt="Immich">
+            <span class="app-icon app-icon-md is-mark" role="img" aria-label="HomersLab itself"><span data-mark16></span></span>
+          </div><p class="footnote" style="margin-top:12px">28 · 32 · 40 · 56 · 72px, and HomersLab’s own tile (the light teal mark at half the tile). App icons: selfh.st/icons, CC BY 4.0; the names and logos are their owners’ trademarks.</p></div>
+        </div>
+        <p class="ds-classes"><code>.brand</code> <code>.lockup</code> <code>.lockup-lg</code> <code>.mark-glyph</code> <code>.mark-16</code> <code>.mark-32</code> <code>.mark-large</code> <code>.logo-l</code> <code>.logo-d</code> <code>.app-icon.is-mark</code> · <code>LOCKUP</code>, <code>MARK</code>, <code>MARK_16</code>, <code>MARK_32</code>, <code>MARK_LARGE</code> in <code>icons.js</code></p>
+      </section>
+
+      <!-- ===================================================================== buttons -->
+      <section class="ds-section" id="buttons" aria-labelledby="h-buttons">
+        <h2 id="h-buttons">Buttons</h2>
+        <p class="ds-when"><b>When to use.</b> One primary per screen, filled with the accent: the thing the screen is for (Install, Invite someone). Secondary actions are grey. Plain is a link-like action inside a sentence or a header. Destructive is red words on a pale red, for an action that leads to a confirmation; the filled red one is only the last press of something that destroys data.</p>
+        <div class="ds-example">
+          <div class="stack" style="gap:20px">
+            <div class="btn-row">
+              <button type="button" class="btn btn-primary"><i data-i="plus"></i>Install an app</button>
+              <button type="button" class="btn">Update</button>
+              <button type="button" class="btn btn-plain">See the install plan</button>
+              <button type="button" class="btn btn-destructive"><i data-i="trash"></i>Delete data…</button>
+              <button type="button" class="btn btn-danger"><i data-i="trash"></i>Delete it</button>
+            </div>
+            <div class="btn-row">
+              <button type="button" class="btn btn-primary btn-lg"><i data-i="key"></i>Install with your passkey</button>
+              <button type="button" class="btn btn-sm">Send again</button>
+              <button type="button" class="btn btn-icon" aria-label="Copy the command"><i data-i="copy"></i></button>
+              <button type="button" class="btn" aria-busy="true"><span class="spinner"></span>Testing…</button>
+            </div>
+            <div class="btn-row"><button type="button" class="btn btn-destructive" disabled aria-describedby="why-del"><i data-i="trash"></i>Delete data</button><span class="btn-why" id="why-del">Remove Paperless-ngx first.</span></div>
+          </div>
+        </div>
+        <ul class="ds-notes">
+          <li><b>Heights:</b> 36px in Admin, 44px for a page's main action and anything on a phone, 30px in dense rows.</li>
+          <li><b>Disabled</b> stays legible and says why next to it, tied with <code>aria-describedby</code>.</li>
+          <li><b>Never</b> a second filled button beside the primary, an accent fill on a status, or a red fill that only opens a dialog.</li>
+        </ul>
+        <p class="ds-classes"><code>.btn</code> <code>.btn-primary</code> <code>.btn-plain</code> <code>.btn-destructive</code> <code>.btn-danger</code> <code>.btn-sm</code> <code>.btn-lg</code> <code>.btn-block</code> <code>.btn-icon</code> <code>[aria-busy]</code> <code>.btn-why</code></p>
+      </section>
+
+      <!-- ===================================================================== lists -->
+      <section class="ds-section" id="lists" aria-labelledby="h-lists">
+        <h2 id="h-lists">Inset grouped lists</h2>
+        <p class="ds-when"><b>When to use.</b> The default way to show a set of things or settings: apps, people, devices, an app's health, the choices of a form. Rows sit edge to edge in a rounded group, split by hairlines inset to the text. A row that opens something has a chevron; a row's value is grey on the right; a switch turns something on at once; a checkmark marks the one choice of several.</p>
+        <div class="ds-cols">
+          <div class="ds-example">
+            <div class="group-block">
+              <div class="group-head"><h3>Apps</h3><button type="button" class="btn btn-plain">View all</button></div>
+              <div class="group lead-md">
+                <a class="row row-link" href="#lists"><span class="row-lead"><img class="app-icon app-icon-md" src="examples/apps/immich.svg" alt=""></span><span class="row-main"><span class="row-title">Immich</span><span class="row-sub">Photos · Study PC</span></span><span class="row-trail"><span class="pill">Update ready</span><i data-i="chevronRight" class="row-chev"></i></span></a>
+                <a class="row row-link" href="#lists"><span class="row-lead"><img class="app-icon app-icon-md" src="examples/apps/paperless-ngx.svg" alt=""></span><span class="row-main"><span class="row-title">Paperless-ngx</span><span class="row-sub">Documents · Study PC</span></span><span class="row-trail"><span class="pill pill-red">Restore test failed</span><i data-i="chevronRight" class="row-chev"></i></span></a>
+                <a class="row row-link" href="#lists"><span class="row-lead"><img class="app-icon app-icon-md" src="examples/apps/jellyfin.svg" alt=""></span><span class="row-main"><span class="row-title">Jellyfin</span><span class="row-sub">Films and series · Attic NAS</span></span><span class="row-trail"><span class="row-value">14:00</span><i data-i="chevronRight" class="row-chev"></i></span></a>
+              </div>
+              <p class="group-foot">Every app is backed up every hour and restore-tested every Sunday.</p>
+            </div>
+            <div class="group-block">
+              <div class="group-head"><h3>Updates</h3></div>
+              <div class="group">
+                <div class="row"><span class="row-main"><span class="row-label">Version</span></span><span class="row-value">2.18.4</span></div>
+                <label class="row"><span class="row-main"><span class="row-label">Update automatically</span><span class="row-sub wrap">At 03:00, to the catalog's tested versions</span></span><input type="checkbox" class="switch" checked></label>
+                <button type="button" class="row row-link row-action"><span class="row-main"><span class="row-label">Run the restore test now</span></span></button>
+              </div>
+            </div>
+          </div>
+          <div class="ds-example">
+            <div class="group-block">
+              <div class="group-head"><h3>Sign-up</h3></div>
+              <div class="group" role="radiogroup" aria-label="Sign-up">
+                <label class="row row-choice"><input type="radio" name="ds-signup" checked><span class="row-main"><span class="row-label">By invite only</span><span class="row-sub wrap">Nobody joins unless you invite them</span></span><span class="row-trail"><i data-i="check2" class="checkmark"></i></span></label>
+                <label class="row row-choice"><input type="radio" name="ds-signup"><span class="row-main"><span class="row-label">Anyone at ferreira.family</span><span class="row-sub wrap">They join as adults; you get a mail</span></span><span class="row-trail"><i data-i="check2" class="checkmark"></i></span></label>
+                <label class="row row-choice"><input type="radio" name="ds-signup"><span class="row-main"><span class="row-label">Off</span></span><span class="row-trail"><i data-i="check2" class="checkmark"></i></span></label>
+              </div>
+            </div>
+            <div class="group-block">
+              <div class="group-head"><h3>Devices</h3></div>
+              <div class="group lead-sm">
+                <div class="row"><span class="row-lead"><i data-i="phone" class="icon-md"></i></span><span class="row-main"><span class="row-title">Tomás's phone</span><span class="row-sub">Pixel 9 · Tailscale · seen 13:58</span></span><button type="button" class="btn btn-sm">Revoke</button></div>
+                <div class="row"><span class="row-lead"><i data-i="desktop" class="icon-md"></i></span><span class="row-main"><span class="row-title">Tomás's desktop</span><span class="row-sub">Windows 11 PC · Tailscale · seen yesterday</span></span><button type="button" class="btn btn-sm">Revoke</button></div>
+                <button type="button" class="row row-link row-destructive"><span class="row-lead"></span><span class="row-main"><span class="row-label">Remove Tomás from the household</span></span></button>
+              </div>
+            </div>
+          </div>
+        </div>
+        <ul class="ds-notes">
+          <li><b>Rows</b> are at least 52px; two lines need the height. Titles are medium weight for an object (an app, a person), regular for a setting.</li>
+          <li><b>One accessory</b> per row: a value, a pill, a switch, a button or a chevron (a chevron may follow a value or a pill).</li>
+          <li><b>The group head</b> is a short sentence-case label; the foot says what the group means in one sentence.</li>
+        </ul>
+        <p class="ds-classes"><code>.group</code> <code>.lead-sm|md|lg</code> <code>.group-head</code> <code>.group-foot</code> <code>.row</code> <code>.row-link</code> <code>.row-lead</code> <code>.row-main</code> <code>.row-title</code> <code>.row-label</code> <code>.row-sub</code> <code>.row-trail</code> <code>.row-value</code> <code>.row-chev</code> <code>.row-choice</code> <code>.row-action</code> <code>.row-destructive</code> <code>.switch</code></p>
+      </section>
+
+      <!-- ===================================================================== widgets -->
+      <section class="ds-section" id="widgets" aria-labelledby="h-widgets">
+        <h2 id="h-widgets">Widgets and cards</h2>
+        <p class="ds-when"><b>When to use.</b> A widget answers one question with one figure: is everything working, when was the last backup. Four sit across the top of an overview; a widget that opens its details has a chevron and lifts. A card holds a block with its own title; a panel is a card of app rows, as on Home.</p>
+        <div class="ds-example">
+          <div class="widgets">
+            <div class="widget"><span class="widget-label">Apps</span><div class="widget-row"><svg class="ring" viewBox="0 0 64 64" aria-hidden="true"><circle class="ring-track" cx="32" cy="32" r="24"/><circle class="ring-arc" cx="32" cy="32" r="24" stroke-dasharray="150.8" stroke-dashoffset="0"/></svg><span class="widget-value">8<small>of 8</small></span></div><span class="widget-caption">Every app answered just now</span></div>
+            <button type="button" class="widget"><span class="widget-label">Last backup<i data-i="chevronRight" class="chev icon-sm"></i></span><span class="widget-value">6 min ago</span><span class="widget-caption">Every hour, to 3 places</span></button>
+            <button type="button" class="widget is-bad"><span class="widget-label">Restore tests<i data-i="chevronRight" class="chev icon-sm"></i></span><span class="widget-value">6<small>of 7 passed</small></span><span class="widget-caption">Paperless-ngx failed on Sunday</span></button>
+            <button type="button" class="widget"><span class="widget-label">Disk space<i data-i="chevronRight" class="chev icon-sm"></i></span><span class="widget-value">1.97 TB<small>free</small></span><span class="meter-track" style="margin-top:12px;--used:2%"><span class="meter-fill"></span></span><span class="widget-caption">Data disk on Study PC</span></button>
+          </div>
+          <div class="grid" style="margin-top:16px">
+            <section class="card span-6" aria-labelledby="ds-card"><div class="card-head"><h3 class="card-title" id="ds-card">The weekly archive</h3><span class="card-meta">Sundays 03:30</span></div>
+              <dl class="kv"><dt>Last</dt><dd>Sunday 8 Nov, 03:34 · 214 MB</dd><dt>To</dt><dd>Backblaze B2 and Proton Drive</dd><dt>Its key</dt><dd><span class="mono">age1q7m3…k2vz</span></dd></dl></section>
+            <section class="panel span-6" aria-labelledby="ds-panel"><h3 class="panel-title" id="ds-panel">Photos and documents <span class="count">2</span></h3>
+              <div class="panel-rows list">
+                <a class="app-row" href="#widgets"><img class="app-icon" src="examples/apps/immich.svg" alt=""><span class="app-row-text"><span class="app-row-name">Immich</span><span class="app-row-for">Photos and videos from every phone</span></span><span class="app-row-end"><span class="dot dot-green" aria-label="Working"></span><i data-i="chevronRight" class="row-chev"></i></span></a>
+                <a class="app-row" href="#widgets"><img class="app-icon" src="examples/apps/paperless-ngx.svg" alt=""><span class="app-row-text"><span class="app-row-name">Paperless-ngx</span><span class="app-row-for">Letters, bills and contracts</span></span><span class="app-row-end"><span class="dot dot-green" aria-label="Working"></span><i data-i="chevronRight" class="row-chev"></i></span></a>
+              </div></section>
+          </div>
+        </div>
+        <ul class="ds-notes">
+          <li><b>The figure</b> is the answer: 28px bold, tabular, its unit smaller and grey. Green or red words only when the figure is a verdict.</li>
+          <li><b>Never</b> an icon in a tinted circle, a sparkline, or a widget whose figure repeats the card below it.</li>
+        </ul>
+        <p class="ds-classes"><code>.widgets</code> <code>.widget</code> <code>.widget-label</code> <code>.widget-value</code> <code>.widget-caption</code> <code>.is-good|is-bad|is-quiet</code> <code>.ring</code> <code>.card</code> <code>.card-head</code> <code>.card-title</code> <code>.panel</code> <code>.panel-title</code> <code>.panel-rows</code></p>
+      </section>
+
+      <!-- ===================================================================== bars -->
+      <section class="ds-section" id="bars" aria-labelledby="h-bars">
+        <h2 id="h-bars">Bars and the sidebar</h2>
+        <p class="ds-when"><b>When to use.</b> The top bar is clear at the top of a page and turns to glass with a hairline once the page moves; the large title collapses into it, and its buttons are glass capsules. On a phone or a tablet, Admin's five destinations live in a glass tab bar that floats above the page, a lens under the chosen one; on a desktop they live in a sidebar that floats on glass, inset from the window's edges (macOS 26). Scroll inside the phone, and tap its tabs.</p>
+        <div class="ds-cols">
+          <div class="ds-example">
+            <div class="ds-phone wall" data-phone data-ui>
+              <div class="ds-phone-scroll" data-phone-scroll>
+                <header class="topbar"><div class="topbar-inner"><span class="brand" role="img" aria-label="HomersLab"><span data-mark></span></span><span class="topbar-title">People</span><span class="topbar-end"><button type="button" class="icon-btn" aria-label="Search"><i data-i="search"></i></button></span></div></header>
+                <div class="ds-phone-body">
+                  <p class="ds-phone-title">People</p>
+                  <div class="group lead-md">
+                    <div class="row row-link"><span class="row-lead"><span class="avatar" style="--h:195">I</span></span><span class="row-main"><span class="row-title">Inês Ferreira</span><span class="row-sub">Admin · 2 devices</span></span><i data-i="chevronRight" class="row-chev"></i></div>
+                    <div class="row row-link"><span class="row-lead"><span class="avatar" style="--h:75">T</span></span><span class="row-main"><span class="row-title">Tomás Ferreira</span><span class="row-sub">Adult · 3 devices</span></span><i data-i="chevronRight" class="row-chev"></i></div>
+                    <div class="row row-link"><span class="row-lead"><span class="avatar" style="--h:330">L</span></span><span class="row-main"><span class="row-title">Lúcia Ferreira</span><span class="row-sub">Adult · 1 device</span></span><i data-i="chevronRight" class="row-chev"></i></div>
+                    <div class="row row-link"><span class="row-lead"><span class="avatar" style="--h:140">R</span></span><span class="row-main"><span class="row-title">Rita Ferreira</span><span class="row-sub">Kid, 12 · 1 device</span></span><i data-i="chevronRight" class="row-chev"></i></div>
+                    <div class="row row-link"><span class="row-lead"><span class="avatar" style="--h:230">D</span></span><span class="row-main"><span class="row-title">Duarte Ferreira</span><span class="row-sub">Kid, 8 · a security key</span></span><i data-i="chevronRight" class="row-chev"></i></div>
+                  </div>
+                  <div class="group"><div class="row"><span class="row-main"><span class="row-label">Invites waiting</span></span><span class="row-value">1</span></div><div class="row"><span class="row-main"><span class="row-label">Sign-up</span></span><span class="row-value">By invite only</span></div></div>
+                  <div class="group lead-sm"><div class="row"><span class="row-lead"><i data-i="mail" class="icon-md"></i></span><span class="row-main"><span class="row-title">Joana Ferreira</span><span class="row-sub">Adult · works until 13 Nov</span></span></div><div class="row"><span class="row-lead"><i data-i="key" class="icon-md"></i></span><span class="row-main"><span class="row-title">Passkeys</span><span class="row-sub">7 across the household</span></span></div></div>
+                </div>
+              </div>
+              <nav class="tabbar" aria-label="Admin (example)">
+                <a class="tab" href="#bars"><i data-i="apps"></i>Apps</a><a class="tab" href="#bars"><i data-i="catalog"></i>Catalog</a><a class="tab" href="#bars" aria-current="page"><i data-i="people"></i>People</a><a class="tab" href="#bars"><i data-i="nodes"></i>Nodes</a><a class="tab" href="#bars"><i data-i="backups"></i>Backups</a>
+              </nav>
+            </div>
+          </div>
+          <div class="ds-example">
+            <div class="ds-sidebar wall">
+              <div class="sidebar glass">
+                <span class="brand"><span data-lockup></span></span>
+                <div class="sidebar-scope"><b>The Ferreira household</b><span>Admin · on the mesh</span></div>
+                <div class="nav">
+                  <a class="nav-item" href="#bars"><i data-i="apps"></i>Apps</a>
+                  <a class="nav-item" href="#bars" aria-current="page"><i data-i="catalog"></i>Catalog</a>
+                  <a class="nav-item" href="#bars"><i data-i="people"></i>People</a>
+                  <a class="nav-item" href="#bars"><i data-i="nodes"></i>Nodes</a>
+                  <a class="nav-item" href="#bars"><i data-i="backups"></i>Backups</a>
+                </div>
+                <div class="sidebar-foot">
+                  <a class="nav-item" href="#bars"><i data-i="settings"></i>Settings</a>
+                  <div class="me-row"><span class="avatar" style="--h:195">I</span><span class="me-text"><b>Inês Ferreira</b><span>Household admin</span></span></div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <ul class="ds-notes">
+          <li><b>The bar</b> carries something real: the back button, the collapsed title, search, the person's menu. Glass needs <code>backdrop-filter</code>; without it the bar turns solid.</li>
+          <li><b>The tab bar</b> holds five destinations at most; the chosen one is the accent on a lens that snaps to it, the rest grey, labels always shown.</li>
+          <li><b>The sidebar</b> names the product and the household at the top, the person at the bottom; counts only on a queue that needs action.</li>
+        </ul>
+        <p class="ds-classes"><code>.topbar</code> <code>.is-scrolled</code> <code>.is-titled</code> <code>.topbar-inner</code> <code>.topbar-title</code> <code>.topbar-back</code> <code>.topbar-end</code> <code>.icon-btn</code> <code>.tabbar</code> <code>.tabbar-lens</code> <code>.tab</code> <code>.has-tabbar</code> <code>.sidebar</code> <code>.sidebar-scope</code> <code>.nav</code> <code>.nav-item</code> <code>.nav-group</code> <code>.me-row</code></p>
+      </section>
+
+      <!-- ===================================================================== sheets -->
+      <section class="ds-section" id="sheets" aria-labelledby="h-sheets">
+        <h2 id="h-sheets">Sheets and the step-up</h2>
+        <p class="ds-when"><b>When to use.</b> A sheet asks one thing that needs a moment: confirm a change, pick a point to restore, fill a short form. It is thick glass on a scrim that softens the page, centred on a desktop and floating just above the bottom edge on a phone, and it springs in from where it was asked for. The step-up is the sheet for a risky change: it says in plain words what the passkey approves and the one plan it is bound to, before the browser asks for the passkey.</p>
+        <div class="ds-cols">
+          <div class="ds-scrim">
+            <section class="sheet is-static" data-ui role="dialog" aria-labelledby="ds-sheet-t" aria-modal="false">
+              <div class="sheet-grab" aria-hidden="true"></div>
+              <div class="sheet-head"><div class="sheet-head-text"><h3 class="sheet-title" id="ds-sheet-t">Remove Paperless-ngx?</h3><p class="sheet-sub">Removing takes nothing away for good, so it needs no passkey.</p></div><button type="button" class="sheet-close" aria-label="Close"><i data-i="x"></i></button></div>
+              <div class="sheet-body"><ul class="group stepup-list">
+                <li><i data-i="x"></i><span>Stops Paperless-ngx on Study PC</span></li>
+                <li><i data-i="x"></i><span>Takes away its sign-in, its name and its place on Home</span></li>
+                <li><i data-i="check"></i><span>Keeps its data (18.4 GB) and its backups<small>Installing it again brings it back as it was</small></span></li>
+              </ul></div>
+              <div class="sheet-foot"><button type="button" class="btn">Cancel</button><button type="button" class="btn btn-destructive">Remove Paperless-ngx</button></div>
+            </section>
+          </div>
+          <div class="ds-scrim">
+            <section class="sheet is-static" data-ui role="dialog" aria-labelledby="ds-step-t" aria-modal="false">
+              <div class="sheet-grab" aria-hidden="true"></div>
+              <div class="sheet-head"><div class="sheet-head-text"><i data-i="key" class="stepup-mark"></i><h3 class="sheet-title" id="ds-step-t">Approve with your passkey</h3><p class="sheet-sub">This plan gives Immich a device, so HomersLab asks for your passkey: once, for the whole plan.</p></div></div>
+              <div class="sheet-body">
+                <ul class="group stepup-list" aria-label="What your passkey approves">
+                  <li><i data-i="check"></i><span>Install Immich on Study PC, for Inês, Tomás and Lúcia</span></li>
+                  <li><i data-i="gpu"></i><span>Use the GPU on Study PC<small>NVIDIA RTX 3060, for face and object recognition</small></span></li>
+                </ul>
+                <p class="stepup-bound"><i data-i="lock"></i><span>Bound to plan <span class="plan-id">p-74b5f0</span>. It approves nothing else, and lapses in 5 minutes. Signed in as Inês Ferreira.</span></p>
+              </div>
+              <div class="sheet-foot"><button type="button" class="btn">Cancel</button><button type="button" class="btn btn-primary"><i data-i="key"></i>Use my passkey</button></div>
+            </section>
+          </div>
+        </div>
+        <p class="ds-label" style="margin-top:12px">Shown at rest above, with their outline only; open one to see it float over the scrim with its shadow.</p>
+        <div class="ds-example" style="margin-top:8px"><div class="btn-row">
+          <button type="button" class="btn" data-open-sheet="confirm">Open the confirmation</button>
+          <button type="button" class="btn btn-primary" data-open-sheet="stepup"><i data-i="key"></i>Open the step-up</button>
+          <button type="button" class="btn" data-open-menu aria-haspopup="true" aria-expanded="false" aria-controls="ds-menu">Open a menu</button>
+        </div></div>
+        <ul class="ds-notes">
+          <li><b>One passkey per plan.</b> The step-up lists every extra in plain words and names the plan id; a changed plan is a new plan and asks again.</li>
+          <li><b>Risky changes</b> always step up: deleting data, nodes, roles, sign-in settings, anything public, extras, restoring an app, eject, trusting a catalog, a join code. Updates, audiences, Remove, revoking a device and inviting an adult or a kid only confirm.</li>
+          <li><b>Focus</b> stays inside an open sheet; Escape and the scrim close it; focus returns to what opened it.</li>
+        </ul>
+        <p class="ds-classes"><code>.scrim</code> <code>.sheet</code> <code>.is-open</code> <code>.sheet-wide</code> <code>.sheet-grab</code> <code>.sheet-head</code> <code>.sheet-title</code> <code>.sheet-sub</code> <code>.sheet-close</code> <code>.sheet-body</code> <code>.sheet-foot</code> <code>.stepup-mark</code> <code>.stepup-list</code> <code>.stepup-bound</code> <code>.plan-id</code> <code>.menu</code> <code>.menu-item</code></p>
+      </section>
+
+      <!-- ===================================================================== plan -->
+      <section class="ds-section" id="plan" aria-labelledby="h-plan">
+        <h2 id="h-plan">The install plan</h2>
+        <p class="ds-when"><b>When to use.</b> Before anything happens to an app (install, update, remove, eject, a restore), its plan is a page of its own whose address carries the plan's id. Each section answers one plain question. The action card on the right lists what the passkey approves above the one button; on a phone it docks at the bottom.</p>
+        <div class="ds-example">
+          <div class="split">
+            <div class="stack" style="gap:24px">
+              <div class="cluster"><span class="subhead">Plan</span><span class="plan-id">p-74b5f0</span><span class="subhead">made 14:06 · nothing happens until you press Install</span></div>
+              <div class="group-block"><div class="group-head"><h3>Where it runs</h3></div>
+                <div class="group" role="radiogroup" aria-label="Node">
+                  <label class="row row-choice"><input type="radio" name="ds-node" checked><span class="row-main"><span class="row-title">Study PC · suggested</span><span class="row-sub wrap">Has the NVIDIA GPU, 18.9 GB of memory free</span></span><span class="row-trail"><i data-i="check2" class="checkmark"></i></span></label>
+                  <label class="row row-choice"><input type="radio" name="ds-node"><span class="row-main"><span class="row-title">Attic NAS</span><span class="row-sub wrap">Has the Intel GPU, 11.2 GB of memory free</span></span><span class="row-trail"><i data-i="check2" class="checkmark"></i></span></label>
+                  <label class="row row-choice"><input type="radio" name="ds-node" disabled><span class="row-main"><span class="row-title">Kitchen Pi</span><span class="row-sub wrap">Not enough memory: needs 6 GB, 4.5 GB free</span></span><span class="row-trail"><i data-i="check2" class="checkmark"></i></span></label>
+                </div></div>
+              <div class="group-block"><div class="group-head"><h3>Who will see it</h3></div>
+                <div class="group"><div class="row is-top" style="display:grid;gap:12px">
+                  <div class="chips" role="group" aria-label="Roles"><button type="button" class="chip" aria-pressed="false">Everyone</button><button type="button" class="chip" aria-pressed="false">Admins</button><button type="button" class="chip" aria-pressed="true"><i data-i="check2" class="chip-check"></i>Adults</button><button type="button" class="chip" disabled title="Immich has no kid view">Kids</button></div>
+                  <p class="subhead">Inês, Tomás and Lúcia see Immich on Home and can open it.</p></div></div></div>
+              <div class="group-block"><div class="group-head"><h3>Extras</h3><span class="needs-key"><i data-i="key"></i>Needs your passkey</span></div>
+                <div class="group"><label class="row"><span class="row-main"><span class="row-title">Use the GPU on Study PC</span><span class="row-sub wrap">NVIDIA RTX 3060, for face and object recognition. Without it Immich still works; faces take longer.</span></span><input type="checkbox" class="switch" checked aria-label="Include the GPU"></label></div></div>
+            </div>
+            <aside class="card stack" aria-label="Install" style="gap:14px">
+              <h3 class="card-title">Your passkey approves</h3>
+              <ul class="lines"><li><i data-i="check"></i><span>Install Immich on Study PC, for Inês, Tomás and Lúcia</span></li><li><i data-i="gpu"></i><span>Use the GPU on Study PC</span></li></ul>
+              <button type="button" class="btn btn-primary btn-lg btn-block"><i data-i="key"></i>Install with your passkey</button>
+              <p class="stepup-bound"><i data-i="lock"></i><span>One passkey approves this plan and nothing else. Change anything and it becomes a new plan.</span></p>
+            </aside>
+          </div>
+        </div>
+        <ul class="ds-notes">
+          <li><b>The questions,</b> in this order: where it runs, who will see it, how people sign in, its name, what is backed up, resources, extras, secrets.</li>
+          <li><b>A plan with no extra</b> shows "Nothing in this plan needs your passkey" and a plain Install.</li>
+          <li><b>A failed first health check</b> undoes the whole install: the progress page says so and what was taken away.</li>
+        </ul>
+        <p class="ds-classes"><code>.split</code> <code>.rail</code> <code>.group-head</code> <code>.row-choice</code> <code>.chips</code> <code>.needs-key</code> <code>.plan-id</code> <code>.stepup-bound</code> · screen layout in the prototypes' <code>admin.css</code></p>
+      </section>
+
+      <!-- ===================================================================== status -->
+      <section class="ds-section" id="status" aria-labelledby="h-status">
+        <h2 id="h-status">Status</h2>
+        <p class="ds-when"><b>When to use.</b> A pill states one fact about one object, beside its name: working, updating, failed. A dot is the same fact when the space is small and a word is nearby. A notice is a sentence about the page, next to the action it drives. Grey for what is fine or neutral; colour only on what needs a look.</p>
+        <div class="ds-example">
+          <div class="stack" style="gap:16px">
+            <div class="cluster"><span class="pill pill-green"><span class="dot dot-green dot-sm"></span>Working</span><span class="pill pill-orange"><span class="dot dot-orange dot-sm"></span>Updating</span><span class="pill pill-red"><span class="dot dot-red dot-sm"></span>Not working</span><span class="pill">Update ready</span><span class="pill"><i data-i="globe"></i>Public</span><span class="pill">Removed, data kept</span><span class="needs-key"><i data-i="key"></i>Needs your passkey</span></div>
+            <div class="cluster"><span class="cluster" style="gap:6px"><span class="dot dot-green"></span>Online</span><span class="cluster" style="gap:6px"><span class="dot dot-orange"></span>Updating</span><span class="cluster" style="gap:6px"><span class="dot dot-red"></span>Not answering</span><span class="cluster" style="gap:6px"><span class="dot is-checking"></span>Checking</span></div>
+            <div class="notice notice-error"><i data-i="alert"></i><span class="notice-body"><b>Paperless-ngx: Sunday's restore test failed.</b><span>The restored copy didn't pass its health check within 10 minutes.</span></span><span class="notice-actions"><button type="button" class="btn btn-sm">Run it again</button></span></div>
+            <div class="notice notice-warn"><i data-i="wifiOff"></i><span class="notice-body"><b>You're away from the mesh.</b><span>Paperless-ngx opens from anywhere; the others need Tailscale on.</span></span></div>
+            <div class="notice notice-ok"><i data-i="check"></i><span class="notice-body">Checked at 13:51: NetBird account "Ferreira", no machines yet.</span></div>
+            <div class="notice notice-info"><i data-i="info"></i><span class="notice-body">You changed the node, so this is a new plan: <span class="plan-id">p-1c09e2</span>.</span></div>
+          </div>
+        </div>
+        <p class="ds-classes"><code>.pill</code> <code>.pill-green|orange|red|plain</code> <code>.dot</code> <code>.dot-green|orange|red</code> <code>.is-checking</code> <code>.needs-key</code> <code>.notice</code> <code>.notice-error|warn|ok|info</code> <code>.notice-body</code> <code>.notice-actions</code></p>
+      </section>
+
+      <!-- ===================================================================== apps -->
+      <section class="ds-section" id="apps" aria-labelledby="h-apps">
+        <h2 id="h-apps">App tiles</h2>
+        <p class="ds-when"><b>When to use.</b> On Home an adult sees each app as a row: its own icon, its product name, what it is for, and its state only when it matters. A kid's Home has its own layout: bigger tiles that say what each app is for. Away from the mesh, the apps that need it are dimmed and say "Needs the mesh".</p>
+        <div class="ds-example">
+          <section class="panel" aria-labelledby="ds-adult"><h3 class="panel-title" id="ds-adult">Adult <span class="count">4</span></h3>
+            <div class="panel-rows" style="--cols:2">
+              <a class="app-row" href="#apps"><img class="app-icon" src="examples/apps/immich.svg" alt=""><span class="app-row-text"><span class="app-row-name">Immich</span><span class="app-row-for">Photos and videos from every phone</span></span><span class="app-row-end"><span class="dot dot-green" role="img" aria-label="Working"></span><i data-i="chevronRight" class="row-chev"></i></span></a>
+              <a class="app-row is-updating" href="#apps"><img class="app-icon" src="examples/apps/jellyfin.svg" alt=""><span class="app-row-text"><span class="app-row-name">Jellyfin</span><span class="app-row-for">Films and series</span></span><span class="app-row-end"><span class="app-row-state">Updating</span><span class="dot dot-orange"></span><i data-i="chevronRight" class="row-chev"></i></span></a>
+              <a class="app-row is-down" href="#apps"><img class="app-icon" src="examples/apps/navidrome.svg" alt=""><span class="app-row-text"><span class="app-row-name">Navidrome</span><span class="app-row-for">The music library</span></span><span class="app-row-end"><span class="app-row-state">Not working</span><span class="dot dot-red"></span><i data-i="chevronRight" class="row-chev"></i></span></a>
+              <a class="app-row is-away" href="#apps"><img class="app-icon" src="examples/apps/home-assistant.svg" alt=""><span class="app-row-text"><span class="app-row-name">Home Assistant</span><span class="app-row-for">Lights, heating and sensors</span></span><span class="app-row-end"><i data-i="lock" class="icon-sm"></i><span class="app-row-state">Needs the mesh</span><i data-i="chevronRight" class="row-chev"></i></span></a>
+            </div></section>
+          <p class="ds-label" style="margin-top:20px">Kid</p>
+          <div class="kid-tiles">
+            <a class="kid-tile" href="#apps"><img class="app-icon" src="examples/apps/jellyfin.svg" alt=""><span class="kid-tile-name">Jellyfin</span><span class="kid-tile-for">Films and series for you</span></a>
+            <a class="kid-tile" href="#apps"><img class="app-icon" src="examples/apps/kavita.svg" alt=""><span class="kid-tile-name">Kavita</span><span class="kid-tile-for">Books and comics for you</span></a>
+            <a class="kid-tile" href="#apps"><img class="app-icon" src="examples/apps/donetick.svg" alt=""><span class="kid-tile-name">Donetick</span><span class="kid-tile-for">Your jobs this week</span></a>
+            <a class="kid-tile is-down" href="#apps"><img class="app-icon" src="examples/apps/navidrome.svg" alt=""><span class="kid-tile-name">Navidrome</span><span class="kid-tile-for">All the music</span><span class="kid-tile-state"><span class="dot dot-red"></span>Not working right now</span></a>
+          </div>
+        </div>
+        <ul class="ds-notes">
+          <li><b>The name</b> is the product's (Immich, Paperless-ngx); what it is for is the grey line under it, so both are learnt.</li>
+          <li><b>States</b> come in words beside a dot: Updating, Not working, Needs the mesh. A working app shows a green dot and nothing else.</li>
+        </ul>
+        <p class="ds-classes"><code>.app-icon</code> <code>.app-icon-sm|md|lg|xl</code> <code>.app-row</code> <code>.app-row-name</code> <code>.app-row-for</code> <code>.app-row-end</code> <code>.is-updating|is-down|is-away</code> <code>.kid-tiles</code> <code>.kid-tile</code></p>
+      </section>
+
+
+      <!-- ===================================================================== the Store -->
+      <section class="ds-section" id="store" aria-labelledby="h-store">
+        <h2 id="h-store">The Store and requests</h2>
+        <p class="ds-when"><b>When to use.</b> The Store is where Admin browses and gets apps, in the manner of an app store: a featured app, collections that scroll sideways, the purposes, a search that is always there, and an app’s page with screenshots, what’s new, information and how it’s wired. Members see the same Store on Home, read-only, and ask for apps. “Store” is the place; the catalog is the signed collection of app definitions behind it. There are no ratings or reviews: there are none to show.</p>
+        <div class="ds-example">
+          <p class="ds-label">Buttons: Get, Open and Update in Admin; Ask for it, Ask too and Asked on Home</p>
+          <div class="card store-grid">
+            <div class="store-item"><a class="store-item-link" href="#store"><img class="app-icon app-icon-store" src="examples/apps/immich.svg" alt=""><span class="store-item-text"><b>Immich</b><span>Photos</span></span></a><button type="button" class="store-get" >Get</button></div><div class="store-item"><a class="store-item-link" href="#store"><img class="app-icon app-icon-store" src="examples/apps/jellyfin.svg" alt=""><span class="store-item-text"><b>Jellyfin</b><span>Films &amp; TV · installed</span></span></a><button type="button" class="store-get" >Update</button></div><div class="store-item"><a class="store-item-link" href="#store"><img class="app-icon app-icon-store" src="examples/apps/kavita.svg" alt=""><span class="store-item-text"><b>Kavita</b><span>Books · installed</span></span></a><button type="button" class="store-get" >Open</button></div>
+            <div class="store-item"><a class="store-item-link" href="#store"><img class="app-icon app-icon-store" src="examples/apps/mealie.svg" alt=""><span class="store-item-text"><b>Mealie</b><span>Recipes</span></span></a><button type="button" class="store-get" >Ask for it</button></div><div class="store-item"><a class="store-item-link" href="#store"><img class="app-icon app-icon-store" src="examples/apps/audiobookshelf.svg" alt=""><span class="store-item-text"><b>Audiobookshelf</b><span>Audiobooks and podcasts</span></span></a><button type="button" class="store-get" >Ask too</button></div><div class="store-item"><a class="store-item-link" href="#store"><img class="app-icon app-icon-store" src="examples/apps/grocy.svg" alt=""><span class="store-item-text"><b>Grocy</b><span>Groceries and stock</span></span></a><button type="button" class="store-get" disabled>Asked</button></div>
+          </div>
+          <p class="ds-label" style="margin-top:22px">A request, as the admin sees it</p>
+          <article class="card store-request"><div class="store-request-head"><img class="app-icon" src="examples/apps/audiobookshelf.svg" alt=""><div class="store-request-title"><b>Tomás and Rita asked for Audiobookshelf</b><span>Audiobooks and podcasts · <span class="tier"><span data-i="shield"></span>Verified</span></span></div></div>
+            <ul class="store-asks"><li><span class="avatar avatar-sm" style="--h:75" aria-hidden="true">T</span><span><b>Tomás</b> · Yesterday 21:40<q>For the audiobooks on the NAS, so I can listen in the car.</q></span></li><li><span class="avatar avatar-sm" style="--h:140" aria-hidden="true">R</span><span><b>Rita</b> <span class="muted">(12)</span> · Today 08:15<q>Can I listen to stories on my tablet at bedtime?</q></span></li></ul>
+            <p class="store-request-have">For music and audiobooks the household has Navidrome. Kids get its kid view: kids’ shelf only.</p>
+            <div class="store-request-actions"><button type="button" class="btn btn-primary">Approve</button><button type="button" class="btn">Not now</button></div></article>
+        </div>
+        <ul class="ds-notes">
+          <li><b>Get</b> opens the install plan, its own page with a plan id; one passkey at Install approves the whole plan and the button grows into the progress. Buttons say Get, Open, Update and Ask for it; plans and progress say install.</li>
+          <li><b>Requests</b> say who asked, what, when, their note, and what the household already has for that purpose. Several people asking for one app make one request. <b>Approve</b> only opens the plan, with them in its audience; <b>Not now</b> takes an optional reason. A request in someone’s own words is answered with “Use” an app, or Not now.</li>
+          <li><b>Kids</b> see only apps with a kid view or marked fine for kids. The person who asked hears the answer on Home, and by mail or ntfy where they set it up.</li>
+        </ul>
+        <p class="ds-classes"><code>.store-head</code> <code>.store-hero</code> <code>.store-shelf</code> <code>.store-scroll</code> (sideways) <code>.store-grid</code> <code>.store-item</code> <code>.store-get</code> <code>.is-primary</code> <code>.store-cats</code> <code>.store-app-head</code> <code>.store-shots</code> <code>.store-dl</code> <code>.store-request</code> <code>.store-asks</code> <code>.tier</code></p>
+      </section>
+
+
+      <!-- ===================================================================== disks, uptime, alerts -->
+      <section class="ds-section" id="ops" aria-labelledby="h-ops">
+        <h2 id="h-ops">Disks, uptime and alerts</h2>
+        <p class="ds-when"><b>When to use.</b> The few pictures of data Admin needs, drawn by <code>charts.js</code> from plain numbers: what fills a disk, where to find a file, ninety days of uptime and a day of response times. Six data tones (<code>--viz-1…6</code>) tell things apart, each with its own ink so a label on it keeps AA; status keeps its own colours. Nothing here is decoration: every picture has the numbers beside it, in words, for a screen reader too.</p>
+        <div class="ds-cols">
+          <div class="ds-example"><p class="ds-label">A disk’s use: <code>HL.usage(segments, size)</code>, amber from 80%, red from 90%</p><div data-demo="usage"></div></div>
+          <div class="ds-example"><p class="ds-label">Ninety days and today: <code>HL.days()</code>, <code>HL.spark()</code></p><div data-demo="days"></div></div>
+        </div>
+        <div class="ds-example"><p class="ds-label">The space map: <code>HL.treemap(items)</code>, tiles that drill down</p><div data-demo="treemap"></div></div>
+        <div class="ds-cols">
+          <div class="ds-example"><p class="ds-label">A disk in a mirror, and which one to pull</p><div class="disk-members"><div class="disk-member is-failed"><span data-i="disk" class="icon-md"></span><span class="dm-text"><b>Samsung 870 EVO 1 TB</b><span>Bay 1 · serial <span class="mono">S6PTNM0T503118W</span> · stopped answering at 13:41</span></span><span class="pill pill-red">Failed</span></div><div class="disk-member"><span data-i="disk" class="icon-md"></span><span class="dm-text"><b>Samsung 870 EVO 1 TB</b><span>Bay 2 · serial <span class="mono">S6PTNM0T503291B</span> · 35 °C</span></span><span class="pill pill-green">Healthy</span></div></div>
+            <div class="bays" style="--n:4;margin-top:14px" role="img" aria-label="Four bays; Bay 1 blinks red"><div class="bay is-pull"><span class="bay-led"></span><b>Bay 1</b><span>Pull this one</span></div><div class="bay"><span class="bay-led"></span><b>Bay 2</b><span>870 EVO</span></div><div class="bay"><span class="bay-led"></span><b>Bay 3</b><span>WD Red Pro</span></div><div class="bay"><span class="bay-led"></span><b>Bay 4</b><span>IronWolf</span></div></div></div>
+          <div class="ds-example"><p class="ds-label">An alert as it arrives, and the analyzer’s session</p><div data-demo="notif"></div><p style="margin-top:14px"><span class="session-pill"><span class="session-ring" style="--p:0.72" aria-hidden="true"></span>7:12 left</span></p>
+            <p style="margin-top:14px" class="cluster"><span class="owner-mark is-ours"><span data-i="check2"></span>HomersLab’s</span><span class="owner-mark is-theirs"><span data-i="lock"></span>Someone else’s: untouched</span><span class="owner-mark is-refused"><span data-i="x"></span>Refused</span></p></div>
+        </div>
+        <ul class="ds-notes">
+          <li><b>A mirror is not a backup</b>, and the screens say so wherever a mirror is shown.</li>
+          <li><b>Destructive disk plans</b> (prepare, erase, rebuild) take the passkey; erasing also takes the disk’s serial, typed. Moving data takes none: the old copy stays 7 days.</li>
+          <li><b>The analyzer</b> opens with the passkey for 10 minutes (the ring counts down), deletes only in storage locations and HomersLab’s leftovers, and asks again for every delete, bound to the exact items.</li>
+          <li><b>Alerts</b>: one per incident, then “resolved”, a reminder every 4 hours; quiet hours hold all but critical; mail is always on for critical.</li>
+        </ul>
+        <p class="ds-classes"><code>.usage</code> <code>.disk-card</code> <code>.disk-member</code> <code>.bays</code> <code>.bay.is-pull</code> <code>.treemap</code> <code>.tm-tile</code> <code>.days</code> <code>.spark</code> <code>.session-pill</code> <code>.notif.is-critical|warning|resolved</code> <code>.owner-mark.is-ours|theirs|refused</code> · tokens <code>--viz-1…6</code> <code>--viz-ink</code> <code>--day-*</code></p>
+      </section>
+
+      <!-- ===================================================================== forms -->
+      <section class="ds-section" id="forms" aria-labelledby="h-forms">
+        <h2 id="h-forms">Forms</h2>
+        <p class="ds-when"><b>When to use.</b> A label above every field, a hint under it when the field takes something particular. A segmented control switches between two to four views or modes. Chips pick several short things, such as an audience. Choice cards compare a few options with their facts side by side. A secret, once saved, is never shown again; it can only be replaced.</p>
+        <div class="ds-cols">
+          <div class="ds-example on-surface"><div class="fields">
+            <div class="field"><label class="field-label" for="ds-name">The household's name</label><input class="input" id="ds-name" value="The Ferreira household" autocomplete="off"></div>
+            <div class="field"><label class="field-label" for="ds-mail">Mail address</label><input class="input" id="ds-mail" type="email" placeholder="joana@example.org" aria-describedby="ds-mail-hint" autocomplete="off"><span class="hint" id="ds-mail-hint">Kids without one get a link instead.</span></div>
+            <div class="field"><label class="field-label" for="ds-dns">Its DNS provider</label><select class="select" id="ds-dns"><option>Infomaniak</option><option>Cloudflare</option><option>deSEC</option></select></div>
+            <div class="field"><span class="field-label">An access token for a NetBird service user</span><div class="secret-saved"><span class="subhead"><i data-i="lock" class="icon-sm"></i>Saved on Study PC. It won't be shown again.</span><button type="button" class="btn btn-sm btn-plain">Replace</button></div></div>
+          </div></div>
+          <div class="ds-example on-surface"><div class="fields">
+            <div class="field"><span class="field-label" id="ds-exp">Exposure</span><div class="segmented" style="--n:2" role="radiogroup" aria-labelledby="ds-exp" data-seg><span class="segmented-thumb" aria-hidden="true"></span><button type="button" role="radio" aria-checked="true"><i data-i="mesh" class="icon-sm"></i>Mesh only</button><button type="button" role="radio" aria-checked="false"><i data-i="globe" class="icon-sm"></i>Public</button></div></div>
+            <div class="field"><span class="field-label" id="ds-aud">Named people</span><div class="chips" role="group" aria-labelledby="ds-aud">
+              <button type="button" class="chip" aria-pressed="true"><span class="avatar" style="--h:195">I</span>Inês<i data-i="check2" class="chip-check"></i></button>
+              <button type="button" class="chip" aria-pressed="true"><span class="avatar" style="--h:75">T</span>Tomás<i data-i="check2" class="chip-check"></i></button>
+              <button type="button" class="chip" aria-pressed="false"><span class="avatar" style="--h:140">R</span>Rita<i data-i="check2" class="chip-check"></i></button></div></div>
+            <div class="choices" role="radiogroup" aria-label="Identity provider">
+              <label class="choice"><input type="radio" name="ds-idp" checked><span class="choice-head"><span class="choice-title">Authentik</span><span class="choice-mark"><i data-i="check2"></i></span></span><span class="subhead">The fuller one. About 2 GB.</span></label>
+              <label class="choice"><input type="radio" name="ds-idp"><span class="choice-head"><span class="choice-title">Kanidm</span><span class="choice-mark"><i data-i="check2"></i></span></span><span class="subhead">The lighter one. About 200 MB.</span></label>
+            </div>
+          </div></div>
+        </div>
+        <p class="ds-classes"><code>.fields</code> <code>.fields-2</code> <code>.field</code> <code>.field-label</code> <code>.input</code> <code>.select</code> <code>.textarea</code> <code>.hint</code> <code>.error-text</code> <code>.secret-saved</code> <code>.segmented</code> <code>.segmented-thumb</code> <code>.chips</code> <code>.chip</code> <code>.choices</code> <code>.choice</code> <code>.switch</code></p>
+      </section>
+
+      <!-- ===================================================================== feedback -->
+      <section class="ds-section" id="feedback" aria-labelledby="h-feedback">
+        <h2 id="h-feedback">Empty states, toasts and progress</h2>
+        <p class="ds-when"><b>When to use.</b> An empty block keeps its frame and its heading and says in one sentence why it is empty and what comes next. A toast confirms what just happened, then goes. A progress row shows a job that takes a while (an install, a restore) step by step, with the time each step finished; a meter shows a quantity at its true ratio; the strip shows twelve Sundays of restore tests.</p>
+        <div class="ds-cols">
+          <div class="ds-example">
+            <div class="group"><div class="empty"><i data-i="remove"></i><p class="empty-title">No removed apps</p><p class="empty-text">Removing an app keeps its data; it would wait here until you install it again or delete its data.</p><a class="btn btn-sm" href="#feedback">Open the catalog</a></div></div>
+            <div class="toast toast-ok" data-ui style="margin-top:16px;animation:none" role="status"><i data-i="check"></i><span>Immich is installed. Inês, Tomás and Lúcia see it on Home now.</span></div>
+            <div class="btn-row" style="margin-top:12px"><button type="button" class="btn btn-sm" data-toast>Show a toast</button></div>
+          </div>
+          <div class="ds-example on-surface"><div class="stack" style="gap:18px">
+            <div class="progress-row"><div class="progress-head"><b>Installing Immich</b><span>4 of 10</span></div><div class="progress" role="progressbar" aria-label="Install progress" aria-valuemin="0" aria-valuemax="10" aria-valuenow="4"><span style="--value:40%"></span></div></div>
+            <ol class="steps">
+              <li class="step is-done"><span class="step-mark"><i data-i="check2"></i></span><span class="step-text"><span class="step-title">Checked the plan</span><span class="step-sub">The official catalog's signature is good; it meets the floor</span></span><span class="step-time">14:07</span></li>
+              <li class="step is-done"><span class="step-mark"><i data-i="check2"></i></span><span class="step-text"><span class="step-title">Pulled 3 images, pinned by digest</span><span class="step-sub">1.9 GB</span></span><span class="step-time">14:08</span></li>
+              <li class="step is-now"><span class="step-mark"><span class="spinner"></span></span><span class="step-text"><span class="step-title">Making 3 secrets</span><span class="step-sub">Sealed to Study PC's TPM; nobody sees them</span></span><span class="step-time"></span></li>
+              <li class="step is-todo"><span class="step-mark"></span><span class="step-text"><span class="step-title">Create the sign-in client "Immich"</span></span><span class="step-time"></span></li>
+            </ol>
+            <div class="meter has-add" style="--used:41%;--add:19%"><div class="meter-head"><b>Memory</b><span>13.1 + 6.0 of 32.0 GB</span></div><div class="meter-track" role="img" aria-label="Memory: 13.1 GB used, 6.0 GB more for Immich, of 32.0 GB"><span class="meter-fill"></span><span class="meter-add"></span></div></div>
+            <div><div class="row-sub" style="margin-bottom:8px">Paperless-ngx: 11 passed, 1 failed (8 Nov)</div><div class="strip" role="img" aria-label="Restore tests on the last 12 Sundays: 11 passed, 1 failed on 8 Nov" data-strip="pppppppppppf"></div><div class="strip-axis" aria-hidden="true" style="margin-top:6px"><span>23 Aug</span><span>8 Nov</span></div></div>
+          </div></div>
+        </div>
+        <p class="ds-classes"><code>.empty</code> <code>.empty-title</code> <code>.empty-text</code> <code>.toast-host</code> <code>.toast</code> <code>.toast-ok|error</code> <code>.progress-row</code> <code>.progress</code> <code>.steps</code> <code>.step</code> <code>.is-done|is-now|is-todo|is-fail</code> <code>.spinner</code> <code>.meter</code> <code>.has-add</code> <code>.is-over</code> <code>.strip</code> <code>.strip-cell</code></p>
+      </section>
+
+      <!-- ===================================================================== people -->
+      <section class="ds-section" id="people" aria-labelledby="h-people">
+        <h2 id="h-people">People, names and codes</h2>
+        <p class="ds-when"><b>When to use.</b> Each person keeps one hue, as a pale tint behind their initial, wherever they appear: an identity, never data. Names on the mesh, plan ids and commands are set in monospace on a fill. A QR code carries a one-time invite or a way onto the mesh, dark on white in both themes so a camera reads it.</p>
+        <div class="ds-cols">
+          <div class="ds-example on-surface"><div class="stack" style="gap:16px">
+            <div class="cluster"><span class="avatar avatar-sm" style="--h:195">I</span><span class="avatar" style="--h:75">T</span><span class="avatar avatar-lg" style="--h:330">L</span><span class="avatar avatar-xl" style="--h:140">R</span><span class="avatar avatar-lg" style="--h:230">D</span></div>
+            <div class="cluster"><span class="host">photos.ferreira.family</span><span class="plan-id">p-74b5f0</span></div>
+            <div class="cmd"><code>sudo homerslab join 7Q4M-2KXP-9RTD</code><button type="button" class="btn btn-icon btn-sm" aria-label="Copy the command"><i data-i="copy"></i></button></div>
+          </div></div>
+          <div class="ds-example"><div class="ds-row" style="align-items:flex-start;gap:20px"><span data-qr></span><div class="stack" style="gap:6px;max-width:28ch"><b>Join this phone to the mesh</b><span class="subhead">Scan with the phone's camera. It works once, for 15 minutes.</span></div></div></div>
+        </div>
+        <p class="ds-classes"><code>.avatar</code> <code>.avatar-sm|lg|xl</code> <code>--h</code> <code>.host</code> <code>.plan-id</code> <code>.cmd</code> <code>.qr</code></p>
+      </section>
+
+      <!-- ===================================================================== assistant -->
+      <section class="ds-section" id="assistant" aria-labelledby="h-assistant">
+        <h2 id="h-assistant">The setup assistant</h2>
+        <p class="ds-when"><b>When to use.</b> For a job a person does once, step by step, such as first-time setup or adding a node. One question per screen, in plain words: a big friendly title, one sentence, the question with a sensible default already chosen, and one Continue. The dots say where you are; everything else waits behind More options; every token has "Where do I find this?". Each screen has a calm illustration made of the system's own shapes and glass.</p>
+        <div class="ds-example ds-assistant-stage wall">
+          <section class="assistant glass-thick" aria-labelledby="ds-as-t">
+            <a class="topbar-back as-back" href="#assistant"><i data-i="chevronBack"></i>Back</a>
+            <div class="dots" aria-hidden="true"><span class="dots-half"><i class="dot-step is-done"></i><i class="dot-step is-done"></i><i class="dot-step is-done"></i><i class="dot-step is-done"></i><i class="dot-step is-now"></i><i class="dot-step"></i><i class="dot-step"></i><i class="dot-step"></i></span><span class="dots-half"><i class="dot-step"></i><i class="dot-step"></i><i class="dot-step"></i></span></div>
+            <div data-illo="network"></div>
+            <div><h3 class="as-title" id="ds-as-t">Your private network</h3><p class="as-lead">It joins your machines and everyone's devices, at home or away. NetBird is a good start.</p></div>
+            <div class="as-body">
+              <div class="pick"><span class="pick-text"><span class="pick-title">NetBird</span><span class="pick-sub">NetBird's cloud · free for a household</span></span><span class="choice-mark"><i data-i="check2"></i></span></div>
+              <div class="field"><div class="field-head"><label class="field-label" for="ds-tok">NetBird access token</label><button type="button" class="help-btn" data-open-sheet="help">Where do I find this?</button></div><input id="ds-tok" class="input input-secret" type="password" autocomplete="off" spellcheck="false" placeholder="Paste it here"></div>
+            </div>
+            <details class="more"><summary>More options<i data-i="chevronDown"></i></summary><div class="more-body">
+              <div class="group" role="radiogroup" aria-label="Mesh"><label class="row row-choice"><input type="radio" name="ds-mesh" checked><span class="row-main"><span class="row-label">NetBird</span><span class="row-sub">Public apps on your own domain</span></span><span class="row-trail"><i data-i="check2" class="checkmark"></i></span></label><label class="row row-choice"><input type="radio" name="ds-mesh"><span class="row-main"><span class="row-label">Tailscale</span><span class="row-sub">Public apps through Funnel; a domain is optional</span></span><span class="row-trail"><i data-i="check2" class="checkmark"></i></span></label><label class="row row-choice"><input type="radio" name="ds-mesh"><span class="row-main"><span class="row-label">Headscale</span><span class="row-sub">Your own server; no public apps</span></span><span class="row-trail"><i data-i="check2" class="checkmark"></i></span></label></div>
+            </div></details>
+            <div class="as-actions"><button type="button" class="btn btn-primary">Continue</button></div>
+          </section>
+        </div>
+        <div class="ds-cols-3 ds-illos">
+          <figure><div data-illo="household"></div><figcaption>The household: its name on a plate</figcaption></figure>
+          <figure><div data-illo="domain"></div><figcaption>A domain: names, each with a certificate</figcaption></figure>
+          <figure><div data-illo="passkey"></div><figcaption>A passkey: a key in a ring that closes</figcaption></figure>
+        </div>
+        <ul class="ds-notes">
+          <li><b>One question per screen.</b> Two fields at most; a sentence says why it is asked. The default is chosen for the person (the sign-in from the machine's memory, NetBird, the DNS provider from the domain) and says why.</li>
+          <li><b>More options</b> holds every other choice and every detail, closed by default; it opens on the smooth spring.</li>
+          <li><b>Dots</b> come in two groups when a job has two halves (setup: the home network, then the mesh); the current one is a pill. A sentence for screen readers says "Step 5 of 11".</li>
+          <li><b>Illustrations</b> (<code>illos.js</code>) are decorative and hidden from screen readers; they assemble on the bouncy spring and stand still under reduced motion.</li>
+        </ul>
+        <p class="ds-classes"><code>.assistant</code> <code>.as-back</code> <code>.as-title</code> <code>.as-lead</code> <code>.as-body</code> <code>.as-actions</code> <code>.dots</code> <code>.dots-half</code> <code>.dot-step</code> <code>.is-done|is-now</code> <code>.pick</code> <code>.more</code> <code>.field-head</code> <code>.help-btn</code> <code>.help-steps</code> <code>.path</code> <code>.illo</code> <code>.illo-glow|tile|orb|chip|lines|doc|ring</code> · <code>ILLO.welcome()</code> … <code>ILLO.done()</code></p>
+      </section>
+
+      <footer class="ds-foot">
+        <span>HomersLab design system · round 4, 10 Nov 2026 · tokens.css, components.css, icons.js, motion.js, illos.js</span>
+        <span>Type: SF on Apple devices; Inter elsewhere, © The Inter Project Authors, SIL Open Font License 1.1 (fonts/OFL-inter.txt).</span>
+        <span>App icons in the examples: selfh.st/icons, CC BY 4.0 (examples/apps/ATTRIBUTION.md). The apps' names and logos are their owners' trademarks.</span>
+        <span>The logo: the Harbour H from the logo kit (brand/kit), in Classic teal; the wordmark is Figtree (SIL Open Font License), outlined.</span>
+      </footer>
+    </main>
+  </div>
+
+  <div class="scrim" data-scrim></div>
+  <section class="sheet" id="ds-sheet-confirm" role="dialog" aria-modal="true" aria-labelledby="ds-c-t" tabindex="-1" hidden>
+    <div class="sheet-grab" aria-hidden="true"></div>
+    <div class="sheet-head"><div class="sheet-head-text"><h2 class="sheet-title" id="ds-c-t">Revoke Tomás's phone?</h2><p class="sheet-sub">Cutting a device off is never risky, so it needs no passkey.</p></div><button type="button" class="sheet-close" data-close aria-label="Close"><i data-i="x"></i></button></div>
+    <div class="sheet-body"><ul class="group stepup-list"><li><i data-i="x"></i><span>It leaves Tailscale at once and can't reach any app</span></li><li><i data-i="info"></i><span>Tomás keeps his household account and his other devices</span></li></ul></div>
+    <div class="sheet-foot"><button type="button" class="btn" data-close>Cancel</button><button type="button" class="btn btn-primary" data-close>Revoke it</button></div>
+  </section>
+  <section class="sheet" id="ds-sheet-stepup" role="dialog" aria-modal="true" aria-labelledby="ds-s-t" tabindex="-1" hidden>
+    <div class="sheet-grab" aria-hidden="true"></div>
+    <div class="sheet-head"><div class="sheet-head-text"><i data-i="key" class="stepup-mark"></i><h2 class="sheet-title" id="ds-s-t">Approve with your passkey</h2><p class="sheet-sub">This plan gives Immich a device, so HomersLab asks for your passkey: once, for the whole plan.</p></div><button type="button" class="sheet-close" data-close aria-label="Close"><i data-i="x"></i></button></div>
+    <div class="sheet-body"><ul class="group stepup-list"><li><i data-i="check"></i><span>Install Immich on Study PC, for Inês, Tomás and Lúcia</span></li><li><i data-i="gpu"></i><span>Use the GPU on Study PC<small>NVIDIA RTX 3060, for face and object recognition</small></span></li></ul>
+      <p class="stepup-bound"><i data-i="lock"></i><span>Bound to plan <span class="plan-id">p-74b5f0</span>. It approves nothing else, and lapses in 5 minutes.</span></p></div>
+    <div class="sheet-foot"><button type="button" class="btn" data-close>Cancel</button><button type="button" class="btn btn-primary" data-close><i data-i="key"></i>Use my passkey</button></div>
+  </section>
+  <section class="sheet" id="ds-sheet-help" role="dialog" aria-modal="true" aria-labelledby="ds-h-t" tabindex="-1" hidden>
+    <div class="sheet-grab" aria-hidden="true"></div>
+    <div class="sheet-head"><div class="sheet-head-text"><h2 class="sheet-title" id="ds-h-t">Where to find a NetBird token</h2><p class="sheet-sub">In NetBird's dashboard, about a minute. HomersLab seals it on the machine and never shows it again.</p></div><button type="button" class="sheet-close" data-close aria-label="Close"><i data-i="x"></i></button></div>
+    <div class="sheet-body"><ol class="group help-steps"><li><span>Open <b>app.netbird.io</b> and sign in.</span></li><li><span>Go to <span class="path"><b>Team</b><i data-i="chevronRight" class="icon-sm"></i><b>Service users</b></span>, then <b>Create service user</b>, as an admin.</span></li><li><span>Open it and choose <b>Create token</b>. Copy the token and paste it here.</span></li></ol></div>
+    <div class="sheet-foot"><button type="button" class="btn btn-primary" data-close>Done</button></div>
+  </section>
+  <div class="menu" id="ds-menu" role="menu" aria-label="Your account">
+    <div class="menu-who"><span class="avatar avatar-lg" style="--h:195">I</span><span><b>Inês Ferreira</b><small>ines@ferreira.family</small></span></div>
+    <div class="menu-sep"></div>
+    <a class="menu-item" role="menuitem" href="#people"><i data-i="key"></i><span>Passkeys<small>2 on this account</small></span></a>
+    <a class="menu-item" role="menuitem" href="#people"><i data-i="home"></i><span>Open Home</span></a>
+    <a class="menu-item" role="menuitem" href="#people"><i data-i="signout"></i><span>Sign out<small>On this device</small></span></a>
+  </div>
+  <div class="toast-host" role="status" aria-live="polite"></div>
+
+  <script src="icons.js"></script>
+  <script src="motion.js"></script>
+  <script src="charts.js"></script>
+  <script src="illos.js"></script>
+  <script src="gallery.js"></script>
+</body>
+</html>

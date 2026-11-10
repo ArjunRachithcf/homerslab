@@ -1,0 +1,45 @@
+<!doctype html>
+<!-- PROTOTYPE, throwaway. HomersLab Home: where the household opens its apps. Installable (PWA), unprivileged: it reads
+     only a projection of apps, audiences and health. On the design system: design/ here is a copy of the repository’s design/. Fake data, no network.
+     ?as=ines|tomas|lucia|rita|duarte picks who is looking; kids get their own layout. -->
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="light dark">
+  <meta name="theme-color" content="#f5f5f7" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)">
+  <meta name="apple-mobile-web-app-title" content="Home">
+  <title>Home · HomersLab</title>
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icons/favicon.svg" type="image/svg+xml">
+  <link rel="icon" href="icons/favicon.ico" sizes="32x32">
+  <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+  <link rel="stylesheet" href="design/tokens.css">
+  <link rel="stylesheet" href="design/components.css">
+  <link rel="stylesheet" href="assets/proto.css">
+  <link rel="stylesheet" href="assets/home.css">
+  <script>
+    document.documentElement.classList.add('js');
+    // each person's glass level, kept in this browser: set before the first paint (home.js keeps it after)
+    try { const q = new URLSearchParams(location.search), g = q.get('glass') || localStorage.getItem('hl-home-glass:' + (q.get('as') || 'tomas')) || 'balanced';
+      if (/^(clear|balanced|frosted|solid)$/.test(g)) document.documentElement.dataset.glass = g; else if (!isNaN(+g)) { document.documentElement.dataset.glass = 'custom'; document.documentElement.style.setProperty('--glass', g); } } catch (e) {}
+  </script>
+</head>
+<body class="has-wallpaper">
+  <div class="wallpaper" aria-hidden="true"></div>
+  <a class="sr-only" href="#home">Skip to your apps</a>
+  <header class="topbar" id="top"><div class="page"><div class="topbar-inner" id="bar"></div></div></header>
+  <main class="page" id="home" tabindex="-1"></main>
+  <div class="menu" id="me-menu" role="dialog" aria-label="Your account"></div>
+  <div class="toast-host" role="status" aria-live="polite"></div>
+  <script src="design/icons.js"></script>
+  <script src="design/motion.js"></script>
+  <script src="assets/data.js"></script>
+  <script src="assets/data-ops.js"></script>
+  <script src="assets/ui.js"></script>
+  <script src="assets/store.js"></script>
+  <script src="assets/proto.js"></script>
+  <script src="assets/home.js"></script>
+</body>
+</html>

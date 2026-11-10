@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+<g transform="translate(0 10)">
+  <!-- hull: stern (left) rises a little higher; tips softened -->
+  <path d="M26 148 Q24 144 28 144 Q34 146 40 156 C48 168 60 174 76 174 H184 C202 174 216 168 226 158 Q230 154 233 157 Q234 160 232 164 C222 188 202 204 172 204 H88 C58 204 36 184 26 148 Z"/>
+  <rect x="120" y="22" width="16" height="160" rx="8"/>
+  <rect x="40" y="44" width="176" height="16" rx="8"/>
+  <!-- sail: top corners r4, bottom corners r28, belly 10 -->
+  <path d="M60 72 Q60 68 64 68 H192 Q196 68 196 72 V122 C196 138 186 146 170 149 C142 155 114 155 86 149 C70 146 60 138 60 122 Z"/>
+</g>
+</svg>

@@ -1,0 +1,155 @@
+# svg_audit.py, 2026-11-09, symbols and lockups (one colour)
+
+=== a-homeward.svg  (972 bytes)
+viewBox 0 0 256 256 · aspect 1.0 (square)
+colours 1: #000000 · gradients 0 · anchors 41
+margins L25.0 R25.0 T42.0 B45.0 · bbox fill 0.531
+✔ no issues found
+production-readiness score: 100/100 (heuristic)
+
+=== b-lyre.svg  (1340 bytes)
+viewBox 0 0 256 256 · aspect 1.0 (square)
+colours 1: #000000 · gradients 0 · anchors 62
+margins L35.0 R35.0 T31.0 B33.5 · bbox fill 0.544
+✔ no issues found
+production-readiness score: 100/100 (heuristic)
+
+=== c-harbour.svg  (787 bytes)
+viewBox 0 0 256 256 · aspect 1.0 (square)
+colours 1: #000000 · gradients 0 · anchors 33
+margins L32.0 R32.0 T32.0 B32.0 · bbox fill 0.562
+✔ no issues found
+production-readiness score: 100/100 (heuristic)
+
+=== d-monogram.svg  (1469 bytes)
+viewBox 0 0 256 256 · aspect 1.0 (square)
+colours 1: #000000 · gradients 0 · anchors 61
+margins L40.4 R40.4 T38.0 B42.0 · bbox fill 0.47
+✔ no issues found
+production-readiness score: 100/100 (heuristic)
+
+=== d-wordmark.svg  (10236 bytes)
+viewBox 0 0 808 256 · aspect 3.156 (horizontal)
+colours 1: #000000 · gradients 0 · anchors 418
+margins L28.7 R27.4 T65.6 B69.3 · bbox fill 0.44
+▲ WARN [complex] 418 anchor points — more than 95% of comparable reference logos (median 75.0). Simplify: fewer points, merged shapes, less detail.
+production-readiness score: 92/100 (heuristic)
+
+=== a-homeward-lockup.svg  (5823 bytes)
+viewBox 0 0 949 256 · aspect 3.707 (horizontal)
+colours 1: #000000 · gradients 0 · anchors 250
+margins L24.0 R28.4 T28.0 B28.0 · bbox fill 0.738
+· INFO [complexity] 250 anchor points (library median 75.0, p75 155.0). Check every point earns its place.
+production-readiness score: 99/100 (heuristic)
+
+=== b-lyre-lockup.svg  (6189 bytes)
+viewBox 0 0 899 256 · aspect 3.512 (horizontal)
+colours 1: #000000 · gradients 0 · anchors 271
+margins L24.0 R28.0 T28.0 B28.0 · bbox fill 0.736
+· INFO [complexity] 271 anchor points (library median 75.0, p75 155.0). Check every point earns its place.
+production-readiness score: 99/100 (heuristic)
+
+=== c-harbour-lockup.svg  (5591 bytes)
+viewBox 0 0 905 256 · aspect 3.535 (horizontal)
+colours 1: #000000 · gradients 0 · anchors 242
+margins L24.0 R28.2 T28.0 B28.0 · bbox fill 0.736
+· INFO [complexity] 242 anchor points (library median 75.0, p75 155.0). Check every point earns its place.
+production-readiness score: 99/100 (heuristic)
+
+=== d-stacked.svg  (11612 bytes)
+viewBox 0 0 421 340 · aspect 1.238 (square)
+colours 1: #000000 · gradients 0 · anchors 478
+margins L24.0 R24.5 T24.0 B24.0 · bbox fill 0.76
+▲ WARN [complex] 478 anchor points — more than 95% of comparable reference logos (median 53.0). Simplify: fewer points, merged shapes, less detail.
+production-readiness score: 92/100 (heuristic)
+
+=== a-homeward-stacked.svg  (5872 bytes)
+viewBox 0 0 489 340 · aspect 1.438 (wide)
+colours 1: #000000 · gradients 0 · anchors 250
+margins L31.1 R27.3 T24.0 B23.0 · bbox fill 0.759
+▲ WARN [near-miss-angle] 1 straight edge(s) are 0.3–3° off a clean angle — they read as mistakes. Snap them: 90.4° (→90°) len 23.5 at (410,292). (Expected — and fine — for type set on a curve or deliberately rotated elements.)
+· INFO [complexity] 250 anchor points (library median 75.0, p75 155.0). Check every point earns its place.
+production-readiness score: 91/100 (heuristic)
+
+=== b-lyre-stacked.svg  (6259 bytes)
+viewBox 0 0 489 340 · aspect 1.438 (wide)
+colours 1: #000000 · gradients 0 · anchors 271
+margins L31.1 R27.3 T24.0 B23.0 · bbox fill 0.759
+▲ WARN [near-miss-angle] 1 straight edge(s) are 0.3–3° off a clean angle — they read as mistakes. Snap them: 90.4° (→90°) len 23.5 at (410,292). (Expected — and fine — for type set on a curve or deliberately rotated elements.)
+· INFO [complexity] 271 anchor points (library median 75.0, p75 155.0). Check every point earns its place.
+production-readiness score: 91/100 (heuristic)
+
+=== c-harbour-stacked.svg  (5710 bytes)
+viewBox 0 0 489 340 · aspect 1.438 (wide)
+colours 1: #000000 · gradients 0 · anchors 242
+margins L31.1 R27.3 T24.0 B23.0 · bbox fill 0.759
+▲ WARN [near-miss-angle] 1 straight edge(s) are 0.3–3° off a clean angle — they read as mistakes. Snap them: 90.4° (→90°) len 23.5 at (410,292). (Expected — and fine — for type set on a curve or deliberately rotated elements.)
+· INFO [complexity] 242 anchor points (library median 75.0, p75 155.0). Check every point earns its place.
+production-readiness score: 91/100 (heuristic)
+
+# colour, light mode (contrast on white)
+
+=== a-homeward-clay.svg  (991 bytes)
+viewBox 0 0 256 256 · aspect 1.0 (square)
+colours 1: #b04e2e · gradients 0 · anchors 41
+margins L25.0 R25.0 T42.0 B45.0 · bbox fill 0.531
+✔ no issues found
+production-readiness score: 100/100 (heuristic)
+
+=== b-lyre-clay.svg  (1359 bytes)
+viewBox 0 0 256 256 · aspect 1.0 (square)
+colours 1: #b04e2e · gradients 0 · anchors 62
+margins L35.0 R35.0 T31.0 B33.5 · bbox fill 0.544
+✔ no issues found
+production-readiness score: 100/100 (heuristic)
+
+=== c-harbour-clay.svg  (806 bytes)
+viewBox 0 0 256 256 · aspect 1.0 (square)
+colours 1: #b04e2e · gradients 0 · anchors 33
+margins L32.0 R32.0 T32.0 B32.0 · bbox fill 0.562
+✔ no issues found
+production-readiness score: 100/100 (heuristic)
+
+=== d-monogram-clay.svg  (1488 bytes)
+viewBox 0 0 256 256 · aspect 1.0 (square)
+colours 1: #b04e2e · gradients 0 · anchors 61
+margins L40.4 R40.4 T38.0 B42.0 · bbox fill 0.47
+✔ no issues found
+production-readiness score: 100/100 (heuristic)
+
+=== d-wordmark-light.svg  (10111 bytes)
+viewBox 0 0 808 256 · aspect 3.156 (horizontal)
+colours 2: #1f1a17 #b04e2e · gradients 0 · anchors 412
+margins L28.7 R27.4 T65.6 B69.3 · bbox fill 0.44
+▲ WARN [complex] 412 anchor points — more than 95% of comparable reference logos (median 75.0). Simplify: fewer points, merged shapes, less detail.
+production-readiness score: 92/100 (heuristic)
+
+# colour, dark mode (contrast on Night #171311)
+
+=== a-homeward-clay-dark.svg  (990 bytes)
+viewBox 0 0 256 256 · aspect 1.0 (square)
+colours 1: #e58a68 · gradients 0 · anchors 41
+margins L25.0 R25.0 T42.0 B45.0 · bbox fill 0.531
+✔ no issues found
+production-readiness score: 100/100 (heuristic)
+
+=== b-lyre-clay-dark.svg  (1358 bytes)
+viewBox 0 0 256 256 · aspect 1.0 (square)
+colours 1: #e58a68 · gradients 0 · anchors 62
+margins L35.0 R35.0 T31.0 B33.5 · bbox fill 0.544
+✔ no issues found
+production-readiness score: 100/100 (heuristic)
+
+=== c-harbour-clay-dark.svg  (805 bytes)
+viewBox 0 0 256 256 · aspect 1.0 (square)
+colours 1: #e58a68 · gradients 0 · anchors 33
+margins L32.0 R32.0 T32.0 B32.0 · bbox fill 0.562
+✔ no issues found
+production-readiness score: 100/100 (heuristic)
+
+=== d-wordmark-dark.svg  (10110 bytes)
+viewBox 0 0 808 256 · aspect 3.156 (horizontal)
+colours 2: #f7f2eb #e58a68 · gradients 0 · anchors 412
+margins L28.7 R27.4 T65.6 B69.3 · bbox fill 0.44
+▲ WARN [complex] 412 anchor points — more than 95% of comparable reference logos (median 75.0). Simplify: fewer points, merged shapes, less detail.
+production-readiness score: 92/100 (heuristic)

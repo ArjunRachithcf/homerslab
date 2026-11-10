@@ -1,0 +1,12 @@
+/* HomersLab colour tokens. Built with: Classic teal. Light first, dark under prefers-color-scheme. */
+:root {
+  --ground: #F5F5F7; --card: #FFFFFF; --text: #1D1D1F; --muted: #6E6E73;
+  --accent: #1B6E66; --on-accent: #FFFFFF;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --ground: #000000; --card: #1C1C1E; --text: #F5F5F7; --muted: #98989D;
+    --accent: #5FB3A9; --on-accent: #000000;
+  }
+}
+/* The other variant, Blue teal: --accent: #186C78 (light), #5DB0BE (dark). */

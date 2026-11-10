@@ -1,0 +1,171 @@
+# svg_audit.py (logo-design skill) on the final kit, 2026-11-10
+# Expected findings: app-icon-light (a white mark on its own tile, deliberate); social-preview (an outlined
+# tagline, so many anchors and small glyph parts: it is a card, not a logo); the wordmark's anchor count (INFO).
+
+## Masters and one-colour files (on white) (--bg #FFFFFF)
+
+=== homerslab-mark.svg  (1085 bytes)
+viewBox 0 0 192 192 · aspect 1.0 (square)
+colours 1: #000000 · gradients 0 · anchors 44
+margins L0.0 R0.0 T0.0 B0.0 · bbox fill 1.0
+✔ no issues found
+production-readiness score: 100/100 (heuristic)
+
+=== homerslab-mark-16.svg  (980 bytes)
+viewBox 0 0 16 16 · aspect 1.0 (square)
+colours 1: #000000 · gradients 0 · anchors 46
+margins L0.0 R0.0 T0.0 B0.0 · bbox fill 1.0
+✔ no issues found
+production-readiness score: 100/100 (heuristic)
+
+=== homerslab-mark-32.svg  (999 bytes)
+viewBox 0 0 32 32 · aspect 1.0 (square)
+colours 1: #000000 · gradients 0 · anchors 44
+margins L0.0 R0.0 T0.0 B0.0 · bbox fill 1.0
+✔ no issues found
+production-readiness score: 100/100 (heuristic)
+
+=== homerslab-horizontal-black.svg  (7052 bytes)
+viewBox 0 0 868 192 · aspect 4.521 (extra-wide)
+colours 1: #000000 · gradients 0 · anchors 308
+margins L0.0 R0.8 T0.0 B0.0 · bbox fill 0.999
+· INFO [complexity] 308 anchor points (library median 75.0, p75 155.0). Check every point earns its place.
+· INFO [extra-wide] Extra-wide lockup (>4.5:1) shrinks badly; provide a stacked lockup and a standalone symbol.
+production-readiness score: 98/100 (heuristic)
+
+=== homerslab-stacked-black.svg  (7241 bytes)
+viewBox 0 0 400 289 · aspect 1.384 (wide)
+colours 1: #000000 · gradients 0 · anchors 308
+margins L0.5 R0.4 T0.0 B0.0 · bbox fill 0.998
+· INFO [complexity] 308 anchor points (library median 75.0, p75 155.0). Check every point earns its place.
+production-readiness score: 99/100 (heuristic)
+
+## Colour files for light backgrounds (on Ground #F5F5F7) (--bg #F5F5F7)
+
+=== homerslab-mark-teal.svg  (1090 bytes)
+viewBox 0 0 192 192 · aspect 1.0 (square)
+colours 1: #1b6e66 · gradients 0 · anchors 44
+margins L0.0 R0.0 T0.0 B0.0 · bbox fill 1.0
+✔ no issues found
+production-readiness score: 100/100 (heuristic)
+
+=== homerslab-mark-16-teal.svg  (987 bytes)
+viewBox 0 0 16 16 · aspect 1.0 (square)
+colours 1: #1b6e66 · gradients 0 · anchors 46
+margins L0.0 R0.0 T0.0 B0.0 · bbox fill 1.0
+✔ no issues found
+production-readiness score: 100/100 (heuristic)
+
+=== homerslab-mark-32-teal.svg  (1006 bytes)
+viewBox 0 0 32 32 · aspect 1.0 (square)
+colours 1: #1b6e66 · gradients 0 · anchors 44
+margins L0.0 R0.0 T0.0 B0.0 · bbox fill 1.0
+✔ no issues found
+production-readiness score: 100/100 (heuristic)
+
+=== homerslab-horizontal-light.svg  (7092 bytes)
+viewBox 0 0 868 192 · aspect 4.521 (extra-wide)
+colours 2: #1b6e66 #1d1d1f · gradients 0 · anchors 308
+margins L0.0 R0.8 T0.0 B0.0 · bbox fill 0.999
+· INFO [complexity] 308 anchor points (library median 75.0, p75 155.0). Check every point earns its place.
+· INFO [extra-wide] Extra-wide lockup (>4.5:1) shrinks badly; provide a stacked lockup and a standalone symbol.
+production-readiness score: 98/100 (heuristic)
+
+=== homerslab-stacked-light.svg  (7281 bytes)
+viewBox 0 0 400 289 · aspect 1.384 (wide)
+colours 2: #1b6e66 #1d1d1f · gradients 0 · anchors 308
+margins L0.5 R0.4 T0.0 B0.0 · bbox fill 0.998
+· INFO [complexity] 308 anchor points (library median 75.0, p75 155.0). Check every point earns its place.
+production-readiness score: 99/100 (heuristic)
+
+=== favicon.svg  (1054 bytes)
+viewBox 0 0 16 16 · aspect 1.0 (square)
+colours 1: #000000 · gradients 0 · anchors 46
+margins L0.0 R0.0 T0.0 B0.0 · bbox fill 1.0
+· INFO [style-block] Uses a <style> block; inline fill attributes are more portable across tools.
+production-readiness score: 99/100 (heuristic)
+
+## Files for dark backgrounds (on black) (--bg #000000)
+
+=== homerslab-mark-teal-dark.svg  (1105 bytes)
+viewBox 0 0 192 192 · aspect 1.0 (square)
+colours 1: #5fb3a9 · gradients 0 · anchors 44
+margins L1.0 R1.0 T1.0 B1.0 · bbox fill 0.979
+✔ no issues found
+production-readiness score: 100/100 (heuristic)
+
+=== homerslab-mark-white.svg  (1109 bytes)
+viewBox 0 0 192 192 · aspect 1.0 (square)
+colours 1: #ffffff · gradients 0 · anchors 44
+margins L1.0 R1.0 T1.0 B1.0 · bbox fill 0.979
+✔ no issues found
+production-readiness score: 100/100 (heuristic)
+
+=== homerslab-mark-16-teal-dark.svg  (999 bytes)
+viewBox 0 0 16 16 · aspect 1.0 (square)
+colours 1: #5fb3a9 · gradients 0 · anchors 46
+margins L0.0 R0.0 T0.0 B0.0 · bbox fill 1.0
+✔ no issues found
+production-readiness score: 100/100 (heuristic)
+
+=== homerslab-mark-32-teal-dark.svg  (1018 bytes)
+viewBox 0 0 32 32 · aspect 1.0 (square)
+colours 1: #5fb3a9 · gradients 0 · anchors 44
+margins L0.0 R0.0 T0.0 B0.0 · bbox fill 1.0
+✔ no issues found
+production-readiness score: 100/100 (heuristic)
+
+=== homerslab-horizontal-dark.svg  (7153 bytes)
+viewBox 0 0 868 192 · aspect 4.521 (extra-wide)
+colours 2: #5fb3a9 #f5f5f7 · gradients 0 · anchors 308
+margins L1.0 R2.1 T1.0 B1.0 · bbox fill 0.986
+· INFO [complexity] 308 anchor points (library median 75.0, p75 155.0). Check every point earns its place.
+· INFO [extra-wide] Extra-wide lockup (>4.5:1) shrinks badly; provide a stacked lockup and a standalone symbol.
+production-readiness score: 98/100 (heuristic)
+
+=== homerslab-stacked-dark.svg  (7302 bytes)
+viewBox 0 0 400 289 · aspect 1.384 (wide)
+colours 2: #5fb3a9 #f5f5f7 · gradients 0 · anchors 308
+margins L0.5 R1.3 T1.0 B0.0 · bbox fill 0.992
+· INFO [complexity] 308 anchor points (library median 75.0, p75 155.0). Check every point earns its place.
+production-readiness score: 99/100 (heuristic)
+
+=== homerslab-horizontal-white.svg  (7101 bytes)
+viewBox 0 0 868 192 · aspect 4.521 (extra-wide)
+colours 1: #ffffff · gradients 0 · anchors 308
+margins L1.0 R2.1 T1.0 B1.0 · bbox fill 0.986
+· INFO [complexity] 308 anchor points (library median 75.0, p75 155.0). Check every point earns its place.
+· INFO [extra-wide] Extra-wide lockup (>4.5:1) shrinks badly; provide a stacked lockup and a standalone symbol.
+production-readiness score: 98/100 (heuristic)
+
+=== homerslab-stacked-white.svg  (7250 bytes)
+viewBox 0 0 400 289 · aspect 1.384 (wide)
+colours 1: #ffffff · gradients 0 · anchors 308
+margins L0.5 R1.3 T1.0 B0.0 · bbox fill 0.992
+· INFO [complexity] 308 anchor points (library median 75.0, p75 155.0). Check every point earns its place.
+production-readiness score: 99/100 (heuristic)
+
+## Icons with their own tile
+
+=== app-icon-light.svg  (1883 bytes)
+viewBox 0 0 1024 1024 · aspect 1.0 (square)
+colours 2: #1b6e66 #ffffff · gradients 0 · anchors 61
+margins L100.0 R100.0 T100.0 B100.0 · bbox fill 0.648
+▲ WARN [white-knockout] 1 white shape(s) are painted on top of coloured shapes. If they are meant as holes, they will show as white blobs on coloured/photo backgrounds and break one-colour versions — make real holes (fill-rule="evenodd" or subtracted paths). Ignore if the white is deliberate (e.g. a symbol on a tile).
+production-readiness score: 92/100 (heuristic)
+
+=== app-icon-dark.svg  (1882 bytes)
+viewBox 0 0 1024 1024 · aspect 1.0 (square)
+colours 2: #1c1c1e #5fb3a9 · gradients 0 · anchors 61
+margins L100.0 R100.0 T100.0 B100.0 · bbox fill 0.648
+✔ no issues found
+production-readiness score: 100/100 (heuristic)
+
+=== social-preview.svg  (29194 bytes)
+viewBox 0 0 1280 640 · aspect 2.0 (wide)
+colours 4: #f5f5f7 #1b6e66 #1d1d1f #6e6e73 · gradients 0 · anchors 1260
+margins L0.0 R0.0 T0.0 B0.0 · bbox fill 1.0
+▲ WARN [complex] 1260 anchor points — more than 95% of comparable reference logos (median 75.0). Simplify: fewer points, merged shapes, less detail.
+▲ WARN [tiny-detail] 45 sub-shape(s) smaller than 1/32 of the lockup height (≈1 px at 32 px tall): 15.9×16.5 at (651,424); 15.9×16.5 at (579,424); 15.9×16.5 at (525,424); 15.9×16.5 at (736,424) …. They vanish when small — enlarge, merge or remove them, or provide a small-size version.
+production-readiness score: 84/100 (heuristic)
+

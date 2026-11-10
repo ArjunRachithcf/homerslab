@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+<g transform="translate(0 6)">
+  <!-- hull: stern (left) rises higher than the bow (right) -->
+  <path d="M24 146 C34 164 52 174 76 174 H184 C206 174 222 166 232 156 C222 192 196 210 164 210 H92 C56 210 30 186 24 146 Z"/>
+  <!-- mast, unit 16 -->
+  <rect x="120" y="28" width="16" height="150" rx="8"/>
+  <!-- yard -->
+  <rect x="52" y="52" width="152" height="16" rx="8"/>
+  <!-- square sail hung from the yard, billowing bottom -->
+  <path d="M74 76 H182 Q188 76 188 82 V120 C188 136 180 142 166 145 C142 151 114 151 90 145 C76 142 68 136 68 120 V82 Q68 76 74 76 Z"/>
+</g>
+</svg>

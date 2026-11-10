@@ -1,0 +1,379 @@
+{
+ "brand": "HomersLab",
+ "recommended": "classic",
+ "built_with": "classic",
+ "notes": [
+  "CMYK: sRGB to U.S. Web Coated (SWOP), relative colorimetric with black-point compensation; greys as black only. Ask the printer for their profile (in Europe usually PSO Coated v3).",
+  "Pantone: nearest PANTONE Solid Coated by CIEDE2000 against Pantone's published sRGB values. Approximate: check a physical guide before printing.",
+  "On the light accent use white; on the dark-mode accent use black (white on it is only 2.5:1)."
+ ],
+ "accents": {
+  "classic": {
+   "name": "Classic teal",
+   "about": "classic's accent, unchanged: a green-leaning teal (OKLCH hue 185\u00b0)",
+   "light": {
+    "hex": "#1B6E66",
+    "rgb": [
+     27,
+     110,
+     102
+    ],
+    "oklch": "oklch(0.488 0.077 185.5)",
+    "cmyk": [
+     85,
+     38,
+     60,
+     19
+    ],
+    "pantone": "7719 C",
+    "pantone_de00": 1.7
+   },
+   "dark": {
+    "hex": "#5FB3A9",
+    "rgb": [
+     95,
+     179,
+     169
+    ],
+    "oklch": "oklch(0.711 0.084 185.5)",
+    "cmyk": [
+     62,
+     10,
+     39,
+     0
+    ],
+    "pantone": "7472 C",
+    "pantone_de00": 2.2
+   },
+   "contrast": [
+    {
+     "pair": "White text on the accent (light mode)",
+     "fg": "#FFFFFF",
+     "bg": "#1B6E66",
+     "ratio": 6.05,
+     "aa_text": true,
+     "aa_large_or_ui": true
+    },
+    {
+     "pair": "Accent on white (links, icons; light mode)",
+     "fg": "#1B6E66",
+     "bg": "#FFFFFF",
+     "ratio": 6.05,
+     "aa_text": true,
+     "aa_large_or_ui": true
+    },
+    {
+     "pair": "Accent on Ground #F5F5F7",
+     "fg": "#1B6E66",
+     "bg": "#F5F5F7",
+     "ratio": 5.56,
+     "aa_text": true,
+     "aa_large_or_ui": true
+    },
+    {
+     "pair": "Dark-mode accent on black",
+     "fg": "#5FB3A9",
+     "bg": "#000000",
+     "ratio": 8.51,
+     "aa_text": true,
+     "aa_large_or_ui": true
+    },
+    {
+     "pair": "Dark-mode accent on Card #1C1C1E",
+     "fg": "#5FB3A9",
+     "bg": "#1C1C1E",
+     "ratio": 6.89,
+     "aa_text": true,
+     "aa_large_or_ui": true
+    },
+    {
+     "pair": "Black text on the dark-mode accent",
+     "fg": "#000000",
+     "bg": "#5FB3A9",
+     "ratio": 8.51,
+     "aa_text": true,
+     "aa_large_or_ui": true
+    },
+    {
+     "pair": "White text on the dark-mode accent (avoid)",
+     "fg": "#FFFFFF",
+     "bg": "#5FB3A9",
+     "ratio": 2.47,
+     "aa_text": false,
+     "aa_large_or_ui": false
+    },
+    {
+     "pair": "Light accent on black (avoid: use the dark-mode accent)",
+     "fg": "#1B6E66",
+     "bg": "#000000",
+     "ratio": 3.47,
+     "aa_text": false,
+     "aa_large_or_ui": true
+    },
+    {
+     "pair": "Dark-mode accent on white (avoid)",
+     "fg": "#5FB3A9",
+     "bg": "#FFFFFF",
+     "ratio": 2.47,
+     "aa_text": false,
+     "aa_large_or_ui": false
+    }
+   ]
+  },
+  "blue": {
+   "name": "Blue teal",
+   "about": "classic's lightness and chroma with the hue turned 24\u00b0 toward blue (OKLCH hue 209\u00b0)",
+   "light": {
+    "hex": "#186C78",
+    "rgb": [
+     24,
+     108,
+     120
+    ],
+    "oklch": "oklch(0.489 0.077 209.4)",
+    "cmyk": [
+     86,
+     44,
+     45,
+     15
+    ],
+    "pantone": "7474 C",
+    "pantone_de00": 3.8
+   },
+   "dark": {
+    "hex": "#5DB0BE",
+    "rgb": [
+     93,
+     176,
+     190
+    ],
+    "oklch": "oklch(0.710 0.083 209.7)",
+    "cmyk": [
+     62,
+     14,
+     24,
+     0
+    ],
+    "pantone": "7709 C",
+    "pantone_de00": 1.1
+   },
+   "contrast": [
+    {
+     "pair": "White text on the accent (light mode)",
+     "fg": "#FFFFFF",
+     "bg": "#186C78",
+     "ratio": 6.08,
+     "aa_text": true,
+     "aa_large_or_ui": true
+    },
+    {
+     "pair": "Accent on white (links, icons; light mode)",
+     "fg": "#186C78",
+     "bg": "#FFFFFF",
+     "ratio": 6.08,
+     "aa_text": true,
+     "aa_large_or_ui": true
+    },
+    {
+     "pair": "Accent on Ground #F5F5F7",
+     "fg": "#186C78",
+     "bg": "#F5F5F7",
+     "ratio": 5.58,
+     "aa_text": true,
+     "aa_large_or_ui": true
+    },
+    {
+     "pair": "Dark-mode accent on black",
+     "fg": "#5DB0BE",
+     "bg": "#000000",
+     "ratio": 8.42,
+     "aa_text": true,
+     "aa_large_or_ui": true
+    },
+    {
+     "pair": "Dark-mode accent on Card #1C1C1E",
+     "fg": "#5DB0BE",
+     "bg": "#1C1C1E",
+     "ratio": 6.82,
+     "aa_text": true,
+     "aa_large_or_ui": true
+    },
+    {
+     "pair": "Black text on the dark-mode accent",
+     "fg": "#000000",
+     "bg": "#5DB0BE",
+     "ratio": 8.42,
+     "aa_text": true,
+     "aa_large_or_ui": true
+    },
+    {
+     "pair": "White text on the dark-mode accent (avoid)",
+     "fg": "#FFFFFF",
+     "bg": "#5DB0BE",
+     "ratio": 2.49,
+     "aa_text": false,
+     "aa_large_or_ui": false
+    },
+    {
+     "pair": "Light accent on black (avoid: use the dark-mode accent)",
+     "fg": "#186C78",
+     "bg": "#000000",
+     "ratio": 3.46,
+     "aa_text": false,
+     "aa_large_or_ui": true
+    },
+    {
+     "pair": "Dark-mode accent on white (avoid)",
+     "fg": "#5DB0BE",
+     "bg": "#FFFFFF",
+     "ratio": 2.49,
+     "aa_text": false,
+     "aa_large_or_ui": false
+    }
+   ]
+  }
+ },
+ "neutrals": [
+  {
+   "name": "Ground",
+   "use": "Page background",
+   "light": {
+    "hex": "#F5F5F7",
+    "rgb": [
+     245,
+     245,
+     247
+    ],
+    "oklch": "oklch(0.971 0.003 286.4)",
+    "cmyk": null,
+    "pantone": null,
+    "pantone_de00": null
+   },
+   "dark": {
+    "hex": "#000000",
+    "rgb": [
+     0,
+     0,
+     0
+    ],
+    "oklch": "oklch(0.000 0.000 0.0)",
+    "cmyk": [
+     0,
+     0,
+     0,
+     100
+    ],
+    "pantone": "Black 6 C",
+    "pantone_de00": null
+   }
+  },
+  {
+   "name": "Card",
+   "use": "Cards, sheets; the dark app icon's tile",
+   "light": {
+    "hex": "#FFFFFF",
+    "rgb": [
+     255,
+     255,
+     255
+    ],
+    "oklch": "oklch(1.000 0.000 89.9)",
+    "cmyk": null,
+    "pantone": null,
+    "pantone_de00": null
+   },
+   "dark": {
+    "hex": "#1C1C1E",
+    "rgb": [
+     28,
+     28,
+     30
+    ],
+    "oklch": "oklch(0.227 0.004 286.1)",
+    "cmyk": [
+     0,
+     0,
+     0,
+     100
+    ],
+    "pantone": "Neutral Black C",
+    "pantone_de00": 2.0
+   }
+  },
+  {
+   "name": "Text",
+   "use": "Text and the wordmark",
+   "light": {
+    "hex": "#1D1D1F",
+    "rgb": [
+     29,
+     29,
+     31
+    ],
+    "oklch": "oklch(0.232 0.004 286.1)",
+    "cmyk": [
+     0,
+     0,
+     0,
+     100
+    ],
+    "pantone": "Neutral Black C",
+    "pantone_de00": 1.7
+   },
+   "dark": {
+    "hex": "#F5F5F7",
+    "rgb": [
+     245,
+     245,
+     247
+    ],
+    "oklch": "oklch(0.971 0.003 286.4)",
+    "cmyk": null,
+    "pantone": null,
+    "pantone_de00": null
+   }
+  },
+  {
+   "name": "Muted",
+   "use": "Secondary text",
+   "light": {
+    "hex": "#6E6E73",
+    "rgb": [
+     110,
+     110,
+     115
+    ],
+    "oklch": "oklch(0.540 0.008 286.1)",
+    "cmyk": [
+     0,
+     0,
+     0,
+     70
+    ],
+    "pantone": "Cool Gray 10 C",
+    "pantone_de00": 3.9
+   },
+   "dark": {
+    "hex": "#98989D",
+    "rgb": [
+     152,
+     152,
+     157
+    ],
+    "oklch": "oklch(0.681 0.007 286.2)",
+    "cmyk": [
+     0,
+     0,
+     0,
+     48
+    ],
+    "pantone": "Cool Gray 7 C",
+    "pantone_de00": 2.2
+   }
+  }
+ ],
+ "on_accent": {
+  "light": "#FFFFFF",
+  "dark": "#000000"
+ }
+}

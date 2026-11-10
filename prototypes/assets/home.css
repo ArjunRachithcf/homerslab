@@ -1,0 +1,103 @@
+/* HomersLab Home prototype: where the household opens its apps. PROTOTYPE, throwaway.
+   Classic's home page on the design system: a frosted bar whose word becomes the greeting, the greeting as the large
+   title with today's fact in grey, app panels on a 12-column grid (12, then 8 + 4 or 9 + 3), a kid's own tiles. */
+
+/* the bar: the household's word gives way to the greeting once it scrolls under the bar (iOS) */
+.h-brand .names { position: relative; display: grid; min-width: 0; }
+.h-brand .word, .h-brand .mini { grid-area: 1 / 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; transition: opacity var(--dur-base) var(--ease-out), transform var(--dur-spring) var(--spring); }
+.h-brand .mini { opacity: 0; transform: translateY(8px); }
+.topbar.is-titled .h-brand .word { opacity: 0; transform: translateY(-8px); }
+.topbar.is-titled .h-brand .mini { opacity: 1; transform: none; }
+.h-me { display: inline-flex; align-items: center; gap: 8px; height: 40px; padding: 4px 12px 4px 4px; border: 0; border-radius: var(--radius-pill); background: none; color: var(--text); font: inherit; cursor: pointer; transition: background-color var(--dur-fast), transform var(--dur-spring) var(--spring); }
+.h-me:hover, .h-me[aria-expanded="true"] { background: var(--fill); }
+.h-me:active { transform: scale(var(--press-scale)); transition-duration: var(--dur-fast), var(--dur-press); }
+
+/* the greeting: the large title, then today's one fact in grey (apple.com's two-tone headline) */
+.h-hello { padding: 56px 0 36px; }
+.h-hello h1 { font-size: var(--fs-large-title); line-height: var(--lh-title); font-weight: var(--weight-bold); letter-spacing: var(--tracking-large); max-width: 24ch; }
+.h-hello h1 .fact { color: var(--text-2); transition: opacity var(--dur-base), filter var(--dur-base); }
+.h-hello h1 .fact.swap { opacity: 0; filter: blur(4px); }
+.h-hello .h-sub { margin-top: 12px; color: var(--text-2); font-size: var(--fs-headline); }
+
+.h-away { margin-bottom: var(--gap); }
+.h-panels { row-gap: var(--gap); }
+.h-panels .panel { min-width: 0; }
+.h-sec { margin-top: 40px; }
+.h-foot { display: flex; flex-wrap: wrap; gap: 8px 16px; justify-content: space-between; padding: 48px 0 32px; color: var(--text-2); font-size: var(--fs-foot); }
+.h-none { padding: 40px 24px; }
+
+/* a kid's Home: bigger tiles that say what each app is for */
+.h-kid .h-hello h1 { max-width: 20ch; }
+
+.only-phone { display: none; }
+.row.only-wide::before { display: none; }
+@media (max-width: 640px) {
+  .h-hello { padding: 28px 0 24px; }
+  .h-hello .h-sub { font-size: var(--fs-body); }
+  .h-me .h-me-name { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+  .h-me { padding: 4px; }
+  .only-phone { display: revert; }
+  .row.only-phone { display: flex; }
+  .only-wide { display: none; }
+  .h-foot { flex-direction: column; }
+}
+
+/* an admin's Home: one fact, when something needs a look in Admin (decision of round 2) */
+.h-look { display: flex; align-items: center; gap: 14px; margin-bottom: var(--gap); padding: 14px 16px; border-radius: var(--radius-card); color: var(--text); transition: transform var(--dur-snappy) var(--spring-snappy); }
+.h-look:active { transform: scale(0.985); }
+/* the whole card opens Admin: its link stretches over it */
+.h-look-link { color: inherit; text-decoration: none; font-weight: var(--weight-semibold); }
+.h-look-link::before { content: ""; position: absolute; inset: 0; border-radius: inherit; z-index: 3; }
+.h-look-link:focus-visible { outline: none; }
+.h-look:has(.h-look-link:focus-visible) { outline: 3px solid var(--focus); outline-offset: 2px; }
+.h-look-mark { display: grid; place-items: center; width: 36px; height: 36px; flex: none; border-radius: 50%; background: var(--pill-red-bg); color: var(--pill-red-ink); }
+.h-look-text { flex: 1; min-width: 0; display: grid; gap: 2px; }
+
+.h-look-text span { font-size: var(--fs-sub); color: var(--text-2); }
+.h-look .row-chev { color: var(--text-2); }
+/* the bar's person button is a glass capsule */
+.h-me { position: relative; background-color: var(--mat-thick); -webkit-backdrop-filter: var(--mat-blur); backdrop-filter: var(--mat-blur); }
+.h-me::after { content: ""; position: absolute; inset: 0; border-radius: inherit; padding: 1px; pointer-events: none; background: linear-gradient(160deg, var(--mat-rim) 0%, var(--mat-rim-soft) 18%, transparent 42%, transparent 64%, var(--mat-rim-soft) 100%); -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0); -webkit-mask-composite: xor; mask: linear-gradient(#000 0 0) content-box exclude, linear-gradient(#000 0 0); } /* taste-skill-ignore: the glass rim, asked for in design round 2 */
+.h-me:hover, .h-me[aria-expanded="true"] { background-color: var(--mat-thick); }
+:is([data-transparency="reduce"], [data-glass="solid"]) .h-me { background-color: var(--mat-solid-thick); background-image: none; -webkit-backdrop-filter: none; backdrop-filter: none; }
+@media (prefers-reduced-transparency: reduce) { .h-me { background-color: var(--mat-solid-thick); background-image: none; -webkit-backdrop-filter: none; backdrop-filter: none; } }
+.h-glass { margin: 0 8px 8px; }
+.h-glass .glass-slider { padding: 2px 4px 0; }
+
+/* asking for an app: the quiet tile at the end of a person's apps, a kid's tile, an answer, the member Store */
+.h-ask { display: flex; align-items: center; gap: 14px; margin-top: var(--gap); padding: 14px 16px; border-radius: var(--radius-card); border: 1.5px dashed color-mix(in srgb, var(--text-2) 45%, transparent); color: var(--text); text-decoration: none; transition: transform var(--dur-snappy) var(--spring-snappy), background-color var(--dur-fast); }
+.h-ask:hover { background: color-mix(in srgb, var(--mat-plate) 60%, transparent); }
+.h-ask:active { transform: scale(0.985); }
+.h-ask-mark { display: grid; place-items: center; flex: none; width: 36px; height: 36px; color: color-mix(in srgb, var(--accent) 80%, var(--text)); }
+.h-ask-text { flex: 1; min-width: 0; display: grid; gap: 2px; }
+.h-ask-text b { font-weight: var(--weight-semibold); }
+.h-ask-text span { font-size: var(--fs-sub); color: var(--text-2); }
+.h-ask .row-chev { color: var(--text-2); }
+.kid-ask { background: transparent; box-shadow: none; border: 2px dashed color-mix(in srgb, var(--text-2) 45%, transparent); text-decoration: none; color: var(--text); }
+.kid-ask::after { display: none; }
+.kid-ask-mark { display: grid; place-items: center; width: 88px; height: 88px; margin-bottom: 12px; border-radius: 22.5%; background: var(--accent-tint); color: var(--accent); }
+.kid-ask-mark .icon { width: 36px; height: 36px; }
+.h-answer { display: flex; align-items: center; gap: 14px; margin-bottom: var(--gap); padding: 14px 16px; border-radius: var(--radius-card); }
+.h-answer .app-icon { --size: 40px; }
+.h-answer-text { flex: 1; min-width: 0; display: grid; gap: 2px; }
+.h-answer-text b { font-weight: var(--weight-semibold); }
+.h-answer-text span { font-size: var(--fs-sub); color: var(--text-2); }
+.h-look-ask .h-look-mark { background: none; color: color-mix(in srgb, var(--accent) 80%, var(--text)); }
+.h-store .store-head { margin-top: 8px; }
+.h-store .store-head h1 { font-size: var(--fs-large-title); }
+.h-store .store-head h1:focus { outline: none; }
+.h-ask-note q { color: var(--text-2); quotes: "“" "”"; }
+.store-cant { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
+.store-cant > div { flex: 1 1 260px; }
+.store-cant h2 { font-size: var(--fs-headline); font-weight: var(--weight-semibold); }
+.store-cant p { margin-top: 2px; font-size: var(--fs-sub); color: var(--text-2); }
+.h-store .card, .h-store .group { background-color: var(--mat-regular); -webkit-backdrop-filter: var(--mat-blur); backdrop-filter: var(--mat-blur); box-shadow: var(--mat-depth), var(--mat-inner); }
+:is([data-transparency="reduce"], [data-glass="solid"]) .h-store :is(.card, .group) { background-color: var(--mat-solid-regular); -webkit-backdrop-filter: none; backdrop-filter: none; }
+@media (prefers-reduced-transparency: reduce) { .h-store :is(.card, .group) { background-color: var(--mat-solid-regular); -webkit-backdrop-filter: none; backdrop-filter: none; } }
+@media (prefers-reduced-motion: reduce) { .h-ask { transition: none; } }
+.h-store .notice { margin-bottom: 12px; }
+.h-store :is(.card, .group) {
+  --ink-lift: calc(max(0, 0.5 - var(--glass)) * 140%); --ink-lift-c: calc(max(0, 0.5 - var(--glass)) * 90%);
+  --text-2: color-mix(in srgb, var(--text-2-on-wall), var(--text) var(--ink-lift));
+  --red-text: color-mix(in srgb, var(--red-text-base), var(--text) var(--ink-lift-c)); --green-text: color-mix(in srgb, var(--green-text-base), var(--text) var(--ink-lift-c)); --orange-text: color-mix(in srgb, var(--orange-text-base), var(--text) var(--ink-lift-c)); }
+.h-pair { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 4px 12px; margin-top: 10px; padding-top: 10px; border-top: var(--hairline) solid var(--separator); font-size: var(--fs-sub); color: var(--text-2); }

@@ -1,0 +1,8 @@
+# Design work kept locally: screenshots and the design skill's working files
+prototypes/screenshots/
+prototypes/.taste-skill/
+.taste-skill/
+# Test sheets that embed other projects' logos for comparison
+brand/concepts/tests/preview.html
+brand/concepts/tests/shelf.html
+brand/concepts/tests/shelf-final.*

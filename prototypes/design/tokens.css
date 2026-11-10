@@ -1,0 +1,291 @@
+/* HomersLab design tokens: colour (light and dark), type, space, radii, shadows, motion, layers, layout.
+   One look for Home and Admin (ADR 0013). The direction is classic's Apple style (classic's site/index.html, its
+   tokens and spring): the system font (SF on Apple devices, Inter elsewhere), Apple's system neutrals, inset grouped
+   lists, widgets, frosted bars and spring motion. The accent is teal; status is iOS green, orange and red, never the
+   accent.
+
+   Framework-free on purpose: plain custom properties that the React components (ADR 0002) read as they are.
+   A theme follows the device; data-theme="light" or "dark" on <html> forces one, and on any element themes that
+   part of the page alone (the gallery shows light and dark side by side this way).
+
+   The logo kit (brand/kit, built in Classic teal) confirms the accent: #1B6E66 for light backgrounds, #5FB3A9 for dark
+   ones, white text on the first and black on the second. To move to the kit's other teal, change the two --brand-accent
+   values (#186C78, #5DB0BE); every tint, hover and focus ring is mixed from them. The mark and lockup are the kit's
+   (design/logo/, inlined by design/icons.js). The greys follow the kit's neutrals, except secondary text, one step
+   stronger than the kit's #6E6E73 / #98989D so that it holds 4.5:1 on a grey fill too.
+
+   Round 2 (2026-11-10) adds today's Apple glass: four materials (clear, regular, thick, bar) with a specular rim and
+   depth, a calm wallpaper for glass to sit on, and springs for motion. data-transparency="reduce" and
+   data-motion="reduce" on <html> force what prefers-reduced-transparency and prefers-reduced-motion ask for. */
+
+/* Inter, only where the system has no SF (Fedora, Windows, Android). Variable: weights 100-900, tabular figures.
+   Copyright (c) 2016 The Inter Project Authors, SIL Open Font License 1.1 (fonts/OFL-inter.txt). */
+@font-face {
+  font-family: "Inter";
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+  src: url("fonts/inter.woff2") format("woff2");
+}
+
+/* ============================================================ the brand, and everything that is not colour */
+:root {
+  /* the brand: the only values to change when the accent moves */
+  --brand-accent-light: #1B6E66;   /* Classic teal, the kit's: 6.1:1 on white, 5.6:1 on the ground; white text on it */
+  --brand-accent-dark: #5FB3A9;    /* 6.9:1 on a dark card, 8.5:1 on black; black text on it (white fails, 2.5:1) */
+
+  /* ---------- type: the system font; Inter where there is no SF ---------- */
+  --font: -apple-system, BlinkMacSystemFont, "Inter", system-ui, sans-serif;
+  --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;   /* plan ids, names, codes: real ids only */
+  --fs-large-title: 34px;  /* a page's h1 and Home's greeting; 28px on a phone */
+  --fs-title: 22px;        /* section, panel and sheet titles */
+  --fs-value: 28px;        /* a widget's figure; 22px on a phone */
+  --fs-headline: 17px;     /* card titles, choices, the bar's collapsed title */
+  --fs-body: 15px;         /* text, rows, controls */
+  --fs-sub: 13px;          /* sublines, captions, group headers, pills */
+  --fs-foot: 12px;         /* meta, axis labels */
+  --fs-tab: 11px;          /* tab bar labels only */
+  --lh-body: 1.4;  --lh-tight: 1.15;  --lh-title: 1.08;
+  --tracking-body: -0.01em;  --tracking-title: -0.022em;  --tracking-large: -0.03em;
+  --weight-regular: 400; --weight-medium: 500; --weight-semibold: 600; --weight-bold: 700;
+
+  /* ---------- space: a 4px base ---------- */
+  --space-1: 4px;  --space-2: 8px;  --space-3: 12px; --space-4: 16px; --space-5: 20px;
+  --space-6: 24px; --space-8: 32px; --space-10: 40px; --space-12: 48px; --space-16: 64px;
+  --gap: 16px;        /* the one grid gutter, across and down */
+  --pad: 20px;        /* inside a card; 16px on a phone */
+  --row-pad-x: 16px;  /* inside a list row */
+
+  /* ---------- radii: soft, decided once ---------- */
+  --radius-card: 22px;     /* cards, inset groups, widgets, sheets */
+  --radius-inner: 14px;    /* rows and wells inside a card, notices, choices, command blocks */
+  --radius-menu: 18px;     /* popover menus, toasts */
+  --radius-field: 12px;    /* text fields and selects */
+  --radius-pill: 999px;    /* buttons, pills, chips, avatars */
+  --radius-icon: 22.5%;    /* an app icon's squircle */
+  --hairline: 1px;         /* separators; 0.5px on a retina screen, below */
+
+  /* ---------- motion: springs, as Apple describes them (a response and a damping ratio), sampled into linear() ---------- */
+  /* Motion is feedback: it answers the person (a press, a toggle, a sheet, a screen they asked for). Home also rises on
+     entry; Admin moves only in answer to input. Under reduced motion, screens cross-fade and everything else is instant. */
+  /* classic's spring, kept: presses springing back, thumbs, chips */
+  --spring: linear(0, 0.06 2.6%, 0.24 5.7%, 0.84 15.1%, 1.03 20.5%, 1.08 24.6%, 1.07 29.2%, 1.01 38.6%, 0.99 48%, 1);
+  /* snappy: damping ratio 0.86, response 0.3s; settles in 418ms, overshoot 0.5%. Toggles, presses, the tab lens */
+  --spring-snappy: linear(0, 0.002 0.7%, 0.016 2.2%, 0.053 4.1%, 0.118 6.5%, 0.209 9.3%, 0.321 12.5%, 0.443 16.0%, 0.564 19.8%, 0.677 23.9%, 0.774 28.3%, 0.852 33.0%, 0.911 37.9%, 0.952 43.1%, 0.978 48.5%, 0.994 54.2%, 1.002 60.1%, 1.005 66.2%, 1.005 72.5%, 1.004 79.1%, 1.003 85.9%, 1.002 92.8%, 1);
+  --dur-snappy: 418ms;
+  /* smooth: damping ratio 1, response 0.38s; settles in 558ms, no overshoot. Screens, shared elements, lists */
+  --spring-smooth: linear(0, 0.002 0.7%, 0.017 2.2%, 0.056 4.1%, 0.123 6.5%, 0.214 9.3%, 0.321 12.5%, 0.434 16.0%, 0.546 19.8%, 0.647 23.9%, 0.735 28.3%, 0.807 33.0%, 0.864 37.9%, 0.907 43.1%, 0.938 48.5%, 0.96 54.2%, 0.974 60.1%, 0.984 66.2%, 0.99 72.5%, 0.994 79.1%, 0.997 85.9%, 0.998 92.8%, 1);
+  --dur-smooth: 558ms;
+  /* bouncy: damping ratio 0.7, response 0.42s; settles in 687ms, overshoot 4.6%. Sheets, menus, toasts, Home's rise */
+  --spring-bouncy: linear(0, 0.003 0.7%, 0.022 2.2%, 0.074 4.1%, 0.163 6.5%, 0.288 9.3%, 0.437 12.5%, 0.593 16.0%, 0.739 19.8%, 0.861 23.9%, 0.952 28.3%, 1.01 33.0%, 1.039 37.9%, 1.046 43.1%, 1.04 48.5%, 1.028 54.2%, 1.016 60.1%, 1.007 66.2%, 1.001 72.5%, 0.999 79.1%, 0.998 85.9%, 0.998 92.8%, 1);
+  --dur-bouncy: 687ms;
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);   /* reveals, fills, counts */
+  --ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
+  --dur-press: 100ms;   /* the way down of a press */
+  --dur-fast: 200ms;    /* colour, opacity, hover */
+  --dur-base: 300ms;    /* fades and cross-fades */
+  --dur-spring: 450ms;  /* a press springing back, a thumb sliding, a menu growing */
+  --dur-sheet: 500ms;   /* a sheet arriving */
+  --dur-reveal: 700ms;  /* a rise on entry, a meter filling */
+  --dur-screen: 480ms;  /* one screen giving way to the next */
+  --dur-fade: 160ms;    /* the cross-fade that replaces movement under reduced motion */
+  --stagger: 45ms;      /* between items that rise together */
+  --press-scale: 0.96;  /* buttons and tiles under a finger */
+
+  /* ---------- layers ---------- */
+  --z-raised: 1;
+  --z-sticky: 10;      /* the frosted top bar */
+  --z-tabbar: 20;      /* the frosted tab bar */
+  --z-menu: 40;        /* popovers */
+  --z-scrim: 50;
+  --z-sheet: 51;       /* sheets, the step-up */
+  --z-toast: 70;
+  --z-system: 80;      /* the browser's own passkey prompt (simulated in the prototypes) */
+  --z-prototype: 100;  /* the prototype bar: never part of the design */
+
+  /* ---------- layout ---------- */
+  --column: 1100px;    /* 12 columns of 77px + 11 gutters of 16px */
+  --sidebar: 240px;
+  --bar-height: 52px;
+  --tabbar-height: 64px;   /* the floating tab bar's capsule; it floats 10px above the bottom edge */
+  --tap: 44px;         /* the smallest target for a finger */
+  --gutter: 16px;      /* the page's side margin on a phone */
+}
+@media (min-resolution: 2dppx) { :root { --hairline: 0.5px; } }
+@media (max-width: 640px) { :root { --fs-large-title: 28px; --fs-value: 22px; --pad: 16px; } }
+
+/* ============================================================ colour: light */
+:root, [data-theme="light"] {
+  color-scheme: light;
+  --ground: #f5f5f7;               /* the page: Apple's grouped background */
+  --surface: #ffffff;              /* cards, inset groups, widgets */
+  --elevated: #ffffff;             /* sheets and dialogs */
+  --fill: rgba(120, 120, 128, 0.12);        /* secondary buttons, chips, segmented tracks, meter tracks */
+  --fill-strong: rgba(120, 120, 128, 0.2);  /* a pressed fill */
+  --hover: rgba(120, 120, 128, 0.08);       /* rows and menu items under the pointer */
+  --separator: rgba(60, 60, 67, 0.16);      /* hairlines between rows, inset to the text */
+  --separator-opaque: #d7d7da;     /* the same line, solid: between sections on the ground */
+  --control-border: #86868b;       /* a field's edge and a switch's ring: 3.6:1 on white, so a control reads as one */
+
+  --text: #1d1d1f;                 /* 16.8:1 on white */
+  --text-2: #636366;               /* secondary text: 6.0:1 on white, 5.5:1 on the ground, 5.2:1 on a fill */
+  --text-3: #8e8e93;               /* never for words: chevrons and the used part of a meter */
+  --on-accent: #ffffff;
+
+  --accent: var(--brand-accent-light);
+  --accent-hover: color-mix(in srgb, var(--accent) 86%, #000);
+  --accent-pressed: color-mix(in srgb, var(--accent) 76%, #000);
+  --accent-tint: color-mix(in srgb, var(--accent) 12%, #fff);   /* a chosen chip; the accent on it is 5.1:1 */
+  --focus: var(--accent);
+
+  /* status: the iOS system colours for dots, bars and fills; their high-contrast variants for words */
+  --green: #34c759;  --orange: #ff9500;  --red: #ff3b30;
+  --green-text-base: #1d7a35; --green-text: var(--green-text-base);   /* 5.4:1 on white, 5.0:1 on the ground */
+  --orange-text-base: #c93400; --orange-text: var(--orange-text-base);  /* 5.3:1 and 4.9:1 */
+  --red-text-base: #d70015; --red-text: var(--red-text-base);     /* 5.4:1 and 4.9:1 */
+  --switch-on: #248a3d;    /* Apple's increased-contrast green: 4.4:1 against white, above the 3:1 a control needs */
+  --danger-fill: #d70015;  /* the filled destructive button: white on it is 5.4:1 */
+  /* pills: a pale tint of the hue with dark ink of the same hue (all above 5.5:1) */
+  --pill-green-bg: #dff6e4;  --pill-green-ink: #196b2f;
+  --pill-orange-bg: #ffeed6; --pill-orange-ink: #8a4300;
+  --pill-red-bg: #ffe0de;    --pill-red-ink: #b0150f;
+  --pill-red-hover: #ffd0cc;  /* a destructive button under the pointer: its ink stays above 5:1 */
+  --pill-neutral-bg: rgba(120, 120, 128, 0.12); --pill-neutral-ink: #1d1d1f;
+
+  /* materials: Apple's glass (iOS and macOS 26) in four weights. Each is a tint over a blur of what is behind it, a
+     specular rim (brightest at the top left) and a shadow that sets it above the page. Text sits on regular glass only
+     over the wallpaper, whose colours are known; on thick glass it can sit over anything: thick keeps 4.5:1 for
+     secondary text whatever scrolls under it. Reduced transparency swaps each for its solid. */
+  /* round 3: light glass is really translucent now (about half to two thirds white), with a stronger, more
+     saturated blur, an inner light and a wallpaper with colour enough for the frost to show. Words keep AA against
+     the real pixels behind them; where a surface can't promise that, the words sit on --mat-plate. */
+  /* the glass level (--glass, 0 = Clear, 0.5 = Balanced, 1 = Frosted) sets every tint's opacity between these ends;
+     the tokens themselves (--mat-regular, --mat-thick, --mat-bar, --mat-plate, the blurs, the sheen) are made from
+     them at the end of this file, once for every theme. The plate under words grows denser as the glass gets clearer. */
+  --mat-clear: rgba(255, 255, 255, 0.25);     /* illustrations only, never under text */
+  --mat-rgb: 255 255 255; --mat-a0: 0.3; --mat-a1: 0.74;              /* regular: panels, widgets, the sidebar */
+  --mat-thick-rgb: 255 255 255; --mat-thick-a0: 0.5; --mat-thick-a1: 0.9;   /* sheets, menus, toasts, the tab bar, bar buttons */
+  --mat-bar-rgb: 248 248 250; --mat-bar-a0: 0.42; --mat-bar-a1: 0.84;  /* the top bar: what scrolls under it tints it */
+  --mat-plate-rgb: 255 255 255; --mat-plate-a0: 0.8; --mat-plate-a1: 0.5;   /* the plate under words: denser when the glass is clearer */
+  --mat-sheen-a0: 0.75; --mat-sheen-a1: 0.45;
+  --mat-solid-regular: #ffffff; --mat-solid-thick: #ffffff; --mat-solid-bar: #f5f5f7;
+  --mat-rim: rgba(255, 255, 255, 1);
+  --mat-rim-soft: rgba(255, 255, 255, 0.5);
+  --mat-edge: rgba(0, 0, 0, 0.06);            /* a hairline that keeps glass apart from a pale ground */
+  --mat-inner: inset 0 1px 1px rgba(255, 255, 255, 0.85), inset 0 -1px 1px rgba(255, 255, 255, 0.3);   /* the faint light inside the glass */
+  --mat-depth: 0 1px 1px rgba(0, 0, 0, 0.04), 0 6px 16px -8px rgba(0, 0, 0, 0.1);   /* panels: lifted, never floating */
+  --mat-depth-high: 0 2px 4px rgba(0, 0, 0, 0.05), 0 28px 70px -16px rgba(0, 0, 0, 0.32);
+  /* the wallpaper glass sits on: calm fields of the brand's teal, a sky blue and a sage (never cream) */
+  --wall-base: #e4eeeb; --wall-a: #96d4c8; --wall-b: #accbf4; --wall-c: #b6d6a4; --wall-d: #a9dbe9;   /* teal, sky, sage blooms */
+  --text-2-on-wall: #55555a;   /* secondary words on a wallpaper page: one step darker, so the blooms can carry colour */
+  --mat-glow: rgba(255, 255, 255, 0.5);       /* where the pointer catches Home's glass */
+  --scrim: rgba(0, 0, 0, 0.28);
+  --segment-thumb: #ffffff;
+
+  /* data: six tones for what a chart tells apart (an app, a storage location, a kind of file), each with its own ink so
+     a label on it keeps AA; never a rainbow, never the status colours */
+  --viz-1: #1b6e66; --viz-2: #2f5fb3; --viz-3: #2e7d4f; --viz-4: #a8520e; --viz-5: #5b6470; --viz-6: #a83a57; --viz-ink: #ffffff;
+  --day-ok: #34c759; --day-partial: #ff9f0a; --day-down: #ff3b30; --day-none: rgba(120, 120, 128, 0.2);
+  /* people: each person keeps one hue (an identity, never data); the avatar is a pale tint of it */
+  --avatar-s: 55%; --avatar-l: 86%; --avatar-ink: #1d1d1f;
+
+  /* shadows: only what floats carries one; a resting card gets a whisper in light and none in dark */
+  --shadow-card: 0 1px 3px rgba(0, 0, 0, 0.05);
+  --shadow-lift: 0 2px 4px rgba(0, 0, 0, 0.05), 0 16px 40px rgba(0, 0, 0, 0.08);
+  --shadow-menu: 0 0 0 0.5px rgba(60, 60, 67, 0.16), 0 12px 40px rgba(0, 0, 0, 0.18);
+  --shadow-sheet: 0 0 0 0.5px rgba(60, 60, 67, 0.16), 0 24px 80px rgba(0, 0, 0, 0.25);
+  --shadow-icon: inset 0 0 0 0.5px rgba(0, 0, 0, 0.12);   /* the hairline round an app icon */
+  --logo-light: inline; --logo-dark: none;   /* which cut of the logo shows: the light one here */
+}
+
+/* ============================================================ colour: dark (true black, elevation by lightness) */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --ground: #000000; --surface: #1c1c1e; --elevated: #2c2c2e;
+    --fill: rgba(120, 120, 128, 0.24); --fill-strong: rgba(120, 120, 128, 0.36); --hover: rgba(120, 120, 128, 0.16);
+    --separator: rgba(84, 84, 88, 0.6); --separator-opaque: #323235; --control-border: #8e8e93;
+    --text: #f5f5f7; --text-2: #aeaeb2; --text-3: #8e8e93; --on-accent: #000000;
+    --accent: var(--brand-accent-dark);
+    --accent-hover: color-mix(in srgb, var(--accent) 88%, #fff);
+    --accent-pressed: color-mix(in srgb, var(--accent) 78%, #fff);
+    --accent-tint: color-mix(in srgb, var(--accent) 18%, #1c1c1e);
+    --focus: var(--accent);
+    --green: #30d158; --orange: #ff9f0a; --red: #ff453a;
+    --green-text-base: #30d158; --orange-text-base: #ffb340; --red-text-base: #ff6961; --green-text: var(--green-text-base); --orange-text: var(--orange-text-base); --red-text: var(--red-text-base);
+    --switch-on: #30d158; --danger-fill: #d70015;
+    --pill-green-bg: #1f3927;  --pill-green-ink: #30d158;
+    --pill-orange-bg: #40311b; --pill-orange-ink: #ffb340;
+    --pill-red-bg: #402322;    --pill-red-ink: #ff6961; --pill-red-hover: #4a2826;
+    --pill-neutral-bg: rgba(120, 120, 128, 0.24); --pill-neutral-ink: #f5f5f7;
+    --mat-clear: rgba(255, 255, 255, 0.06); --mat-rgb: 40 40 44; --mat-a0: 0.3; --mat-a1: 0.8; --mat-thick-rgb: 34 34 38; --mat-thick-a0: 0.8; --mat-thick-a1: 1; --mat-bar-rgb: 0 0 0; --mat-bar-a0: 0.62; --mat-bar-a1: 0.98; --mat-plate-rgb: 28 28 30; --mat-plate-a0: 0.7; --mat-plate-a1: 0.45; --mat-sheen-a0: 0.12; --mat-sheen-a1: 0.07;
+    --mat-inner: inset 0 1px 1px rgba(255, 255, 255, 0.12), inset 0 -1px 1px rgba(255, 255, 255, 0.04); --text-2-on-wall: #aeaeb2;
+    --mat-solid-regular: #1c1c1e; --mat-solid-thick: #242426; --mat-solid-bar: #000000;
+    --mat-rim: rgba(255, 255, 255, 0.34); --mat-rim-soft: rgba(255, 255, 255, 0.1); --mat-edge: rgba(255, 255, 255, 0.08);
+    --mat-depth: 0 1px 1px rgba(0, 0, 0, 0.3), 0 6px 16px -8px rgba(0, 0, 0, 0.4);
+    --mat-depth-high: 0 2px 4px rgba(0, 0, 0, 0.4), 0 28px 70px -16px rgba(0, 0, 0, 0.75);
+    --wall-base: #040707; --wall-a: #0f2f2b; --wall-b: #0e1b30; --wall-c: #14231a; --wall-d: #0c2830; --mat-glow: rgba(255, 255, 255, 0.07);
+    --scrim: rgba(0, 0, 0, 0.55); --segment-thumb: #636366; --viz-1: #5cc2b4; --viz-2: #7aa7ff; --viz-3: #6fcf8f; --viz-4: #ffa65c; --viz-5: #a3abb6; --viz-6: #ff8fab; --viz-ink: #000000; --day-ok: #30d158; --day-partial: #ff9f0a; --day-down: #ff453a; --viz-1: #5cc2b4; --viz-2: #7aa7ff; --viz-3: #6fcf8f; --viz-4: #ffa65c; --viz-5: #a3abb6; --viz-6: #ff8fab; --viz-ink: #000000; --day-ok: #30d158; --day-partial: #ff9f0a; --day-down: #ff453a;
+    --avatar-s: 30%; --avatar-l: 32%; --avatar-ink: #f5f5f7;
+    --shadow-card: none; --shadow-lift: none;
+    --shadow-menu: 0 0 0 0.5px rgba(84, 84, 88, 0.6), 0 12px 40px rgba(0, 0, 0, 0.5);
+    --shadow-sheet: 0 0 0 0.5px rgba(84, 84, 88, 0.6), 0 24px 80px rgba(0, 0, 0, 0.6);
+    --shadow-icon: inset 0 0 0 0.5px rgba(0, 0, 0, 0.12);
+    --logo-light: none; --logo-dark: inline;   /* the reversed cut and the 580 wordmark */
+  }
+}
+[data-theme="dark"] {
+  color-scheme: dark;
+  --ground: #000000; --surface: #1c1c1e; --elevated: #2c2c2e;
+  --fill: rgba(120, 120, 128, 0.24); --fill-strong: rgba(120, 120, 128, 0.36); --hover: rgba(120, 120, 128, 0.16);
+  --separator: rgba(84, 84, 88, 0.6); --separator-opaque: #323235; --control-border: #8e8e93;
+  --text: #f5f5f7; --text-2: #aeaeb2; --text-3: #8e8e93; --on-accent: #000000;
+  --accent: var(--brand-accent-dark);
+  --accent-hover: color-mix(in srgb, var(--accent) 88%, #fff);
+  --accent-pressed: color-mix(in srgb, var(--accent) 78%, #fff);
+  --accent-tint: color-mix(in srgb, var(--accent) 18%, #1c1c1e);
+  --focus: var(--accent);
+  --green: #30d158; --orange: #ff9f0a; --red: #ff453a;
+  --green-text-base: #30d158; --orange-text-base: #ffb340; --red-text-base: #ff6961; --green-text: var(--green-text-base); --orange-text: var(--orange-text-base); --red-text: var(--red-text-base);
+  --switch-on: #30d158; --danger-fill: #d70015;
+  --pill-green-bg: #1f3927;  --pill-green-ink: #30d158;
+  --pill-orange-bg: #40311b; --pill-orange-ink: #ffb340;
+  --pill-red-bg: #402322;    --pill-red-ink: #ff6961; --pill-red-hover: #4a2826;
+  --pill-neutral-bg: rgba(120, 120, 128, 0.24); --pill-neutral-ink: #f5f5f7;
+  --mat-clear: rgba(255, 255, 255, 0.06); --mat-rgb: 40 40 44; --mat-a0: 0.3; --mat-a1: 0.8; --mat-thick-rgb: 34 34 38; --mat-thick-a0: 0.8; --mat-thick-a1: 1; --mat-bar-rgb: 0 0 0; --mat-bar-a0: 0.62; --mat-bar-a1: 0.98; --mat-plate-rgb: 28 28 30; --mat-plate-a0: 0.7; --mat-plate-a1: 0.45; --mat-sheen-a0: 0.12; --mat-sheen-a1: 0.07;
+    --mat-inner: inset 0 1px 1px rgba(255, 255, 255, 0.12), inset 0 -1px 1px rgba(255, 255, 255, 0.04); --text-2-on-wall: #aeaeb2;
+    --mat-solid-regular: #1c1c1e; --mat-solid-thick: #242426; --mat-solid-bar: #000000;
+    --mat-rim: rgba(255, 255, 255, 0.34); --mat-rim-soft: rgba(255, 255, 255, 0.1); --mat-edge: rgba(255, 255, 255, 0.08);
+    --mat-depth: 0 1px 1px rgba(0, 0, 0, 0.3), 0 6px 16px -8px rgba(0, 0, 0, 0.4);
+    --mat-depth-high: 0 2px 4px rgba(0, 0, 0, 0.4), 0 28px 70px -16px rgba(0, 0, 0, 0.75);
+    --wall-base: #040707; --wall-a: #0f2f2b; --wall-b: #0e1b30; --wall-c: #14231a; --wall-d: #0c2830; --mat-glow: rgba(255, 255, 255, 0.07);
+  --scrim: rgba(0, 0, 0, 0.55); --segment-thumb: #636366; --viz-1: #5cc2b4; --viz-2: #7aa7ff; --viz-3: #6fcf8f; --viz-4: #ffa65c; --viz-5: #a3abb6; --viz-6: #ff8fab; --viz-ink: #000000; --day-ok: #30d158; --day-partial: #ff9f0a; --day-down: #ff453a;
+  --avatar-s: 30%; --avatar-l: 32%; --avatar-ink: #f5f5f7;
+  --shadow-card: none; --shadow-lift: none;
+  --shadow-menu: 0 0 0 0.5px rgba(84, 84, 88, 0.6), 0 12px 40px rgba(0, 0, 0, 0.5);
+  --shadow-sheet: 0 0 0 0.5px rgba(84, 84, 88, 0.6), 0 24px 80px rgba(0, 0, 0, 0.6);
+  --shadow-icon: inset 0 0 0 0.5px rgba(0, 0, 0, 0.12);
+  --logo-light: none; --logo-dark: inline;
+}
+
+/* ============================================================ the glass level: one number drives every glass surface */
+/* Clear (0), Balanced (0.5, the default), Frosted (1); Solid is reduced transparency's look. data-glass on <html> (or on
+   any element, to show a part at another level) picks a preset; a custom level sets --glass itself. The tokens are
+   made here, on every element that sets a theme or a level, so nested themes and levels resolve their own. */
+@property --glass { syntax: "<number>"; inherits: true; initial-value: 0.5; }
+:root, [data-theme], [data-glass] {
+  --mat-regular: rgb(var(--mat-rgb) / calc(var(--mat-a0) + (var(--mat-a1) - var(--mat-a0)) * var(--glass)));
+  --mat-thick: rgb(var(--mat-thick-rgb) / calc(var(--mat-thick-a0) + (var(--mat-thick-a1) - var(--mat-thick-a0)) * var(--glass)));
+  --mat-bar: rgb(var(--mat-bar-rgb) / calc(var(--mat-bar-a0) + (var(--mat-bar-a1) - var(--mat-bar-a0)) * var(--glass)));
+  --mat-plate: rgb(var(--mat-plate-rgb) / calc(var(--mat-plate-a0) + (var(--mat-plate-a1) - var(--mat-plate-a0)) * var(--glass)));
+  --mat-blur: blur(calc(18px + 24px * var(--glass))) saturate(calc(220% - 60% * var(--glass)));
+  --mat-blur-thick: blur(calc(26px + 28px * var(--glass))) saturate(calc(240% - 60% * var(--glass)));
+  --mat-sheen: linear-gradient(180deg, rgb(255 255 255 / calc(var(--mat-sheen-a0) + (var(--mat-sheen-a1) - var(--mat-sheen-a0)) * var(--glass))), rgb(255 255 255 / 0.06) 40%, rgb(255 255 255 / 0) 62%); /* taste-skill-ignore: Apple glass (sheen, specular rim, wallpaper), asked for in design rounds 2 and 3 */
+}
+[data-glass="clear"] { --glass: 0; }
+[data-glass="balanced"] { --glass: 0.5; }
+[data-glass="frosted"], [data-glass="solid"] { --glass: 1; }
+/* a change of level glides there on the smooth spring; under reduced motion it is instant */
+:root { transition: --glass var(--dur-smooth) var(--spring-smooth); }
+@media (prefers-reduced-motion: reduce) { :root { transition: none; } }
+:root[data-motion="reduce"] { transition: none; }
