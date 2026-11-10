@@ -196,6 +196,20 @@ A change that needs step-up: deleting data, nodes, roles, sign-in settings, anyt
 eject, trusting a catalog, making a join code, replacing a mesh token, and making a new recovery kit.
 _Avoid_: dangerous action, admin action
 
+### Keeping watch
+
+**Heartbeat**:
+The regular sign of life the primary sends to a check outside the household, which alerts when it stops.
+_Avoid_: ping (the act), monitor
+
+**Incident**:
+One stretch of something not working, from the first failed check to "resolved", with what fixed it.
+_Avoid_: outage (for small ones), event, alert (one incident may send several)
+
+**Maintenance window**:
+The nightly hours when planned work (updates, scrubs, restore tests, moves) runs.
+_Avoid_: downtime window, schedule
+
 ### Keeping data
 
 **Backup**:

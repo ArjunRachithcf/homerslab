@@ -306,6 +306,20 @@ such as a NAS or a GPU box. It is private by default and never needs a router po
 106. As a household admin, I want to delete what I find in storage locations and HomersLab's leftovers, with my passkey
      for every delete and an app's own cleanup inside its data, so that freeing space never breaks an app.
 107. As a household admin, I want deleted items kept for 7 days, so that a wrong delete can be undone.
+108. As a household admin, I want to be told when the primary is down, even when it can't tell me itself, so that a
+     power cut or a crash never goes unnoticed.
+109. As a household admin, I want a year of uptime, response times and incidents per app, node and the public path,
+     so that I see what keeps failing.
+110. As a household admin, I want alerts for nodes, the mesh, the public path, expiring certificates and tokens,
+     security events and resource pressure, so that I act before the family notices.
+111. As a household admin, I want one alert per incident, a "resolved", quiet hours with only critical alerts, and a
+     morning digest, so that alerts stay worth reading.
+112. As a household admin, I want to choose my own alert channels per level, with mail always on for critical, so
+     that nothing depends on one channel.
+113. As a household admin, I want planned work to run in a nightly maintenance window and show "updating" on Home, so
+     that the family isn't surprised.
+114. As a person, I want Home to tell me plainly when an app isn't working and that the admin knows, so that I don't
+     have to ask.
 
 ## Implementation Decisions
 
@@ -557,6 +571,28 @@ Details are in [ADR 0017](adr/0017-disks-btrfs-encrypted-mirrored.md).
   - **Undo**: "Recently deleted" keeps items for 7 days, through a btrfs snapshot.
 - **The agent's contract** gains disks, LUKS with TPM enrolment, btrfs operations and SMART. Every write is a plan,
   and the destructive ones need step-up.
+
+### Uptime and notifications
+
+Details are in [ADR 0018](adr/0018-uptime-and-notifications.md).
+
+- **The primary down**:
+  - an outside check (healthchecks.io or any compatible URL) is pinged every 5 minutes and alerts when the pings stop;
+  - nodes also watch the primary over the mesh.
+- **History**: a year of uptime, response times and an incident log per app, per node and for the public path.
+- **What alerts admins**, besides backups, restore tests, disks, rolled-back updates and requests:
+  - nodes, mesh clients and the public path;
+  - expiries, 14 and 3 days ahead, when renewal hasn't already worked;
+  - security events;
+  - resource pressure.
+- **Behaviour**:
+  - one alert per incident, then "resolved", with a reminder every 4 hours;
+  - quiet hours per admin (22:00–07:00): only critical alerts push, the rest waits for a morning digest.
+- **Channels**: chosen per admin and per level: mail, ntfy, the desktop app, or a webhook. Mail is always on for
+  critical.
+- **The maintenance window**: nightly, 02:00–05:00 by default. Updates, scrubs, restore tests and moves run in it,
+  silencing their own alerts and showing "updating" on Home.
+- **The family** hears on Home only. There is no status page.
 
 ### First-time setup in two halves
 
@@ -891,3 +927,11 @@ Every answer of the grilling (2026-11-09) and where it lives:
 | 117 | It deletes only in safe places; apps' own cleanup inside their data | ADR 0017; story 106 |
 | 118 | Passkey to open the analyzer and for every delete | ADR 0017; story 106 |
 | 119 | Recently deleted, 7 days | ADR 0017; story 107 |
+| 120 | An outside heartbeat, and nodes watching the primary | ADR 0018; story 108 |
+| 121 | Uptime history and incidents, kept a year | ADR 0018; story 109 |
+| 122 | Alerts for nodes, mesh, public path, expiries, security, resources | ADR 0018; story 110 |
+| 123 | The family hears about outages on Home only | ADR 0018; story 114 |
+| 124 | Grouped alerts, quiet hours, digest | ADR 0018; story 111 |
+| 125 | A nightly maintenance window | ADR 0018; story 113; glossary |
+| 126 | Each admin chooses alert channels; mail for critical | ADR 0018; story 112 |
+| 127 | No status page; Home is the status | ADR 0018 |
