@@ -18,7 +18,6 @@ import (
 	"net/http"
 	"net/netip"
 	"os"
-	"strings"
 	"time"
 
 	"github.com/ArjunRachithcf/homerslab/internal/lan"
@@ -68,7 +67,8 @@ func New(c Config) (*Manager, error) {
 		c.LAN = lan.Cached(lan.Current, 5*time.Second)
 	}
 	if c.Hosts == nil {
-		c.Hosts = lan.Cached(ownHosts, 5*time.Second)
+		hostname, _ := os.Hostname()
+		c.Hosts = func() []string { return lan.Names(hostname, c.LAN()) }
 	}
 	if c.LANAddress == nil {
 		c.LANAddress = func() netip.Addr { return netip.Addr{} }
@@ -98,18 +98,6 @@ func New(c Config) (*Manager, error) {
 		web:   c.Web,
 		log:   c.Log,
 	}, nil
-}
-
-// ownHosts are this machine's names: loopback, its LAN addresses and its hostname.
-func ownHosts() []string {
-	hosts := []string{"127.0.0.1", "::1", "localhost"}
-	for _, a := range lan.Addresses() {
-		hosts = append(hosts, a.String())
-	}
-	if h, err := os.Hostname(); err == nil && h != "" {
-		hosts = append(hosts, strings.ToLower(h))
-	}
-	return hosts
 }
 
 // Close closes the database.

@@ -15,10 +15,12 @@ import (
 	"time"
 )
 
-// LAN is this machine's home network: its private prefixes, and the interfaces that carry the default route.
+// LAN is this machine's home network: the interfaces that carry the default route, their private prefixes, and
+// this machine's own private addresses on them.
 type LAN struct {
 	Prefixes   []netip.Prefix
 	Interfaces []string
+	Addresses  []netip.Addr
 }
 
 // FromHere says whether a request from addr comes from this machine or its LAN. A link-local address is the same on
@@ -48,33 +50,39 @@ func Current() LAN {
 		for _, p := range addrs(name) {
 			if private(p.Addr()) {
 				l.Prefixes = append(l.Prefixes, p.Masked())
+				l.Addresses = append(l.Addresses, p.Addr())
 			}
 		}
 	}
 	return l
 }
 
-// Addresses are this machine's own private addresses on the LAN.
-func Addresses() []netip.Addr {
-	var out []netip.Addr
-	for _, name := range DefaultRouteInterfaces(os.DirFS("/proc")) {
-		for _, p := range addrs(name) {
-			if private(p.Addr()) {
-				out = append(out, p.Addr())
-			}
-		}
-	}
-	return out
-}
-
 // Address is this machine's IPv4 address on the LAN, for the links it prints; or the zero Addr if it has none.
-func Address() netip.Addr {
-	for _, a := range Addresses() {
+func (l LAN) Address() netip.Addr {
+	for _, a := range l.Addresses {
 		if a.Is4() {
 			return a
 		}
 	}
 	return netip.Addr{}
+}
+
+// Names are the names a browser on this machine or its LAN may use for it: loopback, its LAN addresses, and its
+// hostname, short and with .local (mDNS). Lower case.
+func Names(hostname string, l LAN) []string {
+	names := []string{"127.0.0.1", "::1", "localhost"}
+	for _, a := range l.Addresses {
+		names = append(names, a.String())
+	}
+	if h := strings.ToLower(strings.TrimSuffix(hostname, ".")); h != "" {
+		short, _, _ := strings.Cut(h, ".")
+		names = append(names, h)
+		if short != h {
+			names = append(names, short)
+		}
+		names = append(names, short+".local")
+	}
+	return names
 }
 
 // private is an address of a home network: RFC 1918 or an IPv6 ULA. Link-local addresses go by their zone instead.

@@ -39,7 +39,8 @@ export function App() {
         try {
           await claim(key);
         } catch (e) {
-          // A used link may be this browser's own, opened again: its session carries on, and load() says if not.
+          // A used link may be this tab's own, opened again: its session carries on, and load() says if not. Another
+          // tab has no session: it needs a new link.
           if (!(e instanceof Refused)) {
             setPhase({ kind: 'error' });
             return;

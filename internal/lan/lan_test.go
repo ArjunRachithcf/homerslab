@@ -46,3 +46,13 @@ func TestOnlyThisMachineAndTheLANAreFromHere(t *testing.T) {
 		}
 	}
 }
+
+func TestTheMachinesNamesAreItsHostnameItsAddressesAndLoopback(t *testing.T) {
+	testenv.Isolate(t)
+	l := lan.LAN{Addresses: []netip.Addr{netip.MustParseAddr("192.168.1.20"), netip.MustParseAddr("fd00:1::20")}}
+	got := lan.Names("Study-PC.home.arpa", l)
+	want := []string{"127.0.0.1", "::1", "localhost", "192.168.1.20", "fd00:1::20", "study-pc.home.arpa", "study-pc", "study-pc.local"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("names = %v, want %v", got, want)
+	}
+}

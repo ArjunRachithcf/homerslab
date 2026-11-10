@@ -6,7 +6,7 @@ let memory: string | null = null; // when the browser refuses storage
 
 function token(): string | null {
   try {
-    return sessionStorage.getItem(TOKEN) ?? memory;
+    return memory ?? sessionStorage.getItem(TOKEN); // the token just claimed wins over an older stored one
   } catch {
     return memory;
   }

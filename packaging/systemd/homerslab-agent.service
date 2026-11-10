@@ -16,7 +16,12 @@ RestartSec=2s
 # So far the agent only reads the machine's facts. Later tickets loosen these as its contract grows (the firewall,
 # the engine, app units, disks).
 NoNewPrivileges=yes
+ProtectSystem=strict
 ProtectHome=read-only
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
 ProtectKernelModules=yes
 ProtectKernelLogs=yes
 ProtectClock=yes

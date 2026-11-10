@@ -63,12 +63,24 @@ func (m *Manager) fromHere(next http.Handler) http.Handler {
 func (m *Manager) ownHost(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		host, port, err := net.SplitHostPort(r.Host)
-		if err != nil || port != strconv.Itoa(m.cfg.SetupPort) || !slices.Contains(m.cfg.Hosts(), strings.ToLower(host)) {
+		if err != nil && !strings.Contains(r.Host, ":") { // no port: a browser leaves out 80
+			host, port, err = r.Host, "80", nil
+		}
+		if err != nil || host == "" || port != strconv.Itoa(m.cfg.SetupPort) || !m.ownName(strings.ToLower(host)) {
 			fail(w, http.StatusMisdirectedRequest, "wrong-host")
 			return
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+// ownName says whether host names this machine: one of its names, or an address its links carry.
+func (m *Manager) ownName(host string) bool {
+	if slices.Contains(m.cfg.Hosts(), host) {
+		return true
+	}
+	a, err := netip.ParseAddr(host)
+	return err == nil && (a == m.cfg.LANAddress() || a == m.cfg.Local)
 }
 
 // sameOrigin wants a change to be JSON sent by the setup page: no form post or cross-site request can make one.

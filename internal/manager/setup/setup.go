@@ -214,8 +214,8 @@ func (s *Setup) Claim(ctx context.Context, key, client string) (string, error) {
 	return session, err
 }
 
-// Session checks a session's token, from client, and keeps the session open. The cookie travels in clear on the
-// LAN, so it is good only from the device that claimed the link, and for a while.
+// Session checks a session's token, from client, and keeps the session open. The token travels in clear on the LAN,
+// so it is good only from the device that claimed the link, and for a while.
 func (s *Setup) Session(ctx context.Context, tok, client string) error {
 	err := s.db.TouchSession(ctx, digest(tok), client, s.now(), SessionIdle, SessionMax)
 	if errors.Is(err, store.ErrNotFound) {

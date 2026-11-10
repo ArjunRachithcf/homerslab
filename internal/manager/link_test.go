@@ -353,3 +353,24 @@ func TestTheBuiltPagesAreNotListed(t *testing.T) {
 		t.Errorf("GET /assets/: %d, want 404", r.Code)
 	}
 }
+
+// The link's own addresses always answer, even where the list of the machine's names misses them (a listener bound
+// to one address); and a browser leaves out port 80.
+func TestTheLinksOwnAddressesAlwaysAnswer(t *testing.T) {
+	testenv.Isolate(t)
+	p := newPrimary(t, func(p *primary) { p.hosts = []string{"study-pc"} })
+	b := p.claimed()
+	for _, h := range []string{"192.168.1.20:7020", "127.0.0.1:7020"} {
+		if r := b.do("GET", "/api/v1/setup", nil, func(r *http.Request) { r.Host = h }); r.Code != http.StatusOK {
+			t.Errorf("Host %s, the link's own: %d %s", h, r.Code, r.Body)
+		}
+	}
+	p = newPrimary(t, func(p *primary) { p.port = 80 })
+	b = p.claimed()
+	if r := b.do("GET", "/api/v1/setup", nil, func(r *http.Request) { r.Host = "192.168.1.20" }); r.Code != http.StatusOK {
+		t.Errorf("port 80 without a port in Host: %d %s", r.Code, r.Body)
+	}
+	if r := b.do("GET", "/api/v1/setup", nil, func(r *http.Request) { r.Host = "192.168.1.20:7020" }); r.Code != http.StatusMisdirectedRequest {
+		t.Errorf("another port: %d, want 421", r.Code)
+	}
+}

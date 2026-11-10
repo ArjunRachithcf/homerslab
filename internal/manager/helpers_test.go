@@ -53,6 +53,8 @@ type primary struct {
 	db    string
 	agent string
 	local netip.Addr
+	hosts []string
+	port  int
 	steps map[string]setup.Handler
 }
 
@@ -77,6 +79,8 @@ func newPrimary(t *testing.T, opts ...option) *primary {
 		db:    filepath.Join(t.TempDir(), "manager.db"),
 		steps: map[string]setup.Handler{},
 		local: netip.MustParseAddr("127.0.0.1"),
+		hosts: []string{"192.168.1.20", "fd00:1::20", "study-pc", "127.0.0.1", "::1", "localhost"},
+		port:  7020,
 	}
 	for _, o := range opts {
 		o(p)
@@ -93,7 +97,7 @@ func (p *primary) open() {
 	m, err := manager.New(manager.Config{
 		DB:          p.db,
 		AgentSocket: p.agent,
-		SetupPort:   7020,
+		SetupPort:   p.port,
 		Local:       p.local,
 		Now:         p.clock.Now,
 		LAN: func() lan.LAN {
@@ -102,9 +106,7 @@ func (p *primary) open() {
 				Interfaces: []string{"enp5s0", "wlp4s0"},
 			}
 		},
-		Hosts: func() []string {
-			return []string{"192.168.1.20", "fd00:1::20", "study-pc", "127.0.0.1", "::1", "localhost"}
-		},
+		Hosts:      func() []string { return p.hosts },
 		LANAddress: func() netip.Addr { return netip.MustParseAddr("192.168.1.20") },
 		Steps:      p.steps,
 	})
@@ -167,6 +169,9 @@ func (p *primary) browser(from string) *browser { return &browser{p: p, from: fr
 
 func (b *browser) do(method, path string, body any, edit ...func(*http.Request)) response {
 	req := newRequest(method, path, body, b.from)
+	if b.p.port != 7020 {
+		req.Host = "192.168.1.20" // a browser leaves out port 80
+	}
 	if b.token != "" {
 		req.Header.Set("Authorization", "Bearer "+b.token)
 	}

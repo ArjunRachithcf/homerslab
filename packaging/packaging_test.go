@@ -67,7 +67,9 @@ func TestTheManagerRunsUnprivilegedAndTheAgentAsRoot(t *testing.T) {
 		t.Errorf("the agent runs as %v, want root", u)
 	}
 	// The agent only reads facts so far; later tickets loosen this as its contract grows.
-	for k, want := range map[string]string{"ProtectHome": "read-only", "ProtectKernelModules": "yes", "ProtectClock": "yes", "ProtectKernelLogs": "yes", "NoNewPrivileges": "yes"} {
+	for k, want := range map[string]string{"ProtectHome": "read-only", "ProtectKernelModules": "yes", "ProtectClock": "yes",
+		"ProtectKernelLogs": "yes", "NoNewPrivileges": "yes", "ProtectSystem": "strict", "PrivateTmp": "yes",
+		"ProtectKernelTunables": "yes", "ProtectControlGroups": "yes", "RestrictSUIDSGID": "yes"} {
 		if got := agent[k]; len(got) != 1 || got[0] != want {
 			t.Errorf("the agent's %s = %v, want %s", k, got, want)
 		}
