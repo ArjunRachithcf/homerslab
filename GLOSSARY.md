@@ -149,6 +149,10 @@ _Avoid_: token, enrolment key
 A shared folder that apps may use, on a node or on a network share.
 _Avoid_: volume, mount, share
 
+**Mirror**:
+Two or more disks that each hold a full copy, so one can fail without a restore. A mirror is not a backup.
+_Avoid_: RAID, redundancy (as a noun)
+
 **Mesh**:
 The private network that joins the household's nodes and devices, at home or away.
 _Avoid_: VPN, tailnet, overlay

@@ -285,6 +285,22 @@ such as a NAS or a GPU box. It is private by default and never needs a router po
     more passkeys.
 96. As a household admin, I want to rename the household's main domain through a guided migration, so that a new
     domain doesn't mean starting over.
+97. As a household admin, I want to see every disk's health, temperature and use (per app and per storage location),
+    with "full in N days", so that I replace or extend a disk before it fails or fills.
+98. As a household admin, I want to use an existing filesystem as app-data space or a storage location without
+    touching what's on it, so that a disk I already have just works.
+99. As a household admin, I want to prepare a new disk from Admin, encrypted and unlocked by the TPM, as btrfs, so
+    that a stolen disk is unreadable and nobody types a passphrase at boot.
+100. As a household admin, I want disks holding app data mirrored by default, and to choose for media disks, so that
+     one dead disk doesn't stop the household.
+101. As a household admin, I want a guided replacement when a mirrored disk fails, showing which disk to pull, so that
+     the apps stay up while I fix it.
+102. As a household admin, I want to move an app's data to another disk or node with a verified switch and a
+     7-day way back, so that rebalancing is safe.
+103. As a household admin, I want apps that can wait to pause when a disk is nearly full, while backups and sign-in
+     keep running, so that one app can't take the household down.
+104. As a household admin, I want to encrypt the system disk in place through a rehearsed, guided migration, so that
+     the whole machine is protected without reinstalling.
 
 ## Implementation Decisions
 
@@ -424,7 +440,7 @@ One folder per app: a manifest, a plain compose file (none for a host app), icon
 - **data to back up**: paths, and database dumps through declared commands;
 - **secrets to generate**, and the UID that reads them;
 - **health checks**;
-- **resources**: memory, disk, GPU;
+- **resources**: memory, disk, GPU, and whether the app can pause when a disk is nearly full;
 - **extras**;
 - **the host-app recipe**: the vendor's repository and package, per distro;
 - **update notes**;
@@ -504,6 +520,32 @@ The manager refuses an app definition unless:
   - The old domain keeps answering for 90 days.
   - Everyone adds a passkey on the new address.
   - It can be rehearsed and rolled back.
+
+### Disks
+
+Details are in [ADR 0017](adr/0017-disks-btrfs-encrypted-mirrored.md).
+
+- **Watching**: SMART health and temperature, use per app and per storage location, growth, "full in N days", and
+  scrub results, with alerts by mail, ntfy and on Home.
+- **Adopting**: an existing filesystem or folder becomes app-data space or a storage location, untouched.
+- **Preparing**: an empty disk can be prepared with the passkey.
+  - It's encrypted with LUKS2, unlocked by the TPM, with its recovery key in the recovery kit.
+  - It's formatted as btrfs, which gives snapshots, reflinks, checksums with scheduled scrubs, compression and
+    mirrors.
+  - A disk with data needs an "Erase this disk" plan: the passkey plus its serial, typed.
+  - The system disk and disks in use are never offered.
+- **Redundancy**:
+  - app data is mirrored by default when there are two or more disks;
+  - media disks ask: mirror or single;
+  - a failed disk is replaced in a guided flow, with the apps kept up.
+- **Moving an app's data**: a plan that snapshots, copies, verifies and switches, keeping the old copy for 7 days with
+  rollback.
+- **Low space**: warnings at 80% and 90%. At 95%, apps declared pausable pause, and backups and sign-in keep running.
+  Per-app size limits are optional.
+- **The system disk**: an in-place encryption migration, offered and rehearsable. It needs a VM dry run and a
+  verified full copy first.
+- **The agent's contract** gains disks, LUKS with TPM enrolment, btrfs operations and SMART. Every write is a plan,
+  and the destructive ones need step-up.
 
 ### First-time setup in two halves
 
@@ -823,3 +865,14 @@ Every answer of the grilling (2026-11-09) and where it lives:
 | 102 | Every domain equal for the apps | ADR 0016; Domains; story 94 |
 | 103 | One sign-in domain, one passkey everywhere | ADR 0016; Domains; story 95 |
 | 104 | Renaming the main domain is a guided migration | ADR 0016; Domains; story 96 |
+| 105 | Admin sees and watches every disk | ADR 0017; Disks; story 97 |
+| 106 | Adopt existing filesystems untouched | ADR 0017; story 98 |
+| 107 | Prepare empty disks from Admin | ADR 0017; story 99 |
+| 108 | Pools and mirrors, with guided replacement | ADR 0017; stories 100–101 |
+| 109 | Prepared disks always LUKS2, TPM-unlocked | ADR 0017; story 99 |
+| 110 | btrfs for prepared disks | ADR 0017 |
+| 111 | App data mirrored by default; media asked | ADR 0017; story 100 |
+| 112 | Erasing: empty disks freely, others by plan with the serial typed | ADR 0017 |
+| 113 | Moving data: snapshot, copy, verify, switch, 7 days back | ADR 0017; story 102 |
+| 114 | Low space: warn, then pause what can wait | ADR 0017; story 103 |
+| 115 | In-place system-disk encryption offered | ADR 0017; story 104 |
