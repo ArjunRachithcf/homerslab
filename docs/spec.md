@@ -265,6 +265,18 @@ such as a NAS or a GPU box. It is private by default and never needs a router po
     current.
 86. As a maintainer, I want a manual release checklist for what CI can't run (GPUs, cloud control planes, Funnel, a
     real phone joining), so that every release is proven end to end on a real household.
+87. As a person, I want to ask for an app the household doesn't have, or describe what I need in my own words, so that
+    the household admin knows what the family wants.
+88. As a household admin, I want app requests in the Store, merged per app, to approve through the normal install plan
+    or turn down with a reason, so that requests never install anything by themselves.
+89. As a household admin, I want Admin in its dark look by default, with Light and System as choices, so that it
+    matches Home's dark look.
+90. As a person, I want to set how see-through the glass is (Clear, Balanced, Frosted, Solid), so that the look suits
+    my eyes and my screen.
+91. As a catalog contributor, I want a feedstock for an app whose sign-in can only be fixed by a patch, built and
+    signed by CI, so that the app can still reach the Verified tier.
+92. As a household admin, I want an upstream security release offered at once, guarded at the edge, when HomersLab's
+    sign-in patch for that app isn't ready yet, so that security fixes never wait on a patch.
 
 ## Implementation Decisions
 
@@ -494,6 +506,24 @@ The manager refuses an app definition unless:
 - Signed packages per distro (deb, rpm, pacman), for x86_64 and arm64.
 - One binary. On the primary it runs as two processes: the manager, unprivileged, and the agent, as root.
 
+### Feedstocks
+
+- **When**: a feedstock exists only when an app can't reach Verified sign-in through its own settings, OIDC, LDAP or
+  the edge's guard ([ADR 0015](adr/0015-feedstocks-for-sign-in-patches.md)).
+- **Upstream first**: every patch is also offered upstream, and is dropped once merged.
+- **Where**: one public repository, with a folder per app holding the recipe, patches and tests.
+- **What it builds**:
+  - images built in CI from source plus patches, each with an SBOM;
+  - signed keyless with Sigstore, the signature naming the workflow;
+  - the catalog pins the digest and the expected signer, and the agent refuses anything else.
+- **Upstream releases**: a bot opens a pull request for each one, and CI rebases, builds, runs the app's sign-in and
+  restore tests, and signs.
+- **Security releases never wait**: when the patch doesn't apply, the release ships with the app guarded at the edge,
+  and the install plan says so.
+- **Third-party catalogs** may declare their own patched builds and signers.
+- **Licences**: patches carry the app's own licence; the tooling is Apache-2.0.
+- **Shown** in Admin's details of an installed app, not in the Store.
+
 ## Testing Decisions
 
 - **What makes a good test**: it tests external behaviour through the highest seam and nothing internal. The seams
@@ -612,6 +642,26 @@ From the interactive review of the reworked prototypes:
   - sensible defaults chosen for the person;
   - details behind "More options".
 
+### Design decisions (round 3, 2026-11-10)
+
+- **Admin is dark by default**, in Home's dark look: true black, the wallpaper's glow, glass panels. Admin's settings
+  offer Dark, Light and System. Home follows the device.
+- **The glass is adjustable**: Clear, Balanced (the default), Frosted, and Solid. People set it per person, in Admin's
+  settings and Home's person menu. The device's reduce-transparency setting always wins, and text keeps AA contrast at
+  every level.
+- **Light glass is truly translucent**, over a light wallpaper with colour. Bars tint with what scrolls under them.
+- **The Store** replaces "install an app". It has a featured app, collections, categories and search; app pages have
+  Get, Open and Update; and Updates and Requests sit as tabs. It's named "Store", not "App Store" (Apple's
+  trademark).
+  - **Get** still opens the install plan, and one passkey approves it.
+  - **Catalogs you trust** live in the Store's settings.
+- **App requests** (stories 87–88):
+  - people ask from Home, for a catalog app or in their own words;
+  - kids see only kid-suitable apps;
+  - admins approve through the install plan, or answer "Not now" with a reason;
+  - requests for the same app merge;
+  - the answer reaches the person on Home, and by mail or ntfy.
+
 ### Spikes
 
 Run on 2026-11-09, each in throwaway containers on the maintainer's machine. The findings and code are in
@@ -729,3 +779,16 @@ Every answer of the grilling (2026-11-09) and where it lives:
 | 84 | Home rises on entry; Admin moves only on input | Design decisions (round 2) |
 | 85 | More iOS/macOS glass and motion | Design decisions (round 2) |
 | 86 | A lean, friendly first-time setup | Design decisions (round 2) |
+| 87 | Admin dark by default | Design decisions (round 3); story 89 |
+| 88 | Adjustable glass: Clear, Balanced, Frosted, Solid | Design decisions (round 3); story 90 |
+| 89 | Translucent light glass; bars tint with content | Design decisions (round 3) |
+| 90 | The Store instead of "install an app" | Design decisions (round 3); glossary |
+| 91 | App requests from members, approved by admins | Design decisions (round 3); stories 87–88; glossary |
+| 92 | Feedstocks only as a last resort, upstream first | ADR 0015; Feedstocks |
+| 93 | One feedstocks repository, a folder per app | ADR 0015 |
+| 94 | Signed images (Sigstore, tied to the workflow) | ADR 0015; Feedstocks |
+| 95 | Security releases ship guarded when a patch lags | ADR 0015; story 92 |
+| 96 | Third-party catalogs may declare patched builds | ADR 0015 |
+| 97 | Patches under each app's licence | ADR 0015 |
+| 98 | HomersLab builds shown in Admin's details only | ADR 0015 |
+| 99 | A bot and CI keep feedstocks current | ADR 0015; story 91 |

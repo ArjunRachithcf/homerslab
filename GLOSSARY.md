@@ -56,7 +56,20 @@ _Avoid_: template, recipe, package, manifest (that is one part of it)
 
 **Catalog**:
 A signed collection of app definitions that a household trusts.
-_Avoid_: store, app store, market, marketplace
+_Avoid_: market, marketplace (the Store is where catalogs are browsed)
+
+**Store**:
+The place where household admins browse the catalogs they trust and get apps.
+_Avoid_: App Store, marketplace, shop
+
+**App request**:
+A person's ask for an app the household doesn't have, which an admin approves or turns down.
+_Avoid_: wish, suggestion, ticket
+
+**Feedstock**:
+HomersLab's recipe for building one app from its upstream source, with the few patches it needs to fit the household's
+sign-in.
+_Avoid_: fork, mirror, build repo
 
 **Official catalog**:
 The catalog HomersLab itself publishes.
