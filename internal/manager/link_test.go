@@ -1,7 +1,10 @@
 package manager_test
 
 import (
+	"io"
+	"net"
 	"net/http"
+	"net/http/httptest"
 	"net/netip"
 	"strings"
 	"sync"
@@ -348,9 +351,63 @@ func TestALinkHasNoLocalURLWhenTheListenerIsNotOnLoopback(t *testing.T) {
 
 func TestTheBuiltPagesAreNotListed(t *testing.T) {
 	testenv.Isolate(t)
+	refused := []string{"/assets/", "/assets/..%2f", "/assets/..%2fsetup.html", "/assets/..%2fassets%2f",
+		"/assets/sub%2fb.js", "/assets/sub", "/assets/..%5csecret.txt", "/assets/%2e%2e%2fsecret.txt", "/assets/%2e%2e"}
+
+	p := newPrimary(t, withPages)
+	b := p.browser(onTheLAN)
+	if r := b.do("GET", "/assets/app.js", nil); r.Code != http.StatusOK || string(r.Body) != "console.log(1)" {
+		t.Errorf("GET /assets/app.js: %d %q", r.Code, r.Body)
+	}
+	for _, path := range refused {
+		if r := b.do("GET", path, nil); r.Code != http.StatusNotFound {
+			t.Errorf("GET %s: %d %q, want 404", path, r.Code, r.Body)
+		}
+	}
+
+	// The same over a real server, whose path handling is the one browsers meet.
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	port := ln.Addr().(*net.TCPAddr).Port
+	p = newPrimary(t, withPages, func(p *primary) { p.port = port })
+	srv := &httptest.Server{Listener: ln, Config: &http.Server{Handler: p.m.Setup()}}
+	srv.Start()
+	t.Cleanup(srv.Close)
+	get := func(path string) (int, string) {
+		resp, err := http.Get(srv.URL + path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		body, _ := io.ReadAll(resp.Body)
+		return resp.StatusCode, string(body)
+	}
+	if code, body := get("/assets/app.js"); code != http.StatusOK || body != "console.log(1)" {
+		t.Errorf("real server, /assets/app.js: %d %q", code, body)
+	}
+	for _, path := range refused {
+		if code, body := get(path); code != http.StatusNotFound {
+			t.Errorf("real server, GET %s: %d %q, want 404", path, code, body)
+		}
+	}
+}
+
+// A request with a Host the manager doesn't know makes it look at the machine's LAN address; a burst of them must
+// not make it read the machine again and again.
+func TestUnknownHostsDontMakeTheManagerReadTheMachineEachTime(t *testing.T) {
+	testenv.Isolate(t)
 	p := newPrimary(t)
-	if r := p.browser(onTheLAN).do("GET", "/assets/", nil); r.Code != http.StatusNotFound {
-		t.Errorf("GET /assets/: %d, want 404", r.Code)
+	b := p.claimed()
+	before := p.lanReads.Load()
+	for range 10 {
+		if r := b.do("GET", "/api/v1/setup", nil, func(r *http.Request) { r.Host = "10.1.2.3:7020" }); r.Code != http.StatusMisdirectedRequest {
+			t.Fatalf("an unknown Host: %d", r.Code)
+		}
+	}
+	if reads := p.lanReads.Load() - before; reads > 1 {
+		t.Errorf("ten unknown-Host requests read the LAN address %d times, want at most once", reads)
 	}
 }
 

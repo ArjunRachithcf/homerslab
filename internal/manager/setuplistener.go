@@ -28,7 +28,7 @@ func (m *Manager) Setup() http.Handler {
 	api.HandleFunc("/api/", notFound)
 	api.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) { http.Redirect(w, r, "/setup", http.StatusSeeOther) })
 	api.HandleFunc("GET /setup", m.page)
-	api.Handle("GET /assets/{file}", http.FileServerFS(m.web)) // files only: no listing
+	api.HandleFunc("GET /assets/{file}", m.asset)
 	api.HandleFunc("/", notFound)
 	return securityHeaders(m.fromHere(m.ownHost(sameOrigin(api))))
 }
@@ -159,6 +159,21 @@ func client(r *http.Request) (netip.Addr, bool) {
 		return netip.Addr{}, false
 	}
 	return ap.Addr().Unmap(), true
+}
+
+// asset serves one file of the built pages' assets folder: a plain name, never a folder, never a path out of it.
+func (m *Manager) asset(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("file")
+	if name == "" || name == "." || strings.ContainsAny(name, `/\`) || strings.Contains(name, "..") {
+		notFound(w, r)
+		return
+	}
+	path := "assets/" + name
+	if fi, err := fs.Stat(m.web, path); err != nil || fi.IsDir() {
+		notFound(w, r)
+		return
+	}
+	http.ServeFileFS(w, r, m.web, path)
 }
 
 // page serves the setup page. It carries no data: the page asks the API, with the key from the link's fragment.

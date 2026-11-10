@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io/fs"
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
@@ -11,7 +12,9 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
+	"testing/fstest"
 	"time"
 
 	"github.com/ArjunRachithcf/homerslab/internal/agent/agenttest"
@@ -55,7 +58,10 @@ type primary struct {
 	local netip.Addr
 	hosts []string
 	port  int
-	steps map[string]setup.Handler
+	web   fs.FS
+	// lanReads counts how often the manager asks for the machine's LAN address.
+	lanReads atomic.Int32
+	steps    map[string]setup.Handler
 }
 
 type option func(*primary)
@@ -107,7 +113,8 @@ func (p *primary) open() {
 			}
 		},
 		Hosts:      func() []string { return p.hosts },
-		LANAddress: func() netip.Addr { return netip.MustParseAddr("192.168.1.20") },
+		LANAddress: func() netip.Addr { p.lanReads.Add(1); return netip.MustParseAddr("192.168.1.20") },
+		Web:        p.web,
 		Steps:      p.steps,
 	})
 	if err != nil {
@@ -305,3 +312,13 @@ func (b *browser) firstThree() state {
 	b.mustAnswer("you", map[string]string{"name": "Inês Ferreira", "mail": "ines@ferreira.family"})
 	return b.mustAnswer("household", map[string]string{"name": "The Ferreira household"})
 }
+
+// builtPages stand in for the web app's build: a page, its assets, and a folder and a file that are no asset.
+var builtPages = fstest.MapFS{
+	"setup.html":      {Data: []byte("<!doctype html><title>setup</title>")},
+	"secret.txt":      {Data: []byte("not an asset")},
+	"assets/app.js":   {Data: []byte("console.log(1)")},
+	"assets/sub/b.js": {Data: []byte("console.log(2)")},
+}
+
+func withPages(p *primary) { p.web = builtPages }

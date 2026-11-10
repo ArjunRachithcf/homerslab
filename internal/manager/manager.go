@@ -73,6 +73,8 @@ func New(c Config) (*Manager, error) {
 	if c.LANAddress == nil {
 		c.LANAddress = func() netip.Addr { return netip.Addr{} }
 	}
+	// Asked on every request with a Host the manager doesn't know: never let a LAN host make it walk the machine.
+	c.LANAddress = lan.Cached(c.LANAddress, 5*time.Second)
 	if c.Log == nil {
 		c.Log = slog.New(slog.DiscardHandler)
 	}

@@ -68,7 +68,7 @@ func runManager(ctx context.Context, args []string, env Env) error {
 	}
 	defer controlLn.Close()
 	bound := netip.MustParseAddrPort(setupLn.Addr().String())
-	lanAddress := func() netip.Addr { return lan.Current().Address() }
+	lanAddress := func() netip.Addr { return lan.Current().Address() } // the manager caches it
 	if h := bound.Addr(); !h.IsUnspecified() {
 		lanAddress = func() netip.Addr { // listening on one address: the links use it, unless it's loopback
 			if h.IsLoopback() {
