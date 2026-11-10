@@ -9,18 +9,31 @@ import (
 	"net"
 	"net/netip"
 	"os"
+	"slices"
 	"strings"
 	"sync"
 	"time"
 )
 
-// FromHere says whether a request from addr comes from this machine or one of the networks in lans.
-func FromHere(addr netip.Addr, lans []netip.Prefix) bool {
-	addr = addr.Unmap().WithZone("") // a link-local address carries its interface, which prefixes never match
+// LAN is this machine's home network: its private prefixes, and the interfaces that carry the default route.
+type LAN struct {
+	Prefixes   []netip.Prefix
+	Interfaces []string
+}
+
+// FromHere says whether a request from addr comes from this machine or its LAN. A link-local address is the same on
+// every interface, so it counts only with the zone of one of the LAN's interfaces: not a container's bridge, a VM's
+// or the mesh's.
+func FromHere(addr netip.Addr, l LAN) bool {
+	addr = addr.Unmap()
 	if addr.IsLoopback() {
 		return true
 	}
-	for _, p := range lans {
+	if addr.IsLinkLocalUnicast() {
+		return addr.Is6() && addr.Zone() != "" && slices.Contains(l.Interfaces, addr.Zone())
+	}
+	addr = addr.WithZone("")
+	for _, p := range l.Prefixes {
 		if p.Contains(addr) {
 			return true
 		}
@@ -28,13 +41,26 @@ func FromHere(addr netip.Addr, lans []netip.Prefix) bool {
 	return false
 }
 
-// Networks are the LAN's networks, read from the live machine.
-func Networks() []netip.Prefix {
-	var out []netip.Prefix
+// Current is the LAN, read from the live machine.
+func Current() LAN {
+	l := LAN{Interfaces: DefaultRouteInterfaces(os.DirFS("/proc"))}
+	for _, name := range l.Interfaces {
+		for _, p := range addrs(name) {
+			if private(p.Addr()) {
+				l.Prefixes = append(l.Prefixes, p.Masked())
+			}
+		}
+	}
+	return l
+}
+
+// Addresses are this machine's own private addresses on the LAN.
+func Addresses() []netip.Addr {
+	var out []netip.Addr
 	for _, name := range DefaultRouteInterfaces(os.DirFS("/proc")) {
 		for _, p := range addrs(name) {
 			if private(p.Addr()) {
-				out = append(out, p.Masked())
+				out = append(out, p.Addr())
 			}
 		}
 	}
@@ -43,17 +69,16 @@ func Networks() []netip.Prefix {
 
 // Address is this machine's IPv4 address on the LAN, for the links it prints; or the zero Addr if it has none.
 func Address() netip.Addr {
-	for _, name := range DefaultRouteInterfaces(os.DirFS("/proc")) {
-		for _, p := range addrs(name) {
-			if a := p.Addr(); a.Is4() && private(a) {
-				return a
-			}
+	for _, a := range Addresses() {
+		if a.Is4() {
+			return a
 		}
 	}
 	return netip.Addr{}
 }
 
-func private(a netip.Addr) bool { return a.IsPrivate() || a.Is6() && a.IsLinkLocalUnicast() }
+// private is an address of a home network: RFC 1918 or an IPv6 ULA. Link-local addresses go by their zone instead.
+func private(a netip.Addr) bool { return a.IsPrivate() }
 
 func addrs(name string) []netip.Prefix {
 	ifc, err := net.InterfaceByName(name)
@@ -113,16 +138,16 @@ func lines(proc fs.FS, name string) [][]string {
 	return out
 }
 
-// Cached remembers what networks returns for ttl, so a page's many requests don't each read /proc and the interfaces.
-func Cached(networks func() []netip.Prefix, ttl time.Duration) func() []netip.Prefix {
+// Cached remembers what read returns for ttl, so a page's many requests don't each read /proc and the interfaces.
+func Cached[T any](read func() T, ttl time.Duration) func() T {
 	var mu sync.Mutex
 	var at time.Time
-	var last []netip.Prefix
-	return func() []netip.Prefix {
+	var last T
+	return func() T {
 		mu.Lock()
 		defer mu.Unlock()
 		if at.IsZero() || time.Since(at) > ttl {
-			last, at = networks(), time.Now()
+			last, at = read(), time.Now()
 		}
 		return last
 	}

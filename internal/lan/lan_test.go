@@ -33,13 +33,15 @@ func TestTheLANIsWhereTheDefaultRouteGoes(t *testing.T) {
 
 func TestOnlyThisMachineAndTheLANAreFromHere(t *testing.T) {
 	testenv.Isolate(t)
-	lans := []netip.Prefix{netip.MustParsePrefix("192.168.1.0/24"), netip.MustParsePrefix("fe80::/64")}
+	l := lan.LAN{Prefixes: []netip.Prefix{netip.MustParsePrefix("192.168.1.0/24")}, Interfaces: []string{"enp5s0"}}
 	for addr, want := range map[string]bool{
 		"127.0.0.1": true, "127.8.9.1": true, "::1": true, "::ffff:127.0.0.1": true,
-		"192.168.1.42": true, "::ffff:192.168.1.42": true, "fe80::1": true, "fe80::1%enp5s0": true,
+		"192.168.1.42": true, "::ffff:192.168.1.42": true, "fe80::1%enp5s0": true,
+		"fe80::1": false, "fe80::1%docker0": false, "fe80::1%virbr0": false, "fe80::1%podman0": false,
 		"192.168.2.1": false, "172.17.0.2": false, "100.64.0.7": false, "203.0.113.9": false, "2001:db8::1": false,
+		"169.254.1.1": false,
 	} {
-		if got := lan.FromHere(netip.MustParseAddr(addr), lans); got != want {
+		if got := lan.FromHere(netip.MustParseAddr(addr), l); got != want {
 			t.Errorf("FromHere(%s) = %v, want %v", addr, got, want)
 		}
 	}

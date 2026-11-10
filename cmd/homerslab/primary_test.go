@@ -8,7 +8,6 @@ import (
 	"io"
 	"net"
 	"net/http"
-	"net/http/cookiejar"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -77,19 +76,20 @@ func TestThePrimaryRunsTheManagerUnprivilegedAndTheAgentAsRoot(t *testing.T) {
 	}
 	base := "http://127.0.0.1:" + m[1]
 
-	jar, _ := cookiejar.New(nil)
-	c := &http.Client{Jar: jar, Timeout: 5 * time.Second}
+	c := &http.Client{Timeout: 5 * time.Second}
 	resp, err := c.Post(base+"/api/v1/setup/claim", "application/json", strings.NewReader(`{"key":"`+m[2]+`"}`))
 	must(t, err)
+	var session struct{ Token string }
+	must(t, json.NewDecoder(resp.Body).Decode(&session))
 	resp.Body.Close()
-	if resp.StatusCode != http.StatusNoContent {
+	if resp.StatusCode != http.StatusOK || session.Token == "" {
 		t.Fatalf("claiming the link: %s", resp.Status)
 	}
 	var facts struct {
 		Hostname string
 		Distro   struct{ Pretty string }
 	}
-	getJSON(t, c, base+"/api/v1/nodes/primary", &facts)
+	getJSON(t, c, base+"/api/v1/nodes/primary", session.Token, &facts)
 	if facts.Hostname != "study-pc" || facts.Distro.Pretty != "Fedora Linux 43 (Workstation Edition)" {
 		t.Errorf("the setup page's facts from the agent: %+v", facts)
 	}
@@ -158,9 +158,12 @@ func processUID(t *testing.T, pid int) int {
 	return -1
 }
 
-func getJSON(t *testing.T, c *http.Client, url string, v any) {
+func getJSON(t *testing.T, c *http.Client, url, token string, v any) {
 	t.Helper()
-	resp, err := c.Get(url)
+	req, err := http.NewRequest("GET", url, nil)
+	must(t, err)
+	req.Header.Set("Authorization", "Bearer "+token)
+	resp, err := c.Do(req)
 	must(t, err)
 	defer resp.Body.Close()
 	b, _ := io.ReadAll(resp.Body)

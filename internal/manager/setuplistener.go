@@ -5,18 +5,20 @@ import (
 	"errors"
 	"io/fs"
 	"mime"
+	"net"
 	"net/http"
 	"net/netip"
+	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/ArjunRachithcf/homerslab/internal/lan"
 	"github.com/ArjunRachithcf/homerslab/internal/manager/setup"
 )
 
-const sessionCookie = "homerslab_setup"
-
-// Setup is the API and the page on the setup listener. Every request must come from this machine or its LAN; the
-// API wants the session a claimed link opened, and state changes must come from the page itself.
+// Setup is the API and the page on the setup listener. Every request must come from this machine or its LAN, and name
+// one of its own hosts; the API wants the session a claimed link opened, and state changes must come from the page
+// itself.
 func (m *Manager) Setup() http.Handler {
 	api := http.NewServeMux()
 	api.HandleFunc("POST /api/v1/setup/claim", m.claim)
@@ -28,7 +30,7 @@ func (m *Manager) Setup() http.Handler {
 	api.HandleFunc("GET /setup", m.page)
 	api.Handle("GET /assets/{file}", http.FileServerFS(m.web)) // files only: no listing
 	api.HandleFunc("/", notFound)
-	return securityHeaders(m.fromHere(sameOrigin(api)))
+	return securityHeaders(m.fromHere(m.ownHost(sameOrigin(api))))
 }
 
 func securityHeaders(next http.Handler) http.Handler {
@@ -50,6 +52,19 @@ func (m *Manager) fromHere(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if a, ok := client(r); !ok || !lan.FromHere(a, m.cfg.LAN()) {
 			fail(w, http.StatusForbidden, "not-from-lan")
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// ownHost answers only requests that name this machine, at the setup listener's port: a site whose name was rebound
+// to this address gets nothing.
+func (m *Manager) ownHost(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		host, port, err := net.SplitHostPort(r.Host)
+		if err != nil || port != strconv.Itoa(m.cfg.SetupPort) || !slices.Contains(m.cfg.Hosts(), strings.ToLower(host)) {
+			fail(w, http.StatusMisdirectedRequest, "wrong-host")
 			return
 		}
 		next.ServeHTTP(w, r)
@@ -99,19 +114,20 @@ func (m *Manager) claim(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	m.log.Info("setup link claimed", "from", r.RemoteAddr)
-	// Plain HTTP on the LAN, so not Secure; HttpOnly and SameSite=Strict keep it out of scripts and other sites.
-	http.SetCookie(w, &http.Cookie{Name: sessionCookie, Value: tok, Path: "/", HttpOnly: true, SameSite: http.SameSiteStrictMode})
-	w.WriteHeader(http.StatusNoContent)
+	// Not a cookie: cookies ignore ports, so every other service on this machine's addresses would be sent it. The
+	// page keeps the token in its tab and sends it as a bearer token.
+	writeJSON(w, http.StatusOK, map[string]string{"token": tok})
 }
 
 func (m *Manager) session(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		c, err := r.Cookie(sessionCookie)
-		if err == nil {
+		tok, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
+		err := setup.ErrNoSession
+		if ok && tok != "" {
 			from, _ := client(r)
-			err = m.setup.Session(r.Context(), c.Value, from.String())
+			err = m.setup.Session(r.Context(), tok, from.String())
 		}
-		if errors.Is(err, setup.ErrNoSession) || errors.Is(err, http.ErrNoCookie) {
+		if errors.Is(err, setup.ErrNoSession) {
 			fail(w, http.StatusUnauthorized, setup.ErrNoSession.Error())
 			return
 		}
@@ -123,13 +139,14 @@ func (m *Manager) session(next http.Handler) http.Handler {
 	})
 }
 
-// client is the address a request comes from, without a port or an interface.
+// client is the address a request comes from, without its port. A link-local address keeps its interface: the same
+// address on another interface is another device.
 func client(r *http.Request) (netip.Addr, bool) {
 	ap, err := netip.ParseAddrPort(r.RemoteAddr)
 	if err != nil {
 		return netip.Addr{}, false
 	}
-	return ap.Addr().Unmap().WithZone(""), true
+	return ap.Addr().Unmap(), true
 }
 
 // page serves the setup page. It carries no data: the page asks the API, with the key from the link's fragment.

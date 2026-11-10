@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"net/netip"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -33,12 +34,12 @@ func TestALinkIsForTheLANAndThisMachine(t *testing.T) {
 
 func TestALinkIsClaimedOnce(t *testing.T) {
 	testenv.Isolate(t)
-	for _, from := range []string{thisMachine, onTheLAN, lanV6, linkLocalV6, linkLocalV6 + "%enp5s0", "::1"} {
+	for _, from := range []string{thisMachine, onTheLAN, lanV6, linkLocalV6 + "%enp5s0", linkLocalV6 + "%wlp4s0", "::1"} {
 		t.Run(from, func(t *testing.T) {
 			p := newPrimary(t)
 			l := p.newLink()
 			first := p.browser(from)
-			if r := first.claim(l); r.Code != http.StatusNoContent {
+			if r := first.claim(l); r.Code != http.StatusOK {
 				t.Fatalf("first claim: %d %s", r.Code, r.Body)
 			}
 			if s := first.state(); s.Current != "welcome" {
@@ -57,12 +58,13 @@ func TestALinkIsRefusedToAnyoneElse(t *testing.T) {
 	testenv.Isolate(t)
 	p := newPrimary(t)
 	l := p.newLink()
-	for _, from := range []string{theInternet, onTheMesh, aContainer, onAnother, "2001:db8::9"} {
+	for _, from := range []string{theInternet, onTheMesh, aContainer, onAnother, "2001:db8::9",
+		linkLocalV6 + "%docker0", linkLocalV6 + "%virbr0", linkLocalV6 + "%podman0", linkLocalV6} {
 		if r := p.browser(from).claim(l); r.Code != http.StatusForbidden || r.errorCode(t) != "not-from-lan" {
 			t.Errorf("claim from %s: %d %s, want 403 not-from-lan", from, r.Code, r.Body)
 		}
 	}
-	if r := p.browser(onTheLAN).claim(l); r.Code != http.StatusNoContent {
+	if r := p.browser(onTheLAN).claim(l); r.Code != http.StatusOK {
 		t.Errorf("refusing strangers must not use the link up: the LAN's claim got %d %s", r.Code, r.Body)
 	}
 }
@@ -72,7 +74,7 @@ func TestALinkIsRefusedAfter30Minutes(t *testing.T) {
 	for _, c := range []struct {
 		after time.Duration
 		code  int
-	}{{30*time.Minute - time.Second, http.StatusNoContent}, {30 * time.Minute, http.StatusForbidden}, {25 * time.Hour, http.StatusForbidden}} {
+	}{{30*time.Minute - time.Second, http.StatusOK}, {30 * time.Minute, http.StatusForbidden}, {25 * time.Hour, http.StatusForbidden}} {
 		p := newPrimary(t)
 		l := p.newLink()
 		p.clock.Add(c.after)
@@ -112,7 +114,7 @@ func TestSetupNeedsAClaimedLink(t *testing.T) {
 	p := newPrimary(t)
 	p.newLink()
 	stranger := p.browser(onTheLAN)
-	stranger.cookies = []*http.Cookie{{Name: "homerslab_setup", Value: "guessed"}}
+	stranger.token = "guessed"
 	for _, b := range []*browser{p.browser(onTheLAN), stranger} {
 		for _, req := range [][2]string{{"GET", "/api/v1/setup"}, {"GET", "/api/v1/nodes/primary"}, {"PUT", "/api/v1/setup/steps/welcome"}} {
 			var body any
@@ -130,7 +132,7 @@ func TestEverySetupRequestComesFromTheLAN(t *testing.T) {
 	testenv.Isolate(t)
 	p := newPrimary(t)
 	b := p.claimed()
-	moved := &browser{p: p, from: theInternet, cookies: b.cookies}
+	moved := &browser{p: p, from: theInternet, token: b.token}
 	for _, path := range []string{"/api/v1/setup", "/api/v1/nodes/primary", "/setup", "/"} {
 		if r := moved.do("GET", path, nil); r.Code != http.StatusForbidden {
 			t.Errorf("GET %s from outside with a valid session: %d, want 403", path, r.Code)
@@ -138,16 +140,73 @@ func TestEverySetupRequestComesFromTheLAN(t *testing.T) {
 	}
 }
 
-func TestTheSessionCookieStaysInTheBrowser(t *testing.T) {
+// The session is no cookie: cookies ignore ports, so every other service on this machine's addresses would get it.
+// The page keeps the token in its tab and sends it as a bearer token.
+func TestTheSessionIsATokenNotACookie(t *testing.T) {
 	testenv.Isolate(t)
 	p := newPrimary(t)
-	b := p.claimed()
-	if len(b.cookies) != 1 {
-		t.Fatalf("cookies = %v", b.cookies)
+	b := p.claimed() // the helper fails the test on any Set-Cookie
+	if len(b.token) < 43 {
+		t.Fatalf("token %q", b.token)
 	}
-	c := b.cookies[0]
-	if !c.HttpOnly || c.SameSite != http.SameSiteStrictMode || c.Path != "/" {
-		t.Errorf("cookie %+v: want HttpOnly, SameSite=Strict, Path=/", c)
+	asCookie := p.browser(onTheLAN)
+	cookie := func(r *http.Request) { r.AddCookie(&http.Cookie{Name: "homerslab_setup", Value: b.token}) }
+	if r := asCookie.do("GET", "/api/v1/setup", nil, cookie); r.Code != http.StatusUnauthorized {
+		t.Errorf("the token as a cookie: %d, want 401", r.Code)
+	}
+	for _, h := range []string{"Bearer", "Basic " + b.token, "bearer" + b.token} {
+		if r := p.browser(onTheLAN).do("GET", "/api/v1/setup", nil, func(r *http.Request) { r.Header.Set("Authorization", h) }); r.Code != http.StatusUnauthorized {
+			t.Errorf("Authorization %q: %d, want 401", h, r.Code)
+		}
+	}
+	if r := b.do("GET", "/api/v1/setup", nil); r.Code != http.StatusOK {
+		t.Errorf("with the bearer token: %d %s", r.Code, r.Body)
+	}
+}
+
+func TestALinkIsClaimedOnceWhenManyTryAtOnce(t *testing.T) {
+	testenv.Isolate(t)
+	p := newPrimary(t)
+	for round := range 20 {
+		key := p.newLink().key(t)
+		var wg sync.WaitGroup
+		codes := make([]int, 16)
+		for i := range codes {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				codes[i] = serve(p.m.Setup(), newRequest("POST", "/api/v1/setup/claim", map[string]string{"key": key}, onTheLAN)).Code
+			}()
+		}
+		wg.Wait()
+		won := 0
+		for _, c := range codes {
+			switch c {
+			case http.StatusOK:
+				won++
+			case http.StatusForbidden:
+			default:
+				t.Errorf("round %d: a claim answered %d", round, c)
+			}
+		}
+		if won != 1 {
+			t.Fatalf("round %d: %d claims won, want exactly one (%v)", round, won, codes)
+		}
+	}
+}
+
+// Link-local addresses are the same on every interface; the zone says which one. Only the LAN's interfaces count,
+// and a session stays on the interface it was claimed from.
+func TestLinkLocalCountsOnlyOnTheLANsInterfaces(t *testing.T) {
+	testenv.Isolate(t)
+	p := newPrimary(t)
+	b := p.browser(linkLocalV6 + "%enp5s0")
+	if r := b.claim(p.newLink()); r.Code != http.StatusOK {
+		t.Fatalf("claim over enp5s0: %d %s", r.Code, r.Body)
+	}
+	other := &browser{p: p, from: linkLocalV6 + "%wlp4s0", token: b.token}
+	if r := other.do("GET", "/api/v1/setup", nil); r.Code != http.StatusUnauthorized {
+		t.Errorf("the same address on another interface: %d, want 401", r.Code)
 	}
 }
 
@@ -215,7 +274,7 @@ func TestASessionStaysWithTheDeviceThatClaimedIt(t *testing.T) {
 	testenv.Isolate(t)
 	p := newPrimary(t)
 	b := p.claimed()
-	neighbour := &browser{p: p, from: "192.168.1.77", cookies: b.cookies} // the same LAN, someone else's device
+	neighbour := &browser{p: p, from: "192.168.1.77", token: b.token} // the same LAN, someone else's device
 	if r := neighbour.do("GET", "/api/v1/setup", nil); r.Code != http.StatusUnauthorized {
 		t.Errorf("the session's cookie from another device on the LAN: %d %s, want 401", r.Code, r.Body)
 	}
@@ -224,16 +283,54 @@ func TestASessionStaysWithTheDeviceThatClaimedIt(t *testing.T) {
 	}
 }
 
-func TestASessionEndsAfterSomeHoursEvenWhenUsed(t *testing.T) {
+func TestASessionEndsTwoHoursAfterTheClaimEvenWhenUsed(t *testing.T) {
 	testenv.Isolate(t)
 	p := newPrimary(t)
 	b := p.claimed()
-	for range 8 {
+	for range 4 {
 		p.clock.Add(29 * time.Minute)
-		b.do("GET", "/api/v1/setup", nil)
+		if r := b.do("GET", "/api/v1/setup", nil); r.Code != http.StatusOK {
+			t.Fatalf("a visit at %s: %d", p.clock.Now(), r.Code)
+		}
 	}
+	p.clock.Add(2*time.Hour - 4*29*time.Minute - time.Second) // 2h - 1s after the claim
+	if r := b.do("GET", "/api/v1/setup", nil); r.Code != http.StatusOK {
+		t.Errorf("a second before two hours: %d, want 200", r.Code)
+	}
+	p.clock.Add(time.Second)
 	if r := b.do("GET", "/api/v1/setup", nil); r.Code != http.StatusUnauthorized {
-		t.Errorf("a session used for four hours: %d %s, want 401", r.Code, r.Body)
+		t.Errorf("two hours after the claim: %d %s, want 401", r.Code, r.Body)
+	}
+}
+
+// DNS rebinding: a page on another site whose name now points here gets nothing. Only the link's own names answer.
+func TestOnlyTheLinksOwnHostsAreAnswered(t *testing.T) {
+	testenv.Isolate(t)
+	p := newPrimary(t)
+	b := p.claimed()
+	host := func(h string) func(*http.Request) { return func(r *http.Request) { r.Host = h } }
+	for _, h := range []string{"192.168.1.20:7020", "127.0.0.1:7020", "[::1]:7020", "localhost:7020", "study-pc:7020", "[fd00:1::20]:7020"} {
+		if r := b.do("GET", "/api/v1/setup", nil, host(h)); r.Code != http.StatusOK {
+			t.Errorf("Host %s: %d %s, want 200", h, r.Code, r.Body)
+		}
+	}
+	for _, h := range []string{"evil.example:7020", "evil.example", "192.168.1.20", "192.168.1.20:8080", "192.168.1.21:7020", ""} {
+		for _, req := range [][2]string{{"GET", "/api/v1/setup"}, {"GET", "/setup"}, {"POST", "/api/v1/setup/claim"}} {
+			var body any
+			if req[0] == "POST" {
+				body = map[string]string{"key": "x"}
+			}
+			if r := b.do(req[0], req[1], body, host(h)); r.Code != http.StatusMisdirectedRequest || r.errorCode(t) != "wrong-host" {
+				t.Errorf("%s %s with Host %q: %d %s, want 421 wrong-host", req[0], req[1], h, r.Code, r.Body)
+			}
+		}
+	}
+	rebound := func(r *http.Request) {
+		r.Host = "evil.example:7020"
+		r.Header.Set("Origin", "http://evil.example:7020")
+	}
+	if r := b.do("PUT", "/api/v1/setup/steps/welcome", map[string]string{}, rebound); r.Code != http.StatusMisdirectedRequest {
+		t.Errorf("a rebound PUT: %d %s, want 421", r.Code, r.Body)
 	}
 }
 

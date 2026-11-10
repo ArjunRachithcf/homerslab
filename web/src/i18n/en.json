@@ -18,7 +18,7 @@
   "setup.error.unbuilt": "This step comes with a later version of HomersLab. What you’ve chosen so far is kept.",
 
   "step.welcome.title": "Let’s set up HomersLab",
-  "step.welcome.lead": "This machine, {host}, becomes your household’s home server. It takes about 20 minutes, and you can stop at any time.",
+  "step.welcome.lead": "This machine, {host}, will run your household’s apps. It takes about 20 minutes, and you can stop at any time.",
   "step.welcome.backTitle": "Welcome back",
   "step.welcome.backLead": "You stopped at {step}. What you chose then is kept.",
   "step.welcome.start": "Get started",

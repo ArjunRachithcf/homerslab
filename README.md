@@ -50,7 +50,7 @@ Security, then polish, then breadth:
 | `packaging/` | The systemd units: the manager unprivileged, the agent as root |
 
 ```sh
-go test ./...                                   # as root too, to test the primary's two processes
+go test ./...                                   # the two-process test needs root: it runs in CI's Go container
 (cd web && npm ci --ignore-scripts && npm run lint && npm run build)
 CGO_ENABLED=0 go build -o bin/homerslab ./cmd/homerslab
 (cd web && npx playwright test)                 # first-time setup in a browser, against bin/homerslab

@@ -18,6 +18,7 @@ import (
 
 	"github.com/ArjunRachithcf/homerslab/internal/agent/agenttest"
 	"github.com/ArjunRachithcf/homerslab/internal/cli"
+	"github.com/ArjunRachithcf/homerslab/internal/lan"
 	"github.com/ArjunRachithcf/homerslab/internal/manager"
 	"github.com/ArjunRachithcf/homerslab/internal/testenv"
 )
@@ -31,7 +32,7 @@ func running(t *testing.T) string {
 		AgentSocket: agenttest.Start(t, agenttest.Primary()),
 		SetupPort:   7020,
 		Local:       netip.MustParseAddr("127.0.0.1"),
-		LAN:         func() []netip.Prefix { return nil },
+		LAN:         func() lan.LAN { return lan.LAN{} },
 		LANAddress:  func() netip.Addr { return netip.MustParseAddr("192.168.1.20") },
 	})
 	if err != nil {

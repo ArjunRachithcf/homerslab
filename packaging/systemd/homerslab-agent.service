@@ -13,5 +13,13 @@ UMask=0077
 Restart=on-failure
 RestartSec=2s
 
+# So far the agent only reads the machine's facts. Later tickets loosen these as its contract grows (the firewall,
+# the engine, app units, disks).
+NoNewPrivileges=yes
+ProtectHome=read-only
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectClock=yes
+
 [Install]
 WantedBy=multi-user.target

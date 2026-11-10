@@ -3,7 +3,7 @@
 // database, so setup resumes where it stopped.
 import { useCallback, useEffect, useState } from 'react';
 import { flushSync } from 'react-dom';
-import { rich, t } from '../i18n/t';
+import { rich, t, type Key } from '../i18n/t';
 import { answer, claim, getPrimary, getSetup, Refused, type Facts, type Setup } from './api';
 import { Assistant, Field, Icon, stepTitle, type Screen } from './Assistant';
 import { diskSize, memory } from './format';
@@ -179,7 +179,7 @@ function useStep(id: string, setup: Setup, facts: Facts | null, next: () => void
         lead: resumed ? t('step.welcome.backLead', { step: stepTitle(setup.current) }) : rich('step.welcome.lead', { host: <b>{host}</b> }),
         body: resumed ? <Left steps={left.map((s) => s.id)} /> : undefined,
         moreLabel: t('step.welcome.about'),
-        more: <About facts={facts} />,
+        more: <><About facts={facts} /><Needs /></>,
         primary: { label: t(resumed ? 'step.welcome.resume' : 'step.welcome.start'), busy },
         onPrimary: resumed ? resume : () => send({}),
       };
@@ -235,6 +235,27 @@ function Left({ steps }: { steps: string[] }) {
           <li className="row" key={id}>
             <span className="row-lead"><Icon name="clock" cls="icon icon-md" /></span>
             <span className="row-main"><span className="row-label">{stepTitle(id)}</span></span>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+/** What the admin will need on the way. */
+function Needs() {
+  const needs: [string, Key][] = [
+    ['mesh', 'step.welcome.need.mesh'], ['globe', 'step.welcome.need.domain'], ['mail', 'step.welcome.need.mail'],
+    ['printer', 'step.welcome.need.kit'], ['laptop', 'step.welcome.need.device'],
+  ];
+  return (
+    <div>
+      <p className="group-head" id="as-needs">{t('step.welcome.needs')}</p>
+      <ul className="group lead-sm" aria-labelledby="as-needs">
+        {needs.map(([i, k]) => (
+          <li className="row" key={k}>
+            <span className="row-lead"><Icon name={i} cls="icon icon-md" /></span>
+            <span className="row-main"><span className="row-label wrap">{t(k)}</span></span>
           </li>
         ))}
       </ul>

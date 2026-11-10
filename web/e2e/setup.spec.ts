@@ -9,6 +9,7 @@ test('the link opens first-time setup, which shows the machine as its agent repo
   await expect(page.getByRole('heading', { level: 1 })).toContainText('Let’s set up HomersLab');
   await expect(page.getByText('study-pc', { exact: true }).first()).toBeVisible();
   await expect(page).toHaveURL(/\/setup(#\/welcome)?$/); // the one-time key is gone from the address bar
+  expect(await page.context().cookies()).toEqual([]); // the session rides in this tab, not in a cookie
 
   await page.getByText('About this machine').click();
   const facts = page.getByRole('list', { name: 'About this machine' });
@@ -16,6 +17,12 @@ test('the link opens first-time setup, which shows the machine as its agent repo
     'WDC WD40EFRX-68N', '4 TB', 'TPM 2.0', 'NVIDIA GeForce RTX 3060 Lite Hash Rate']) {
     await expect(facts).toContainText(fact);
   }
+  const needs = page.getByRole('list', { name: 'You’ll need' });
+  for (const need of ['Your mesh’s token', 'Your domain and its DNS provider’s token', 'The password of a mailbox',
+    'A printer or a password manager', 'This laptop or your phone']) {
+    await expect(needs).toContainText(need);
+  }
+  await expect(page.getByText('home server')).toHaveCount(0); // the glossary's words: a machine, not a server
 });
 
 test('setup takes one question per screen, and resumes where it stopped', async ({ page, primary }) => {

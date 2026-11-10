@@ -17,6 +17,8 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
+	"os"
+	"strings"
 	"time"
 
 	"github.com/ArjunRachithcf/homerslab/internal/lan"
@@ -34,10 +36,13 @@ type Config struct {
 	// Addr when it doesn't.
 	Local netip.Addr
 	Now   func() time.Time
-	// LAN lists the home network's prefixes; LANAddress is this machine's address on it, or the zero Addr when the
-	// setup listener isn't on the LAN.
-	LAN        func() []netip.Prefix
+	// LAN is the home network; LANAddress is this machine's address on it, or the zero Addr when the setup listener
+	// isn't on the LAN.
+	LAN        func() lan.LAN
 	LANAddress func() netip.Addr
+	// Hosts are the names the setup listener answers to, with SetupPort: the link's own addresses, loopback and the
+	// machine's hostname. Any other Host is refused, against DNS rebinding.
+	Hosts func() []string
 	// Steps adds step handlers to the built ones (setup.Built).
 	Steps map[string]setup.Handler
 	Web   fs.FS // the built pages; surfaces.Dist() when nil
@@ -60,7 +65,10 @@ func New(c Config) (*Manager, error) {
 		c.Now = time.Now
 	}
 	if c.LAN == nil {
-		c.LAN = lan.Cached(lan.Networks, 5*time.Second)
+		c.LAN = lan.Cached(lan.Current, 5*time.Second)
+	}
+	if c.Hosts == nil {
+		c.Hosts = lan.Cached(ownHosts, 5*time.Second)
 	}
 	if c.LANAddress == nil {
 		c.LANAddress = func() netip.Addr { return netip.Addr{} }
@@ -90,6 +98,18 @@ func New(c Config) (*Manager, error) {
 		web:   c.Web,
 		log:   c.Log,
 	}, nil
+}
+
+// ownHosts are this machine's names: loopback, its LAN addresses and its hostname.
+func ownHosts() []string {
+	hosts := []string{"127.0.0.1", "::1", "localhost"}
+	for _, a := range lan.Addresses() {
+		hosts = append(hosts, a.String())
+	}
+	if h, err := os.Hostname(); err == nil && h != "" {
+		hosts = append(hosts, strings.ToLower(h))
+	}
+	return hosts
 }
 
 // Close closes the database.

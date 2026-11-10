@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/ArjunRachithcf/homerslab/internal/agent/agenttest"
+	"github.com/ArjunRachithcf/homerslab/internal/lan"
 	"github.com/ArjunRachithcf/homerslab/internal/manager"
 	"github.com/ArjunRachithcf/homerslab/internal/manager/setup"
 )
@@ -28,7 +29,7 @@ const (
 	aContainer  = "172.17.0.2"   // a container on this machine's own bridge
 	theInternet = "203.0.113.9"  // anyone else
 	lanV6       = "fd00:1::42"   // the LAN's IPv6 prefix
-	linkLocalV6 = "fe80::1234:1" // the LAN's link-local addresses
+	linkLocalV6 = "fe80::1234:1" // link-local: only with the zone of an interface that carries the default route
 )
 
 // clock is the test's time, moved by hand.
@@ -95,8 +96,14 @@ func (p *primary) open() {
 		SetupPort:   7020,
 		Local:       p.local,
 		Now:         p.clock.Now,
-		LAN: func() []netip.Prefix {
-			return []netip.Prefix{netip.MustParsePrefix("192.168.1.0/24"), netip.MustParsePrefix("fd00:1::/64"), netip.MustParsePrefix("fe80::/64")}
+		LAN: func() lan.LAN {
+			return lan.LAN{
+				Prefixes:   []netip.Prefix{netip.MustParsePrefix("192.168.1.0/24"), netip.MustParsePrefix("fd00:1::/64")},
+				Interfaces: []string{"enp5s0", "wlp4s0"},
+			}
+		},
+		Hosts: func() []string {
+			return []string{"192.168.1.20", "fd00:1::20", "study-pc", "127.0.0.1", "::1", "localhost"}
 		},
 		LANAddress: func() netip.Addr { return netip.MustParseAddr("192.168.1.20") },
 		Steps:      p.steps,
@@ -148,26 +155,27 @@ func (p *primary) control(method, path string, body any) response {
 	return serve(p.m.Control(), newRequest(method, path, body, "@"))
 }
 
-// browser is someone's browser on the setup listener, at one address, keeping its cookies.
+// browser is someone's browser on the setup listener, at one address, keeping its session's token as the page does
+// (in sessionStorage, sent as a bearer token).
 type browser struct {
-	p       *primary
-	from    string
-	cookies []*http.Cookie
+	p     *primary
+	from  string
+	token string
 }
 
 func (p *primary) browser(from string) *browser { return &browser{p: p, from: from} }
 
 func (b *browser) do(method, path string, body any, edit ...func(*http.Request)) response {
 	req := newRequest(method, path, body, b.from)
-	for _, c := range b.cookies {
-		req.AddCookie(c)
+	if b.token != "" {
+		req.Header.Set("Authorization", "Bearer "+b.token)
 	}
 	for _, e := range edit {
 		e(req)
 	}
 	r := serve(b.p.m.Setup(), req)
-	for _, c := range (&http.Response{Header: r.Header}).Cookies() {
-		b.cookies = append(b.cookies[:0:0], c)
+	if c := r.Header.Values("Set-Cookie"); len(c) > 0 {
+		b.p.t.Errorf("%s %s set a cookie: %v", method, path, c)
 	}
 	return r
 }
@@ -227,14 +235,20 @@ func (p *primary) newLink() link {
 }
 
 func (b *browser) claim(l link) response {
-	return b.do("POST", "/api/v1/setup/claim", map[string]string{"key": l.key(b.p.t)})
+	r := b.do("POST", "/api/v1/setup/claim", map[string]string{"key": l.key(b.p.t)})
+	if r.Code == http.StatusOK {
+		var s struct{ Token string }
+		r.json(b.p.t, &s)
+		b.token = s.Token
+	}
+	return r
 }
 
 // claimed is a browser on this machine that has opened a fresh link.
 func (p *primary) claimed() *browser {
 	p.t.Helper()
 	b := p.browser(onTheLAN)
-	if r := b.claim(p.newLink()); r.Code != http.StatusNoContent {
+	if r := b.claim(p.newLink()); r.Code != http.StatusOK {
 		p.t.Fatalf("claiming a fresh link: %d %s", r.Code, r.Body)
 	}
 	return b
