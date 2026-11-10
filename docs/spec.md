@@ -777,6 +777,17 @@ From the interactive review of the reworked prototypes:
   - requests for the same app merge;
   - the answer reaches the person on Home, and by mail or ntfy.
 
+### Design decisions (round 4 answers, 2026-11-10)
+
+- **No wallpaper choice**: every household gets HomersLab's own wallpaper.
+- **Hiding an app**: where a household has two apps for one purpose, each person may hide the one they don't use, on
+  their own Home only.
+- **Setup defaults confirmed**:
+  - NetBird alone;
+  - the domain taken from the admin's mail address;
+  - the DNS provider guessed from the domain's name servers.
+- **Admin's motion confirmed**: screens push and pop, and icons fly to their page, always in answer to a click.
+
 ### Spikes
 
 Run on 2026-11-09, each in throwaway containers on the maintainer's machine. The findings and code are in
@@ -935,3 +946,7 @@ Every answer of the grilling (2026-11-09) and where it lives:
 | 125 | A nightly maintenance window | ADR 0018; story 113; glossary |
 | 126 | Each admin chooses alert channels; mail for critical | ADR 0018; story 112 |
 | 127 | No status page; Home is the status | ADR 0018 |
+| 128 | No wallpaper choice | Design decisions (round 4 answers) |
+| 129 | A person may hide one of two same-purpose apps on their Home | Design decisions (round 4 answers) |
+| 130 | Setup defaults confirmed | Design decisions (round 4 answers) |
+| 131 | Admin's motion confirmed | Design decisions (round 4 answers) |
