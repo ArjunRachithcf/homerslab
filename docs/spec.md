@@ -219,7 +219,8 @@ such as a NAS or a GPU box. It is private by default and never needs a router po
 ### Security
 
 67. As a household admin, I want risky changes to ask for my passkey every time, so that a stolen session can't do
-    damage. Risky changes are deleting data, nodes, roles, sign-in settings, anything public, and extras.
+    damage. Risky changes are deleting data, nodes, roles, sign-in settings, anything public, extras, restoring an app,
+    eject, trusting a catalog and making a join code.
 68. As a household admin, I want Admin reachable only over the mesh, so that it is never on the internet.
 69. As a household admin, I want Home unable to reach anything privileged, so that a flaw in the public-facing part
     can't become control of the household.
@@ -572,6 +573,27 @@ The manager refuses an app definition unless:
 - Then a design system: tokens, components, light and dark, mobile.
 - Then the backend, built against it.
 
+### Design decisions (round 1, 2026-11-10)
+
+From the review of the first prototypes and logo concepts:
+- **Logo**: C, "Harbour H": an H whose crossbar is a hull, with a sail rising inside it.
+- **Look**: classic's own design language.
+  - **Accent**: classic's teal (`#1B6E66`, `#5FB3A9` in dark mode), "teal blue". Clay was dropped: on cream it is the
+    look of a well-known AI assistant's brand.
+  - **Style**: Apple's system style from classic's home page: the system font (SF), inset grouped lists, widgets,
+    frosted glass, and spring animations.
+- **The install plan** is its own page, with an address that carries the plan's id.
+- **One passkey per plan**: a single step-up at Install approves the whole plan, extras included, and any change makes a
+  new plan.
+- **Risky changes** also include restoring an app, eject, trusting a catalog and making a join code. Updates, audience
+  changes, Remove, revoking a device and inviting an adult or a kid don't ask for the passkey.
+- **A kid's Home** has its own layout: bigger tiles that say what each app is for.
+- **Away from the mesh**, Home dims the apps that need it ("Needs the mesh") and offers "How to connect".
+- **Apps on Home** show their product names with their own icons, which each app definition ships.
+- **Defaults**:
+  - the recovery kit can't be made in a browser running on the primary itself;
+  - a failed first health check undoes the whole install.
+
 ### Spikes
 
 Run on 2026-11-09, each in throwaway containers on the maintainer's machine. The findings and code are in
@@ -674,3 +696,11 @@ Every answer of the grilling (2026-11-09) and where it lives:
 | 69 | Hourly backups; storage locations opt-in | ADR 0010; story 56 |
 | 70 | Meshes built NetBird, then Headscale, then Tailscale | ADR 0005; Further Notes |
 | 71 | 1.0's catalog: the maintainer's apps, Verified | Further Notes |
+| 72 | Logo: Harbour H | Design decisions |
+| 73 | Teal and classic's Apple-style look | Design decisions |
+| 74 | The install plan is its own page | Design decisions |
+| 75 | One passkey per plan | Design decisions |
+| 76 | Risky changes plus four | Design decisions; story 67; glossary |
+| 77 | A kid's Home has its own layout | Design decisions |
+| 78 | Away from the mesh, Home dims mesh-only apps | Design decisions |
+| 79 | Product names and their own icons on Home | Design decisions |
