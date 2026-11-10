@@ -51,6 +51,7 @@ type primary struct {
 	clock *clock
 	db    string
 	agent string
+	local netip.Addr
 	steps map[string]setup.Handler
 }
 
@@ -74,6 +75,7 @@ func newPrimary(t *testing.T, opts ...option) *primary {
 		clock: &clock{now: time.Date(2026, 11, 10, 13, 30, 0, 0, time.UTC)},
 		db:    filepath.Join(t.TempDir(), "manager.db"),
 		steps: map[string]setup.Handler{},
+		local: netip.MustParseAddr("127.0.0.1"),
 	}
 	for _, o := range opts {
 		o(p)
@@ -91,6 +93,7 @@ func (p *primary) open() {
 		DB:          p.db,
 		AgentSocket: p.agent,
 		SetupPort:   7020,
+		Local:       p.local,
 		Now:         p.clock.Now,
 		LAN: func() []netip.Prefix {
 			return []netip.Prefix{netip.MustParsePrefix("192.168.1.0/24"), netip.MustParsePrefix("fd00:1::/64"), netip.MustParsePrefix("fe80::/64")}

@@ -63,6 +63,8 @@ const (
 	LinkLife = 30 * time.Minute
 	// SessionIdle is how long a claimed link's session stays open without a visit.
 	SessionIdle = 30 * time.Minute
+	// SessionMax is how long a session lasts at most; then a new link continues where setup stopped.
+	SessionMax = 2 * time.Hour
 )
 
 // Setup is first-time setup on this primary.
@@ -147,7 +149,13 @@ func (s *Setup) Answer(ctx context.Context, id string, over Half, answer json.Ra
 	if Steps[i].Half != over {
 		return State{}, ErrOverTheMesh
 	}
-	for _, earlier := range st.Steps[:i] {
+	if over == LAN && st.Half == Mesh {
+		return State{}, ErrLANHalfDone // the first half is settled once the mesh half has begun
+	}
+	for _, earlier := range st.Steps {
+		if earlier.ID == id {
+			break
+		}
 		if earlier.State != "done" {
 			return State{}, ErrEarlierStepOpen
 		}
@@ -196,19 +204,20 @@ func (s *Setup) NewLink(ctx context.Context) (Link, error) {
 	return l, s.db.NewLink(ctx, hash, now, l.ExpiresAt)
 }
 
-// Claim uses up a link and returns the token of the session it opens.
-func (s *Setup) Claim(ctx context.Context, key string) (string, error) {
+// Claim uses up a link and returns the token of the session it opens for client, the claiming device's address.
+func (s *Setup) Claim(ctx context.Context, key, client string) (string, error) {
 	session, sessionHash := token()
-	err := s.db.ClaimLink(ctx, digest(key), sessionHash, s.now())
+	err := s.db.ClaimLink(ctx, digest(key), sessionHash, client, s.now())
 	if errors.Is(err, store.ErrNotFound) {
 		return "", ErrLinkRefused
 	}
 	return session, err
 }
 
-// Session checks a session's token, and keeps the session open.
-func (s *Setup) Session(ctx context.Context, tok string) error {
-	err := s.db.TouchSession(ctx, digest(tok), s.now(), SessionIdle)
+// Session checks a session's token, from client, and keeps the session open. The cookie travels in clear on the
+// LAN, so it is good only from the device that claimed the link, and for a while.
+func (s *Setup) Session(ctx context.Context, tok, client string) error {
+	err := s.db.TouchSession(ctx, digest(tok), client, s.now(), SessionIdle, SessionMax)
 	if errors.Is(err, store.ErrNotFound) {
 		return ErrNoSession
 	}

@@ -72,3 +72,23 @@ test('the page without a link says how to get one', async ({ page, primary }) =>
   await page.goto(link.localUrl.replace(/#.*/, ''));
   await expect(page.getByRole('heading', { level: 1 })).toContainText('This link doesn’t work any more');
 });
+
+test('opening the same link again in the same browser carries on', async ({ page, primary }) => {
+  const link = await primary.newLink();
+  await page.goto(link.localUrl);
+  await page.getByRole('button', { name: 'Get started' }).click();
+  await expect(page.getByRole('heading', { level: 1 })).toContainText('What’s your name?');
+  await page.goto('about:blank');
+  await page.goto(link.localUrl);
+  await expect(page.getByRole('heading', { level: 1 })).toContainText('Welcome back');
+});
+
+test('a new link opened in the tab that shows setup is claimed there', async ({ page, primary }) => {
+  await page.goto((await primary.newLink()).localUrl);
+  await page.getByRole('button', { name: 'Get started' }).click();
+  await expect(page.getByRole('heading', { level: 1 })).toContainText('What’s your name?');
+  await page.goto((await primary.newLink()).localUrl); // same page, only the fragment changes
+  await expect(page.getByRole('heading', { level: 1 })).toContainText('Welcome back');
+  await page.getByRole('button', { name: 'Continue where I stopped' }).click();
+  await expect(page.getByRole('heading', { level: 1 })).toContainText('What’s your name?');
+});

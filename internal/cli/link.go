@@ -46,11 +46,12 @@ on this machine or on another device at home:
   %s
 
 %s
-Scan the code with a phone's camera to open it there. On this machine itself, this works too:
-  %s
-
-Each new link ends the earlier ones. To make another: sudo homerslab setup link
-`, until, l.URL, qr, l.LocalURL)
+Scan the code with a phone's camera to open it there.
+`, until, l.URL, qr)
+	if l.LocalURL != "" && l.LocalURL != l.URL {
+		fmt.Fprintf(env.Stdout, "On this machine itself, this works too:\n  %s\n", l.LocalURL)
+	}
+	fmt.Fprint(env.Stdout, "\nEach new link ends the earlier ones. To make another: sudo homerslab setup link\n")
 	return nil
 }
 

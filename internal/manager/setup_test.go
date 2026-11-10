@@ -58,6 +58,9 @@ func TestTheLANHalfEndsWithMeshAndCertificateAndHandsOver(t *testing.T) {
 			t.Errorf("PUT %s over the LAN: %d %s, want 403 over-the-mesh", id, r.Code, r.Body)
 		}
 	}
+	if r := b.answer("you", map[string]string{"name": "Someone Else", "mail": "else@example.org"}); r.Code != http.StatusConflict || r.errorCode(t) != "lan-half-done" {
+		t.Errorf("changing the LAN half after the hand-off: %d %s, want 409 lan-half-done", r.Code, r.Body)
+	}
 	if r := p.control("POST", "/api/v1/setup/links", nil); r.Code != http.StatusConflict || r.errorCode(t) != "lan-half-done" {
 		t.Errorf("a new LAN link after the LAN half: %d %s, want 409 lan-half-done", r.Code, r.Body)
 	}
@@ -177,5 +180,27 @@ func TestSetupsStepsLiveInTheManagersDatabase(t *testing.T) {
 	want := []string{"welcome/lan/done", "you/lan/done", "household/lan/done", "signin/lan/todo", "network/lan/todo", "domain/lan/todo", "mail/lan/todo", "kit/lan/todo", "join/mesh/todo", "passkey/mesh/todo", "done/mesh/todo"}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("setup_step rows:\n got %v\nwant %v", got, want)
+	}
+}
+
+func TestAStepGoneFromANewVersionLeavesTheDatabase(t *testing.T) {
+	testenv.Isolate(t)
+	p := newPrimary(t)
+	p.claimed().firstThree()
+	if err := p.m.Close(); err != nil {
+		t.Fatal(err)
+	}
+	db, err := sql.Open("sqlite", p.db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO setup_step (id, position, half) VALUES ('retired', 3, 'lan')`); err != nil {
+		t.Fatal(err)
+	}
+	db.Close()
+	p.open()
+	s := p.claimed().state()
+	if s.Current != "signin" || len(s.Steps) != len(lanHalf)+len(meshHalf) {
+		t.Errorf("with an old step in the database: at %q with %d steps", s.Current, len(s.Steps))
 	}
 }

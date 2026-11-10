@@ -30,6 +30,7 @@ func running(t *testing.T) string {
 		DB:          filepath.Join(dir, "manager.db"),
 		AgentSocket: agenttest.Start(t, agenttest.Primary()),
 		SetupPort:   7020,
+		Local:       netip.MustParseAddr("127.0.0.1"),
 		LAN:         func() []netip.Prefix { return nil },
 		LANAddress:  func() netip.Addr { return netip.MustParseAddr("192.168.1.20") },
 	})

@@ -10,11 +10,13 @@ import (
 	"net/netip"
 	"os"
 	"strings"
+	"sync"
+	"time"
 )
 
 // FromHere says whether a request from addr comes from this machine or one of the networks in lans.
 func FromHere(addr netip.Addr, lans []netip.Prefix) bool {
-	addr = addr.Unmap()
+	addr = addr.Unmap().WithZone("") // a link-local address carries its interface, which prefixes never match
 	if addr.IsLoopback() {
 		return true
 	}
@@ -109,4 +111,19 @@ func lines(proc fs.FS, name string) [][]string {
 		out = append(out, strings.Fields(sc.Text()))
 	}
 	return out
+}
+
+// Cached remembers what networks returns for ttl, so a page's many requests don't each read /proc and the interfaces.
+func Cached(networks func() []netip.Prefix, ttl time.Duration) func() []netip.Prefix {
+	var mu sync.Mutex
+	var at time.Time
+	var last []netip.Prefix
+	return func() []netip.Prefix {
+		mu.Lock()
+		defer mu.Unlock()
+		if at.IsZero() || time.Since(at) > ttl {
+			last, at = networks(), time.Now()
+		}
+		return last
+	}
 }

@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	_ "modernc.org/sqlite" // pure Go, so the binary stays static
@@ -49,6 +50,7 @@ var migrations = []string{
 	);
 	CREATE TABLE setup_session (
 		token_hash BLOB PRIMARY KEY,
+		client     TEXT NOT NULL,
 		created_at INTEGER NOT NULL,
 		last_seen  INTEGER NOT NULL,
 		revoked_at INTEGER
@@ -92,6 +94,15 @@ func (s *Store) migrate(steps []Step) error {
 			}
 		}
 		if _, err := tx.Exec(fmt.Sprintf(`PRAGMA user_version = %d`, version)); err != nil {
+			return err
+		}
+		known := make([]any, len(steps))
+		marks := make([]string, len(steps))
+		for i, st := range steps {
+			known[i], marks[i] = st.ID, "?"
+		}
+		// A step a newer version dropped leaves; its answers stay, as answers are keyed by name.
+		if _, err := tx.Exec(`DELETE FROM setup_step WHERE id NOT IN (`+strings.Join(marks, ", ")+`)`, known...); err != nil {
 			return err
 		}
 		for i, st := range steps {
@@ -194,9 +205,9 @@ func (s *Store) NewLink(ctx context.Context, keyHash []byte, created, expires ti
 	})
 }
 
-// ClaimLink uses up a live link and opens a session in its place. It returns ErrNotFound when the link is unknown,
-// already claimed, revoked or expired.
-func (s *Store) ClaimLink(ctx context.Context, keyHash, sessionHash []byte, now time.Time) error {
+// ClaimLink uses up a live link and opens a session in its place, for the client that claimed it. It returns
+// ErrNotFound when the link is unknown, already claimed, revoked or expired.
+func (s *Store) ClaimLink(ctx context.Context, keyHash, sessionHash []byte, client string, now time.Time) error {
 	return s.tx(ctx, func(tx *sql.Tx) error {
 		res, err := tx.ExecContext(ctx, `UPDATE setup_link SET claimed_at = ?
 			WHERE key_hash = ? AND claimed_at IS NULL AND revoked_at IS NULL AND expires_at > ?`,
@@ -207,18 +218,18 @@ func (s *Store) ClaimLink(ctx context.Context, keyHash, sessionHash []byte, now 
 		if n, _ := res.RowsAffected(); n != 1 {
 			return ErrNotFound
 		}
-		_, err = tx.ExecContext(ctx, `INSERT INTO setup_session (token_hash, created_at, last_seen) VALUES (?, ?, ?)`,
-			sessionHash, now.UnixMilli(), now.UnixMilli())
+		_, err = tx.ExecContext(ctx, `INSERT INTO setup_session (token_hash, client, created_at, last_seen) VALUES (?, ?, ?, ?)`,
+			sessionHash, client, now.UnixMilli(), now.UnixMilli())
 		return err
 	})
 }
 
-// TouchSession keeps a session open, if it is live and was last seen less than idle ago. Otherwise it returns
-// ErrNotFound.
-func (s *Store) TouchSession(ctx context.Context, tokenHash []byte, now time.Time, idle time.Duration) error {
+// TouchSession keeps a session open, if it is live, asked for by the client that opened it, last seen less than idle
+// ago and opened less than max ago. Otherwise it returns ErrNotFound.
+func (s *Store) TouchSession(ctx context.Context, tokenHash []byte, client string, now time.Time, idle, max time.Duration) error {
 	res, err := s.db.ExecContext(ctx, `UPDATE setup_session SET last_seen = ?
-		WHERE token_hash = ? AND revoked_at IS NULL AND last_seen > ?`,
-		now.UnixMilli(), tokenHash, now.Add(-idle).UnixMilli())
+		WHERE token_hash = ? AND client = ? AND revoked_at IS NULL AND last_seen > ? AND created_at > ?`,
+		now.UnixMilli(), tokenHash, client, now.Add(-idle).UnixMilli(), now.Add(-max).UnixMilli())
 	if err != nil {
 		return err
 	}

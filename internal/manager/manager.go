@@ -30,7 +30,10 @@ type Config struct {
 	DB          string // the database file
 	AgentSocket string // the primary's agent
 	SetupPort   int    // the setup listener's port, for the links
-	Now         func() time.Time
+	// Local is the loopback address the setup listener answers on, for the link on this machine itself; the zero
+	// Addr when it doesn't.
+	Local netip.Addr
+	Now   func() time.Time
 	// LAN lists the home network's prefixes; LANAddress is this machine's address on it, or the zero Addr when the
 	// setup listener isn't on the LAN.
 	LAN        func() []netip.Prefix
@@ -57,7 +60,7 @@ func New(c Config) (*Manager, error) {
 		c.Now = time.Now
 	}
 	if c.LAN == nil {
-		c.LAN = lan.Networks
+		c.LAN = lan.Cached(lan.Networks, 5*time.Second)
 	}
 	if c.LANAddress == nil {
 		c.LANAddress = func() netip.Addr { return netip.Addr{} }
@@ -129,7 +132,7 @@ func (m *Manager) Control() http.Handler {
 
 type linkResponse struct {
 	URL       string    `json:"url"`
-	LocalURL  string    `json:"localUrl"`
+	LocalURL  string    `json:"localUrl,omitempty"`
 	ExpiresAt time.Time `json:"expiresAt"`
 }
 
@@ -147,7 +150,10 @@ func (m *Manager) newLink(w http.ResponseWriter, r *http.Request) {
 	at := func(a netip.Addr) string {
 		return fmt.Sprintf("http://%s/setup#k=%s", netip.AddrPortFrom(a, uint16(m.cfg.SetupPort)), l.Key)
 	}
-	resp := linkResponse{LocalURL: at(netip.AddrFrom4([4]byte{127, 0, 0, 1})), ExpiresAt: l.ExpiresAt}
+	resp := linkResponse{ExpiresAt: l.ExpiresAt}
+	if m.cfg.Local.IsValid() {
+		resp.LocalURL = at(m.cfg.Local)
+	}
 	resp.URL = resp.LocalURL
 	if a := m.cfg.LANAddress(); a.IsValid() {
 		resp.URL = at(a)
@@ -192,7 +198,7 @@ func (m *Manager) putStep(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusNotFound, err.Error())
 	case errors.Is(err, setup.ErrOverTheMesh):
 		fail(w, http.StatusForbidden, err.Error())
-	case errors.Is(err, setup.ErrEarlierStepOpen):
+	case errors.Is(err, setup.ErrEarlierStepOpen), errors.Is(err, setup.ErrLANHalfDone):
 		fail(w, http.StatusConflict, err.Error())
 	case errors.Is(err, setup.ErrNotBuilt):
 		fail(w, http.StatusNotImplemented, err.Error())

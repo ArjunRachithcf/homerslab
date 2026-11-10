@@ -29,20 +29,31 @@ export function App() {
   }, []);
 
   useEffect(() => {
-    // The key rides in the fragment, which never reaches a server or a log. It is claimed once, then dropped.
-    const key = new URLSearchParams(location.hash.slice(1)).get('k');
-    (async () => {
+    // The key rides in the fragment, which never reaches a server or a log. It is claimed once, then dropped. A link
+    // can also arrive in a tab that already shows setup: then only the fragment changes.
+    const open = async () => {
+      const key = new URLSearchParams(location.hash.slice(1)).get('k');
       if (key) {
         history.replaceState(null, '', `${location.pathname}#/welcome`);
+        setView('welcome');
         try {
           await claim(key);
-        } catch {
-          setPhase({ kind: 'refused' });
-          return;
+        } catch (e) {
+          // A used link may be this browser's own, opened again: its session carries on, and load() says if not.
+          if (!(e instanceof Refused)) {
+            setPhase({ kind: 'error' });
+            return;
+          }
         }
       }
       await load();
-    })();
+    };
+    const onHash = () => {
+      if (new URLSearchParams(location.hash.slice(1)).has('k')) void open();
+    };
+    void open();
+    window.addEventListener('hashchange', onHash);
+    return () => window.removeEventListener('hashchange', onHash);
   }, [load]);
 
   const go = useCallback((id: string, type: 'push' | 'pop' | 'fade' = 'push') => {
@@ -189,7 +200,7 @@ function useStep(id: string, setup: Setup, facts: Facts | null, next: () => void
     }
     case 'household':
       return {
-        illo: 'household', title: t('step.household.title'), lead: t('step.household.lead'),
+        illo: 'household', title: t('step.household.title'), lead: t('step.household.lead'), illoFacts: { name: householdValue },
         body: <Field id="household" label={t('step.household.name')} value={householdValue}
           onChange={(v) => { setTouched(true); setHousehold(v); }}
           error={bad.includes('name') ? t('step.household.invalid') : undefined} />,

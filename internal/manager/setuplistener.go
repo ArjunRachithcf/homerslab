@@ -26,7 +26,7 @@ func (m *Manager) Setup() http.Handler {
 	api.HandleFunc("/api/", notFound)
 	api.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) { http.Redirect(w, r, "/setup", http.StatusSeeOther) })
 	api.HandleFunc("GET /setup", m.page)
-	api.Handle("GET /assets/", http.FileServerFS(m.web))
+	api.Handle("GET /assets/{file}", http.FileServerFS(m.web)) // files only: no listing
 	api.HandleFunc("/", notFound)
 	return securityHeaders(m.fromHere(sameOrigin(api)))
 }
@@ -48,8 +48,7 @@ func securityHeaders(next http.Handler) http.Handler {
 // fromHere refuses anything that doesn't come from this machine or its LAN.
 func (m *Manager) fromHere(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		ap, err := netip.ParseAddrPort(r.RemoteAddr)
-		if err != nil || !lan.FromHere(ap.Addr(), m.cfg.LAN()) {
+		if a, ok := client(r); !ok || !lan.FromHere(a, m.cfg.LAN()) {
 			fail(w, http.StatusForbidden, "not-from-lan")
 			return
 		}
@@ -88,7 +87,8 @@ func (m *Manager) claim(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusForbidden, setup.ErrLinkRefused.Error())
 		return
 	}
-	tok, err := m.setup.Claim(r.Context(), body.Key)
+	from, _ := client(r)
+	tok, err := m.setup.Claim(r.Context(), body.Key, from.String())
 	if errors.Is(err, setup.ErrLinkRefused) {
 		m.log.Warn("refused a setup link", "from", r.RemoteAddr)
 		fail(w, http.StatusForbidden, err.Error())
@@ -108,7 +108,8 @@ func (m *Manager) session(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		c, err := r.Cookie(sessionCookie)
 		if err == nil {
-			err = m.setup.Session(r.Context(), c.Value)
+			from, _ := client(r)
+			err = m.setup.Session(r.Context(), c.Value, from.String())
 		}
 		if errors.Is(err, setup.ErrNoSession) || errors.Is(err, http.ErrNoCookie) {
 			fail(w, http.StatusUnauthorized, setup.ErrNoSession.Error())
@@ -120,6 +121,15 @@ func (m *Manager) session(next http.Handler) http.Handler {
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+// client is the address a request comes from, without a port or an interface.
+func client(r *http.Request) (netip.Addr, bool) {
+	ap, err := netip.ParseAddrPort(r.RemoteAddr)
+	if err != nil {
+		return netip.Addr{}, false
+	}
+	return ap.Addr().Unmap().WithZone(""), true
 }
 
 // page serves the setup page. It carries no data: the page asks the API, with the key from the link's fragment.

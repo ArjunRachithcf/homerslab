@@ -3,7 +3,6 @@ package node
 
 import (
 	"bufio"
-	"bytes"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -196,7 +195,6 @@ func gpus(root fs.FS) ([]GPU, error) {
 		return nil, fmt.Errorf("listing PCI devices: %w", err)
 	}
 	out := []GPU{}
-	var names map[string]string
 	for _, e := range entries {
 		dir := path.Join("sys/bus/pci/devices", e.Name())
 		if !strings.HasPrefix(text(root, path.Join(dir, "class")), "0x03") {
@@ -204,49 +202,62 @@ func gpus(root fs.FS) ([]GPU, error) {
 		}
 		vendor := strings.TrimPrefix(text(root, path.Join(dir, "vendor")), "0x")
 		device := strings.TrimPrefix(text(root, path.Join(dir, "device")), "0x")
-		if names == nil {
-			names = pciNames(root)
+		out = append(out, GPU{Vendor: vendor, PCIID: vendor + ":" + device})
+	}
+	if len(out) == 0 {
+		return out, nil
+	}
+	wanted := map[string]bool{}
+	for _, g := range out {
+		wanted[g.Vendor], wanted[g.PCIID] = true, true
+	}
+	names := pciNames(root, wanted)
+	for i, g := range out {
+		out[i].Model = names[g.PCIID]
+		if out[i].Vendor = vendors[g.Vendor]; out[i].Vendor == "" {
+			out[i].Vendor = names[g.Vendor]
 		}
-		g := GPU{Vendor: vendors[vendor], Model: names[vendor+":"+device], PCIID: vendor + ":" + device}
-		if g.Vendor == "" {
-			g.Vendor = names[vendor]
-		}
-		out = append(out, g)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].PCIID < out[j].PCIID })
 	return out, nil
 }
 
-// pciNames reads pci.ids into "vendor" → vendor name and "vendor:device" → the device's marketing name (the part in
-// brackets, when there is one).
-func pciNames(root fs.FS) map[string]string {
+// pciNames looks up, in the system's pci.ids, the names of the wanted "vendor" and "vendor:device" ids: a vendor's
+// name, and a device's marketing name (the part in brackets, when there is one). It stops once it has them all.
+func pciNames(root fs.FS, wanted map[string]bool) map[string]string {
 	names := map[string]string{}
-	var b []byte
+	var f fs.File
 	for _, p := range []string{"usr/share/hwdata/pci.ids", "usr/share/misc/pci.ids"} {
-		if data, err := fs.ReadFile(root, p); err == nil {
-			b = data
+		var err error
+		if f, err = root.Open(p); err == nil {
 			break
 		}
 	}
+	if f == nil {
+		return names
+	}
+	defer f.Close()
 	vendor := ""
-	sc := bufio.NewScanner(bytes.NewReader(b))
-	for sc.Scan() {
+	sc := bufio.NewScanner(f)
+	for sc.Scan() && len(names) < len(wanted) {
 		line := sc.Text()
 		switch {
 		case line == "" || line[0] == '#' || strings.HasPrefix(line, "\t\t"):
 		case line[0] == '\t':
-			if id, name, ok := strings.Cut(strings.TrimPrefix(line, "\t"), "  "); ok && vendor != "" {
+			if id, name, ok := strings.Cut(strings.TrimPrefix(line, "\t"), "  "); ok && vendor != "" && wanted[vendor+":"+id] {
 				names[vendor+":"+id] = bracketed(name)
 			}
 		case strings.HasPrefix(line, "C "):
-			vendor = "" // the device classes start here
+			return names // the device classes start here
 		default:
 			id, name, ok := strings.Cut(line, "  ")
 			if !ok {
 				continue
 			}
 			vendor = id
-			names[vendor] = name
+			if wanted[id] {
+				names[id] = name
+			}
 		}
 	}
 	return names

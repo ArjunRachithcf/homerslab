@@ -78,13 +78,24 @@ func runManager(ctx context.Context, args []string, env Env) error {
 		}
 	}
 	log := slog.New(slog.NewTextHandler(env.Stderr, nil))
-	m, err := manager.New(manager.Config{DB: *db, AgentSocket: *agentSocket, SetupPort: int(bound.Port()), LANAddress: lanAddress, Log: log})
+	m, err := manager.New(manager.Config{DB: *db, AgentSocket: *agentSocket, SetupPort: int(bound.Port()), Local: loopbackOf(bound.Addr()), LANAddress: lanAddress, Log: log})
 	if err != nil {
 		return err
 	}
 	defer m.Close()
 	log.Info("manager starting", "setup", setupLn.Addr(), "control", *control)
 	return m.Serve(ctx, setupLn, controlLn)
+}
+
+// loopbackOf is the loopback address a listener bound to addr answers on, or the zero Addr.
+func loopbackOf(addr netip.Addr) netip.Addr {
+	switch {
+	case addr.IsUnspecified(), addr.Unmap().Is4() && addr.IsLoopback():
+		return netip.AddrFrom4([4]byte{127, 0, 0, 1})
+	case addr.IsLoopback():
+		return netip.IPv6Loopback()
+	}
+	return netip.Addr{}
 }
 
 // listenPrivate listens on a Unix socket only this user (and root) can open.

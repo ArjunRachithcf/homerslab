@@ -2,6 +2,7 @@ package manager_test
 
 import (
 	"net/http"
+	"net/netip"
 	"strings"
 	"testing"
 	"time"
@@ -32,7 +33,7 @@ func TestALinkIsForTheLANAndThisMachine(t *testing.T) {
 
 func TestALinkIsClaimedOnce(t *testing.T) {
 	testenv.Isolate(t)
-	for _, from := range []string{thisMachine, onTheLAN, lanV6, linkLocalV6, "::1"} {
+	for _, from := range []string{thisMachine, onTheLAN, lanV6, linkLocalV6, linkLocalV6 + "%enp5s0", "::1"} {
 		t.Run(from, func(t *testing.T) {
 			p := newPrimary(t)
 			l := p.newLink()
@@ -207,5 +208,51 @@ func TestSetupResponsesCarryTheSecurityHeaders(t *testing.T) {
 	}
 	if csp := r.Header.Get("Content-Security-Policy"); !strings.Contains(csp, "default-src 'self'") || !strings.Contains(csp, "frame-ancestors 'none'") {
 		t.Errorf("Content-Security-Policy = %q", csp)
+	}
+}
+
+func TestASessionStaysWithTheDeviceThatClaimedIt(t *testing.T) {
+	testenv.Isolate(t)
+	p := newPrimary(t)
+	b := p.claimed()
+	neighbour := &browser{p: p, from: "192.168.1.77", cookies: b.cookies} // the same LAN, someone else's device
+	if r := neighbour.do("GET", "/api/v1/setup", nil); r.Code != http.StatusUnauthorized {
+		t.Errorf("the session's cookie from another device on the LAN: %d %s, want 401", r.Code, r.Body)
+	}
+	if r := b.do("GET", "/api/v1/setup", nil); r.Code != http.StatusOK {
+		t.Errorf("the device that claimed it: %d %s", r.Code, r.Body)
+	}
+}
+
+func TestASessionEndsAfterSomeHoursEvenWhenUsed(t *testing.T) {
+	testenv.Isolate(t)
+	p := newPrimary(t)
+	b := p.claimed()
+	for range 8 {
+		p.clock.Add(29 * time.Minute)
+		b.do("GET", "/api/v1/setup", nil)
+	}
+	if r := b.do("GET", "/api/v1/setup", nil); r.Code != http.StatusUnauthorized {
+		t.Errorf("a session used for four hours: %d %s, want 401", r.Code, r.Body)
+	}
+}
+
+func TestALinkHasNoLocalURLWhenTheListenerIsNotOnLoopback(t *testing.T) {
+	testenv.Isolate(t)
+	p := newPrimary(t, func(p *primary) { p.local = netip.Addr{} })
+	if l := p.newLink(); l.LocalURL != "" {
+		t.Errorf("localUrl = %q, want none", l.LocalURL)
+	}
+	p = newPrimary(t, func(p *primary) { p.local = netip.IPv6Loopback() })
+	if l := p.newLink(); !strings.HasPrefix(l.LocalURL, "http://[::1]:7020/setup#k=") {
+		t.Errorf("localUrl = %q, want [::1]", l.LocalURL)
+	}
+}
+
+func TestTheBuiltPagesAreNotListed(t *testing.T) {
+	testenv.Isolate(t)
+	p := newPrimary(t)
+	if r := p.browser(onTheLAN).do("GET", "/assets/", nil); r.Code != http.StatusNotFound {
+		t.Errorf("GET /assets/: %d, want 404", r.Code)
 	}
 }
