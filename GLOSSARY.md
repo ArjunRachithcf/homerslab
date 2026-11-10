@@ -42,7 +42,8 @@ _Avoid_: registration, onboarding link
 ### Apps and catalogs
 
 **App**:
-Something people open and use, such as photos, documents or films, installed from a catalog.
+Something people open and use, such as photos, documents or films, installed from a catalog. A household may have
+several apps of one kind.
 _Avoid_: component, service, package, stack
 
 **Host app**:
@@ -171,7 +172,7 @@ _Avoid_: re-authentication, sudo mode, elevation
 
 **Risky change**:
 A change that needs step-up: deleting data, nodes, roles, sign-in settings, anything public, extras, restoring an app,
-eject, trusting a catalog, and making a join code.
+eject, trusting a catalog, making a join code, replacing a mesh token, and making a new recovery kit.
 _Avoid_: dangerous action, admin action
 
 ### Keeping data

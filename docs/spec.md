@@ -124,6 +124,8 @@ such as a NAS or a GPU box. It is private by default and never needs a router po
     means updates, backups, health, and the edge in front.
 26. As a household admin, I want apps to use an NVIDIA GPU or an Intel iGPU when the node has one, so that transcoding
     and local AI work.
+26a. As a household admin, I want to choose which app serves a purpose, or install several apps of the same kind (two
+    photo apps, or Jellyfin and Plex side by side), so that each person can use the one they prefer.
 
 ### Using the apps
 
@@ -220,7 +222,7 @@ such as a NAS or a GPU box. It is private by default and never needs a router po
 
 67. As a household admin, I want risky changes to ask for my passkey every time, so that a stolen session can't do
     damage. Risky changes are deleting data, nodes, roles, sign-in settings, anything public, extras, restoring an app,
-    eject, trusting a catalog and making a join code.
+    eject, trusting a catalog, making a join code, replacing a mesh token and making a new recovery kit.
 68. As a household admin, I want Admin reachable only over the mesh, so that it is never on the internet.
 69. As a household admin, I want Home unable to reach anything privileged, so that a flaw in the public-facing part
     can't become control of the household.
@@ -594,6 +596,22 @@ From the review of the first prototypes and logo concepts:
   - the recovery kit can't be made in a browser running on the primary itself;
   - a failed first health check undoes the whole install.
 
+### Design decisions (round 2, 2026-11-10)
+
+From the interactive review of the reworked prototypes:
+- **Admin names apps by product** (Immich, with "Photos" beside it). HomersLab is an app store: a household picks which
+  app serves a purpose, or installs several apps of one kind side by side (story 26a).
+- **Two more risky changes**: replacing a mesh token, and making a new recovery kit.
+- **An admin's Home** carries one more fact, "something needs a look in Admin", whenever something does.
+- **iOS green** marks apps that work and tests that pass.
+- **Motion**: Home rises on entry, while Admin moves only in answer to the person.
+- **More glass and more motion**, in the manner of iOS and macOS: translucent materials, depth, springy transitions.
+  Contrast rules and the person's reduce-motion and reduce-transparency settings still apply.
+- **First-time setup** becomes lean and friendly:
+  - one question per screen, in plain words;
+  - sensible defaults chosen for the person;
+  - details behind "More options".
+
 ### Spikes
 
 Run on 2026-11-09, each in throwaway containers on the maintainer's machine. The findings and code are in
@@ -704,3 +722,10 @@ Every answer of the grilling (2026-11-09) and where it lives:
 | 77 | A kid's Home has its own layout | Design decisions |
 | 78 | Away from the mesh, Home dims mesh-only apps | Design decisions |
 | 79 | Product names and their own icons on Home | Design decisions |
+| 80 | Admin names apps by product; several apps of one kind may be installed | Design decisions (round 2); story 26a |
+| 81 | Replacing a mesh token and making a new recovery kit are risky | Design decisions (round 2); story 67; glossary |
+| 82 | An admin's Home says when something needs a look | Design decisions (round 2) |
+| 83 | iOS green for what's fine | Design decisions (round 2) |
+| 84 | Home rises on entry; Admin moves only on input | Design decisions (round 2) |
+| 85 | More iOS/macOS glass and motion | Design decisions (round 2) |
+| 86 | A lean, friendly first-time setup | Design decisions (round 2) |
