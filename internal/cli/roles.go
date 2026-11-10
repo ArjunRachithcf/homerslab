@@ -1,0 +1,98 @@
+package cli
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log/slog"
+	"net"
+	"net/netip"
+	"os"
+	"os/user"
+	"strconv"
+	"syscall"
+
+	"github.com/ArjunRachithcf/homerslab/internal/agent"
+	"github.com/ArjunRachithcf/homerslab/internal/lan"
+	"github.com/ArjunRachithcf/homerslab/internal/manager"
+)
+
+func runAgent(ctx context.Context, args []string, env Env) error {
+	fs := flags("agent", env)
+	socket := fs.String("socket", DefaultAgentSocket, "the agent API's Unix socket")
+	group := fs.String("socket-group", DefaultGroup, "the group that may use the socket: the manager's")
+	sysroot := fs.String("sysroot", "/", "the system root to read the machine's facts from")
+	if err := parse(fs, args); err != nil {
+		return err
+	}
+	gid, err := groupID(*group)
+	if err != nil {
+		return err
+	}
+	log := slog.New(slog.NewTextHandler(env.Stderr, nil))
+	log.Info("agent starting", "socket", *socket, "euid", env.Euid())
+	return agent.Serve(ctx, agent.Config{Socket: *socket, SocketGID: gid, Sysroot: os.DirFS(*sysroot), Log: log})
+}
+
+func groupID(name string) (int, error) {
+	if gid, err := strconv.Atoi(name); err == nil {
+		return gid, nil
+	}
+	g, err := user.LookupGroup(name)
+	if err != nil {
+		return 0, fmt.Errorf("the socket's group: %w", err)
+	}
+	return strconv.Atoi(g.Gid)
+}
+
+func runManager(ctx context.Context, args []string, env Env) error {
+	fs := flags("manager", env)
+	db := fs.String("db", DefaultDB, "the manager's database")
+	agentSocket := fs.String("agent-socket", DefaultAgentSocket, "the primary's agent")
+	control := fs.String("control-socket", DefaultControlSocket, "the control socket, for the CLI on this machine")
+	listen := fs.String("listen", DefaultListen, "the setup listener, on this machine and its LAN")
+	if err := parse(fs, args); err != nil {
+		return err
+	}
+	if env.Euid() == 0 {
+		return errors.New("the manager runs unprivileged, as the homerslab user; it reaches the host only through the agent")
+	}
+	setupLn, err := net.Listen("tcp", *listen)
+	if err != nil {
+		return err
+	}
+	defer setupLn.Close()
+	controlLn, err := listenPrivate(*control)
+	if err != nil {
+		return err
+	}
+	defer controlLn.Close()
+	bound := netip.MustParseAddrPort(setupLn.Addr().String())
+	lanAddress := lan.Address
+	if h := bound.Addr(); !h.IsUnspecified() {
+		lanAddress = func() netip.Addr { // listening on one address: the links use it, unless it's loopback
+			if h.IsLoopback() {
+				return netip.Addr{}
+			}
+			return h
+		}
+	}
+	log := slog.New(slog.NewTextHandler(env.Stderr, nil))
+	m, err := manager.New(manager.Config{DB: *db, AgentSocket: *agentSocket, SetupPort: int(bound.Port()), LANAddress: lanAddress, Log: log})
+	if err != nil {
+		return err
+	}
+	defer m.Close()
+	log.Info("manager starting", "setup", setupLn.Addr(), "control", *control)
+	return m.Serve(ctx, setupLn, controlLn)
+}
+
+// listenPrivate listens on a Unix socket only this user (and root) can open.
+func listenPrivate(path string) (net.Listener, error) {
+	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return nil, err
+	}
+	old := syscall.Umask(0o177)
+	defer syscall.Umask(old)
+	return net.Listen("unix", path)
+}

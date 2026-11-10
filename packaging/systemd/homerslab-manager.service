@@ -1,0 +1,46 @@
+# The manager keeps the household's state and serves the API, unprivileged: it reaches the host only through the
+# agent. Its control socket, for the CLI on this machine, is for root and this user alone.
+[Unit]
+Description=HomersLab manager
+Documentation=https://github.com/ArjunRachithcf/homerslab
+Wants=homerslab-agent.service
+After=homerslab-agent.service network.target
+
+[Service]
+Type=exec
+User=homerslab
+Group=homerslab
+ExecStart=/usr/bin/homerslab manager
+StateDirectory=homerslab
+StateDirectoryMode=0700
+RuntimeDirectory=homerslab
+RuntimeDirectoryMode=0700
+UMask=0077
+Restart=on-failure
+RestartSec=2s
+
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+
+[Install]
+WantedBy=multi-user.target

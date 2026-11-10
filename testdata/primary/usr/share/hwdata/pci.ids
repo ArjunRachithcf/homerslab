@@ -1,0 +1,11 @@
+#	List of PCI IDs (excerpt)
+#
+1022  Advanced Micro Devices, Inc. [AMD]
+	1483  Starship/Matisse GPP Bridge
+	1487  Starship/Matisse HD Audio Controller
+10de  NVIDIA Corporation
+	2487  GA104 [GeForce RTX 3060]
+	2504  GA106 [GeForce RTX 3060 Lite Hash Rate]
+		1462 397d  GeForce RTX 3060 Ventus 2X
+8086  Intel Corporation
+	46a6  Alder Lake-P GT2 [Iris Xe Graphics]

@@ -1,0 +1,17 @@
+# The agent owns this node's host, so it runs as root. Its API is a Unix socket for root and the manager's group.
+[Unit]
+Description=HomersLab agent
+Documentation=https://github.com/ArjunRachithcf/homerslab
+Before=homerslab-manager.service
+
+[Service]
+Type=exec
+ExecStart=/usr/bin/homerslab agent
+RuntimeDirectory=homerslab-agent
+RuntimeDirectoryMode=0755
+UMask=0077
+Restart=on-failure
+RestartSec=2s
+
+[Install]
+WantedBy=multi-user.target

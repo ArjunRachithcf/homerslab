@@ -6,3 +6,11 @@ prototypes/.taste-skill/
 brand/concepts/tests/preview.html
 brand/concepts/tests/shelf.html
 brand/concepts/tests/shelf-final.*
+# The web app's tools and outputs (the built pages keep only .gitkeep, so the binary builds before the pages do)
+web/node_modules/
+internal/surfaces/dist/*
+!internal/surfaces/dist/.gitkeep
+web/test-results/
+web/playwright-report/
+# The binary
+/bin/

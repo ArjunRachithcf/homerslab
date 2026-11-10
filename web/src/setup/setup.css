@@ -1,0 +1,35 @@
+/* First-time setup's page: where the page answers from at the top, the setup assistant (the design system's) in the
+   middle, a line about stopping below. Placement only, as in prototypes/assets/setup.css. */
+.as-page { min-height: 100vh; min-height: 100dvh; display: grid; grid-template-rows: auto 1fr auto; }
+.as-top { display: flex; align-items: center; justify-content: space-between; gap: 12px; max-width: 1100px; width: 100%; margin: 0 auto; padding: 14px 24px; }
+.as-where {
+  position: relative; display: inline-flex; align-items: center; gap: 8px; min-width: 0; height: 36px; padding: 0 14px; border-radius: var(--radius-pill); font-size: var(--fs-sub); white-space: nowrap; overflow: hidden;
+  background-color: var(--mat-thick); background-image: var(--mat-sheen); -webkit-backdrop-filter: var(--mat-blur); backdrop-filter: var(--mat-blur);
+  box-shadow: inset 0 0 0 0.5px var(--mat-edge), 0 1px 2px rgba(0, 0, 0, 0.05), 0 6px 16px -8px rgba(0, 0, 0, 0.2);
+}
+.as-where .icon { width: 14px; height: 14px; color: var(--text-2); flex: none; }
+.as-where .host { background: none; padding: 0; font-size: 12.5px; white-space: nowrap; }
+.as-where .sep { color: var(--text-2); }
+.as-top .brand-m { display: none; }
+:is([data-transparency="reduce"], [data-glass="solid"]) .as-where { background-color: var(--mat-solid-thick); background-image: none; -webkit-backdrop-filter: none; backdrop-filter: none; }
+@media (prefers-reduced-transparency: reduce) { .as-where { background-color: var(--mat-solid-thick); background-image: none; -webkit-backdrop-filter: none; backdrop-filter: none; } }
+
+.as-main { display: grid; align-content: start; justify-items: center; padding: 8px 16px 24px; }
+.as-main:focus { outline: none; }
+.as-foot { max-width: 56ch; margin: 0 auto; padding: 0 16px 32px; text-align: center; font-size: var(--fs-sub); color: var(--text-2); }
+
+.as-check { display: flex; align-items: flex-start; gap: 10px; padding: 12px 14px; border-radius: var(--radius-inner); background: var(--pill-green-bg); color: var(--pill-green-ink); text-align: left; }
+.as-check .icon { flex: none; margin-top: 2px; }
+.as-check b { font-weight: var(--weight-semibold); }
+.more-body .group { box-shadow: inset 0 0 0 var(--hairline) var(--separator); }
+.assistant .notice { text-align: left; }
+.as-body .cmd code { user-select: all; }
+
+@media (max-width: 640px) {
+  .as-top { padding: 10px 12px; }
+  .as-where .long { display: none; }
+  .as-top .brand-l { display: none; }
+  .as-top .brand-m { display: inline-flex; }
+  .as-top .brand-m .mark-glyph { width: 28px; height: 28px; }
+  .as-main { padding: 4px 8px 16px; }
+}
