@@ -1,0 +1,18 @@
+// Roles as HomersLab would write them: adults reach every app, kids only the apps
+// tagged for them, and every person's device reaches the household resolver.
+{
+  "groups": {
+    "group:adults": ["adult@"],
+    "group:kids":   ["kid@"],
+  },
+  "tagOwners": {
+    "tag:app":  [],
+    "tag:kids": [],
+    "tag:dns":  [],
+  },
+  "grants": [
+    {"src": ["group:adults"], "dst": ["tag:app"], "ip": ["tcp:80"]},
+    {"src": ["group:kids"],   "dst": ["tag:kids", "tag:app"], "ip": ["tcp:80"]},
+    {"src": ["group:adults", "group:kids"], "dst": ["tag:dns"], "ip": ["udp:53", "tcp:53"]},
+  ],
+}

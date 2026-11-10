@@ -1,0 +1,7 @@
+# Test credentials, downloaded upstream sources and tooling never go into git.
+secrets/
+src-ref/
+node_modules/
+.npm-cache/
+scripts/node_modules/
+results/.*

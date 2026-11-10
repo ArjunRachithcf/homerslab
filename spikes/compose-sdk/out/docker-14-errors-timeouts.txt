@@ -1,0 +1,18 @@
+######## WaitTimeout 5s
+== up took 7.746s
+== ERROR application not healthy after 5s
+   chain=[*errors.errorString] tags=[]
+NAME                         SERVICE  STATE     HEALTH     EXIT PORTS
+hlspike-compose-err-web-1    web      running   starting   0    
+== ps took 33ms
+######## context timeout 4s (containers already exist -> running)
+== up took 4.002s
+== ERROR context deadline exceeded
+   chain=[context.deadlineExceededError] tags=[context.DeadlineExceeded]
+NAME                         SERVICE  STATE     HEALTH     EXIT PORTS
+1935f9011dfb_hlspike-compose-err-web-1 web      created              0    
+hlspike-compose-err-web-1    web      running   starting   0    
+== ps took 43ms
+-- cleanup
+== left with label com.docker.compose.project=hlspike-compose-err: containers=0 volumes=[] networks=[]
+== down took 8.523s

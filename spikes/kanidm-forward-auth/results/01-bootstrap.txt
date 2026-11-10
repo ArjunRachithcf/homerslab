@@ -1,0 +1,8 @@
+service account homerslab: created
+homerslab -> idm_people_admins: ok
+homerslab -> idm_group_admins: ok
+homerslab -> idm_oauth2_admins: ok
+homerslab -> idm_service_account_admins: ok
+homerslab -> idm_account_policy_admins: ok
+read-write API token for homerslab saved to secrets/homerslab.token, length 341
+token works: /v1/self -> homerslab@idm.hlspike.test | memberof: ['idm_account_policy_admins', 'idm_all_accounts', 'idm_group_admins', 'idm_high_privilege', 'idm_oauth2_admins', 'idm_people_admins', 'idm_service_account_admins']

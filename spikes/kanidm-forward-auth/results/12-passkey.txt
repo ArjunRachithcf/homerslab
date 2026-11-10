@@ -1,0 +1,7 @@
+enrolment: {"before":[],"rp":{"name":"Kanidm idm.hlspike.test","id":"idm.hlspike.test"},"uv":"required","passkeys":["pat-virtual-passkey","pat-virtual-passkey"],"can_commit":true,"warnings":[]} | signCount [1]
+first sign-in (passkey): {"seen":["username","waiting"],"before":[1],"after":[3],"auth_time":1794252323,"amr":null,"sub":"d745260b-495d-4864-9508-d1951431ba91","user":"pat"}
+again without prompt (SSO): {"seen":[],"before":[3],"after":[3],"auth_time":1794252323,"amr":null,"sub":"d745260b-495d-4864-9508-d1951431ba91","user":"pat"}
+prompt=login: {"seen":["waiting"],"before":[3],"after":[4],"auth_time":1794252329,"amr":null,"sub":"d745260b-495d-4864-9508-d1951431ba91","user":"pat"}
+max_age=0: {"seen":["waiting"],"before":[4],"after":[5],"auth_time":1794252333,"amr":null,"sub":"d745260b-495d-4864-9508-d1951431ba91","user":"pat"}
+
+RESULT passkey sign-in works: true; SSO without prompt makes no assertion: true; prompt=login = fresh passkey assertion: true; max_age=0 = fresh passkey assertion: true

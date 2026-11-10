@@ -1,0 +1,4 @@
+client-adult s077.home.test           A=100.64.0.62  app=s077 node=s077.home.test ip=100.64.0.62 host=s077.home.test caller=adult-laptop.home.test (user adult)
+client-adult s100.home.test           A=100.64.0.60  app=s100 node=s100.home.test ip=100.64.0.60 host=s100.home.test caller=adult-laptop.home.test (user adult)
+client-adult s003.home.test           A=100.64.0.27  app=s003 node=s003.home.test ip=100.64.0.27 host=s003.home.test caller=adult-laptop.home.test (user adult)
+peers listed on the adult (incl. itself): 107

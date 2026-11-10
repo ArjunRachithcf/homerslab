@@ -1,0 +1,21 @@
+######## bad-image
+== up took 683ms
+== ERROR Error response from daemon: pull access denied for hlspike-compose-does-not-exist, repository does not exist or may require 'docker login'
+   chain=[*errors.joinError] tags=[]
+== down took 13ms
+######## port-conflict
+== up took 1.262s
+== ERROR Error response from daemon: failed to set up container networking: driver failed programming external connectivity on endpoint hlspike-compose-err-web-1 (169ff6edadaff3c3a97c983582f27706b138fbc583015518e3afa4e3e093d3ec): Bind for 127.0.0.1:18080 failed: port is already allocated
+   chain=[*client.httpError *fmt.wrapError *errors.errorString] tags=[]
+== down took 436ms
+######## missing-secret
+time="2026-11-09T20:07:02+01:00" level=warning msg="secret file hlspike-compose-err_token does not exist"
+== up took 378ms
+== ERROR Error response from daemon: invalid mount config for type "bind": bind source path does not exist: ~/homerslab/spikes/compose-sdk/project/errors/missing.txt
+   chain=[*client.httpError *fmt.wrapError *errors.errorString] tags=[]
+== down took 502ms
+######## unhealthy (secret not readable: no SELinux override)
+== up took 15.786s
+== ERROR dependency failed to start: container hlspike-compose-err-web-1 is unhealthy
+   chain=[*fmt.wrapError *errors.errorString] tags=[]
+== down took 11.331s

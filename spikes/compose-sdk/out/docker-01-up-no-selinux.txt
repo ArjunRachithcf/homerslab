@@ -1,0 +1,17 @@
+  [event] start up
+  [event] Network hlspike-compose_default    Working Creating 
+  [event] Volume hlspike-compose_data        Working Creating 
+  [event] Volume hlspike-compose_data        Done    Created 
+  [event] Network hlspike-compose_default    Done    Created 
+  [event] Container hlspike-compose-web-1    Working Creating 
+  [event] Container hlspike-compose-web-1    Done    Created 
+  [event] Container hlspike-compose-whoami-1 Working Creating 
+  [event] Container hlspike-compose-whoami-1 Done    Created 
+  [event] Container hlspike-compose-web-1    Working Starting 
+  [event] Container hlspike-compose-web-1    Done    Started 
+  [event] Container hlspike-compose-web-1    Working Waiting 
+  [event] Container hlspike-compose-web-1    Error   Error dependency web failed to start
+  [event] done up success=true
+== up took 15.18s
+== ERROR dependency failed to start: container hlspike-compose-web-1 is unhealthy
+   chain=[*fmt.wrapError *errors.errorString] tags=[]

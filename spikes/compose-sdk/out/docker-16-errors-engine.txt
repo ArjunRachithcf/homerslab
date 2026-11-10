@@ -1,0 +1,20 @@
+######## load with unreachable engine
+  network default (engine name hlspike-compose_default)
+== load took 37ms
+######## up with unreachable engine
+== up took 38ms
+== ERROR failed to connect to the docker API at unix:///nonexistent/docker.sock; check if the path is correct and if the daemon is running: dial unix /nonexistent/docker.sock: connect: no such file or directory
+   chain=[client.errConnectionFailed *fmt.wrapError *net.OpError *os.SyscallError syscall.Errno] tags=[client.IsErrConnectionFailed]
+######## ps with unreachable engine
+== ps took 2ms
+== ERROR failed to connect to the docker API at unix:///nonexistent/docker.sock; check if the path is correct and if the daemon is running: dial unix /nonexistent/docker.sock: connect: no such file or directory
+   chain=[client.errConnectionFailed *fmt.wrapError *net.OpError *os.SyscallError syscall.Errno] tags=[client.IsErrConnectionFailed]
+######## down by name, project that doesn't exist
+time="2026-11-09T20:01:14+01:00" level=warning msg="Warning: No resource found to remove for project \"hlspike-compose-never-existed\"."
+== left with label com.docker.compose.project=hlspike-compose-never-existed: containers=0 volumes=[] networks=[]
+== down took 16ms
+######## ps, project that doesn't exist
+NAME                         SERVICE  STATE     HEALTH     EXIT PORTS
+== ps took 5ms
+######## logs, project that doesn't exist
+== logs took 5ms

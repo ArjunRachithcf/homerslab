@@ -1,0 +1,20 @@
+--- kanidm during the A/B run (since 2026-11-10T06:50:45Z):
+2026-11-10T06:52:02 ┕━ ｉ [info]: A valid parent and oauth2 session value exists for this token | event_tag_id: 10
+2026-11-10T06:52:22 ┝━ ｉ [info]: A valid parent and oauth2 session value exists for this token | event_tag_id: 10
+2026-11-10T06:52:22 ┕━ ｉ [info]: Attempt to reuse a refresh token detected, destroying session | event_tag_id: 10 | sess
+2026-11-10T06:52:22 ┕━ ｉ [info]: A valid parent and oauth2 session value exists for this token | event_tag_id: 10
+2026-11-10T06:53:23 ┕━ ｉ [info]: A valid parent and oauth2 session value exists for this token | event_tag_id: 10
+2026-11-10T06:53:23 ┕━ ｉ [info]: A valid parent and oauth2 session value exists for this token | event_tag_id: 10
+2026-11-10T06:53:43 ┝━ ｉ [info]: A valid parent and oauth2 session value exists for this token | event_tag_id: 10
+2026-11-10T06:53:43 ┕━ ｉ [info]: Attempt to reuse a refresh token detected, destroying session | event_tag_id: 10 | sess
+--- oauth2-proxy during the A/B run:
+2026-11-10T06:52:02 [2026/11/10 06:52:02] Refreshing session - SessionAge: 1m14.896737759s
+2026-11-10T06:52:22 [2026/11/10 06:52:22] Refreshing session - SessionAge: 1m34.896737759s
+2026-11-10T06:52:22 [2026/11/10 06:52:22] Fatal refresh error detected (session revoked or invalid), clearing session for user: 9d0243e2-9cdd-4db8-952
+2026-11-10T06:52:22 [2026/11/10 06:52:22] Unable to refresh session: error refreshing tokens: unable to redeem refresh token: failed to get token: oau
+2026-11-10T06:52:22 [2026/11/10 06:52:22] Refreshing session - SessionAge: 1m19.993204026s
+2026-11-10T06:53:23 [2026/11/10 06:53:23] Refreshing session - SessionAge: 1m0.273518849s
+2026-11-10T06:53:23 [2026/11/10 06:53:23] Refreshing session - SessionAge: 1m0.197746835s
+2026-11-10T06:53:43 [2026/11/10 06:53:43] Refreshing session - SessionAge: 1m20.273518849s
+2026-11-10T06:53:43 [2026/11/10 06:53:43] Unable to refresh session: error refreshing tokens: unable to redeem refresh token: failed to get token: oau
+2026-11-10T06:53:43 [2026/11/10 06:53:43] Fatal refresh error detected (session revoked or invalid), clearing session for user: 9d0243e2-9cdd-4db8-952

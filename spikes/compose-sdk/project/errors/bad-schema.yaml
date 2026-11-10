@@ -1,0 +1,3 @@
+services:
+  web:
+    imagee: busybox:1.38.0

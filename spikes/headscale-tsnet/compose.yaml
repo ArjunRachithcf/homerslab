@@ -1,0 +1,221 @@
+# Spike: Headscale v0.29.7 + tsnet. Always run with
+#   docker compose -p hlspike-headscale -f compose.yaml ...
+# Nothing here publishes a port beyond 127.0.0.1, and nothing restarts on its own.
+#
+# SELinux: a private label (:Z) belongs to exactly one container. Docker relabels a :Z bind
+# mount every time a container using it starts, which cuts off any other running container
+# that mounts the same folder (it then gets EACCES and floods the audit log with denials).
+# So every :Z folder below is mounted by one service only, the one-off services run under a
+# fixed container name (scripts/build.sh, scripts/oneoff.sh), so two of them can never run at
+# once, and "docker compose run apps" is never used. ./ca is read by several containers, so
+# it is shared (:z), read-only.
+name: hlspike-headscale
+
+networks:
+  spike:
+    ipam:
+      config:
+        - subnet: 10.77.29.0/24
+
+volumes:
+  headscale-lib: {}
+  ts-dns-state: {}
+  client-adult-state: {}
+  client-kid-state: {}
+
+x-hosts: &hosts
+  extra_hosts:
+    - "headscale.hlspike.test:10.77.29.10"
+
+x-ts-env: &ts-env
+  TS_STATE_DIR: /var/lib/tailscale
+  TS_EXTRA_ARGS: --login-server=https://headscale.hlspike.test:8443
+  TS_AUTH_ONCE: "true"
+  SSL_CERT_DIR: /ca
+  TS_NO_LOGS_NO_SUPPORT: "true"
+  TS_FORCE_NOISE_443: "1"
+
+# The tsnet process's environment.
+x-tsnet-env: &tsnet-env
+  SSL_CERT_DIR: /ca
+  TS_NO_LOGS_NO_SUPPORT: "true"
+  # No UPnP/NAT-PMP/PCP mappings on the router, ever (tsnet has no option for it).
+  TS_DISABLE_PORTMAPPER: "1"
+  # Skip the plain-HTTP :80 Noise attempt: when it fails, the dialer asks Tailscale's
+  # DERP servers ("bootstrap DNS") for the control server's name.
+  TS_FORCE_NOISE_443: "1"
+
+services:
+  headscale:
+    image: headscale/headscale:0.29.7@sha256:11f81665e842809db9fe3006a38c56a66e968baa5abd4bac498e86445572b970
+    command: serve
+    restart: "no"
+    read_only: true
+    tmpfs:
+      - /var/run/headscale
+    volumes:
+      - ./headscale:/etc/headscale:ro,Z
+      - headscale-lib:/var/lib/headscale
+    ports:
+      - "127.0.0.1:18443:8443"   # API + Noise + DERP (TLS)
+      - "127.0.0.1:19090:9090"   # metrics
+    networks:
+      spike:
+        ipv4_address: 10.77.29.10
+    healthcheck:
+      test: ["CMD", "headscale", "health"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  # Builds go/bin/apps (scripts/build.sh). The only container that mounts ./go.
+  builder:
+    image: golang:1.27.3@sha256:e519d3b0a5b285e5aa53ab9eef02bc6bbb9cb04608389b743a136a9ce75f0d1e
+    profiles: [tools]
+    restart: "no"
+    user: "1000:1000"
+    working_dir: /src
+    environment:
+      HOME: /src/.home
+      GOMODCACHE: /src/.cache/mod
+      GOCACHE: /src/.cache/build
+      GOTOOLCHAIN: local
+      CGO_ENABLED: "0"
+    volumes:
+      - ./go:/src:Z
+    networks:
+      - spike
+
+  # The long-running process: N tsnet nodes, one per app. The only container that mounts
+  # ./run/apps (its copy of the binary, its keys, its state). Runs as the host user so every
+  # file it writes stays removable without root.
+  apps:
+    image: golang:1.27.3@sha256:e519d3b0a5b285e5aa53ab9eef02bc6bbb9cb04608389b743a136a9ce75f0d1e
+    restart: "no"
+    user: "1000:1000"
+    working_dir: /work
+    <<: *hosts
+    environment:
+      <<: *tsnet-env
+      APPS_ARGS: ${APPS_ARGS:-}
+    command: ["sh", "-c", "exec /work/apps $$APPS_ARGS"]
+    volumes:
+      - ./run/apps:/work:Z
+      - ./ca:/ca:ro,z
+    networks:
+      spike:
+        ipv4_address: 10.77.29.20
+    depends_on:
+      headscale:
+        condition: service_healthy
+
+  # One-off runs of the same binary (scale and negative tests, scripts/oneoff.sh). The only
+  # container that mounts ./run/oneoff.
+  oneoff:
+    image: golang:1.27.3@sha256:e519d3b0a5b285e5aa53ab9eef02bc6bbb9cb04608389b743a136a9ce75f0d1e
+    profiles: [tools]
+    restart: "no"
+    user: "1000:1000"
+    working_dir: /work
+    <<: *hosts
+    environment:
+      <<: *tsnet-env
+    volumes:
+      - ./run/oneoff:/work:Z
+      - ./ca:/ca:ro,z
+    networks:
+      - spike
+
+  # The household resolver for split DNS: CoreDNS behind a Tailscale client (userspace
+  # networking), sharing its network namespace. The client forwards UDP/TCP 53 that arrives on
+  # its tailnet address to 127.0.0.1:53, where CoreDNS listens.
+  ts-dns:
+    image: tailscale/tailscale:v1.104.4@sha256:ed6480b33c6eb67c9cbd203ed42b9fb57e361986725b6856def71b7a3d9e276c
+    restart: "no"
+    hostname: resolver
+    <<: *hosts
+    environment:
+      <<: *ts-env
+      TS_HOSTNAME: resolver
+      TS_USERSPACE: "true"
+      TS_ACCEPT_DNS: "false"
+    env_file:
+      - path: .secrets/ts-dns.env
+        required: false
+    volumes:
+      - ts-dns-state:/var/lib/tailscale
+      - ./ca:/ca:ro,z
+    networks:
+      spike:
+        ipv4_address: 10.77.29.30
+    depends_on:
+      headscale:
+        condition: service_healthy
+
+  coredns:
+    image: coredns/coredns:1.15.0@sha256:0a9d8c8ddf34347eb59aad9a8784f0710de88d6d112726d11d271f9bc6daca26
+    restart: "no"
+    network_mode: "service:ts-dns"
+    command: ["-conf", "/etc/coredns/Corefile"]
+    volumes:
+      - ./coredns:/etc/coredns:ro,Z
+    depends_on:
+      - ts-dns
+
+  # Two people's devices: real Tailscale clients with a TUN device inside their own network
+  # namespace, accepting the tailnet's DNS (so /etc/resolv.conf points at 100.100.100.100).
+  # After (re)creating one, add "ip route add blackhole 100.64.0.0/10" inside it, so an address
+  # that isn't a peer never leaves by the default route.
+  client-adult:
+    image: tailscale/tailscale:v1.104.4@sha256:ed6480b33c6eb67c9cbd203ed42b9fb57e361986725b6856def71b7a3d9e276c
+    restart: "no"
+    hostname: adult-laptop
+    <<: *hosts
+    environment:
+      <<: *ts-env
+      TS_HOSTNAME: adult-laptop
+      TS_USERSPACE: "false"
+      TS_ACCEPT_DNS: "true"
+      TS_DEBUG_FIREWALL_MODE: nftables   # this kernel has no iptables-legacy tables
+    env_file:
+      - path: .secrets/client-adult.env
+        required: false
+    cap_add: [NET_ADMIN]
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    volumes:
+      - client-adult-state:/var/lib/tailscale
+      - ./ca:/ca:ro,z
+    networks:
+      spike:
+        ipv4_address: 10.77.29.41
+    depends_on:
+      headscale:
+        condition: service_healthy
+
+  client-kid:
+    image: tailscale/tailscale:v1.104.4@sha256:ed6480b33c6eb67c9cbd203ed42b9fb57e361986725b6856def71b7a3d9e276c
+    restart: "no"
+    hostname: kid-tablet
+    <<: *hosts
+    environment:
+      <<: *ts-env
+      TS_HOSTNAME: kid-tablet
+      TS_USERSPACE: "false"
+      TS_ACCEPT_DNS: "true"
+      TS_DEBUG_FIREWALL_MODE: nftables   # this kernel has no iptables-legacy tables
+    env_file:
+      - path: .secrets/client-kid.env
+        required: false
+    cap_add: [NET_ADMIN]
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    volumes:
+      - client-kid-state:/var/lib/tailscale
+      - ./ca:/ca:ro,z
+    networks:
+      spike:
+        ipv4_address: 10.77.29.42
+    depends_on:
+      headscale:
+        condition: service_healthy

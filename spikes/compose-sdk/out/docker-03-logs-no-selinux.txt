@@ -1,0 +1,3 @@
+web-1 | secret: NOT readable: head: /run/secrets/token: Permission denied
+web-1 | boots recorded in the named volume: 1
+== logs took 30ms

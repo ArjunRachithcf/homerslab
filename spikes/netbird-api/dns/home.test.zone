@@ -1,0 +1,7 @@
+$ORIGIN home.test.
+$TTL 30
+@        IN SOA ns.hlspike.test. admin.hlspike.test. 1 7200 3600 1209600 30
+@        IN NS  ns.hlspike.test.
+; Like classic's DNS zone: one wildcard CNAME to the proxy cluster. It also answers
+; validation.home.test, the name NetBird checks before it accepts the custom domain.
+*        IN CNAME proxy.hlspike.test.

@@ -1,0 +1,36 @@
+  [event] start up
+  [event] Container hlspike-compose-web-1    Working Recreate 
+  [event] Container hlspike-compose-web-1    Done    Recreated 
+  [event] Container hlspike-compose-web-1    Working Starting 
+  [event] Container hlspike-compose-web-1    Done    Started 
+  [event] Container hlspike-compose-web-1    Working Waiting 
+  [event] Container hlspike-compose-web-1    Done    Healthy 
+  [event] Container hlspike-compose-whoami-1 Working Starting 
+  [event] Container hlspike-compose-whoami-1 Done    Started 
+  [event] Container hlspike-compose-whoami-1 Working Waiting 
+  [event] Container hlspike-compose-web-1    Working Waiting 
+  [event] Container hlspike-compose-web-1    Done    Healthy 
+  [event] Container hlspike-compose-whoami-1 Done    Healthy 
+  [event] done up success=false
+== containers before up: 2, after: 2, kept (same ID): 1
+NAME                         SERVICE  STATE     HEALTH     EXIT PORTS
+hlspike-compose-whoami-1     whoami   running              0    127.0.0.1:18090->80/tcp
+hlspike-compose-web-1        web      running   healthy    0    
+== up took 12.95s
+Hostname: d1b0b989ae9f
+IP: 127.0.0.1
+IP: ::1
+web-1 | secret: readable, 33 bytes
+web-1 | boots recorded in the named volume: 2
+container hlspike-compose-whoami-1 id=d1b0b989ae9f
+  label com.docker.compose.depends_on=web:service_healthy:false
+  selinux process="system_u:system_r:container_t:s0:c806,c1016" mount="system_u:object_r:container_file_t:s0:c806,c1016" securityopt=[]
+  capadd=[] capdrop=[] binds=[]
+container hlspike-compose-web-1 id=aaf4f0e29df4
+  label com.docker.compose.project.config_files=~/homerslab/spikes/compose-sdk/project/compose.yaml,~/homerslab/spikes/compose-sdk/project/compose.selinux.yaml
+  mount type=volume name=hlspike-compose_data src=~/.local/share/containers/storage/volumes/hlspike-compose_data/_data dst=/data rw=true mode=""
+  mount type=bind name= src=~/homerslab/spikes/compose-sdk/project/secrets/token.txt dst=/run/secrets/token rw=false mode=""
+  mount type=bind name= src=~/homerslab/spikes/compose-sdk/project/secrets dst=/run/hlspike-secrets-dir rw=false mode=""
+  selinux process="system_u:system_r:container_t:s0:c225,c839" mount="system_u:object_r:container_file_t:s0:c225,c839" securityopt=[]
+  capadd=[] capdrop=[FOWNER FSETID KILL NET_BIND_SERVICE SETFCAP SETPCAP SYS_CHROOT] binds=[~/homerslab/spikes/compose-sdk/project/secrets/token.txt:/run/secrets/token:ro,bind,private ~/homerslab/spikes/compose-sdk/project/secrets:/run/hlspike-secrets-dir:ro,rprivate,rbind hlspike-compose_data:/data:rw,rprivate,nosuid,nodev,rbind]
+  health healthy failing=0

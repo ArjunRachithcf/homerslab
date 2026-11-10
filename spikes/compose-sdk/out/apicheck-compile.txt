@@ -1,0 +1,11 @@
+== v5.5.1
+OK
+== v5.7.0
+# hlspike/composesdk/internal/apicheck
+internal/apicheck/apicheck.go:17:13: svc.Port undefined (type api.Compose has no field or method Port)
+internal/apicheck/apicheck.go:21:75: cannot use mode (variable of type string) as api.ImagePruneMode value in struct literal
+go 1.26.10
+# hlspike/composesdk/internal/apicheck
+internal/apicheck/apicheck.go:13:78: use of promoted field ContainerSpec.Image in struct literal of type "github.com/compose-spec/compose-go/v2/types".ServiceConfig requires go1.27 or later (-lang was set to go1.26; check go.mod)
+internal/apicheck/apicheck.go:17:13: svc.Port undefined (type api.Compose has no field or method Port)
+internal/apicheck/apicheck.go:21:75: cannot use mode (variable of type string) as api.ImagePruneMode value in struct literal

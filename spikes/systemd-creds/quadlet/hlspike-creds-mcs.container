@@ -1,0 +1,17 @@
+# For the root-only test plan (docs/research/2026-11-09-spike-systemd-creds.md, step 4): a rootless app user's
+# Quadlet unit. Its credential is in that user's credstore; the unit labels it with the app's MCS level and the
+# container runs at that level, so Podman never relabels. Checked here only with quadlet -dryrun -user.
+[Container]
+Image=docker.io/library/busybox@sha256:a46257e06c82ad85242d0d38077d0a52d9896389ca60a1a59d3463db586e5fa4
+ContainerName=hlspike-creds-mcs
+Network=none
+SecurityLabelLevel=s0:c100,c200
+Mount=type=bind,src=%d/db-password,dst=/run/secrets/db-password,ro=true
+UserNS=keep-id:uid=999,gid=999
+User=999:999
+Exec=sleep infinity
+
+[Service]
+LoadCredentialEncrypted=db-password
+ExecStartPre=/usr/bin/chcon -t container_file_t -l s0:c100,c200 %d/db-password
+Restart=on-failure

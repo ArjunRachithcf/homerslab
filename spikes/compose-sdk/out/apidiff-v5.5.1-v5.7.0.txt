@@ -1,0 +1,108 @@
+################ pkg/api v5.5.1 -> v5.7.0 (incompatible changes only)
+- Compose.Port: removed
+- DownOptions.Images: changed from string to ImagePruneMode
+- Inspector.Ports: added
+################ pkg/compose v5.5.1 -> v5.7.0 (incompatible changes only)
+- (*composeService).Port: removed
+- CommandMetadata: changed from CommandMetadata to github.com/docker/compose/v5/internal/provider.CommandMetadata
+- ImagePruneAll: changed from ImagePruneMode to github.com/docker/compose/v5/pkg/api.ImagePruneMode
+- ImagePruneLocal: changed from ImagePruneMode to github.com/docker/compose/v5/pkg/api.ImagePruneMode
+- ImagePruneMode: changed from ImagePruneMode to github.com/docker/compose/v5/pkg/api.ImagePruneMode
+- ImagePruneNone: changed from ImagePruneMode to github.com/docker/compose/v5/pkg/api.ImagePruneMode
+- ImagePruneOptions.Mode: changed from ImagePruneMode to github.com/docker/compose/v5/pkg/api.ImagePruneMode
+- JsonMessage: changed from JsonMessage to github.com/docker/compose/v5/internal/provider.JsonMessage
+- NetworkHash: removed
+- NewImagePruner: changed from func(github.com/moby/moby/client.ImageAPIClient, *github.com/compose-spec/compose-go/v2/types.Project) *ImagePruner to func(github.com/moby/moby/client.ImageAPIClient, *github.com/compose-spec/compose-go/v2/types.Project, *golang.org/x/sync/semaphore.Weighted) *ImagePruner
+- ParameterMetadata: changed from ParameterMetadata to github.com/docker/compose/v5/internal/provider.ParameterMetadata
+- ProviderMetadata: changed from ProviderMetadata to github.com/docker/compose/v5/internal/provider.ProviderMetadata
+- ServiceHash: removed
+- VolumeHash: removed
+################ github.com/moby/moby/client (incompatible changes only)
+- MaxAPIVersion: value changed from "1.55" to "1.56"
+################ github.com/compose-spec/compose-go/v2/types (incompatible changes only)
+- ServiceConfig.Annotations: removed
+- ServiceConfig.BlkioConfig: removed
+- ServiceConfig.Build: removed
+- ServiceConfig.CPUCount: removed
+- ServiceConfig.CPUPercent: removed
+- ServiceConfig.CPUPeriod: removed
+- ServiceConfig.CPUQuota: removed
+- ServiceConfig.CPURTPeriod: removed
+- ServiceConfig.CPURTRuntime: removed
+- ServiceConfig.CPUS: removed
+- ServiceConfig.CPUSet: removed
+- ServiceConfig.CPUShares: removed
+- ServiceConfig.CapAdd: removed
+- ServiceConfig.CapDrop: removed
+- ServiceConfig.Cgroup: removed
+- ServiceConfig.CgroupParent: removed
+- ServiceConfig.Command: removed
+- ServiceConfig.Configs: removed
+- ServiceConfig.CredentialSpec: removed
+- ServiceConfig.CustomLabels: removed
+- ServiceConfig.DNS: removed
+- ServiceConfig.DNSOpts: removed
+- ServiceConfig.DNSSearch: removed
+- ServiceConfig.DependsOn: removed
+- ServiceConfig.DeviceCgroupRules: removed
+- ServiceConfig.Devices: removed
+- ServiceConfig.Dockerfile: removed
+- ServiceConfig.DomainName: removed
+- ServiceConfig.Entrypoint: removed
+- ServiceConfig.EnvFiles: removed
+- ServiceConfig.Environment: removed
+- ServiceConfig.Expose: removed
+- ServiceConfig.ExtraHosts: removed
+- ServiceConfig.Gpus: removed
+- ServiceConfig.GroupAdd: removed
+- ServiceConfig.HealthCheck: removed
+- ServiceConfig.Hostname: removed
+- ServiceConfig.Image: removed
+- ServiceConfig.Init: removed
+- ServiceConfig.Ipc: removed
+- ServiceConfig.Isolation: removed
+- ServiceConfig.LabelFiles: removed
+- ServiceConfig.Labels: removed
+- ServiceConfig.LogDriver: removed
+- ServiceConfig.LogOpt: removed
+- ServiceConfig.Logging: removed
+- ServiceConfig.MacAddress: removed
+- ServiceConfig.MemLimit: removed
+- ServiceConfig.MemReservation: removed
+- ServiceConfig.MemSwapLimit: removed
+- ServiceConfig.MemSwappiness: removed
+- ServiceConfig.Models: removed
+- ServiceConfig.NetworkMode: removed
+- ServiceConfig.Networks: removed
+- ServiceConfig.OomKillDisable: removed
+- ServiceConfig.OomScoreAdj: removed
+- ServiceConfig.Pid: removed
+- ServiceConfig.PidsLimit: removed
+- ServiceConfig.Platform: removed
+- ServiceConfig.Ports: removed
+- ServiceConfig.PreStart: changed from []ServiceHook to []PreStartHook
+- ServiceConfig.Privileged: removed
+- ServiceConfig.PullPolicy: removed
+- ServiceConfig.ReadOnly: removed
+- ServiceConfig.Runtime: removed
+- ServiceConfig.Secrets: removed
+- ServiceConfig.SecurityOpt: removed
+- ServiceConfig.ShmSize: removed
+- ServiceConfig.StdinOpen: removed
+- ServiceConfig.StopGracePeriod: removed
+- ServiceConfig.StopSignal: removed
+- ServiceConfig.StorageOpt: removed
+- ServiceConfig.Sysctls: removed
+- ServiceConfig.Tmpfs: removed
+- ServiceConfig.Tty: removed
+- ServiceConfig.Ulimits: removed
+- ServiceConfig.UseAPISocket: removed
+- ServiceConfig.User: removed
+- ServiceConfig.UserNSMode: removed
+- ServiceConfig.Uts: removed
+- ServiceConfig.VolumeDriver: removed
+- ServiceConfig.Volumes: removed
+- ServiceConfig.VolumesFrom: removed
+- ServiceConfig.WorkingDir: removed
+- ServiceHook.Image: removed
+- ServiceHook.PerReplica: removed

@@ -1,0 +1,45 @@
+account policy of idm_all_persons:
+  credential_type_minimum = ['mfa']
+groups and persons:
+  POST /v1/group -> 200
+  POST /v1/group -> 200
+  POST /v1/person -> 200
+  PUT /v1/person/ada/_attr/mail -> 200
+  POST /v1/person -> 200
+  PUT /v1/person/kim/_attr/mail -> 200
+  POST /v1/group/adults/_attr/member -> 200
+  POST /v1/group/kids/_attr/member -> 200
+  POST /v1/group -> 200
+  POST /v1/group/household/_attr/member -> 200
+credentials for ada (password + TOTP via a reset intent):
+  GET /v1/person/ada/_credential/_update_intent/3600 -> 200
+  intent token for ada: issued, expires at unix 1794254333
+  exchanged: primary=None warnings=['NoValidCredentials'] can_commit=False
+  password set: warnings=['MfaRequired'] can_commit=False
+  TOTP generated: algo=sha256 step=30 digits=6
+  TOTP verified: primary={"PasswordMfa": [["spike"], [], 0]} can_commit=True
+  committed
+credentials for kim (password + TOTP via a reset intent):
+  GET /v1/person/kim/_credential/_update_intent/3600 -> 200
+  intent token for kim: issued, expires at unix 1794254333
+  exchanged: primary=None warnings=['NoValidCredentials'] can_commit=False
+  password set: warnings=['MfaRequired'] can_commit=False
+  TOTP generated: algo=sha256 step=30 digits=6
+  TOTP verified: primary={"PasswordMfa": [["spike"], [], 0]} can_commit=True
+  committed
+OAuth2 client 'whoami' (guarded app; scope map: adults only):
+  POST /v1/oauth2/_basic -> 200
+  POST /v1/oauth2/whoami/_attr/oauth2_rs_origin -> 200
+  POST /v1/oauth2/whoami/_scopemap/adults -> 200
+  PATCH /v1/oauth2/whoami -> 200
+  GET /v1/oauth2/whoami/_basic_secret -> 200
+OAuth2 client 'stepup-probe' (adults only):
+  POST /v1/oauth2/_basic -> 200
+  POST /v1/oauth2/stepup-probe/_attr/oauth2_rs_origin -> 200
+  POST /v1/oauth2/stepup-probe/_scopemap/adults -> 200
+  PATCH /v1/oauth2/stepup-probe -> 200
+  GET /v1/oauth2/stepup-probe/_basic_secret -> 200
+LDAP reader service account (managed by homerslab):
+  POST /v1/service_account -> 200
+  POST /v1/service_account/ldap_reader/_api_token -> 200
+  read-only API token saved, length 328

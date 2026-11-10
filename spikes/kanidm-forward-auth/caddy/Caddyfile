@@ -1,0 +1,118 @@
+# HomersLab spike: a guarded app (traefik/whoami) behind Caddy forward_auth -> oauth2-proxy -> Kanidm.
+{
+	admin off
+	auto_https disable_redirects
+	skip_install_trust
+	local_certs
+	http_port 28080
+	https_port 28744
+}
+
+app.hlspike.test:28744 {
+	tls internal
+
+	# oauth2-proxy's own endpoints (sign-in, start, callback) live on the app's own name.
+	handle /oauth2/* {
+		reverse_proxy 10.231.77.12:4180 {
+			header_up X-Real-IP {remote_host}
+			header_up X-Forwarded-Uri {uri}
+		}
+	}
+
+	# Landing page for the step-up probe client (the test reads code and state from the URL).
+	handle /stepup/callback {
+		respond "stepup callback" 200
+	}
+
+	# The same guard written out (what forward_auth expands to), plus oauth2-proxy's refreshed session
+	# cookie passed back to the browser on 2xx. oauth2-proxy's nginx docs: "if you enabled
+	# --cookie-refresh, this is needed for it to work with auth_request".
+	handle /fixed/* {
+		reverse_proxy 10.231.77.12:4180 {
+			method GET
+			rewrite /oauth2/auth
+			header_up X-Forwarded-Method {method}
+			header_up X-Forwarded-Uri {uri}
+
+			@good status 2xx
+			handle_response @good {
+				request_header -X-Auth-Request-User
+				request_header -X-Auth-Request-Email
+				request_header -X-Auth-Request-Groups
+				request_header -X-Auth-Request-Preferred-Username
+				request_header -X-Auth-Request-Access-Token
+				request_header X-Auth-Request-User {rp.header.X-Auth-Request-User}
+				request_header X-Auth-Request-Email {rp.header.X-Auth-Request-Email}
+				request_header X-Auth-Request-Groups {rp.header.X-Auth-Request-Groups}
+				request_header X-Auth-Request-Preferred-Username {rp.header.X-Auth-Request-Preferred-Username}
+				copy_response_headers {
+					include Set-Cookie
+				}
+			}
+			@unauth status 401
+			handle_response @unauth {
+				redir * /oauth2/sign_in?rd={scheme}://{hostport}{uri} 302
+			}
+		}
+		reverse_proxy 10.231.77.13:80
+	}
+
+	# A per-request audience check through oauth2-proxy's allowed_groups query parameter.
+	handle /kids-only/* {
+		forward_auth 10.231.77.12:4180 {
+			uri /oauth2/auth?allowed_groups=kids
+			copy_headers X-Auth-Request-User X-Auth-Request-Email X-Auth-Request-Groups X-Auth-Request-Preferred-Username
+			@unauth status 401
+			handle_response @unauth {
+				redir * /oauth2/sign_in?rd={scheme}://{hostport}{uri} 302
+			}
+		}
+		reverse_proxy 10.231.77.13:80
+	}
+
+	handle {
+		# Headers an app might trust that oauth2-proxy never sets: the edge strips them.
+		request_header -Remote-User
+		request_header -Remote-Email
+		request_header -Remote-Groups
+		request_header -X-Forwarded-User
+		request_header -X-Forwarded-Email
+		request_header -X-Forwarded-Preferred-Username
+		request_header -X-Forwarded-Groups
+
+		forward_auth 10.231.77.12:4180 {
+			uri /oauth2/auth
+			# Caddy >= 2.11.2 deletes each of these from the client's request before copying it
+			# from the auth response (GHSA-7r4p-vjf4-gxv4). X-Auth-Request-Access-Token is never
+			# set by this oauth2-proxy, so a client-supplied one must not survive.
+			copy_headers X-Auth-Request-User X-Auth-Request-Email X-Auth-Request-Groups X-Auth-Request-Preferred-Username X-Auth-Request-Access-Token
+			@unauth status 401
+			handle_response @unauth {
+				redir * /oauth2/sign_in?rd={scheme}://{hostport}{uri} 302
+			}
+		}
+		reverse_proxy 10.231.77.13:80
+	}
+}
+
+# Second guarded app: own client (whoami2), own oauth2-proxy (10.231.77.14), own cookie.
+app2.hlspike.test:28744 {
+	tls internal
+	handle /oauth2/* {
+		reverse_proxy 10.231.77.14:4180 {
+			header_up X-Real-IP {remote_host}
+			header_up X-Forwarded-Uri {uri}
+		}
+	}
+	handle {
+		forward_auth 10.231.77.14:4180 {
+			uri /oauth2/auth
+			copy_headers X-Auth-Request-User X-Auth-Request-Email X-Auth-Request-Groups X-Auth-Request-Preferred-Username
+			@unauth status 401
+			handle_response @unauth {
+				redir * /oauth2/sign_in?rd={scheme}://{hostport}{uri} 302
+			}
+		}
+		reverse_proxy 10.231.77.13:80
+	}
+}

@@ -1,0 +1,8 @@
+######## v5.7.0 dry-run alone (REV=9)
+7b76c436fe11_hlspike-compose-web-1 web      created   healthy    0    
+== up took 677ms
+web id before=7b76c436fe11 after=7b76c436fe11 rev=1
+######## v5.7.0 dry-run + streams (REV=9)
+hlspike-compose-whoami-1     whoami   running              0    127.0.0.1:18080->80/tcp
+== up took 13.767s
+web id before=7b76c436fe11 after=9a01210735da rev=9

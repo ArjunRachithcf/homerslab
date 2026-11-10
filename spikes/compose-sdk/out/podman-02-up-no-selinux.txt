@@ -1,0 +1,19 @@
+  [event] start up
+  [event] Image traefik/whoami:v1.12.0@sha256:c4717a8d1f0134a7444e24f881160e033991f23027c6c5a9a3f8fd22e70d1d44 Working Pulling 
+  [event] Image traefik/whoami:v1.12.0@sha256:c4717a8d1f0134a7444e24f881160e033991f23027c6c5a9a3f8fd22e70d1d44 Done    Pulled 
+  [event] Network hlspike-compose_default    Working Creating 
+  [event] Volume hlspike-compose_data        Working Creating 
+  [event] Network hlspike-compose_default    Done    Created 
+  [event] Volume hlspike-compose_data        Done    Created 
+  [event] Container hlspike-compose-web-1    Working Creating 
+  [event] Container hlspike-compose-web-1    Done    Created 
+  [event] Container hlspike-compose-whoami-1 Working Creating 
+  [event] Container hlspike-compose-whoami-1 Done    Created 
+  [event] Container hlspike-compose-web-1    Working Starting 
+  [event] Container hlspike-compose-web-1    Done    Started 
+  [event] Container hlspike-compose-web-1    Working Waiting 
+  [event] Container hlspike-compose-web-1    Error   Error dependency web failed to start
+  [event] done up success=true
+== up took 20.16s
+== ERROR dependency failed to start: container hlspike-compose-web-1 is unhealthy
+   chain=[*fmt.wrapError *errors.errorString] tags=[]

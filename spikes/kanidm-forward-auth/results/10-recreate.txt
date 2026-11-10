@@ -1,0 +1,21 @@
+  POST /v1/oauth2/_basic -> 200
+  POST /v1/oauth2/whoami/_attr/oauth2_rs_origin -> 200
+  POST /v1/oauth2/whoami/_scopemap/adults -> 200
+  PATCH /v1/oauth2/whoami -> 200
+  GET /v1/oauth2/whoami/_basic_secret -> 200
+  POST /v1/oauth2/_basic -> 200
+  POST /v1/oauth2/whoami2/_attr/oauth2_rs_origin -> 200
+  POST /v1/oauth2/whoami2/_scopemap/adults -> 200
+  PATCH /v1/oauth2/whoami2 -> 200
+  GET /v1/oauth2/whoami2/_basic_secret -> 200
+person ada3 (adult) for the role-change test:
+  POST /v1/person -> 200
+  PUT /v1/person/ada3/_attr/mail -> 200
+  POST /v1/group/adults/_attr/member -> 200
+  GET /v1/person/ada3/_credential/_update_intent/3600 -> 200
+  intent token for ada3: issued, expires at unix 1794255668
+  exchanged: primary=None warnings=['NoValidCredentials'] can_commit=False
+  password set: warnings=['MfaRequired'] can_commit=False
+  TOTP generated: algo=sha256 step=30 digits=6
+  TOTP verified: primary={"PasswordMfa": [["spike"], [], 0]} can_commit=True
+  committed

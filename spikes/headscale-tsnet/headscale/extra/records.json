@@ -1,0 +1,27 @@
+[
+  {
+    "name": "books.home.test",
+    "type": "A",
+    "value": "100.64.0.7"
+  },
+  {
+    "name": "chores.home.test",
+    "type": "A",
+    "value": "100.64.0.4"
+  },
+  {
+    "name": "notes.home.test",
+    "type": "A",
+    "value": "100.64.0.2"
+  },
+  {
+    "name": "photos.home.test",
+    "type": "A",
+    "value": "100.64.0.3"
+  },
+  {
+    "name": "wiki.home.test",
+    "type": "A",
+    "value": "100.64.0.6"
+  }
+]

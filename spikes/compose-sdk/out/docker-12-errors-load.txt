@@ -1,0 +1,15 @@
+######## bad-yaml
+== load took 1ms
+== ERROR failed to parse ~/homerslab/spikes/compose-sdk/project/errors/bad-yaml.yaml: go-yaml load error in scanner at L4.C13: mapping values are not allowed in this context
+   chain=[*fmt.wrapError *libyaml.LoadError] tags=[]
+######## bad-schema
+== load took 36ms
+== ERROR validating ~/homerslab/spikes/compose-sdk/project/errors/bad-schema.yaml: services.web additional properties 'imagee' not allowed
+   chain=[*fmt.wrapError schema.validationError] tags=[]
+######## missing-var
+== load took 1ms
+== ERROR error while interpolating services.web.environment.TOKEN_PATH: required variable HLSPIKE_REQUIRED is missing a value: HLSPIKE_REQUIRED must be set
+   chain=[*errors.joinError] tags=[]
+== load took 0s
+== ERROR invalid project name "hlspike-compose-BAD!": must consist only of lowercase alphanumeric characters, hyphens, and underscores as well as start with a letter or number
+   chain=[*errors.errorString] tags=[]

@@ -1,0 +1,34 @@
+  class = ['account', 'key_object', 'key_object_internal', 'key_object_jwe_a128gcm', 'key_object_jwe_a256gcm', 'key_object_jwt_es256', 'memberof', 'oauth2_resource_server', 'oauth2_resource_server_basic', 'object']
+  displayname = ['Whoami (guarded)']
+  key_internal_data = <3 value(s), not shown>
+  name = ['whoami']
+  oauth2_consent_prompt_enable = ['false']
+  oauth2_prefer_short_username = ['true']
+  oauth2_rs_basic_secret = <1 value(s), not shown>
+  oauth2_rs_origin = ['https://app.hlspike.test:28744/oauth2/callback']
+  oauth2_rs_origin_landing = ['https://app.hlspike.test:28744/']
+  oauth2_rs_scope_map = ['adults@idm.hlspike.test: {"email", "groups_name", "openid", "profile"}']
+  oauth2_strict_redirect_uri = ['true']
+  spn = ['whoami@idm.hlspike.test']
+  uuid = ['4230412d-e7ec-4592-ac2b-c947aee2b463']
+discovery:
+  issuer = https://idm.hlspike.test:28743/oauth2/openid/whoami
+  authorization_endpoint = https://idm.hlspike.test:28743/ui/oauth2
+  token_endpoint = https://idm.hlspike.test:28743/oauth2/token
+  userinfo_endpoint = https://idm.hlspike.test:28743/oauth2/openid/whoami/userinfo
+  jwks_uri = https://idm.hlspike.test:28743/oauth2/openid/whoami/public_key.jwk
+  end_session_endpoint = None
+  revocation_endpoint = https://idm.hlspike.test:28743/oauth2/token/revoke
+  introspection_endpoint = https://idm.hlspike.test:28743/oauth2/token/introspect
+  scopes_supported = ['email', 'groups_name', 'openid', 'profile']
+  response_types_supported = ['code']
+  id_token_signing_alg_values_supported = ['ES256']
+  token_endpoint_auth_methods_supported = ['client_secret_basic', 'client_secret_post']
+  code_challenge_methods_supported = ['S256']
+  claims_supported = None
+  prompt_values_supported = None
+  claims_parameter_supported = False
+  request_parameter_supported = False
+  acr_values_supported = None
+  grant_types_supported = ['authorization_code', 'urn:ietf:params:oauth:grant-type:token-exchange', 'refresh_token']
+  other keys: ['authorization_endpoint', 'claim_types_supported', 'claims_parameter_supported', 'code_challenge_methods_supported', 'display_values_supported', 'grant_types_supported', 'id_token_signing_alg_values_supported', 'introspection_endpoint', 'introspection_endpoint_auth_methods_supported', 'jwks_uri', 'request_parameter_supported', 'request_uri_parameter_supported', 'require_request_uri_registration', 'response_modes_supported', 'response_types_supported', 'revocation_endpoint', 'revocation_endpoint_auth_methods_supported', 'scopes_supported', 'service_documentation', 'subject_types_supported', 'token_endpoint', 'token_endpoint_auth_methods_supported', 'userinfo_endpoint']

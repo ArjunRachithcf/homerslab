@@ -1,0 +1,26 @@
+######## v5.7.0 up over v5.5.1 containers (REV=3 as last applied)
+== containers before up: 2, after: 2, kept (same ID): 2
+NAME                         SERVICE  STATE     HEALTH     EXIT PORTS
+hlspike-compose-whoami-1     whoami   running              0    127.0.0.1:18090->80/tcp
+hlspike-compose-web-1        web      running   healthy    0    
+== up took 781ms
+######## v5.7.0 ls
+stack hlspike-compose status="running(2)" files=~/homerslab/spikes/compose-sdk/project/compose.yaml,~/homerslab/spikes/compose-sdk/project/compose.selinux.yaml
+(0 other projects on this engine, not shown)
+== ls took 17ms
+######## gpu via CDI on rootless podman
+NAME                         SERVICE  STATE     HEALTH     EXIT PORTS
+hlspike-compose-gpu-gpu-1    gpu      stopped              0    
+== up took 533ms
+gpu-1 | ls: /dev/nvidia0: Permission denied
+gpu-1 | ls: /dev/nvidiactl: Permission denied
+gpu-1 | ls: /dev/nvidia-uvm-tools: Permission denied
+gpu-1 | ls: /dev/nvidia-uvm: Permission denied
+gpu-1 | ls: /dev/nvidia-modeset: Permission denied
+gpu-1 | 
+gpu-1 | /usr/bin/nvidia-smi
+== logs took 38ms
+hlspike-compose-gpu-gpu-1    gpu      exited               0    
+== ps took 9ms
+DeviceRequests=Error: template: inspect:1:44: executing "inspect" at <.HostConfig.DeviceRequests>: can't evaluate field DeviceRequests in type *define.InspectContainerHostConfig
+== down took 55ms

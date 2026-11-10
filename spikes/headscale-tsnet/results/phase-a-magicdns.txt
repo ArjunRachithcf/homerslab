@@ -1,0 +1,20 @@
+# Phase A: MagicDNS names under base_domain ts.hlspike.test (2026-11-09T19:04:26Z)
+client-adult photos.ts.hlspike.test   A=100.64.0.3   app=photos node=photos.ts.hlspike.test ip=100.64.0.3 host=photos.ts.hlspike.test caller=adult-laptop.ts.hlspike.test (user adult)
+client-adult notes.ts.hlspike.test    A=100.64.0.2   app=notes node=notes.ts.hlspike.test ip=100.64.0.2 host=notes.ts.hlspike.test caller=adult-laptop.ts.hlspike.test (user adult)
+client-adult chores.ts.hlspike.test   A=100.64.0.4   app=chores node=chores.ts.hlspike.test ip=100.64.0.4 host=chores.ts.hlspike.test caller=adult-laptop.ts.hlspike.test (user adult)
+client-adult books.ts.hlspike.test    A=100.64.0.7   app=books node=books.ts.hlspike.test ip=100.64.0.7 host=books.ts.hlspike.test caller=adult-laptop.ts.hlspike.test (user adult)
+client-adult wiki.ts.hlspike.test     A=100.64.0.6   app=wiki node=wiki.ts.hlspike.test ip=100.64.0.6 host=wiki.ts.hlspike.test caller=adult-laptop.ts.hlspike.test (user adult)
+client-kid photos.ts.hlspike.test   A=none         wget: bad address 'photos.ts.hlspike.test'
+client-kid notes.ts.hlspike.test    A=none         wget: bad address 'notes.ts.hlspike.test'
+client-kid chores.ts.hlspike.test   A=100.64.0.4   app=chores node=chores.ts.hlspike.test ip=100.64.0.4 host=chores.ts.hlspike.test caller=kid-tablet.ts.hlspike.test (user kid)
+client-kid books.ts.hlspike.test    A=none         wget: bad address 'books.ts.hlspike.test'
+client-kid wiki.ts.hlspike.test     A=none         wget: bad address 'wiki.ts.hlspike.test'
+# kid, by tailnet IP through tailscaled (not the OS route):
+no matching peer
+# adult: path to photos
+pong from photos (100.64.0.3) via 10.77.29.20:57747 in 0s
+# kid: tailscale status
+100.64.0.9  kid-tablet  kid             linux  -                                                  
+100.64.0.4  chores      tagged-devices  linux  active; direct 10.77.29.20:50370, tx 1596 rx 1692  
+100.64.0.1  resolver    tagged-devices  linux  -                                                  
+100.64.0.5  resolver2   tagged-devices  linux  -                                                  

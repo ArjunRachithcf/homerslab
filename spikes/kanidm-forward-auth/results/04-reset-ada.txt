@@ -1,0 +1,13 @@
+reset session opened; current primary: {"PasswordMfa": [["spike"], [], 0]}
+old TOTP 'spike' removed; warnings=['MfaRequired'] can_commit=False
+new password + TOTP: {"PasswordMfa": [["spike-reset"], [], 0]} can_commit: True
+committed
+old credential: refused -> auth denied for ada
+Traceback (most recent call last):
+  File "~/homerslab/spikes/kanidm-forward-auth/scripts/reset.py", line 46, in <module>
+    tok = k.auth(person, password, secret, sec["algo"], privileged=False)
+  File "~/homerslab/spikes/kanidm-forward-auth/scripts/kanidm_api.py", line 98, in auth
+    raise RuntimeError(f"auth denied for {username}: {state['denied']}")
+RuntimeError: auth denied for ada: Account is temporarily locked
+new credential: works, token length 634
+after waiting a further 2s

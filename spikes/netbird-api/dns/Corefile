@@ -1,0 +1,17 @@
+# The sandbox's stand-in for public DNS. Nothing is forwarded anywhere: names outside
+# these two zones are refused.
+#
+#   hlspike.test  the NetBird server and the proxy cluster's address
+#   home.test     the household's domain as the internet sees it: the wildcard CNAME to the
+#                 proxy cluster that classic's DNS zone carries (it also answers validation.home.test)
+hlspike.test:53 {
+    file /etc/coredns/hlspike.test.zone
+    log
+    errors
+}
+
+home.test:53 {
+    file /etc/coredns/home.test.zone
+    log
+    errors
+}

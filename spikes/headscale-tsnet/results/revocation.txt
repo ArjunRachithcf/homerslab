@@ -1,0 +1,16 @@
+# Revocation by API (2026-11-09T19:10:11Z); base_domain is home.test here
+client-adult wiki.home.test           A=100.64.0.6   app=wiki node=wiki.ts.hlspike.test ip=100.64.0.6 host=wiki.home.test caller=adult-laptop.home.test (user adult)
+{}HTTP 200  
+node wiki deleted: its name is gone on the adult after 1.615181370 s
+client-adult wiki.home.test           A=none         wget: bad address 'wiki.home.test'
+- the tsnet node 'wiki' in the apps process:
+- expiring the kid's device (node 9):
+{"id":"9","name":"kid-tablet","expiry":"2026-11-09T19:10:17.703879089Z"}
+Error response from daemon: container 3166322b9ebdd8c9a7f30ab6e028c3dd21d274c5efc9eb395a5e30697a04efe4 is not running
+kid's device can no longer fetch chores.home.test after 1.462926923 s
+service "client-kid" is not running
+- re-invite: a new user-owned key for kid, then the device starts again (2026-11-09T19:10:56Z)
+{"id":"11","aclTags":[],"user":"kid","reusable":false,"ephemeral":false,"expiration":"2026-11-09T20:10:56Z"}
+ Container hlspike-headscale-client-kid-1 Started 
+kid's device back on chores.home.test after 4.607873961 s
+{"id":"9","givenName":"kid-tablet","ipAddresses":"100.64.0.9","expiry":null,"online":true}

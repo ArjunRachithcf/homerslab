@@ -1,0 +1,8 @@
+$ORIGIN hlspike.test.
+$TTL 30
+@        IN SOA ns.hlspike.test. admin.hlspike.test. 1 7200 3600 1209600 30
+@        IN NS  ns.hlspike.test.
+ns       IN A   10.231.0.53
+nb       IN A   10.231.0.10
+proxy    IN A   10.231.0.20
+*.proxy  IN CNAME proxy.hlspike.test.

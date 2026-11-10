@@ -1,0 +1,3 @@
+services:
+  web:
+    image: docker.io/library/hlspike-compose-does-not-exist:0

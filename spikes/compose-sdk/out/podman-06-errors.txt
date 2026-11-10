@@ -1,0 +1,38 @@
+######## bad-image
+  [event] start up
+  [event] Image docker.io/library/hlspike-compose-does-not-exist:0 Working Pulling 
+  [event] Image docker.io/library/hlspike-compose-does-not-exist:0 Error   Error denied: requested access to the resource is denied
+  [event] done up success=true
+== up took 1.463s
+== ERROR Error response from daemon: denied: requested access to the resource is denied
+   chain=[*errors.joinError] tags=[]
+== down took 37ms
+######## port-conflict
+  [event] start up
+  [event] Network hlspike-compose-err_default Working Creating 
+  [event] Network hlspike-compose-err_default Done    Created 
+  [event] Container hlspike-compose-err-web-1 Working Creating 
+  [event] Container hlspike-compose-err-web-1 Done    Created 
+  [event] Container hlspike-compose-err-web-1 Working Starting 
+  [event] done up success=true
+== up took 3.843s
+== ERROR Error response from daemon: rootlessport listen tcp 127.0.0.1:18090: bind: address already in use
+   chain=[*client.httpError *fmt.wrapError *errors.errorString] tags=[]
+== down took 69ms
+######## missing-secret
+  [event] start up
+  [event] Network hlspike-compose-err_default Working Creating 
+  [event] Network hlspike-compose-err_default Done    Created 
+  [event] Container hlspike-compose-err-web-1 Working Creating 
+time="2026-11-09T20:10:48+01:00" level=warning msg="secret file hlspike-compose-err_token does not exist"
+  [event] Container hlspike-compose-err-web-1 Done    Created 
+  [event] Container hlspike-compose-err-web-1 Working Starting 
+  [event] Container hlspike-compose-err-web-1 Done    Started 
+  [event] Container hlspike-compose-err-web-1 Working Waiting 
+  [event] Container hlspike-compose-err-web-1 Done    Healthy 
+  [event] done up success=false
+== containers before up: 0, after: 1, kept (same ID): 0
+NAME                         SERVICE  STATE     HEALTH     EXIT PORTS
+hlspike-compose-err-web-1    web      running              0    
+== up took 845ms
+== down took 10.416s

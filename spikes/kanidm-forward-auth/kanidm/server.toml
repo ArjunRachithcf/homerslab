@@ -1,0 +1,15 @@
+# Kanidm 1.12.0 for the HomersLab spike (compose project hlspike-kanidm).
+# Throwaway: self-signed TLS from `kanidmd cert-generate`, published on 127.0.0.1 only.
+version = "2"
+
+bindaddress = "0.0.0.0:28743"
+ldapbindaddress = "0.0.0.0:3636"
+
+db_path = "/data/kanidm.db"
+tls_chain = "/data/chain.pem"
+tls_key = "/data/key.pem"
+
+log_level = "info"
+
+domain = "idm.hlspike.test"
+origin = "https://idm.hlspike.test:28743"

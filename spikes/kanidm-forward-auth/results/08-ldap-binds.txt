@@ -1,0 +1,14 @@
+--- ada (in adults) binds to app media-ldap with her app password
+u: ada@idm.hlspike.test
+exit=0
+    ...and searches as that session (persons visible):
+0
+--- kim (kids, not in the app's linked group adults) binds with her app password
+exit=49
+ldap_bind: Invalid credentials (49)
+--- ada binds with her primary password, no app (not POSIX, no fallback)
+ldap_bind: Invalid credentials (49)
+exit=49
+--- ada's app password without the app= part
+ldap_bind: Invalid credentials (49)
+exit=49

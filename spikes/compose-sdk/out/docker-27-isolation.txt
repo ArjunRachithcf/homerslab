@@ -1,0 +1,13 @@
+hlspike-compose-whoami-1     whoami   running              0    127.0.0.1:18080->80/tcp
+hlspike-compose-web-1        web      running   healthy    0    
+== up took 4.23s
+hlspike-compose-err-web-1    web      running   starting   0    
+== up took 1.402s
+######## down hlspike-compose (RemoveOrphans, -v)
+== left with label com.docker.compose.project=hlspike-compose: containers=0 volumes=[] networks=[]
+== down took 11.757s
+######## hlspike-compose-err after that:
+NAME                         SERVICE  STATE     HEALTH     EXIT PORTS
+hlspike-compose-err-web-1    web      running   starting   0    
+== ps took 33ms
+== down took 11.158s

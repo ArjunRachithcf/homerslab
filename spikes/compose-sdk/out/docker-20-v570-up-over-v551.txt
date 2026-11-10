@@ -1,0 +1,15 @@
+  [event] start up
+  [event] Container hlspike-compose-web-1    Done    Running 
+  [event] Container hlspike-compose-whoami-1 Done    Running 
+  [event] Container hlspike-compose-web-1    Working Waiting 
+  [event] Container hlspike-compose-web-1    Done    Healthy 
+  [event] Container hlspike-compose-web-1    Working Waiting 
+  [event] Container hlspike-compose-whoami-1 Working Waiting 
+  [event] Container hlspike-compose-whoami-1 Done    Healthy 
+  [event] Container hlspike-compose-web-1    Done    Healthy 
+  [event] done up success=false
+== containers before up: 2, after: 2, kept (same ID): 2
+NAME                         SERVICE  STATE     HEALTH     EXIT PORTS
+hlspike-compose-whoami-1     whoami   running              0    127.0.0.1:18080->80/tcp
+hlspike-compose-web-1        web      running   healthy    0    
+== up took 779ms

@@ -1,0 +1,25 @@
+stack hlspike-compose status="running(2)" files=~/homerslab/spikes/compose-sdk/project/compose.yaml,~/homerslab/spikes/compose-sdk/project/compose.selinux.yaml
+(5 other projects on this engine, not shown)
+== ls took 991ms
+######## down without -v
+  [event] start down
+  [event] Container hlspike-compose-whoami-1 Working Stopping 
+  [event] Container hlspike-compose-whoami-1 Done    Stopped 
+  [event] Container hlspike-compose-whoami-1 Working Removing 
+  [event] Container hlspike-compose-whoami-1 Done    Removed 
+  [event] Container hlspike-compose-web-1    Working Stopping 
+  [event] Container hlspike-compose-web-1    Done    Stopped 
+  [event] Container hlspike-compose-web-1    Working Removing 
+  [event] Container hlspike-compose-web-1    Done    Removed 
+  [event] Network hlspike-compose_default    Working Removing 
+  [event] Network hlspike-compose_default    Done    Removed 
+  [event] done down success=false
+== left with label com.docker.compose.project=hlspike-compose: containers=0 volumes=[hlspike-compose_data] networks=[]
+== down took 12.975s
+######## up again: does the volume still hold boots.log?
+NAME                         SERVICE  STATE     HEALTH     EXIT PORTS
+hlspike-compose-whoami-1     whoami   running              0    127.0.0.1:18080->80/tcp
+hlspike-compose-web-1        web      running   healthy    0    
+== up took 4.717s
+web-1 | secret: readable, 33 bytes
+web-1 | boots recorded in the named volume: 5

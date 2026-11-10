@@ -1,0 +1,39 @@
+######## bad-image
+  [event] start up
+  [event] Image docker.io/library/hlspike-compose-does-not-exist:0 Working Pulling 
+  [event] Image docker.io/library/hlspike-compose-does-not-exist:0 Error   Error pull access denied for hlspike-compose-does-not-exist, repository does not exist or may require 'docker login'
+  [event] done up success=true
+== up took 800ms
+== ERROR Error response from daemon: pull access denied for hlspike-compose-does-not-exist, repository does not exist or may require 'docker login'
+   chain=[*errors.joinError] tags=[]
+-- cleanup
+== left with label com.docker.compose.project=hlspike-compose-err: containers=0 volumes=[] networks=[]
+== down took 53ms
+######## port-conflict
+  [event] start up
+  [event] Network hlspike-compose-err_default Working Creating 
+  [event] Network hlspike-compose-err_default Done    Created 
+  [event] Container hlspike-compose-err-web-1 Working Creating 
+  [event] Container hlspike-compose-err-web-1 Done    Created 
+  [event] Container hlspike-compose-err-web-1 Working Starting 
+  [event] done up success=true
+== up took 2.317s
+== ERROR Error response from daemon: failed to set up container networking: driver failed programming external connectivity on endpoint hlspike-compose-err-web-1 (f01ac75535fe04d86dfba64aca28d30f7f57e58813842eff9520798eca995d60): Bind for 127.0.0.1:18080 failed: port is already allocated
+   chain=[*client.httpError *fmt.wrapError *errors.errorString] tags=[]
+-- cleanup
+== left with label com.docker.compose.project=hlspike-compose-err: containers=0 volumes=[] networks=[]
+== down took 495ms
+######## missing-secret
+  [event] start up
+  [event] Network hlspike-compose-err_default Working Creating 
+  [event] Network hlspike-compose-err_default Done    Created 
+  [event] Container hlspike-compose-err-web-1 Working Creating 
+time="2026-11-09T19:59:42+01:00" level=warning msg="secret file hlspike-compose-err_token does not exist"
+  [event] service:web:1                      Error   Error response from daemon: invalid mount config for type "bind": bind source path does not exist: ~/homerslab/spikes/compose-sdk/project/errors/missing.txt 
+  [event] done up success=true
+== up took 427ms
+== ERROR Error response from daemon: invalid mount config for type "bind": bind source path does not exist: ~/homerslab/spikes/compose-sdk/project/errors/missing.txt
+   chain=[*client.httpError *fmt.wrapError *errors.errorString] tags=[]
+-- cleanup
+== left with label com.docker.compose.project=hlspike-compose-err: containers=0 volumes=[] networks=[]
+== down took 387ms

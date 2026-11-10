@@ -1,0 +1,26 @@
+NAME                         SERVICE  STATE     HEALTH     EXIT PORTS
+hlspike-compose-err-web-1    web      running   starting   0    
+== up took 1.554s
+######## interrupted forced recreate (timeout 1500ms)
+== ERROR context deadline exceeded
+   chain=[context.deadlineExceededError] tags=[context.DeadlineExceeded]
+NAME                         SERVICE  STATE     HEALTH     EXIT PORTS
+4cdd1626cfba_hlspike-compose-err-web-1 web      created              0    
+hlspike-compose-err-web-1    web      running   starting   0    
+== ps took 55ms
+######## plain up afterwards
+  [event] start up
+  [event] Container hlspike-compose-err-web-1 Working Stopping 
+  [event] Container hlspike-compose-err-web-1 Done    Stopped 
+  [event] Container hlspike-compose-err-web-1 Working Removing 
+  [event] Container hlspike-compose-err-web-1 Done    Removed 
+  [event] Container 4cdd1626cfba_hlspike-compose-err-web-1 Working Starting 
+  [event] Container 4cdd1626cfba_hlspike-compose-err-web-1 Done    Started 
+  [event] done up success=false
+== containers before up: 1, after: 1, kept (same ID): 0
+NAME                         SERVICE  STATE     HEALTH     EXIT PORTS
+4cdd1626cfba_hlspike-compose-err-web-1 web      running   starting   0    
+== up took 10.444s
+-- cleanup
+== left with label com.docker.compose.project=hlspike-compose-err: containers=0 volumes=[] networks=[]
+== down took 10.888s

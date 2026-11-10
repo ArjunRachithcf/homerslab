@@ -1,0 +1,15 @@
+t+11s: log 11830 lines, 876K, cpu_s 0.92
+t+21s: log 24031 lines, 1.8M, cpu_s 2.83
+t+31s: log 36447 lines, 2.7M, cpu_s 4.79
+t+41s: log 48047 lines, 3.5M, cpu_s 6.81
+t+51s: log 59395 lines, 4.3M, cpu_s 8.98
+t+61s: log 71592 lines, 5.2M, cpu_s 11.16
+denials from c768,c910: 0
+the loop (most frequent lines in the last 3000):
+  176  machine-unauthorized u=? []
+  176  control: [v#] mapRoutine: netmap received: loggedIn=true inMapPoll=true
+  176  control: [v#] sendStatus: mapRoutine-got-netmap: loggedIn=true inMapPoll=true
+  176  control: mapRoutine: [v#] backoff: # msec
+  176  [v#] netmap diff: (none)
+  176  netmap: suggested exit node: no preferred DERP, try again later
+map responses received after the delete: 4822; peak 80 per second; backoff values (msec): min 5 max 9977

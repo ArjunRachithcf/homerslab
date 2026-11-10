@@ -1,0 +1,12 @@
+== containers before up: 0, after: 1, kept (same ID): 0
+NAME                         SERVICE  STATE     HEALTH     EXIT PORTS
+hlspike-compose-gpu-gpu-1    gpu      running              0    
+== up took 3.597s
+gpu-1 | nvidia-modeset nvidia-uvm nvidia-uvm-tools nvidia0 nvidiactl 
+gpu-1 | /usr/bin/nvidia-smi
+== logs took 34ms
+NAME                         SERVICE  STATE     HEALTH     EXIT PORTS
+hlspike-compose-gpu-gpu-1    gpu      exited               0    
+== ps took 22ms
+DeviceRequests=[{"Driver":"cdi","Count":0,"DeviceIDs":["nvidia.com/gpu=all"],"Capabilities":null,"Options":null}]
+== down took 1.119s

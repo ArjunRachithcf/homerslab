@@ -1,0 +1,7 @@
+== up took 4.027s
+######## up with RemoveOrphans
+  [event] Container hlspike-compose-intruder2 Working Stopping 
+  [event] Container hlspike-compose-intruder2 Done    Stopped 
+  [event] Container hlspike-compose-intruder2 Working Removing 
+  [event] Container hlspike-compose-intruder2 Done    Removed 
+== up took 11.535s

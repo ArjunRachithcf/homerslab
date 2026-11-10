@@ -1,0 +1,22 @@
+# Phase B1: split DNS home.test -> 100.64.0.1 (CoreDNS behind the official client, userspace) (2026-11-09T19:05:46Z)
+Split DNS Routes:
+  - home.test                      -> 100.64.0.1
+
+client-adult photos.home.test         A=100.64.0.3   app=photos node=photos.ts.hlspike.test ip=100.64.0.3 host=photos.home.test caller=adult-laptop.ts.hlspike.test (user adult)
+client-adult notes.home.test          A=100.64.0.2   app=notes node=notes.ts.hlspike.test ip=100.64.0.2 host=notes.home.test caller=adult-laptop.ts.hlspike.test (user adult)
+client-adult chores.home.test         A=100.64.0.4   app=chores node=chores.ts.hlspike.test ip=100.64.0.4 host=chores.home.test caller=adult-laptop.ts.hlspike.test (user adult)
+client-adult books.home.test          A=100.64.0.7   app=books node=books.ts.hlspike.test ip=100.64.0.7 host=books.home.test caller=adult-laptop.ts.hlspike.test (user adult)
+client-adult wiki.home.test           A=100.64.0.6   app=wiki node=wiki.ts.hlspike.test ip=100.64.0.6 host=wiki.home.test caller=adult-laptop.ts.hlspike.test (user adult)
+client-adult nothere.home.test        A=none         wget: bad address 'nothere.home.test'
+# the kid resolves every name (the resolver has no per-person view); only chores is reachable:
+client-kid photos.home.test A=100.64.0.3
+client-kid chores.home.test A=100.64.0.4
+client-kid chores.home.test         A=100.64.0.4   app=chores node=chores.ts.hlspike.test ip=100.64.0.4 host=chores.home.test caller=kid-tablet.ts.hlspike.test (user kid)
+wget: can't connect to remote host (100.64.0.3): Invalid argument
+# CoreDNS log: the userspace client relays every query from 127.0.0.1, so the resolver can't tell who asked:
+coredns-1  | [INFO] 127.0.0.1:51836 - 52517 "A IN photos.home.test. udp 34 false 512" NOERROR qr,aa,rd 66 0.000098129s
+coredns-1  | [INFO] 127.0.0.1:48053 - 52517 "A IN photos.home.test. udp 34 false 512" NOERROR qr,aa,rd 66 0.000056991s
+coredns-1  | [INFO] 127.0.0.1:54519 - 54403 "AAAA IN photos.home.test. udp 34 false 512" NOERROR qr,aa,rd 34 0.000045397s
+coredns-1  | [INFO] 127.0.0.1:42463 - 54403 "AAAA IN photos.home.test. udp 34 false 512" NOERROR qr,aa,rd 34 0.000046864s
+new record music.home.test visible on the adult after .279051201 s
+removed record gone on the adult after 1.345456501 s

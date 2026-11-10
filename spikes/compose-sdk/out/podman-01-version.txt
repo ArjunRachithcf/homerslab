@@ -1,0 +1,36 @@
+######## v5.5.1
+go go1.27.3
+dep github.com/compose-spec/compose-go/v2 v2.15.0
+dep github.com/docker/cli v29.7.2+incompatible
+dep github.com/docker/compose/v5 v5.5.1
+dep github.com/moby/moby/api v1.55.0
+dep github.com/moby/moby/client v0.5.1
+api.ComposeVersion (com.docker.compose.version label) = ""
+endpoint unix:///run/user/1000/podman/podman.sock
+engine "linux/amd64/fedora-44" version=5.8.7 api=1.44 (min 1.24) negotiated client api=1.44 os=linux
+  component Podman Engine 5.8.7
+  component Conmon conmon version 2.2.1, commit: 
+  component OCI Runtime (crun) crun version 1.28
+commit: 54f16ffbefcd022bf032af768b5c5ce075c18bfc
+rundir: /run/user/1000/crun
+spec: 1.0.0
++SYSTEMD +SELINUX +APPARMOR +CAP +SECCOMP +EBPF +CRIU +LIBKRUN +WASM:wasmedge +JSON_C
+== version took 229ms
+######## v5.7.0
+go go1.27.3
+dep github.com/compose-spec/compose-go/v2 v2.16.2
+dep github.com/docker/cli v29.9.2+incompatible
+dep github.com/docker/compose/v5 v5.7.0
+dep github.com/moby/moby/api v1.56.1
+dep github.com/moby/moby/client v0.6.2
+api.ComposeVersion (com.docker.compose.version label) = ""
+endpoint unix:///run/user/1000/podman/podman.sock
+engine "linux/amd64/fedora-44" version=5.8.7 api=1.44 (min 1.24) negotiated client api=1.44 os=linux
+  component Podman Engine 5.8.7
+  component Conmon conmon version 2.2.1, commit: 
+  component OCI Runtime (crun) crun version 1.28
+commit: 54f16ffbefcd022bf032af768b5c5ce075c18bfc
+rundir: /run/user/1000/crun
+spec: 1.0.0
++SYSTEMD +SELINUX +APPARMOR +CAP +SECCOMP +EBPF +CRIU +LIBKRUN +WASM:wasmedge +JSON_C
+== version took 129ms

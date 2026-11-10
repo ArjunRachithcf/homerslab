@@ -1,0 +1,24 @@
+# The node's edge, as HomersLab would run it, inside the "edge" peer's network namespace.
+#   :443   the mesh listener: household devices reach it over NetBird (policy household -> edges, TCP 443)
+#   :8444  the public listener: only NetBird's reverse proxy reaches it, PROXY protocol v2 first
+# TLS ends here, with this edge's own certificate (Caddy's local CA stands in for ACME).
+{
+	admin off
+	local_certs
+	skip_install_trust
+	auto_https disable_redirects
+	servers :8444 {
+		listener_wrappers {
+			proxy_protocol {
+				timeout 5s
+				allow 100.88.0.0/16
+			}
+			tls
+		}
+	}
+}
+
+https://app.home.test:443, https://app.home.test:8444, https://photos.home.test:8444, https://home.test:8444 {
+	tls internal
+	respond "edge says hello: sni={host} listener={http.request.local.port} client={remote_host}" 200
+}

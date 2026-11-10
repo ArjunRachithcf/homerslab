@@ -1,0 +1,8 @@
+2026/11/09 19:08:12.313779 stats {"cpu_s":2.93,"fds":61,"go_sys_kib":54026,"goroutines":657,"heap_inuse_kib":29800,"nodes_up":6,"num_gc":12,"rss_kib":56680,"rss_peak_kib":56680,"stack_inuse_kib":4320,"threads":20,"when":"periodic"}
+2026/11/09 19:09:12.317956 stats {"cpu_s":3.05,"fds":61,"go_sys_kib":54026,"goroutines":657,"heap_inuse_kib":31824,"nodes_up":6,"num_gc":12,"rss_kib":56728,"rss_peak_kib":56728,"stack_inuse_kib":4320,"threads":20,"when":"periodic"}
+2026/11/09 19:10:12.313016 stats {"cpu_s":3.09,"fds":61,"go_sys_kib":54026,"goroutines":657,"heap_inuse_kib":24432,"nodes_up":6,"num_gc":13,"rss_kib":56580,"rss_peak_kib":56580,"stack_inuse_kib":3968,"threads":20,"when":"periodic"}
+hlspike-headscale-apps-1 cpu=20.78% mem=33.48MiB / 125.1GiB pids=20
+hlspike-headscale-headscale-1 cpu=9.94% mem=26.47MiB / 125.1GiB pids=20
+hlspike-headscale-ts-dns-1 cpu=0.04% mem=61.29MiB / 125.1GiB pids=28
+hlspike-headscale-coredns-1 cpu=0.10% mem=52.18MiB / 125.1GiB pids=12
+hlspike-headscale-client-adult-1 cpu=0.03% mem=26.49MiB / 125.1GiB pids=29

@@ -1,0 +1,21 @@
+######## identical up
+== containers before up: 2, after: 2, kept (same ID): 2
+NAME                         SERVICE  STATE     HEALTH     EXIT PORTS
+hlspike-compose-whoami-1     whoami   running              0    127.0.0.1:18090->80/tcp
+hlspike-compose-web-1        web      running   healthy    0    
+== up took 1.35s
+######## HLSPIKE_REV=2
+== containers before up: 2, after: 2, kept (same ID): 1
+NAME                         SERVICE  STATE     HEALTH     EXIT PORTS
+hlspike-compose-whoami-1     whoami   running              0    127.0.0.1:18090->80/tcp
+hlspike-compose-web-1        web      running   healthy    0    
+== up took 12.488s
+rev now: rev=2
+######## dry-run alone REV=3
+hlspike-compose-web-1        web      running   healthy    0    
+== up took 1.207s
+rev now: rev=2
+######## dry-run + streams REV=3
+hlspike-compose-web-1        web      running   healthy    0    
+== up took 12.324s
+rev now: rev=3

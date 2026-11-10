@@ -1,0 +1,31 @@
+container hlspike-compose-whoami-1 id=f20def11d973
+  label com.docker.compose.config-hash=762d224cc52f2c757a5830401bb9199b42bc19c84224864e645a20612f9f4178
+  label com.docker.compose.container-number=1
+  label com.docker.compose.depends_on=web:service_healthy:false
+  label com.docker.compose.image=sha256:80f8bb74f634d45d55967820a702c5fddf01cf92968bb29ed7a3573dd16b0e55
+  label com.docker.compose.oneoff=False
+  label com.docker.compose.project=hlspike-compose
+  label com.docker.compose.project.config_files=~/homerslab/spikes/compose-sdk/project/compose.yaml
+  label com.docker.compose.project.working_dir=~/homerslab/spikes/compose-sdk/project
+  label com.docker.compose.service=whoami
+  label com.docker.compose.version=
+  selinux process="system_u:system_r:container_t:s0:c618,c643" mount="system_u:object_r:container_file_t:s0:c618,c643" securityopt=[]
+  capadd=[] capdrop=[] binds=[]
+container hlspike-compose-web-1 id=16c5b6e1d2ae
+  label com.docker.compose.config-hash=3bef0079a6d691b8445927987d02aa042239145f8886bb27a5aea8e086ca0111
+  label com.docker.compose.container-number=1
+  label com.docker.compose.depends_on=
+  label com.docker.compose.image=sha256:f97baa533a26513c453a362be331a43eb60214302f449c16571b23cea141dce4
+  label com.docker.compose.oneoff=False
+  label com.docker.compose.project=hlspike-compose
+  label com.docker.compose.project.config_files=~/homerslab/spikes/compose-sdk/project/compose.yaml
+  label com.docker.compose.project.working_dir=~/homerslab/spikes/compose-sdk/project
+  label com.docker.compose.service=web
+  label com.docker.compose.version=
+  mount type=volume name=hlspike-compose_data src=/var/lib/docker/volumes/hlspike-compose_data/_data dst=/data rw=true mode="rw"
+  mount type=bind name= src=~/homerslab/spikes/compose-sdk/project/secrets/token.txt dst=/run/secrets/token rw=false mode=""
+  selinux process="system_u:system_r:container_t:s0:c114,c130" mount="system_u:object_r:container_file_t:s0:c114,c130" securityopt=[]
+  capadd=[CAP_CHOWN CAP_DAC_OVERRIDE CAP_SETGID CAP_SETUID] capdrop=[ALL] binds=[hlspike-compose_data:/data:rw]
+  health unhealthy failing=9
+  last probe exit=1 output="head: /run/secrets/token: Permission denied"
+== inspect took 35ms

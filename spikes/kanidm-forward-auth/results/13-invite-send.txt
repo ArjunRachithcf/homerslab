@@ -1,0 +1,4 @@
+POST /v1/person/kim/_credential/_update_intent_send {'ttl': 86400, 'email': None} -> 200 | queued message id: 4e21ef93-4c52-4532-bb95-20168c7c97d0
+/v1/message -> 404
+/v1/messages -> 404
+/v1/message_queue -> 404

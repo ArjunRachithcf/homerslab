@@ -1,0 +1,84 @@
+[19:22:03 +1s] R1: ada on app2 -> {"ok":true,"status":200,"at":"https://app2.hlspike.test:28744/api"}
+[19:22:03 +1s] R1: DELETE /v1/oauth2/whoami2 -> 200 | discovery for whoami2 now -> HTTP 404
+[19:22:04 +2s] R1 client deleted: still 200, 0s after the change
+[19:22:04 +3s] R2: ada3 on app -> {"ok":true,"status":200,"at":"https://app.hlspike.test:28744/api"}
+[19:22:05 +3s] R2 role removed: still 200, 0s after the change
+[19:22:15 +13s] R2 role removed: still 200, 10s after the change
+[19:22:19 +17s] R1 client deleted: still 200, 15s after the change
+[19:22:25 +23s] R2 role removed: still 200, 20s after the change
+[19:22:34 +32s] R1 client deleted: still 200, 30s after the change
+[19:22:35 +33s] R2 role removed: still 200, 30s after the change
+[19:22:45 +43s] R2 role removed: still 200, 40s after the change
+[19:22:49 +47s] R1 client deleted: still 200, 45s after the change
+[19:22:55 +53s] R2 role removed: still 200, 50s after the change
+[19:23:04 +62s] R1 client deleted: still 200, 60s after the change
+[19:23:06 +64s] R2 role removed: DENIED 61s after the change (HTTP 200 at https://idm.hlspike.test:28743/ui/oauth2)
+[19:23:06 +64s] R2: ada3 signing in again lands on "Access Denied" at https://idm.hlspike.test:28743/ui/oauth2
+[19:23:06 +64s] R3: ada on app -> {"ok":true,"status":200,"at":"https://app.hlspike.test:28744/api"}
+[19:23:06 +64s] R3: scope maps now: None
+[19:23:07 +65s] R3 scope map removed: still 200, 0s after the change
+[19:23:19 +77s] R1 client deleted: still 200, 75s after the change
+[19:23:22 +80s] R3 scope map removed: still 200, 15s after the change
+[19:23:34 +92s] R1 client deleted: still 200, 90s after the change
+[19:23:37 +95s] R3 scope map removed: still 200, 30s after the change
+[19:23:49 +107s] R1 client deleted: still 200, 106s after the change
+[19:23:52 +110s] R3 scope map removed: still 200, 45s after the change
+[19:24:04 +122s] R1 client deleted: still 200, 121s after the change
+[19:24:07 +125s] R3 scope map removed: still 200, 60s after the change
+[19:24:19 +137s] R1 client deleted: still 200, 136s after the change
+[19:24:22 +140s] R3 scope map removed: DENIED 76s after the change (HTTP 200 at https://idm.hlspike.test:28743/ui/oauth2)
+[19:24:24 +142s] R3: a fresh sign-in by ada now lands on "Access Denied" at https://idm.hlspike.test:28743/ui/oauth2/resume
+[19:24:24 +142s] R3: restore -> scope maps now: ['adults@idm.hlspike.test: {"email", "groups_name", "openid", "profile"}']
+[19:24:34 +152s] R1 client deleted: still 200, 151s after the change
+[19:24:49 +168s] R1 client deleted: still 200, 166s after the change
+[19:25:04 +183s] R1 client deleted: still 200, 181s after the change
+[19:25:20 +198s] R1 client deleted: still 200, 196s after the change
+[19:25:35 +213s] R1 client deleted: still 200, 211s after the change
+[19:25:50 +228s] R1 client deleted: still 200, 226s after the change
+[19:26:05 +243s] R1 client deleted: still 200, 241s after the change
+[19:26:20 +258s] R1 client deleted: still 200, 256s after the change
+[19:26:35 +273s] R1 client deleted: still 200, 271s after the change
+[19:26:50 +288s] R1 client deleted: still 200, 286s after the change
+[19:27:05 +303s] R1 client deleted: still 200, 301s after the change
+[19:27:20 +318s] R1 client deleted: still 200, 316s after the change
+[19:27:35 +333s] R1 client deleted: still 200, 332s after the change
+[19:27:50 +348s] R1 client deleted: still 200, 347s after the change
+[19:28:05 +363s] R1 client deleted: still 200, 362s after the change
+[19:28:20 +378s] R1 client deleted: still 200, 377s after the change
+[19:28:35 +393s] R1 client deleted: still 200, 392s after the change
+[19:28:50 +408s] R1 client deleted: still 200, 407s after the change
+[19:29:05 +423s] R1 client deleted: still 200, 422s after the change
+[19:29:20 +439s] R1 client deleted: still 200, 437s after the change
+[19:29:35 +454s] R1 client deleted: still 200, 452s after the change
+[19:29:50 +469s] R1 client deleted: still 200, 467s after the change
+[19:30:06 +484s] R1 client deleted: still 200, 482s after the change
+[19:30:21 +499s] R1 client deleted: still 200, 497s after the change
+[19:30:36 +514s] R1 client deleted: still 200, 512s after the change
+[19:30:51 +529s] R1 client deleted: still 200, 527s after the change
+[19:31:06 +544s] R1 client deleted: still 200, 542s after the change
+[19:31:21 +559s] R1 client deleted: still 200, 557s after the change
+[19:31:36 +574s] R1 client deleted: still 200, 573s after the change
+[19:31:51 +589s] R1 client deleted: still 200, 588s after the change
+[19:32:06 +604s] R1 client deleted: still 200, 603s after the change
+[19:32:21 +619s] R1 client deleted: still 200, 618s after the change
+[19:32:36 +634s] R1 client deleted: still 200, 633s after the change
+[19:32:51 +649s] R1 client deleted: still 200, 648s after the change
+[19:33:06 +665s] R1 client deleted: still 200, 663s after the change
+[19:33:22 +680s] R1 client deleted: still 200, 678s after the change
+[19:33:37 +695s] R1 client deleted: still 200, 693s after the change
+[19:33:52 +710s] R1 client deleted: still 200, 708s after the change
+[19:34:07 +725s] R1 client deleted: still 200, 723s after the change
+[19:34:22 +740s] R1 client deleted: still 200, 738s after the change
+[19:34:37 +755s] R1 client deleted: still 200, 753s after the change
+[19:34:52 +770s] R1 client deleted: still 200, 768s after the change
+[19:35:07 +785s] R1 client deleted: still 200, 784s after the change
+[19:35:22 +800s] R1 client deleted: still 200, 799s after the change
+[19:35:37 +815s] R1 client deleted: still 200, 814s after the change
+[19:35:52 +830s] R1 client deleted: still 200, 829s after the change
+[19:36:07 +845s] R1 client deleted: still 200, 844s after the change
+[19:36:22 +861s] R1 client deleted: still 200, 859s after the change
+[19:36:38 +876s] R1 client deleted: still 200, 874s after the change
+[19:36:53 +891s] R1 client deleted: still 200, 889s after the change
+[19:37:08 +906s] R1 client deleted: DENIED 904s after the change (HTTP 200 at https://idm.hlspike.test:28743/ui/oauth2)
+
+summary: R1 client deleted -> denied after 904s; R2 role removed -> denied after 61s; R3 scope map removed -> denied after 76s

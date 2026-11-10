@@ -1,0 +1,29 @@
+# 1) A/B polling run (the script then stopped on the JSON parse of whoami's text reply); 2) two reruns of the forged-header check only.
+[06:50:47 +1s] A plain forward_auth: signed in, at https://app.hlspike.test:28744/api cookie=58bed990
+[06:51:02 +16s] B Set-Cookie passed : signed in, at https://app.hlspike.test:28744/fixed/api cookie=2b66d443
+[06:51:22 +36s] A plain forward_auth: HTTP 200 ok cookie 58bed990->58bed990
+[06:51:22 +36s] B Set-Cookie passed : HTTP 200 ok cookie 2b66d443->2b66d443
+[06:51:42 +56s] A plain forward_auth: HTTP 200 ok cookie 58bed990->58bed990
+[06:51:42 +57s] B Set-Cookie passed : HTTP 200 ok cookie 2b66d443->2b66d443
+[06:52:02 +77s] A plain forward_auth: HTTP 200 ok cookie 58bed990->58bed990
+[06:52:02 +77s] B Set-Cookie passed : HTTP 200 ok cookie 2b66d443->2b66d443
+[06:52:22 +97s] A plain forward_auth: HTTP 200 ok BOUNCED via app.hlspike.test:28744/oauth2/sign_in > idm.hlspike.test:28743/ui/oauth2 > app.hlspike.test:28744/oauth2/callback cookie 58bed990->ba973b32
+[06:52:22 +97s] B Set-Cookie passed : HTTP 200 ok cookie 2b66d443->45cd3fc3
+[06:52:42 +117s] A plain forward_auth: HTTP 200 ok cookie ba973b32->ba973b32
+[06:52:42 +117s] B Set-Cookie passed : HTTP 200 ok cookie 45cd3fc3->45cd3fc3
+[06:53:03 +137s] A plain forward_auth: HTTP 200 ok cookie ba973b32->ba973b32
+[06:53:03 +137s] B Set-Cookie passed : HTTP 200 ok cookie 45cd3fc3->45cd3fc3
+[06:53:23 +157s] A plain forward_auth: HTTP 200 ok cookie ba973b32->ba973b32
+[06:53:23 +158s] B Set-Cookie passed : HTTP 200 ok cookie 45cd3fc3->ae40c2c3
+[06:53:43 +178s] A plain forward_auth: HTTP 200 ok BOUNCED via app.hlspike.test:28744/oauth2/sign_in > idm.hlspike.test:28743/ui/oauth2 > app.hlspike.test:28744/oauth2/callback cookie ba973b32->2e91819c
+[06:53:43 +178s] B Set-Cookie passed : HTTP 200 ok cookie ae40c2c3->ae40c2c3
+[06:54:03 +198s] A plain forward_auth: HTTP 200 ok cookie 2e91819c->2e91819c
+[06:54:03 +198s] B Set-Cookie passed : HTTP 200 ok cookie ae40c2c3->ae40c2c3
+[06:54:28 +2s] B Set-Cookie passed : signed in, at https://app.hlspike.test:28744/fixed/api cookie=6fd74b8c
+# NOTE: the line below came from a parser bug in the test (whoami answers this path in text with CRLF line ends,
+# and the regex didn't match), not from Caddy. The rerun after the fix, further down, is the result.
+[06:54:28 +2s] B forged headers -> app saw {"X-Auth-Request-User":"(absent)","X-Auth-Request-Email":"(absent)","X-Auth-Request-Groups":"(absent)","X-Auth-Request-Preferred-Username":"(absent)","X-Auth-Request-Access-Token":"(absent)"}
+summary B Set-Cookie passed : 0 bounce(s) through sign-in, 0 failed poll(s), 1 distinct cookie values
+[06:55:12 +1s] B Set-Cookie passed : signed in, at https://app.hlspike.test:28744/fixed/api cookie=4a6000a6
+[06:55:12 +1s] B forged headers -> app saw {"X-Auth-Request-User":"9d0243e2-9cdd-4db8-9528-94a0b5069cf2","X-Auth-Request-Email":"ada@hlspike.test","X-Auth-Request-Groups":"idm_all_persons,idm_all_accounts,idm_people_self_name_write,adults,household","X-Auth-Request-Preferred-Username":"ada","X-Auth-Request-Access-Token":"(absent)"}
+summary B Set-Cookie passed : 0 bounce(s) through sign-in, 0 failed poll(s), 1 distinct cookie values

@@ -1,0 +1,28 @@
+# Spike only (project hlspike-creds): a secret from an environment variable, which Compose copies into the
+# container itself (it honours uid/gid/mode, unlike a file-based secret). spike.sh step2c sets HLSPIKE_DB from
+# the unit's credential for this one command.
+name: hlspike-creds
+
+services:
+  env-secret:
+    image: busybox@sha256:a46257e06c82ad85242d0d38077d0a52d9896389ca60a1a59d3463db586e5fa4
+    network_mode: none
+    restart: "no"
+    user: "999:999"
+    secrets:
+      - source: db-env
+        target: db-password
+        uid: "999"
+        gid: "999"
+        mode: 0400
+    command:
+      - sh
+      - -c
+      - |
+        id; ls -ln /run/secrets/
+        if cat /run/secrets/db-password >/dev/null 2>/tmp/err; then echo "READ-OK sha256=$$(sha256sum /run/secrets/db-password | cut -c1-12)"; else echo "READ-FAILED: $$(cat /tmp/err)"; fi
+        trap 'exit 0' TERM; while :; do sleep 1; done
+
+secrets:
+  db-env:
+    environment: HLSPIKE_DB

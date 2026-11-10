@@ -1,0 +1,52 @@
+# Test project for the HomersLab Compose SDK spike. The spike always runs it as project
+# hlspike-compose (never under another name); ports only on 127.0.0.1.
+name: hlspike-compose
+
+services:
+  web:
+    image: busybox:1.38.0@sha256:a46257e06c82ad85242d0d38077d0a52d9896389ca60a1a59d3463db586e5fa4
+    # Serves /data over HTTP. Reports whether the secret is readable, never its content.
+    command:
+      - sh
+      - -c
+      - |
+        if head -c1 /run/secrets/token >/dev/null 2>/tmp/err; then
+          echo "secret: readable, $$(wc -c < /run/secrets/token) bytes"
+        else
+          echo "secret: NOT readable: $$(cat /tmp/err)"
+        fi
+        echo "rev=$${HLSPIKE_REV}" > /data/index.html
+        date >> /data/boots.log
+        echo "boots recorded in the named volume: $$(wc -l < /data/boots.log)"
+        exec httpd -f -v -p 8080 -h /data
+    environment:
+      HLSPIKE_REV: ${HLSPIKE_REV:-1}
+    volumes:
+      - data:/data
+    secrets:
+      - token
+    cap_drop: [ALL]
+    cap_add: [CHOWN, SETUID, SETGID, DAC_OVERRIDE]
+    healthcheck:
+      # Healthy only when the secret is readable and httpd answers.
+      test: ["CMD-SHELL", "head -c1 /run/secrets/token >/dev/null && wget -q -O /dev/null http://127.0.0.1:8080/"]
+      interval: 2s
+      timeout: 2s
+      retries: 3
+      start_period: 10s
+      start_interval: 1s
+
+  whoami:
+    image: traefik/whoami:v1.12.0@sha256:c4717a8d1f0134a7444e24f881160e033991f23027c6c5a9a3f8fd22e70d1d44
+    ports:
+      - "127.0.0.1:${HLSPIKE_PORT:-18080}:80"
+    depends_on:
+      web:
+        condition: service_healthy
+
+volumes:
+  data: {}
+
+secrets:
+  token:
+    file: ./secrets/token.txt

@@ -38,7 +38,7 @@ But every app took a dozen hand-edited files, and nothing could install, remove,
   guarded at the edge;
 - **a name** on the household's mesh;
 - **optional public access**, with TLS still ending at home;
-- **backups** every day, and a restore test every week;
+- **backups** every hour, and a restore test every week;
 - **updates** to tested versions, with a snapshot first and an automatic rollback;
 - **kids' safety**: kids see only what's for them.
 
@@ -65,8 +65,9 @@ such as a NAS or a GPU box. It is private by default and never needs a router po
    package, so that I don't need a dedicated appliance.
 2. As a prospective household admin, I want the installer to print a one-time link and a QR code that work only from
    this machine or my LAN for 30 minutes, so that nobody else can claim the machine during setup.
-3. As a prospective household admin, I want to create my admin account with a passkey during first-time setup, so
-   that the strongest sign-in is there from the first minute.
+3. As a prospective household admin, I want to create my admin account with a passkey at the household's own sign-in
+   address once my device is on the mesh, so that the strongest sign-in is there from the start, tied to the name I'll
+   use every day.
 4. As a prospective household admin, I want to choose the household's identity provider (Authentik or Kanidm) from a
    plain-language comparison, so that I pick what fits my hardware.
 5. As a prospective household admin, I want to choose the mesh and give its token once, so that HomersLab joins
@@ -78,7 +79,7 @@ such as a NAS or a GPU box. It is private by default and never needs a router po
    can be sent.
 8. As a prospective household admin, I want a recovery kit at the end of first-time setup, printable and ready for my
    password manager, so that I can restore everything even without HomersLab.
-9. As a prospective household admin, I want the LAN listener to close for good when first-time setup finishes, so
+9. As a prospective household admin, I want the LAN listener to close for good at my first sign-in over the mesh, so
    that the LAN never sees the household's apps.
 10. As a prospective household admin, I want to install onto another machine over SSH from the setup app and then
     continue in the browser, so that I can set up a headless machine from my laptop.
@@ -185,8 +186,9 @@ such as a NAS or a GPU box. It is private by default and never needs a router po
 
 ### Backups and restore
 
-56. As a household admin, I want every app's data backed up automatically, deduplicated and encrypted, to a target I
-    choose (disk, SFTP, S3, B2, or Proton Drive), so that a dead disk or a fire doesn't lose the family's photos.
+56. As a household admin, I want every app's own data backed up every hour, deduplicated and encrypted, to a target I
+    choose (disk, SFTP, S3, B2, or Proton Drive), so that a dead disk or a fire doesn't lose the family's photos. Big
+    shared folders (films, music) are backed up only where I opt in.
 57. As a household admin, I want a weekly write-only archive of the small, sensitive things, encrypted to a key that
     isn't on the machines, so that even someone who takes over a machine can't read it.
 58. As a household admin, I want a restore test of every app every week, with the result in Admin, so that I know a
@@ -204,9 +206,11 @@ such as a NAS or a GPU box. It is private by default and never needs a router po
 63. As a household admin, I want removing an app to keep its data and backups, so that reinstalling brings it back as
     it was. Removing still stops the app and takes away its sign-in, names, public exposure and place on Home.
 64. As a household admin, I want "delete data" as a separate action, where I type the app's name and confirm with my
-    passkey, so that losing data is never an accident.
+    passkey, so that losing data is never an accident. Its backups and archive copies still expire on their own
+    schedule.
 65. As a household admin, I want to eject an app, so that it keeps running without HomersLab. Eject writes it out as
-    a plain compose project with its data, settings and secrets.
+    a plain compose project with its data, settings and secrets, plus a ready edge snippet for a guarded app. Its plan
+    says plainly that nobody can reach the app until an edge is in front of it again.
 66. As a household admin of classic, I want an importer that moves my household in one sitting with a one-command
     rollback, so that moving is safe.
     - It reads a classic backup: volumes, databases, people and their groups.
@@ -279,23 +283,34 @@ such as a NAS or a GPU box. It is private by default and never needs a router po
     - token rotation (NetBird service-user tokens last at most 365 days);
     - drift reports.
   - **The node authority**: join codes and agent certificates, for mTLS over the mesh.
-  - **Certificates**: ACME DNS challenges through libdns, then handed to the edges. The DNS token never leaves the
-    primary.
+  - **Certificates**: one wildcard certificate per household domain, from an ACME DNS challenge through libdns, handed
+    to the edges. The DNS token never leaves the primary, and the household's app names never reach public
+    Certificate Transparency logs.
 - **Agent** (on every node; root). It owns:
   - **The container engine**: Docker, or rootful Podman through its Docker-compatible API, or rootless Podman with one
-    unprivileged user per app. It runs compose projects through Docker's Compose SDK, pinned.
+    unprivileged user per app.
+  - **App units**: one systemd unit per app, running standard tools: the `docker compose` CLI pinned by the agent's
+    package, or Quadlet units with Podman ([ADR 0014](adr/0014-app-units-run-standard-tools.md)). The agent uses the
+    Compose SDK, pinned exactly, for status, health, logs and planning, in a project-name namespace reserved for
+    HomersLab.
   - **Host apps**: the vendor's repository and package, per distro.
   - **The firewall table**: no published ports, mesh-only listeners, the LAN kept out, drift corrected.
   - **The mesh clients**: NetBird, and Tailscale's client, which also serves Headscale. Per-app tsnet nodes serve
-    Tailscale households without a domain, and Funnel.
+    Headscale households, Tailscale households without a domain, and Funnel.
+    - Router port mapping (UPnP, NAT-PMP, PCP) is switched off in every client: `NB_DISABLE_NAT_MAPPER=true`,
+      `TS_DISABLE_PORTMAPPER=1`.
+    - tsnet nodes upload no logs, reach their control plane over port 443 only, and are closed before they are
+      deleted.
   - **The edge's configuration**: through Caddy's admin API on a Unix socket.
-  - **Secrets**: systemd credentials sealed to the TPM, decrypted at service start, handed to containers as files.
+  - **Secrets**: systemd credentials, sealed by the agent with an explicit `host+tpm2` key, decrypted by the app's unit
+    at start, and handed to its containers as files under the app's own SELinux MCS level
+    ([ADR 0011](adr/0011-secrets-as-tpm-sealed-systemd-credentials.md)).
   - **Storage locations**: local folders, and network shares over the mesh.
   - **Health probes, backup and restore runs, and eject.**
-- **Edge** (on every node; unprivileged Caddy, with only the capability to bind low ports).
+- **Edge** (on every node; unprivileged Caddy 2.11.2 or later, with only the capability to bind low ports).
   - Per-app sites on the node's mesh addresses.
   - Forward-auth to the identity provider for guarded apps, after stripping identity headers that a client could
-    forge.
+    forge, passing the sign-in's refreshed session cookie back to the browser.
   - A public listener that requires PROXY protocol v2, for NetBird's TLS passthrough.
   - Funnel traffic arrives through the agent's tsnet listeners.
 - **Catalog**.
@@ -333,10 +348,12 @@ such as a NAS or a GPU box. It is private by default and never needs a router po
 **Identity providers** must provide:
 - per-app OIDC clients, created, changed and deleted;
 - a forward-auth guard per app and audience;
-- LDAP access for apps that need it;
+- LDAP access for apps that need it (with Kanidm, a person creates an app's LDAP password themselves);
 - people: invite, role, passkey reset, removal;
 - groups for roles and audiences;
 - step-up, as a fresh passkey assertion bound to a plan;
+- revocation that reaches the guard: removing a person, a role or an app also ends that app's guard sessions;
+- admins who hold passkeys only, enforced by HomersLab where the provider doesn't;
 - optional SSH sign-in on nodes: SSSD with Authentik, kanidm-unixd with Kanidm;
 - a report of what it can do.
 
@@ -345,6 +362,7 @@ such as a NAS or a GPU box. It is private by default and never needs a router po
 - device invites and revocation, per person and role;
 - per-app names that resolve to the right node: wildcard records, split DNS, or a per-app node;
 - policies per role;
+- router port mapping switched off in its clients;
 - a public path, where the mesh has one: NetBird's reverse proxy in TLS passthrough, or Funnel;
 - a report of what it can do, for example "no public path" on Headscale.
 
@@ -355,7 +373,7 @@ such as a NAS or a GPU box. It is private by default and never needs a router po
 | Control plane | Cloud, or self-hosted | Tailscale's cloud | The household's own server |
 | A node joins with | A setup key, by API | A tagged, pre-approved auth key from an OAuth client | A pre-auth key with tags, by API |
 | A person's device | A setup key where the app takes one, otherwise the mesh's sign-in | Signs in to the tailnet | Signs in with the household account (Headscale's OIDC login, against the household's identity provider) |
-| Per-app names | Wildcard records in its DNS zones, by API | Split DNS to the primary's resolver, by API; without a domain, one tsnet node per app | Split DNS to the primary's resolver, set once in Headscale's configuration during first-time setup |
+| Per-app names | Wildcard records in its DNS zones, by API | Split DNS to the primary's resolver, by API; without a domain, one tsnet node per app | Each app is its own tsnet node, `<app>.<domain>`, with Headscale's base domain set to the household domain once in first-time setup; a device learns only the names its person may open |
 | Policies | By API | By API (the policy file) | By API (the policy kept in its database) |
 | Public path | Its reverse proxy, TLS passthrough, own domain | Funnel, on `*.ts.net` | None |
 | Domain | Required | Optional | Required |
@@ -381,7 +399,7 @@ One folder per app: a manifest, a plain compose file (none for a host app), icon
 - **names and exposure**: the default exposure, and whether a public path is allowed;
 - **audience**: the default audience, and the kid view;
 - **data to back up**: paths, and database dumps through declared commands;
-- **secrets to generate**;
+- **secrets to generate**, and the UID that reads them;
 - **health checks**;
 - **resources**: memory, disk, GPU;
 - **extras**;
@@ -420,40 +438,58 @@ The manager refuses an app definition unless:
   - CI installs, signs in, updates and restores every verified app.
   - The admin applies an update, or opts in per app.
   - An update runs snapshot → update → health check → rollback if unhealthy.
-  - HomersLab itself updates the same way, from signed releases.
+  - HomersLab itself and the platform's own parts (identity provider, edge, mesh clients) update the same way, from
+    signed releases.
 - **Remove.** Keeps the data and backups.
-- **Delete data.** Typing the app's name, plus a step-up.
-- **Eject.** Writes a plain compose project with its data, settings and secrets, and ends HomersLab's management of the
-  app. The app's sign-in client stays while the household keeps its identity provider.
+- **Delete data.** Typing the app's name, plus a step-up. Its backups and archive copies expire on their own schedule.
+- **Eject.** Hands over the compose project, its secrets as `0600` files, its data and settings, and for a guarded app
+  a ready edge snippet. HomersLab's edge stops serving the app, and the plan says nobody can reach it until an edge is
+  in front of it again. The app's sign-in client stays while the household keeps its identity provider
+  ([ADR 0012](adr/0012-every-app-can-be-ejected.md)).
+- **Restore to an earlier point.** A plan that takes a snapshot first.
 
 ### Names and certificates
 
 - **With a domain**, every app is `<name>.<domain>` on the mesh, resolving to its node.
-  - NetBird: wildcard records in its DNS zones.
-  - Tailscale: split DNS to a resolver on the primary.
-  - Headscale: split DNS to the same resolver, configured once in Headscale.
+  - NetBird: wildcard records in its DNS zones, by API.
+  - Tailscale: split DNS to a resolver on the primary, by API.
+  - Headscale: its base domain is the household domain, set once in first-time setup. Every app is its own tsnet node,
+    so a device learns only the names its person may open
+    ([Headscale spike](research/2026-11-09-spike-headscale-tsnet.md)).
+- **Certificates**: one wildcard certificate per household domain, issued on the primary and handed to the edges over
+  the agents' mTLS. The household's app names never appear in public Certificate Transparency logs.
 - **Headscale always needs a domain.** Its support for `tailscale cert` was merged into its main branch on 2026-10-18
   but isn't in a release yet (v0.29.7). Even then it would need a DNS provider for the household's domain.
 - **On Tailscale without a domain**, every app is its own tagged tsnet node, named `<name>.<tailnet>.ts.net`, with
-  Tailscale's certificate. The free plan allows 50 tagged devices, so this is chosen over Tailscale Services, which
-  allows 10.
-- **Certificates for domains** come from the primary's DNS challenge.
+  Tailscale's per-node certificate, which is public in the CT logs. The free plan allows 50 tagged devices, so this is
+  chosen over Tailscale Services, which allows 10.
+
+### First-time setup in two halves
+
+- **The one-time link** works on the machine or its LAN for 30 minutes. It covers everything up to "mesh connected,
+  certificate issued": the household, the identity provider, the mesh and its token, the domain and its DNS token,
+  mail, and the recovery kit.
+- **Then the admin joins this device to the mesh** (a QR code) and finishes at the sign-in's own address, where the
+  admin's passkey is created. The passkey is bound to the name the household will use every day.
+- **The LAN listener closes for good** at the admin's first sign-in over the mesh.
+- **Headscale households** also make one guided change in Headscale's configuration: its base domain.
 
 ### Security defaults
 
-- No router ports, ever.
+- No router ports, ever, and no router port mapping by the mesh clients.
 - TLS ends on the household's machines.
 - The LAN sees the machines, not the apps.
 - Admin is reachable over the mesh only.
 - Secrets travel only inward: a front end may send one, and no response carries one.
 - Signed releases, an SBOM, image digests pinned in the catalog, signed catalogs.
 - No telemetry.
-- Notifications by mail and ntfy, and in the desktop app.
+- Notifications by mail always, by ntfy where the household has one (an external server or the catalog's ntfy app),
+  and in the desktop app.
 
 ### Packaging
 
 - Signed packages per distro (deb, rpm, pacman), for x86_64 and arm64.
-- One binary, which runs as the manager, the agent or both.
+- One binary. On the primary it runs as two processes: the manager, unprivileged, and the agent, as root.
 
 ## Testing Decisions
 
@@ -478,6 +514,7 @@ The manager refuses an app definition unless:
   byte for byte with a committed baseline. A deliberate change updates the baseline and explains the diff. Prior art:
   classic's golden tests.
 - **Restore by hand**: CI follows the recovery kit's how-to, using only plain restic and age.
+- **Compose SDK upgrades** pass an API diff, the engine contract suite and a golden test of config hashes.
 - **Distros and architectures**: package install tests in containers and VMs.
 - **Surfaces**:
   - flow tests on the key flows: first-time setup, install with a plan, invite, add a node, restore;
@@ -517,6 +554,10 @@ The manager refuses an app definition unless:
 - **Classic** takes fixes only, and is archived after the move.
 - **The maintainer's private apps** go into a private signed catalog, the first third-party catalog.
 - **The repository** is public from its first commit. The README says "not ready" until 1.0.
+- **The meshes are built in this order:** NetBird, then Headscale (which runs in CI), then Tailscale's cloud (its API
+  adapter and Funnel, tested against a recorded stand-in and the manual release checklist).
+- **1.0's catalog:** every app the maintainer's household runs today is Verified before the move. Converter output
+  that passes review joins as Community.
 
 ### Design first
 
@@ -531,19 +572,19 @@ The manager refuses an app definition unless:
 - Then a design system: tokens, components, light and dark, mobile.
 - Then the backend, built against it.
 
-### Open spikes
+### Spikes
 
-1. **NetBird's reverse-proxy API, end to end.** It was in beta on 2026-11-09. On the shared cloud cluster, TLS
-   services need a chosen listen port, and classic found 443 and 8443 unavailable there in 2026-10.
-2. **systemd credentials** with Docker, rootful Podman and rootless Podman.
-3. **Kanidm with oauth2-proxy** as the forward-auth guard.
-4. **Pinning the Compose SDK.** Minor releases have broken its library APIs.
-5. **Per-app tsnet nodes**, and the tagged-device limits.
-6. **A Tailscale OAuth client**, created from a one-time token.
-7. **Headscale**:
-   - split DNS to the primary's resolver;
-   - OIDC login against Authentik and against Kanidm;
-   - `tailscale cert`, once it ships in a release.
+Run on 2026-11-09, each in throwaway containers on the maintainer's machine. The findings and code are in
+[research/](research/) and `spikes/`.
+
+| Spike | Answer | Still open |
+|---|---|---|
+| [NetBird API](research/2026-11-09-spike-netbird-api.md) | Every operation works by API on self-hosted NetBird, including the TLS passthrough public path with PROXY v2 | The cloud (the first token needs one dashboard visit; shared clusters' TLS ports) |
+| [systemd credentials](research/2026-11-09-spike-systemd-creds.md) | Works for Docker, Compose and rootless Podman, with per-app SELinux MCS levels and explicit `host+tpm2` sealing | The root tests, in a VM |
+| [Kanidm + oauth2-proxy](research/2026-11-09-spike-kanidm-forward-auth.md) | Meets the contract by API; guards need the session cookie passed back | Revocation that reaches the guard; LDAP is partial |
+| [Compose SDK](research/2026-11-09-spike-compose-sdk.md) | Works on Docker and rootless Podman, v5.5.1 and v5.7.0 | Rootful Podman; the GPU on rootless Podman (SELinux) |
+| [Headscale + tsnet](research/2026-11-09-spike-headscale-tsnet.md) | Keys and policy by API, 100 tsnet nodes in one process, names that follow the policy | Headscale's OIDC login; `tailscale cert` in a release |
+| A Tailscale OAuth client from a one-time token | Not run | Needs a real tailnet |
 
 ### Name
 
@@ -553,7 +594,8 @@ Checked on 2026-11-09:
 - **GitHub and npm**: no repository or package named homerslab.
 - **Domains**: no DNS for .dev, .org, .io or .app; .com is taken.
 - **Collision**: Homer, a popular self-hosted dashboard, shares the word.
-- **Still to do**: check the trademark registers (EUIPO, Swissreg, USPTO) before the name goes public.
+- **Trademarks** (TMview, Swissreg, USPTO): no HomersLab mark anywhere, live or dead. Similar HOMER software marks
+  exist; the maintainer plans no registration and no commercial use.
 
 ### Traceability
 
@@ -624,3 +666,11 @@ Every answer of the grilling (2026-11-09) and where it lives:
 | 61 | Eject is the way out; the platform stays HomersLab's | ADR 0012 |
 | 62 | Secrets as TPM-sealed systemd credentials | ADR 0011 |
 | 63 | Headscale named in the mesh contract (added after the grilling) | ADR 0005; Adapter contracts |
+| 64 | First-time setup in two halves; the passkey at the sign-in's own address | First-time setup in two halves; stories 3, 9 |
+| 65 | One wildcard certificate per household domain | ADR 0006; Names and certificates |
+| 66 | App units run standard tools; the SDK reads and plans | ADR 0014; Modules (Agent) |
+| 67 | Eject hands over everything, an edge snippet included | ADR 0012; story 65 |
+| 68 | Headscale's base domain is the household domain | ADR 0005; Names and certificates |
+| 69 | Hourly backups; storage locations opt-in | ADR 0010; story 56 |
+| 70 | Meshes built NetBird, then Headscale, then Tailscale | ADR 0005; Further Notes |
+| 71 | 1.0's catalog: the maintainer's apps, Verified | Further Notes |

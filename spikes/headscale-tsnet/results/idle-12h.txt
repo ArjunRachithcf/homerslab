@@ -1,0 +1,6 @@
+hlspike-headscale-headscale-1 cpu=0.10% mem=21.8MiB / 125.1GiB
+hlspike-headscale-ts-dns-1 cpu=0.04% mem=21.57MiB / 125.1GiB
+hlspike-headscale-coredns-1 cpu=0.04% mem=13.11MiB / 125.1GiB
+hlspike-headscale-client-adult-1 cpu=0.12% mem=28.7MiB / 125.1GiB
+hlspike-headscale-client-kid-1 cpu=0.11% mem=22.94MiB / 125.1GiB
+nodes registered: 108, online now: 3

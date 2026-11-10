@@ -1,0 +1,10 @@
+19:31:43Z
+hlspike-kanidm-caddy-1	13.88MiB / 125.1GiB
+hlspike-kanidm-oauth2-proxy-1	6.309MiB / 125.1GiB
+hlspike-kanidm-oauth2-proxy-b-1	7.918MiB / 125.1GiB
+hlspike-kanidm-ldapclient-1	1000KiB / 125.1GiB
+hlspike-kanidm-whoami-1	4.422MiB / 125.1GiB
+hlspike-kanidm-kanidm-1	102.2MiB / 125.1GiB
+kanidm          current= 125.3 MiB peak= 132.2 MiB anon=  77.4 MiB
+oauth2-proxy    current=   6.5 MiB peak=  11.9 MiB anon=   5.6 MiB
+oauth2-proxy-b  current=   9.6 MiB peak=  10.3 MiB anon=   7.2 MiB

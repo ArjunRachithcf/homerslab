@@ -1,0 +1,19 @@
+# API key rotation through the REST API (2026-11-09T19:09:16Z)
+key 2 created with key 1 (prefix hskey-api-KPi6VZrcJknI, expires 2027-02-07T19:09:16Z)
+- key 2 lists the keys:
+{"id":"1","prefix":"hskey-api-O1ofRQ9BKLHA-***","expiration":"2027-02-07T18:52:04.974828239Z","lastSeen":null}
+{"id":"2","prefix":"hskey-api-KPi6VZrcJknI-***","expiration":"2027-02-07T19:09:16Z","lastSeen":null}
+- key 2 expires key 1:
+{}HTTP 200  
+- key 1 now:
+UnauthorizedHTTP 401  
+- a key created over REST without an expiration:
+  created: prefix hskey-api-zA50ekndg0fm
+  using it right away: UnauthorizedHTTP 401  
+{"id":"1","prefix":"hskey-api-O1ofRQ9BKLHA-***","expiration":"2026-11-09T19:09:17.161267413Z"}
+{"id":"2","prefix":"hskey-api-KPi6VZrcJknI-***","expiration":"2027-02-07T19:09:16Z"}
+{"id":"3","prefix":"hskey-api-zA50ekndg0fm-***","expiration":"0001-01-01T00:00:00Z"}
+- key 2 deletes keys 1 and 3:
+{}HTTP 200  
+{}HTTP 200  
+{"id":"2","prefix":"hskey-api-KPi6VZrcJknI-***","expiration":"2027-02-07T19:09:16Z"}

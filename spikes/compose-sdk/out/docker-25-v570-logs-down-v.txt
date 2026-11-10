@@ -1,0 +1,24 @@
+web-1 | [::ffff:127.0.0.1]:49416: response:200
+web-1 | [::ffff:127.0.0.1]:49432: response:200
+web-1 | [::ffff:127.0.0.1]:49442: response:200
+whoami-1 | 2026/11/09 19:01:46 Starting up on port 80
+== logs took 41ms
+stack hlspike-compose status="running(2)" files=~/homerslab/spikes/compose-sdk/project/compose.yaml,~/homerslab/spikes/compose-sdk/project/compose.selinux.yaml
+(5 other projects on this engine, not shown)
+== ls took 431ms
+  [event] start down
+  [event] Container hlspike-compose-whoami-1 Working Stopping 
+  [event] Container hlspike-compose-whoami-1 Done    Stopped 
+  [event] Container hlspike-compose-whoami-1 Working Removing 
+  [event] Container hlspike-compose-whoami-1 Done    Removed 
+  [event] Container hlspike-compose-web-1    Working Stopping 
+  [event] Container hlspike-compose-web-1    Done    Stopped 
+  [event] Container hlspike-compose-web-1    Working Removing 
+  [event] Container hlspike-compose-web-1    Done    Removed 
+  [event] Volume hlspike-compose_data        Working Removing 
+  [event] Network hlspike-compose_default    Working Removing 
+  [event] Volume hlspike-compose_data        Done    Removed 
+  [event] Network hlspike-compose_default    Done    Removed 
+  [event] done down success=false
+== left with label com.docker.compose.project=hlspike-compose: containers=0 volumes=[] networks=[]
+== down took 11.599s

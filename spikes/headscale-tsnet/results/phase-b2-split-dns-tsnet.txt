@@ -1,0 +1,13 @@
+# Phase B2: split DNS home.test -> 100.64.0.5 (a tsnet node in the apps process, relaying to CoreDNS) (2026-11-09T19:06:31Z)
+route switched on the adult 7.113563070 s after the restart began
+Split DNS Routes:
+  - home.test                      -> 100.64.0.5
+
+client-adult photos.home.test         A=100.64.0.3   app=photos node=photos.ts.hlspike.test ip=100.64.0.3 host=photos.home.test caller=adult-laptop.ts.hlspike.test (user adult)
+client-adult notes.home.test          A=100.64.0.2   app=notes node=notes.ts.hlspike.test ip=100.64.0.2 host=notes.home.test caller=adult-laptop.ts.hlspike.test (user adult)
+client-adult chores.home.test         A=100.64.0.4   app=chores node=chores.ts.hlspike.test ip=100.64.0.4 host=chores.home.test caller=adult-laptop.ts.hlspike.test (user adult)
+client-adult books.home.test          A=100.64.0.7   app=books node=books.ts.hlspike.test ip=100.64.0.7 host=books.home.test caller=adult-laptop.ts.hlspike.test (user adult)
+client-adult wiki.home.test           A=100.64.0.6   app=wiki node=wiki.ts.hlspike.test ip=100.64.0.6 host=wiki.home.test caller=adult-laptop.ts.hlspike.test (user adult)
+client-kid chores.home.test         A=100.64.0.4   app=chores node=chores.ts.hlspike.test ip=100.64.0.4 host=chores.home.test caller=kid-tablet.ts.hlspike.test (user kid)
+# TCP to the tsnet resolver (dig-less: busybox nslookup is UDP only), via tailscale nc from the adult:
+TCP answer, last 4 bytes (the A record): 100.64.0.3

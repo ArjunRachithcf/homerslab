@@ -1,0 +1,4 @@
+# Test credentials and downloaded upstream files never go into git.
+secrets/
+upstream/
+gocheck/bin/

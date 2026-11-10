@@ -1,0 +1,10 @@
+######## bad-image
+== ERROR Error response from daemon: pull access denied for hlspike-compose-does-not-exist, repository does not exist or may require 'docker login'
+   chain=[*errors.joinError] tags=[errdefs.NotFound]
+######## port-conflict
+######## missing-secret
+== ERROR Error response from daemon: invalid mount config for type "bind": bind source path does not exist: ~/homerslab/spikes/compose-sdk/project/errors/missing.txt
+   chain=[*client.httpError *fmt.wrapError *errors.errorString] tags=[errdefs.InvalidArgument]
+######## port-conflict
+== ERROR Error response from daemon: failed to set up container networking: driver failed programming external connectivity on endpoint hlspike-compose-err-web-1 (bfb5e9435126194737d76737a167fcbe4a03cc8088689bae42c7952270e79c27): Bind for 127.0.0.1:18080 failed: port is already allocated
+   chain=[*client.httpError *fmt.wrapError *errors.errorString] tags=[errdefs.Internal]

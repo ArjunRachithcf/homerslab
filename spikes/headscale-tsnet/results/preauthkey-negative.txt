@@ -1,0 +1,13 @@
+# Pre-auth keys that must not work (tsnet, TS_FORCE_NOISE_443=1) (2026-11-09T19:19:26Z)
+=== noexp: key created over REST without expiration (stored as 0001-01-01)
+2026/11/09 19:19:22.833528 [noexp] control: RegisterReq: got response; nodeKeyExpired=false, machineAuthorized=false; authURL=false
+2026/11/09 19:19:22.833894 [noexp] control: [v1] TryLogin: authkey expired
+2026/11/09 19:19:22.834223 [noexp] Received error: authkey expired
+2026/11/09 19:19:22.834280 [noexp] health(warnable=login-state): error: You are logged out. The last login error was: authkey expired
+2026/11/09 19:19:22.906000 node noexp: FAILED: tsnet.Up: backend: authkey expired
+=== photos-again: single-use key, already used by photos
+2026/11/09 19:19:25.833478 [photos-again] control: RegisterReq: got response; nodeKeyExpired=false, machineAuthorized=false; authURL=false
+2026/11/09 19:19:25.833587 [photos-again] control: [v1] TryLogin: authkey already used
+2026/11/09 19:19:25.833688 [photos-again] health(warnable=login-state): error: You are logged out. The last login error was: authkey already used
+2026/11/09 19:19:25.833819 [photos-again] Received error: authkey already used
+2026/11/09 19:19:25.902890 node photos-again: FAILED: tsnet.Up: backend: authkey already used

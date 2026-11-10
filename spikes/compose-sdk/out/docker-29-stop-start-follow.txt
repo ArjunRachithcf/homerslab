@@ -1,0 +1,31 @@
+######## v5.5.1 up
+NAME                         SERVICE  STATE     HEALTH     EXIT PORTS
+hlspike-compose-whoami-1     whoami   running              0    127.0.0.1:18080->80/tcp
+hlspike-compose-web-1        web      running   healthy    0    
+== up took 3.901s
+5.5.1
+######## v5.7.0 up over it (version label now differs)
+== containers before up: 2, after: 2, kept (same ID): 2
+== up took 766ms
+######## v5.7.0 stop
+NAME                         SERVICE  STATE     HEALTH     EXIT PORTS
+hlspike-compose-whoami-1     whoami   exited               2    
+hlspike-compose-web-1        web      exited               137  
+== stop took 11.505s
+######## v5.5.1 start by name only (no files)
+NAME                         SERVICE  STATE     HEALTH     EXIT PORTS
+hlspike-compose-whoami-1     whoami   running              0    127.0.0.1:18080->80/tcp
+hlspike-compose-web-1        web      running   healthy    0    
+== start took 3.049s
+######## v5.7.0 logs -follow for 4s
+whoami-1 | 2026/11/09 19:19:30 Starting up on port 80
+whoami-1 | 2026/11/09 19:19:46 Starting up on port 80
+web-1 | boots recorded in the named volume: 2
+web-1 | [::ffff:127.0.0.1]:39422: response:200
+web-1 | [::ffff:127.0.0.1]:39430: response:200
+web-1 | [::ffff:127.0.0.1]:39434: response:200
+== logs took 4.001s
+== ERROR context deadline exceeded
+   chain=[context.deadlineExceededError] tags=[context.DeadlineExceeded]
+######## down -v
+== down took 12.011s

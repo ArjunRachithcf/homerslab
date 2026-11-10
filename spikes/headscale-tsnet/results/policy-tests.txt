@@ -1,0 +1,7 @@
+# Policy tests (beta in 0.29): checked by POST /api/v1/policy/check, enforced on PUT
+- passing tests:
+{}HTTP 200  
+- a failing test (kid@ to tag:dns:22):
+{"code":3, "message":"test(s) failed:\nkid@ -> tag:dns:22: expected ALLOWED, got DENIED", "details":[]}HTTP 400  
+{"code":2, "message":"setting policy: test(s) failed:\nkid@ -> tag:dns:22: expected ALLOWED, got DENIED", "details":[]}HTTP 500  
+- stored policy still the previous one: 2026-11-09T19:08:45.725766984Z

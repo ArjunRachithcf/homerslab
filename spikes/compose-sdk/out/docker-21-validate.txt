@@ -1,0 +1,7 @@
+######## v5.5.1: detached up + OnExit
+hlspike-compose-web-1        web      running   healthy    0    
+== up took 1.255s
+######## v5.7.0: detached up + OnExit
+== up took 65ms
+== ERROR incompatible options (Start.Wait, Start.Attach, Start.OnExit): Wait implies detached mode and Attach is nil, so no interactive session runs to honor OnExit
+   chain=[*api.IncompatibleOptionsError *errors.errorString] tags=[api.IncompatibleOptionsError options=Start.Wait,Start.Attach,Start.OnExit api.ErrIncompatibleOptions]

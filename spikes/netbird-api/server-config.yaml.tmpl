@@ -1,0 +1,34 @@
+# NetBird combined server (management + signal + relay + STUN + embedded Dex) for the spike.
+# Rendered by setup.sh into secrets/server/config.yaml with fresh secrets.
+# Shape: getting-started.sh v0.82.0 (render_combined_yaml), minus Traefik and TLS: plain HTTP
+# and h2c on :80, reachable only on the sandbox's internal Docker network as nb.hlspike.test.
+server:
+  listenAddress: ":80"
+  exposedAddress: "http://nb.hlspike.test:80"
+  stunPorts:
+    - 3478
+  metricsPort: 9090
+  healthcheckAddress: ":9000"
+  logLevel: "info"
+  logFile: "console"
+
+  authSecret: "__RELAY_AUTH_SECRET__"
+  dataDir: "/var/lib/netbird"
+
+  # The sandbox has no internet: don't try.
+  disableAnonymousMetrics: true
+  disableGeoliteUpdate: true
+
+  auth:
+    issuer: "http://nb.hlspike.test/oauth2"
+    signKeyRefreshEnabled: true
+    sessionCookieEncryptionKey: "__SESSION_COOKIE_KEY__"
+    dashboardRedirectURIs:
+      - "http://nb.hlspike.test/nb-auth"
+      - "http://nb.hlspike.test/nb-silent-auth"
+    cliRedirectURIs:
+      - "http://localhost:53000/"
+
+  store:
+    engine: "sqlite"
+    encryptionKey: "__DATASTORE_KEY__"

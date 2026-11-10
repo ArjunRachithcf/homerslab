@@ -1,0 +1,13 @@
+[06:55:52 +2s] R3-fixed: signed in, at https://app.hlspike.test:28744/fixed/api cookie=9a4733cf
+[06:55:52 +2s] scope maps now: None
+[06:56:13 +22s] R3-fixed: HTTP 200 ok cookie 9a4733cf->9a4733cf
+[06:56:33 +42s] R3-fixed: HTTP 200 ok cookie 9a4733cf->9a4733cf
+[06:56:53 +62s] R3-fixed: HTTP 200 ok cookie 9a4733cf->708a6008
+[06:57:13 +82s] R3-fixed: HTTP 200 ok cookie 708a6008->708a6008
+[06:57:33 +103s] R3-fixed: HTTP 200 ok cookie 708a6008->708a6008
+[06:57:53 +123s] R3-fixed: HTTP 200 ok cookie 708a6008->708a6008
+[06:58:13 +143s] R3-fixed: HTTP 200 ok cookie 708a6008->7061f7b1
+[06:58:33 +163s] R3-fixed: HTTP 200 ok cookie 7061f7b1->7061f7b1
+[06:58:34 +164s] a fresh sign-in by ada now lands on "Access Denied" at https://idm.hlspike.test:28743/ui/oauth2/resume
+[06:58:34 +164s] restore: scope maps now: ['adults@idm.hlspike.test: {"email", "groups_name", "openid", "profile"}']
+summary R3-fixed: 0 bounce(s) through sign-in, 0 failed poll(s), 3 distinct cookie values over 160s after the scope map was removed

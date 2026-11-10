@@ -1,0 +1,183 @@
+# Spike: a local, self-hosted NetBird v0.82.0 driven only by its REST API.
+# Always run as: docker compose -p hlspike-netbird ...   (the name below says the same)
+#
+# Isolation: one internal network (no internet, no route to the host's NetBird or the LAN),
+# no published ports, WireGuard only inside the peer containers' own namespaces.
+name: hlspike-netbird
+
+x-netbird-client: &netbird-client
+  image: netbirdio/netbird:0.82.0@sha256:eca5b274c635bfbb04ec6724a0712d1146190dd450eea199eeb83916fdd94965
+  cap_add: [NET_ADMIN]
+  stop_grace_period: 5s
+  profiles: [peers]
+
+networks:
+  mesh:
+    internal: true
+    ipam:
+      config:
+        - subnet: 10.231.0.0/24
+  # Only for gobuild: reaches the Go module proxy, never the sandbox.
+  build:
+    ipam:
+      config:
+        - subnet: 10.231.1.0/24
+
+volumes:
+  server_data:
+  proxy_state:
+  edge_state:
+  device_state:
+  caddy_data:
+  gocache:
+
+services:
+  # Stand-in for public DNS (see dns/Corefile).
+  dns:
+    image: coredns/coredns:1.13.1@sha256:9b9128672209474da07c91439bf15ed704ae05ad918dd6454e5b6ae14e35fee6
+    command: ["-conf", "/etc/coredns/Corefile"]
+    volumes:
+      - ./dns:/etc/coredns:ro,Z
+    networks:
+      mesh:
+        ipv4_address: 10.231.0.53
+
+  # Combined server: management, signal, relay, STUN, embedded Dex.
+  server:
+    image: netbirdio/netbird-server:0.82.0@sha256:7b5b53b2dc8bc25639f791cf72d47cf86911894ff3f8a97cb79bab9be958109c
+    command: ["--config", "/etc/netbird/config.yaml"]
+    environment:
+      NB_SETUP_PAT_ENABLED: "true"
+      # Without this, a fresh install downloads GeoLite2 from pkgs.netbird.io and exits when it can't.
+      NB_DISABLE_GEOLOCATION: "true"
+    volumes:
+      - server_data:/var/lib/netbird
+      - ./secrets/server:/etc/netbird:ro,Z
+    dns: [10.231.0.53]
+    stop_grace_period: 5s
+    networks:
+      mesh:
+        ipv4_address: 10.231.0.10
+        aliases: [nb.hlspike.test]
+
+  # The API client (curl, jq), and later "the internet" for the public path.
+  tools:
+    image: nicolaka/netshoot:v0.15@sha256:47b907d662d139d1e2f22bfe14f4efca1e3f1feed283572f47c970c780c03b61
+    command: ["sleep", "infinity"]
+    user: "1000:1000"
+    volumes:
+      - ./secrets/tools:/secrets:ro,Z
+    dns: [10.231.0.53]
+    stop_grace_period: 1s
+    networks:
+      mesh:
+        ipv4_address: 10.231.0.5
+
+  # A node: joins with the "edges" setup key; its edge (Caddy) shares its network namespace.
+  edge:
+    <<: *netbird-client
+    hostname: edge
+    env_file:
+      - path: ./secrets/env/edge.env
+        required: false
+    environment:
+      NB_MANAGEMENT_URL: http://nb.hlspike.test:80
+      NB_HOSTNAME: edge
+      NB_LOG_LEVEL: info
+    volumes:
+      - edge_state:/var/lib/netbird
+    networks:
+      mesh:
+        ipv4_address: 10.231.0.30
+
+  edge-web:
+    image: caddy:2.11.9-alpine@sha256:0bbb055bda6793c999bde78b1b5ce3e89f829fb031af2cf50056ea1246559fee
+    network_mode: service:edge
+    depends_on: [edge]
+    volumes:
+      - ./edge-web/Caddyfile:/etc/caddy/Caddyfile:ro,Z
+      - caddy_data:/data
+    stop_grace_period: 2s
+    profiles: [peers]
+
+  # A household device: joins with the "household" setup key.
+  device:
+    <<: *netbird-client
+    hostname: device
+    env_file:
+      - path: ./secrets/env/device.env
+        required: false
+    environment:
+      NB_MANAGEMENT_URL: http://nb.hlspike.test:80
+      NB_HOSTNAME: device
+      NB_LOG_LEVEL: info
+    volumes:
+      - device_state:/var/lib/netbird
+    networks:
+      mesh:
+        ipv4_address: 10.231.0.31
+
+  device-tools:
+    image: nicolaka/netshoot:v0.15@sha256:47b907d662d139d1e2f22bfe14f4efca1e3f1feed283572f47c970c780c03b61
+    command: ["sleep", "infinity"]
+    network_mode: service:device
+    depends_on: [device]
+    stop_grace_period: 1s
+    profiles: [peers]
+
+  # NetBird's reverse proxy, registered with an account-scoped proxy token from the API.
+  # No ACME: its TLS-passthrough services never touch a certificate; a self-signed one for the
+  # cluster's own name keeps it from looking for one.
+  proxy:
+    image: netbirdio/reverse-proxy:0.82.0@sha256:cc0deaed250ca1332e28f40caca780055cdda7871750cb020478f6fe96e1f6d7
+    env_file:
+      - path: ./secrets/env/proxy.env
+        required: false
+    environment:
+      NB_PROXY_MANAGEMENT_ADDRESS: http://nb.hlspike.test:80
+      NB_PROXY_ALLOW_INSECURE: "true"
+      NB_PROXY_DOMAIN: proxy.hlspike.test
+      NB_PROXY_ADDRESS: ":8443"
+      NB_PROXY_CERTIFICATE_DIRECTORY: /certs
+      NB_PROXY_ACME_CERTIFICATES: "false"
+      NB_PROXY_LOG_LEVEL: info
+      NB_PROXY_DISABLE_GEOLOCATION: "true"
+    volumes:
+      - proxy_state:/var/lib/netbird
+      - ./secrets/proxy-certs:/certs:ro,Z
+    dns: [10.231.0.53]
+    stop_grace_period: 5s
+    profiles: [proxy]
+    networks:
+      mesh:
+        ipv4_address: 10.231.0.20
+
+  # Builds gocheck/ with the official Go REST client. No credentials, not on the sandbox network.
+  gobuild:
+    image: golang:1.26.4-alpine@sha256:3ad57304ad93bbec8548a0437ad9e06a455660655d9af011d58b993f6f615648
+    working_dir: /src
+    environment:
+      CGO_ENABLED: "0"
+      GOTOOLCHAIN: local
+      GOCACHE: /cache/build
+      GOMODCACHE: /cache/mod
+    command: ["sh", "-c", "go mod tidy && go build -trimpath -o bin/gocheck . && go list -m github.com/netbirdio/netbird && chown -R 1000:1000 /src"]
+    volumes:
+      - ./gocheck:/src:z
+      - gocache:/cache
+    networks: [build]
+    profiles: [gobuild]
+
+  # Runs the static gocheck binary inside the sandbox, as the service user.
+  gocheck:
+    image: nicolaka/netshoot:v0.15@sha256:47b907d662d139d1e2f22bfe14f4efca1e3f1feed283572f47c970c780c03b61
+    user: "1000:1000"
+    command: ["/app/gocheck"]
+    volumes:
+      - ./gocheck/bin:/app:ro,z
+      - ./secrets/gocheck:/secrets:ro,Z
+    dns: [10.231.0.53]
+    networks:
+      mesh:
+        ipv4_address: 10.231.0.6
+    profiles: [gocheck]

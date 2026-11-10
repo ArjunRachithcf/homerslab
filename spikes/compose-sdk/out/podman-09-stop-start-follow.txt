@@ -1,0 +1,27 @@
+######## v5.7.0 up
+NAME                         SERVICE  STATE     HEALTH     EXIT PORTS
+hlspike-compose-web-1        web      running   healthy    0    
+hlspike-compose-whoami-1     whoami   running              0    127.0.0.1:18090->80/tcp
+== up took 3.708s
+######## v5.7.0 stop
+NAME                         SERVICE  STATE     HEALTH     EXIT PORTS
+hlspike-compose-web-1        web      exited               137  
+hlspike-compose-whoami-1     whoami   exited               2    127.0.0.1:18090->80/tcp
+== stop took 11.338s
+######## v5.7.0 start by name only
+NAME                         SERVICE  STATE     HEALTH     EXIT PORTS
+hlspike-compose-web-1        web      running   healthy    0    
+hlspike-compose-whoami-1     whoami   running              0    127.0.0.1:18090->80/tcp
+== start took 1.789s
+######## logs -follow 4s
+web-1 | boots recorded in the named volume: 2
+web-1 | [::ffff:127.0.0.1]:49402: response:200
+whoami-1 | 2026/11/09 19:20:16 Starting up on port 80
+whoami-1 | 2026/11/09 19:20:30 Starting up on port 80
+web-1 | [::ffff:127.0.0.1]:49412: response:200
+== logs took 4.003s
+== ERROR context deadline exceeded
+   chain=[context.deadlineExceededError] tags=[context.DeadlineExceeded]
+######## down -v
+== left with label com.docker.compose.project=hlspike-compose: containers=0 volumes=[] networks=[]
+== down took 11.681s

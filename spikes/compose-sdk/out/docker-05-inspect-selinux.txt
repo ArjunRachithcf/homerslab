@@ -1,0 +1,13 @@
+container hlspike-compose-web-1 id=cd7c3cb7ade1
+  label com.docker.compose.project.config_files=~/homerslab/spikes/compose-sdk/project/compose.yaml,~/homerslab/spikes/compose-sdk/project/compose.selinux.yaml
+  mount type=volume name=hlspike-compose_data src=/var/lib/docker/volumes/hlspike-compose_data/_data dst=/data rw=true mode="rw"
+  mount type=bind name= src=~/homerslab/spikes/compose-sdk/project/secrets dst=/run/hlspike-secrets-dir rw=false mode="ro,Z"
+  mount type=bind name= src=~/homerslab/spikes/compose-sdk/project/secrets/token.txt dst=/run/secrets/token rw=false mode=""
+  selinux process="system_u:system_r:container_t:s0:c426,c753" mount="system_u:object_r:container_file_t:s0:c426,c753" securityopt=[]
+  capadd=[CAP_CHOWN CAP_DAC_OVERRIDE CAP_SETGID CAP_SETUID] capdrop=[ALL] binds=[hlspike-compose_data:/data:rw ~/homerslab/spikes/compose-sdk/project/secrets:/run/hlspike-secrets-dir:ro,Z]
+  health healthy failing=0
+  last probe exit=0 output=""
+container hlspike-compose-whoami-1 id=f20def11d973
+  label com.docker.compose.depends_on=web:service_healthy:false
+  selinux process="system_u:system_r:container_t:s0:c618,c643" mount="system_u:object_r:container_file_t:s0:c618,c643" securityopt=[]
+  capadd=[] capdrop=[] binds=[]

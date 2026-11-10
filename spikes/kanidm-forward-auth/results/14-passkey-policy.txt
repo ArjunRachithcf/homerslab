@@ -1,0 +1,10 @@
+admins policy: {'class': ['account_policy', 'group', 'object'], 'credential_type_minimum': ['passkey']}
+  intent token for adm1: issued, expires at unix 1794256242
+  exchanged: primary=None warnings=['NoValidCredentials'] can_commit=False
+  password set: warnings=['MfaRequired'] can_commit=False
+  TOTP generated: algo=sha256 step=30 digits=6
+  TOTP verified: primary={"PasswordMfa": [["spike"], [], 0]} can_commit=True
+  committed
+adm1 outside admins: password + TOTP sign-in works (token length 652)
+adm1 inside admins (passkey minimum): password + TOTP sign-in works (token length 652)
+adm1's credential-update session now: {'primary_state': 'PolicyDeny', 'passkeys_state': 'Modifiable', 'warnings': ['NoValidCredentials'], 'can_commit': False}

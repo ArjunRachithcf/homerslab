@@ -1,0 +1,155 @@
+# HomersLab spike: can Kanidm 1.12 meet the identity provider contract by API?
+# Run only as: docker compose -p hlspike-kanidm ...   (the name below makes that the default too)
+# Ports are published on 127.0.0.1 only. Nothing here touches the live `homelab` project.
+name: hlspike-kanidm
+
+x-kanidm-image: &kanidm-image kanidm/server:1.12.0@sha256:71b6ff5a9c9c32b632894d8acef5a2afc77941b35a0aa95dcee959fe688d5ce9
+
+services:
+  kanidm:
+    image: *kanidm-image
+    environment:
+      KANIDM_CONFIG: /config/server.toml
+    volumes:
+      - kanidm-data:/data
+      - ./kanidm/server.toml:/config/server.toml:ro,Z
+    ports:
+      - "127.0.0.1:28743:28743"
+    networks:
+      spike:
+        ipv4_address: 10.231.77.10
+        aliases: [idm.hlspike.test]
+
+  oauth2-proxy:
+    image: quay.io/oauth2-proxy/oauth2-proxy:v7.15.6@sha256:c3415e8660af553f5e18f5d90db050614c02493c0ac6260ac59442f6d9b12048
+    depends_on: [kanidm]
+    environment:
+      OAUTH2_PROXY_PROVIDER: oidc
+      OAUTH2_PROXY_PROVIDER_DISPLAY_NAME: Household account
+      OAUTH2_PROXY_OIDC_ISSUER_URL: https://idm.hlspike.test:28743/oauth2/openid/${O2P_CLIENT_ID:-whoami}
+      OAUTH2_PROXY_CLIENT_ID: ${O2P_CLIENT_ID:-whoami}
+      OAUTH2_PROXY_CLIENT_SECRET_FILE: /secrets/client_secret
+      OAUTH2_PROXY_COOKIE_SECRET_FILE: /secrets/cookie_secret
+      OAUTH2_PROXY_REDIRECT_URL: https://app.hlspike.test:28744/oauth2/callback
+      OAUTH2_PROXY_CODE_CHALLENGE_METHOD: S256
+      OAUTH2_PROXY_SCOPE: openid profile email groups_name
+      OAUTH2_PROXY_OIDC_GROUPS_CLAIM: groups
+      OAUTH2_PROXY_ALLOWED_GROUPS: ${O2P_ALLOWED_GROUPS:-adults}
+      OAUTH2_PROXY_EMAIL_DOMAINS: "*"
+      OAUTH2_PROXY_PROVIDER_CA_FILES: /kanidm-ca/ca.pem
+      OAUTH2_PROXY_HTTP_ADDRESS: 0.0.0.0:4180
+      OAUTH2_PROXY_REVERSE_PROXY: "true"
+      OAUTH2_PROXY_TRUSTED_PROXY_IPS: 10.231.77.11
+      OAUTH2_PROXY_SET_XAUTHREQUEST: "true"
+      OAUTH2_PROXY_UPSTREAMS: static://202
+      OAUTH2_PROXY_SKIP_PROVIDER_BUTTON: "true"
+      OAUTH2_PROXY_WHITELIST_DOMAINS: app.hlspike.test:28744
+      OAUTH2_PROXY_COOKIE_NAME: _hl_guard
+      OAUTH2_PROXY_COOKIE_SECURE: "true"
+      OAUTH2_PROXY_COOKIE_REFRESH: ${O2P_COOKIE_REFRESH:-1m}
+      OAUTH2_PROXY_COOKIE_EXPIRE: 12h
+      OAUTH2_PROXY_INSECURE_OIDC_SKIP_NONCE: "false"
+    volumes:
+      - kanidm-ca:/kanidm-ca:ro
+      - ./secrets/oauth2-proxy:/secrets:ro,Z
+    networks:
+      spike:
+        ipv4_address: 10.231.77.12
+
+  # A second guarded app with its own client and its own oauth2-proxy (the per-app pattern).
+  oauth2-proxy-b:
+    image: quay.io/oauth2-proxy/oauth2-proxy:v7.15.6@sha256:c3415e8660af553f5e18f5d90db050614c02493c0ac6260ac59442f6d9b12048
+    profiles: [app-b]
+    depends_on: [kanidm]
+    environment:
+      OAUTH2_PROXY_PROVIDER: oidc
+      OAUTH2_PROXY_PROVIDER_DISPLAY_NAME: Household account
+      OAUTH2_PROXY_OIDC_ISSUER_URL: https://idm.hlspike.test:28743/oauth2/openid/whoami2
+      OAUTH2_PROXY_CLIENT_ID: whoami2
+      OAUTH2_PROXY_CLIENT_SECRET_FILE: /secrets/client_secret
+      OAUTH2_PROXY_COOKIE_SECRET_FILE: /secrets/cookie_secret
+      OAUTH2_PROXY_REDIRECT_URL: https://app2.hlspike.test:28744/oauth2/callback
+      OAUTH2_PROXY_CODE_CHALLENGE_METHOD: S256
+      OAUTH2_PROXY_SCOPE: openid profile email groups_name
+      OAUTH2_PROXY_OIDC_GROUPS_CLAIM: groups
+      OAUTH2_PROXY_ALLOWED_GROUPS: adults
+      OAUTH2_PROXY_EMAIL_DOMAINS: "*"
+      OAUTH2_PROXY_PROVIDER_CA_FILES: /kanidm-ca/ca.pem
+      OAUTH2_PROXY_HTTP_ADDRESS: 0.0.0.0:4180
+      OAUTH2_PROXY_REVERSE_PROXY: "true"
+      OAUTH2_PROXY_TRUSTED_PROXY_IPS: 10.231.77.11
+      OAUTH2_PROXY_SET_XAUTHREQUEST: "true"
+      OAUTH2_PROXY_UPSTREAMS: static://202
+      OAUTH2_PROXY_SKIP_PROVIDER_BUTTON: "true"
+      OAUTH2_PROXY_WHITELIST_DOMAINS: app2.hlspike.test:28744
+      OAUTH2_PROXY_COOKIE_NAME: _hl_guard_b
+      OAUTH2_PROXY_COOKIE_SECURE: "true"
+      OAUTH2_PROXY_COOKIE_REFRESH: 1m
+      OAUTH2_PROXY_COOKIE_EXPIRE: 12h
+      OAUTH2_PROXY_INSECURE_OIDC_SKIP_NONCE: "false"
+    volumes:
+      - kanidm-ca:/kanidm-ca:ro
+      - ./secrets/oauth2-proxy-b:/secrets:ro,Z
+    networks:
+      spike:
+        ipv4_address: 10.231.77.14
+
+  caddy:
+    image: caddy:2.11.9-alpine@sha256:0bbb055bda6793c999bde78b1b5ce3e89f829fb031af2cf50056ea1246559fee
+    depends_on: [oauth2-proxy, whoami]
+    volumes:
+      - ./caddy/Caddyfile:/etc/caddy/Caddyfile:ro,Z
+      - caddy-data:/data
+    ports:
+      - "127.0.0.1:28744:28744"
+    networks:
+      spike:
+        ipv4_address: 10.231.77.11
+
+  whoami:
+    image: traefik/whoami:v1.12.0@sha256:c4717a8d1f0134a7444e24f881160e033991f23027c6c5a9a3f8fd22e70d1d44
+    networks:
+      spike:
+        ipv4_address: 10.231.77.13
+
+  # One-off helpers (profile "tools"): docker compose -p hlspike-kanidm run --rm <name> ...
+  tools:
+    image: kanidm/tools:1.12.0@sha256:9147fe75e7d2c47dbe46df5431255ab7abb05d22f404d16cd99cec27adedd38a
+    profiles: [tools]
+    environment:
+      KANIDM_URL: https://idm.hlspike.test:28743
+      KANIDM_CA_PATH: /kanidm-ca/ca.pem
+    volumes:
+      - kanidm-ca:/kanidm-ca:ro
+      - kanidm-cli:/root
+    networks: [spike]
+
+  ldapclient:
+    image: alpine:3.22@sha256:49340b346798875b5592e5d420241f2f9cfba5f47e62ebb1446a1b34734e898f
+    profiles: [tools]
+    command: ["sleep", "7200"]
+    environment:
+      LDAPTLS_CACERT: /kanidm-ca/ca.pem
+    volumes:
+      - kanidm-ca:/kanidm-ca:ro
+    networks: [spike]
+
+  helper:
+    image: alpine:3.22@sha256:49340b346798875b5592e5d420241f2f9cfba5f47e62ebb1446a1b34734e898f
+    profiles: [tools]
+    volumes:
+      - kanidm-data:/kanidm-data:ro
+      - kanidm-ca:/kanidm-ca
+    networks: [spike]
+
+volumes:
+  kanidm-data:
+  kanidm-ca:
+  kanidm-cli:
+  caddy-data:
+
+networks:
+  spike:
+    ipam:
+      config:
+        - subnet: 10.231.77.0/24

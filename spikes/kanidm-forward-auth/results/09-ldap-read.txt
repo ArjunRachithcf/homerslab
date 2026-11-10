@@ -1,0 +1,29 @@
+--- bind: ldapwhoami -D dn=token -w <RO API token>
+u: ldap_reader@idm.hlspike.test
+exit=0
+--- persons in adults: (&(class=person)(memberof=spn=adults@idm.hlspike.test,dc=idm,dc=hlspike,dc=test))
+dn: spn=ada@idm.hlspike.test,dc=idm,dc=hlspike,dc=test
+entryuuid: 9d0243e2-9cdd-4db8-9528-94a0b5069cf2
+mail: ada@hlspike.test
+uid: ada
+
+--- persons in kids
+dn: spn=kim@idm.hlspike.test,dc=idm,dc=hlspike,dc=test
+mail: kim@hlspike.test
+uid: kim
+
+--- group entries visible to the reader: (class=group)
+0
+--- write: ldapmodify displayname (must be refused), then the entry re-read
+modifying entry "spn=ada@idm.hlspike.test,dc=idm,dc=hlspike,dc=test"
+ldap_result: Protocol error (2)
+exit=2
+displayname: Ada (adult)
+--- bad token
+ldap_bind: Other (e.g., implementation specific) error (80)
+	additional info: NotAuthenticated
+--- plain ldap:// and StartTLS on 3636
+ldap_result: Can't contact LDAP server (-1)
+ldap_start_tls: Can't contact LDAP server (-1)
+--- TLS: certificate verified against Kanidm's CA (LDAPTLS_CACERT); without it
+ldap_sasl_bind(SIMPLE): Can't contact LDAP server (-1)

@@ -1,0 +1,7 @@
+# Policy changes by API, timed on the kid's device (2026-11-09T19:08:43Z)
+2026-11-09T19:08:44.225311720Z
+kids granted tag:app: the kid fetches photos.home.test after 1.020999298 s
+client-kid photos.home.test         A=100.64.0.3   app=photos node=photos.ts.hlspike.test ip=100.64.0.3 host=photos.home.test caller=kid-tablet.home.test (user kid)
+2026-11-09T19:08:45.725766984Z
+grant removed: the kid has lost photos.home.test after 1.107550846 s
+client-kid photos.home.test         A=none         wget: bad address 'photos.home.test'

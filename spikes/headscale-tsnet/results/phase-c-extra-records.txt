@@ -1,0 +1,24 @@
+# Phase C: extra_records_path, no split DNS (2026-11-09T19:07:10Z)
+records served on the adult 7.878783906 s after the restart began
+Run 'tailscale set --accept-dns=false' to revert to your system default DNS resolver.
+=== MagicDNS configuration ===
+MagicDNS: enabled tailnet-wide (suffix = ts.hlspike.test)
+Resolvers (in preference order):
+  (no resolvers configured, system default will be used: see 'System DNS configuration' below)
+Split DNS Routes:
+  (no routes configured: split DNS disabled)
+Search Domains:
+or if no resolvers are provided by the coordination server.
+Search domains:
+client-adult photos.home.test         A=100.64.0.3   app=photos node=photos.ts.hlspike.test ip=100.64.0.3 host=photos.home.test caller=adult-laptop.ts.hlspike.test (user adult)
+client-adult notes.home.test          A=100.64.0.2   app=notes node=notes.ts.hlspike.test ip=100.64.0.2 host=notes.home.test caller=adult-laptop.ts.hlspike.test (user adult)
+client-adult chores.home.test         A=100.64.0.4   app=chores node=chores.ts.hlspike.test ip=100.64.0.4 host=chores.home.test caller=adult-laptop.ts.hlspike.test (user adult)
+client-adult books.home.test          A=100.64.0.7   app=books node=books.ts.hlspike.test ip=100.64.0.7 host=books.home.test caller=adult-laptop.ts.hlspike.test (user adult)
+client-adult wiki.home.test           A=100.64.0.6   app=wiki node=wiki.ts.hlspike.test ip=100.64.0.6 host=wiki.home.test caller=adult-laptop.ts.hlspike.test (user adult)
+# the kid gets every record too (extra records are tailnet-wide):
+client-kid photos.home.test A=100.64.0.3
+client-kid chores.home.test A=100.64.0.4
+client-kid chores.home.test         A=100.64.0.4   app=chores node=chores.ts.hlspike.test ip=100.64.0.4 host=chores.home.test caller=kid-tablet.ts.hlspike.test (user kid)
+added music.home.test by atomic rename: visible on the adult after .553098056 s
+  ... and on the kid after .737459046 s
+removed music.home.test by in-place write: gone on the adult after 1.035621430 s

@@ -1,0 +1,12 @@
+# Override for SELinux-enforcing hosts: compose bind-mounts a `file:` secret without any relabel
+# option, so the container cannot read a file labeled user_home_t. Mounting the secret's folder
+# once with `selinux: Z` makes the engine relabel it privately for this one container.
+services:
+  web:
+    volumes:
+      - type: bind
+        source: ./secrets
+        target: /run/hlspike-secrets-dir
+        read_only: true
+        bind:
+          selinux: Z

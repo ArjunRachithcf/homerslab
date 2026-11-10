@@ -1,0 +1,6 @@
+# name -> tailnet address, written from GET /api/v1/node
+100.64.0.2 notes.home.test
+100.64.0.3 photos.home.test
+100.64.0.4 chores.home.test
+100.64.0.6 wiki.home.test
+100.64.0.7 books.home.test

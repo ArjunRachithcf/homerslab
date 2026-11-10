@@ -1,0 +1,104 @@
+== 1. unauthenticated
+[+0.8s] PASS  unauthenticated request is redirected to sign-in
+        chain: https://app.hlspike.test:28744/api -> https://app.hlspike.test:28744/oauth2/sign_in -> https://idm.hlspike.test:28743/ui/oauth2 | fields: username
+[+0.9s] PASS  forged identity headers without a session do not get in
+        ended at https://idm.hlspike.test:28743/ui/oauth2
+== 2. adult (ada, in adults) signs in with password + TOTP
+[+2.1s] PASS  adult gets 200 from the guarded app
+        Kanidm asked for: username -> totp -> password
+[+2.1s] PASS  identity headers reach the app
+        {"X-Auth-Request-User":"9d0243e2-9cdd-4db8-9528-94a0b5069cf2","X-Auth-Request-Email":"ada@hlspike.test","X-Auth-Request-Preferred-Username":"ada","X-Auth-Request-Groups":"idm_all_persons,idm_all_accounts,idm_people_self_name_write,adults,household"}
+        cookies on the app: _hl_guard (secure=true, httpOnly=true, sameSite=Lax)
+== 3. kid (kim, in kids) signs in
+[+3.1s] PASS  kid is refused (Kanidm: no scope map for kids)
+        asked: username -> totp -> password | page "Access Denied" at https://idm.hlspike.test:28743/ui/oauth2/resume: Access Denied If you believe this is an error, please quote the below Operation ID to support persons. Operation ID: eda6ae6a-690d-4561-8a22-f42f3f939cb1 Powere
+[+3.2s] PASS  kid still cannot reach the app afterwards
+        ended at https://idm.hlspike.test:28743/ui/oauth2
+== 4. forged identity headers from the signed-in adult
+[+3.2s] PASS  copied identity headers carry the real identity, not the forged values
+        {"X-Auth-Request-User":"9d0243e2-9cdd-4db8-9528-94a0b5069cf2","X-Auth-Request-Email":"ada@hlspike.test","X-Auth-Request-Preferred-Username":"ada","X-Auth-Request-Groups":"idm_all_persons,idm_all_accounts,idm_people_self_name_write,adults,household","X-Spike-Unlisted":"forged-unlisted"}
+[+3.2s] PASS  a copied header that oauth2-proxy did not return is deleted (Caddy >= 2.11.2)
+[+3.2s] PASS  headers the edge strips explicitly (Remote-User, X-Forwarded-User) are gone
+        note: a header neither copied nor stripped passes through: X-Spike-Unlisted=forged-unlisted
+== 5. step-up (prompt / max_age) with the adult's live Kanidm session
+        adult's sign-in at unix 1794251572
+[+3.4s] PASS  no prompt: code issued silently (SSO)
+        {"prompted":[],"asked":[],"landed":"https://app.hlspike.test:28744/stepup/callback","auth_time":1794251572,"nonce":"AMOQ5Gl5gotKgHW-","amr":null,"acr":null}
+        ID token: {"iss":"https://idm.hlspike.test:28743/oauth2/openid/stepup-probe","aud":"stepup-probe","sub":"9d0243e2-9cdd-4db8-9528-94a0b5069cf2","preferred_username":"ada","groups":["idm_all_persons","idm_all_accounts","idm_people_self_name_write","adults","household"],"auth_time":1794251572,"iat":1794251573,"exp":1794252473,"nonce":"AMOQ5Gl5gotKgHW-","amr":null,"acr":null,"email":null,"id_token_alg":"ES256","token_type":"Bearer","expires_in":900,"has_refresh_token":true,"access_token_format":"JWS (3 parts)"}
+[+3.6s] PASS  max_age=3600: no prompt, session is fresh enough
+        {"prompted":[],"asked":[],"landed":"https://app.hlspike.test:28744/stepup/callback","auth_time":1794251572,"nonce":"alKGAOucCYQupQJI","amr":null,"acr":null}
+[+11.6s] PASS  prompt=login: Kanidm asks again, then auth_time is fresh
+        {"prompted":["totp"],"asked":["totp","password"],"landed":"https://app.hlspike.test:28744/stepup/callback","auth_time":1794251581,"nonce":"plan-Xos0pqrqawIFEXVT","amr":null,"acr":null}
+[+11.6s] PASS  the step-up is bound to the plan through the nonce
+        nonce=plan-Xos0pqrqawIFEXVT
+[+41.7s] PASS  max_age=0: Kanidm asks again, then auth_time is fresh
+        {"prompted":["totp"],"asked":["totp","password"],"landed":"https://app.hlspike.test:28744/stepup/callback","auth_time":1794251611,"nonce":"6HFKjDspRdZ3ZpH8","amr":null,"acr":null}
+[+41.9s] PASS  prompt=none with a session: code issued silently
+        {"prompted":[],"asked":[],"landed":"https://app.hlspike.test:28744/stepup/callback","auth_time":1794251611,"nonce":"DeTipA9VOrxDo3Zy","amr":null,"acr":null}
+[+42.1s] PASS  prompt=none without a session: error=login_required, no UI
+        {"prompted":[],"asked":[],"landed":"https://app.hlspike.test:28744/stepup/callback","error":"login_required"}
+        prompt=login without a session shows: ["username"]
+        kid on the probe client: {"prompted":["totp"],"asked":[],"landed":"https://idm.hlspike.test:28743/ui/oauth2"} title="Login"
+== 6. /kids-only/ uses /oauth2/auth?allowed_groups=kids
+[+63.5s] PASS  adult is refused on a kids-only route (403 from oauth2-proxy, passed on by Caddy)
+        status 403 at https://app.hlspike.test:28744/kids-only/api
+== 7. scope map widened to kids by API; oauth2-proxy --allowed-group=adults must still refuse the kid
+        scope maps now: ['adults@idm.hlspike.test: {"email", "groups_name", "openid", "profile"}', 'kids@idm.hlspike.test: {"email", "groups_name", "openid", "profile"}']
+[+64.5s] PASS  kid passes Kanidm but is refused by oauth2-proxy (allowed group)
+        status 403 at https://app.hlspike.test:28744/oauth2/callback: 403 Forbidden More Info Go back Sign in Secured with OAuth2 Proxy version v7.15.6
+        scope maps now: ['adults@idm.hlspike.test: {"email", "groups_name", "openid", "profile"}']
+== 8. person removal
+        POST /v1/person -> 200
+          PUT /v1/person/ada2/_attr/mail -> 200
+          GET /v1/person/ada2/_credential/_update_intent/3600 -> 200
+          intent token for ada2: issued, expires at unix 1794255235
+          exchanged: primary=None warnings=['NoValidCredentials'] can_commit=False
+          password set: warnings=['MfaRequired'] can_commit=False
+          TOTP generated: algo=sha256 step=30 digits=6
+          TOTP verified: primary={"PasswordMfa": [["spike"], [], 0]} can_commit=True
+          committed
+[+66.0s] PASS  second adult (ada2) gets 200
+        DELETE /v1/person/ada2 -> 200
+        [+66.2s] still 200 (0s after deletion)
+        [+76.3s] still 200 (10s after deletion)
+        [+86.4s] still 200 (20s after deletion)
+        [+96.4s] still 200 (30s after deletion)
+        [+106.5s] still 200 (40s after deletion)
+        [+116.6s] still 200 (51s after deletion)
+        [+127.0s] denied, now at https://idm.hlspike.test:28743/ui/oauth2
+[+127.0s] PASS  deleted person loses access to the guarded app
+        after 60.871s (cookie-refresh 1m)
+== 9. client deletion
+[+127.1s] PASS  adult still has access before the client is deleted
+        DELETE /v1/oauth2/whoami -> 200
+        discovery for whoami now -> HTTP 404
+        [+127.4s] still 200 (0s after deletion)
+        [+137.4s] still 200 (10s after deletion)
+        [+147.5s] still 200 (20s after deletion)
+        [+157.5s] still 200 (30s after deletion)
+        [+167.6s] still 200 (40s after deletion)
+        [+177.7s] still 200 (50s after deletion)
+        [+187.7s] still 200 (60s after deletion)
+        [+197.8s] still 200 (71s after deletion)
+        [+207.9s] still 200 (81s after deletion)
+        [+217.9s] still 200 (91s after deletion)
+        [+228.0s] still 200 (101s after deletion)
+        [+238.1s] still 200 (111s after deletion)
+        [+248.1s] still 200 (121s after deletion)
+        [+258.2s] still 200 (131s after deletion)
+        [+268.2s] still 200 (141s after deletion)
+        [+278.3s] still 200 (151s after deletion)
+        [+288.3s] still 200 (161s after deletion)
+        [+298.4s] still 200 (171s after deletion)
+        [+308.5s] still 200 (181s after deletion)
+        [+318.5s] still 200 (191s after deletion)
+        [+328.6s] still 200 (201s after deletion)
+        [+338.6s] still 200 (211s after deletion)
+        [+348.7s] still 200 (221s after deletion)
+        [+358.8s] still 200 (231s after deletion)
+[+368.8s] FAIL  deleting the client in Kanidm revokes the existing guard session
+        after nulls (cookie-refresh 1m)
+[+369.0s] PASS  a new sign-in for the deleted client fails
+        HTTP 200 at https://idm.hlspike.test:28743/ui/oauth2: Kanidm idm.hlspike.test Error An unrecoverable error occurred. Please contact your administrator with the details below. Operation ID: 7cf729be-326d-4ccf-86f2-2
+
+22/23 checks passed; FAILED: deleting the client in Kanidm revokes the existing guard session

@@ -1,0 +1,72 @@
+# Spike only: project hlspike-creds, no network. Run from inside a unit started with
+# LoadCredentialEncrypted=db-password:..., so $CREDENTIALS_DIRECTORY is set (spike.sh step2c).
+name: hlspike-creds
+
+x-reader: &reader
+  image: busybox@sha256:a46257e06c82ad85242d0d38077d0a52d9896389ca60a1a59d3463db586e5fa4
+  network_mode: none
+  restart: "no"
+  command:
+    - sh
+    - -c
+    - |
+      id; ls -ln /run/secrets/
+      if cat /run/secrets/db-password >/dev/null 2>/tmp/err; then echo "READ-OK sha256=$$(sha256sum /run/secrets/db-password | cut -c1-12)"; else echo "READ-FAILED: $$(cat /tmp/err)"; fi
+      trap 'exit 0' TERM; while :; do sleep 1; done
+
+services:
+  # The plain compose way: a file-based secret, bind-mounted read-only at /run/secrets/<name>.
+  secret-file:
+    <<: *reader
+    secrets: [db-password]
+
+  # Same, asking for an owner and mode (does Compose honour them for a file-based secret?).
+  secret-mode:
+    <<: *reader
+    secrets:
+      - source: db-password
+        uid: "999"
+        gid: "999"
+        mode: 0440
+
+  # A long-syntax bind with an SELinux relabel instead of secrets:.
+  bind-z:
+    <<: *reader
+    volumes:
+      - type: bind
+        source: ${CREDENTIALS_DIRECTORY:?run inside a unit with LoadCredentialEncrypted=}/db-password
+        target: /run/secrets/db-password
+        read_only: true
+        bind:
+          selinux: z
+          create_host_path: false
+
+  # The same long syntax, allowing Compose to create a missing source.
+  bind-z-create:
+    <<: *reader
+    volumes:
+      - type: bind
+        source: ${CREDENTIALS_DIRECTORY:?run inside a unit with LoadCredentialEncrypted=}/db-password
+        target: /run/secrets/db-password
+        read_only: true
+        bind:
+          selinux: z
+          create_host_path: true
+
+  # A file-based secret, no engine relabel: the unit labels the credential with the app's MCS level and the
+  # container runs at that level (spike.sh step2d sets HLSPIKE_MCS).
+  secret-mcs:
+    <<: *reader
+    security_opt:
+      - label=level:${HLSPIKE_MCS:-s0:c100,c200}
+    secrets: [db-password]
+
+  # The short syntax with a relabel.
+  short-z:
+    <<: *reader
+    volumes:
+      - ${CREDENTIALS_DIRECTORY:?run inside a unit with LoadCredentialEncrypted=}/db-password:/run/secrets/db-password:ro,z
+
+secrets:
+  db-password:
+    file: ${CREDENTIALS_DIRECTORY:?run inside a unit with LoadCredentialEncrypted=}/db-password

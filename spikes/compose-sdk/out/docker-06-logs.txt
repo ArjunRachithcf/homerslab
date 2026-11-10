@@ -1,0 +1,10 @@
+web-1 | secret: readable, 33 bytes
+web-1 | boots recorded in the named volume: 2
+web-1 | [::ffff:127.0.0.1]:56718: response:200
+web-1 | [::ffff:127.0.0.1]:50316: response:200
+web-1 | [::ffff:127.0.0.1]:50322: response:200
+web-1 | [::ffff:127.0.0.1]:50326: response:200
+web-1 | [::ffff:127.0.0.1]:50328: response:200
+web-1 | [::ffff:127.0.0.1]:50330: response:200
+whoami-1 | 2026/11/09 18:57:24 Starting up on port 80
+== logs took 26ms

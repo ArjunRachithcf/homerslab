@@ -1,0 +1,13 @@
+# The household resolver: answers only for home.test, from a hosts file HomersLab's manager
+# would write. Nothing is forwarded to the internet.
+home.test:53 {
+    hosts /etc/coredns/home.hosts {
+        ttl 10
+        reload 1s
+    }
+    log
+    errors
+}
+.:53 {
+    errors
+}

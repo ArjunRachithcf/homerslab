@@ -1,0 +1,9 @@
+# Device extra: the GPU through CDI (the same request classic's Ollama uses). The container only
+# lists the device nodes the CDI spec injected; it never opens them.
+services:
+  gpu:
+    image: busybox:1.38.0@sha256:a46257e06c82ad85242d0d38077d0a52d9896389ca60a1a59d3463db586e5fa4
+    command: ["sh", "-c", "ls /dev/ | grep -E '^nvidia' | tr '\\n' ' '; echo; ls /usr/bin/nvidia-smi"]
+    devices:
+      - nvidia.com/gpu=all
+    cap_drop: [ALL]

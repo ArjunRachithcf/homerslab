@@ -1,0 +1,17 @@
+# Dry run only (spike.sh never installs it): what HomersLab would write for a rootless Podman app.
+[Unit]
+Description=HomersLab spike: a systemd credential as a file in a rootless Podman container
+
+[Container]
+Image=docker.io/library/busybox@sha256:a46257e06c82ad85242d0d38077d0a52d9896389ca60a1a59d3463db586e5fa4
+ContainerName=hlspike-creds-q
+Network=none
+# %d is the unit's $CREDENTIALS_DIRECTORY (systemd.unit(5), specifiers).
+Volume=%d/db-password:/run/secrets/db-password:ro,z
+UserNS=keep-id:uid=999,gid=999
+User=999:999
+Exec=sh -c 'cat /run/secrets/db-password >/dev/null && echo READ-OK'
+
+[Service]
+LoadCredentialEncrypted=db-password:%h/.config/credstore.encrypted/db-password
+Restart=on-failure

@@ -1,0 +1,7 @@
+homerslab -> idm_application_admins: ok (granted by idm_admin)
+POST /scim/v1/Application -> 200 | linked group: {"uuid": "30f150b1-aacc-4f84-8dcd-85b6dc41a027", "value": "adults@idm.hlspike.test"}
+application media-ldap uuid 146f4dac-62ca-4e25-a4a0-836530aa1ea3
+  manager token cannot create ada's app password: HTTP 403: "accessdenied"
+  ada: app password created with ada's own privileged session (label spike, length 23)
+  manager token cannot create kim's app password: HTTP 403: "accessdenied"
+  kim: app password created with kim's own privileged session (label spike, length 23)

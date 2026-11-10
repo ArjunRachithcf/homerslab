@@ -1,0 +1,50 @@
+=== N=50 (2026-11-09T19:22:05Z), idle 120s after start
+19:20:04.783295 all nodes started: up=50 failed=0 in 11.243s
+join: 50 nodes, mean 1.70s, max 2.21s
+stats {"cpu_s":2.87,"fds":457,"go_sys_kib":140574,"goroutines":5304,"heap_inuse_kib":96384,"nodes_up":50,"num_gc":10,"rss_anon_kib":82844,"rss_file_kib":21016,"rss_kib":103860,"rss_peak_kib":103860,"stack_inuse_kib":16192,"threads":25,"when":"periodic"}
+stats {"cpu_s":2.97,"fds":457,"go_sys_kib":140574,"goroutines":5304,"heap_inuse_kib":96408,"nodes_up":50,"num_gc":10,"rss_anon_kib":82908,"rss_file_kib":21016,"rss_kib":103924,"rss_peak_kib":103924,"stack_inuse_kib":16192,"threads":25,"when":"periodic"}
+stats {"cpu_s":2.99,"fds":457,"go_sys_kib":140574,"goroutines":5305,"heap_inuse_kib":96416,"nodes_up":50,"num_gc":10,"rss_anon_kib":82928,"rss_file_kib":21016,"rss_kib":103944,"rss_peak_kib":103944,"stack_inuse_kib":16192,"threads":25,"when":"periodic"}
+hlspike-headscale-scale cpu=0.15% mem=83.47MiB / 125.1GiB pids=25
+hlspike-headscale-headscale-1 cpu=0.43% mem=54.74MiB / 125.1GiB pids=22
+=== N=1 (2026-11-09T19:23:58Z), idle 90s after start
+19:22:28.018735 all nodes started: up=1 failed=0 in 1.529s
+join: 1 nodes, mean 1.53s, max 1.53s
+stats {"cpu_s":0.12,"fds":16,"go_sys_kib":19078,"goroutines":110,"heap_inuse_kib":5544,"nodes_up":1,"num_gc":3,"rss_anon_kib":8100,"rss_file_kib":20848,"rss_kib":28948,"rss_peak_kib":28948,"stack_inuse_kib":1248,"threads":13,"when":"periodic"}
+stats {"cpu_s":0.13,"fds":16,"go_sys_kib":19334,"goroutines":110,"heap_inuse_kib":5568,"nodes_up":1,"num_gc":3,"rss_anon_kib":8124,"rss_file_kib":20848,"rss_kib":28972,"rss_peak_kib":28972,"stack_inuse_kib":1248,"threads":13,"when":"periodic"}
+stats {"cpu_s":0.13,"fds":16,"go_sys_kib":19334,"goroutines":110,"heap_inuse_kib":5584,"nodes_up":1,"num_gc":3,"rss_anon_kib":8136,"rss_file_kib":20016,"rss_kib":28152,"rss_peak_kib":28152,"stack_inuse_kib":1248,"threads":13,"when":"periodic"}
+hlspike-headscale-scale cpu=0.00% mem=8.781MiB / 125.1GiB pids=13
+hlspike-headscale-headscale-1 cpu=7.63% mem=49.77MiB / 125.1GiB pids=22
+=== N=10 (2026-11-09T19:25:37Z), idle 90s after start
+19:24:06.672884 all nodes started: up=10 failed=0 in 2.71s
+join: 10 nodes, mean 1.42s, max 1.71s
+stats {"cpu_s":0.43,"fds":97,"go_sys_kib":50126,"goroutines":1064,"heap_inuse_kib":28304,"nodes_up":10,"num_gc":6,"rss_anon_kib":23932,"rss_file_kib":21084,"rss_kib":45016,"rss_peak_kib":45016,"stack_inuse_kib":4864,"threads":21,"when":"periodic"}
+stats {"cpu_s":0.46,"fds":97,"go_sys_kib":50126,"goroutines":1065,"heap_inuse_kib":28392,"nodes_up":10,"num_gc":6,"rss_anon_kib":24008,"rss_file_kib":21084,"rss_kib":45092,"rss_peak_kib":45092,"stack_inuse_kib":4864,"threads":21,"when":"periodic"}
+stats {"cpu_s":0.47,"fds":97,"go_sys_kib":50126,"goroutines":1064,"heap_inuse_kib":28392,"nodes_up":10,"num_gc":6,"rss_anon_kib":24012,"rss_file_kib":21084,"rss_kib":45096,"rss_peak_kib":45096,"stack_inuse_kib":4864,"threads":21,"when":"periodic"}
+hlspike-headscale-scale cpu=0.00% mem=24.87MiB / 125.1GiB pids=21
+hlspike-headscale-headscale-1 cpu=0.19% mem=36.12MiB / 125.1GiB pids=22
+=== N=25 (2026-11-09T19:27:18Z), idle 90s after start
+19:25:48.317905 all nodes started: up=25 failed=0 in 6.08s
+join: 25 nodes, mean 1.53s, max 1.64s
+stats {"cpu_s":1.04,"fds":232,"go_sys_kib":83226,"goroutines":2656,"heap_inuse_kib":54128,"nodes_up":25,"num_gc":8,"rss_anon_kib":44876,"rss_file_kib":21016,"rss_kib":65892,"rss_peak_kib":65892,"stack_inuse_kib":9312,"threads":25,"when":"periodic"}
+stats {"cpu_s":1.1,"fds":232,"go_sys_kib":83226,"goroutines":2654,"heap_inuse_kib":54184,"nodes_up":25,"num_gc":8,"rss_anon_kib":44952,"rss_file_kib":21016,"rss_kib":65968,"rss_peak_kib":65968,"stack_inuse_kib":9312,"threads":25,"when":"periodic"}
+stats {"cpu_s":1.12,"fds":232,"go_sys_kib":83226,"goroutines":2654,"heap_inuse_kib":54192,"nodes_up":25,"num_gc":8,"rss_anon_kib":44968,"rss_file_kib":21016,"rss_kib":65984,"rss_peak_kib":65984,"stack_inuse_kib":9312,"threads":25,"when":"periodic"}
+hlspike-headscale-scale cpu=0.00% mem=46.02MiB / 125.1GiB pids=25
+hlspike-headscale-headscale-1 cpu=0.19% mem=46.21MiB / 125.1GiB pids=22
+=== N=100 (2026-11-09T19:30:02Z), idle 120s after start
+19:28:02.032333 all nodes started: up=100 failed=0 in 21.322s
+join: 100 nodes, mean 1.61s, max 2.17s
+stats {"cpu_s":5.92,"fds":907,"go_sys_kib":244734,"goroutines":10610,"heap_inuse_kib":197600,"nodes_up":100,"num_gc":12,"rss_anon_kib":145336,"rss_file_kib":21144,"rss_kib":166480,"rss_peak_kib":166480,"stack_inuse_kib":29952,"threads":30,"when":"periodic"}
+stats {"cpu_s":6.18,"fds":907,"go_sys_kib":248830,"goroutines":10610,"heap_inuse_kib":199024,"nodes_up":100,"num_gc":12,"rss_anon_kib":146756,"rss_file_kib":21144,"rss_kib":167900,"rss_peak_kib":167900,"stack_inuse_kib":29952,"threads":30,"when":"periodic"}
+stats {"cpu_s":6.21,"fds":907,"go_sys_kib":248830,"goroutines":10611,"heap_inuse_kib":199096,"nodes_up":100,"num_gc":12,"rss_anon_kib":146880,"rss_file_kib":21144,"rss_kib":168024,"rss_peak_kib":168024,"stack_inuse_kib":29952,"threads":30,"when":"periodic"}
+hlspike-headscale-scale cpu=0.19% mem=149.5MiB / 125.1GiB pids=30
+hlspike-headscale-headscale-1 cpu=0.42% mem=102MiB / 125.1GiB pids=25
+=== allow-all policy {} for the next run:
+=== N=50 (2026-11-09T19:32:40Z), idle 120s after start
+19:30:40.667526 all nodes started: up=50 failed=0 in 10.546s
+join: 50 nodes, mean 1.50s, max 1.57s
+stats {"cpu_s":6.8,"fds":457,"go_sys_kib":275134,"goroutines":5305,"heap_inuse_kib":207664,"nodes_up":50,"num_gc":21,"rss_anon_kib":244440,"rss_file_kib":21080,"rss_kib":265520,"rss_peak_kib":265520,"stack_inuse_kib":16480,"threads":28,"when":"periodic"}
+stats {"cpu_s":6.86,"fds":457,"go_sys_kib":275134,"goroutines":5304,"heap_inuse_kib":207720,"nodes_up":50,"num_gc":21,"rss_anon_kib":244448,"rss_file_kib":21080,"rss_kib":265528,"rss_peak_kib":265528,"stack_inuse_kib":16480,"threads":28,"when":"periodic"}
+stats {"cpu_s":6.88,"fds":457,"go_sys_kib":275134,"goroutines":5304,"heap_inuse_kib":207728,"nodes_up":50,"num_gc":21,"rss_anon_kib":244448,"rss_file_kib":21080,"rss_kib":265528,"rss_peak_kib":265528,"stack_inuse_kib":16480,"threads":28,"when":"periodic"}
+hlspike-headscale-scale cpu=1.61% mem=202.4MiB / 125.1GiB pids=28
+hlspike-headscale-headscale-1 cpu=0.64% mem=89.02MiB / 125.1GiB pids=25
+=== (policy restored to policy/policy.hujson)

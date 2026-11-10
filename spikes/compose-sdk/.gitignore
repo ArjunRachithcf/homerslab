@@ -1,0 +1,5 @@
+# Build caches, binaries and the random test secret: never committed.
+.cache/
+go/bin/
+out/docker-config/
+project/secrets/

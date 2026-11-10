@@ -1,0 +1,120 @@
+{
+  "when": "2026-11-09T19:18:59.504Z",
+  "results": [
+    {
+      "name": "unauthenticated request is redirected to sign-in",
+      "ok": true,
+      "detail": "chain: https://app.hlspike.test:28744/api -> https://app.hlspike.test:28744/oauth2/sign_in -> https://idm.hlspike.test:28743/ui/oauth2 | fields: username"
+    },
+    {
+      "name": "forged identity headers without a session do not get in",
+      "ok": true,
+      "detail": "ended at https://idm.hlspike.test:28743/ui/oauth2"
+    },
+    {
+      "name": "adult gets 200 from the guarded app",
+      "ok": true,
+      "detail": "Kanidm asked for: username -> totp -> password"
+    },
+    {
+      "name": "identity headers reach the app",
+      "ok": true,
+      "detail": "{\"X-Auth-Request-User\":\"9d0243e2-9cdd-4db8-9528-94a0b5069cf2\",\"X-Auth-Request-Email\":\"ada@hlspike.test\",\"X-Auth-Request-Preferred-Username\":\"ada\",\"X-Auth-Request-Groups\":\"idm_all_persons,idm_all_accounts,idm_people_self_name_write,adults,household\"}"
+    },
+    {
+      "name": "kid is refused (Kanidm: no scope map for kids)",
+      "ok": true,
+      "detail": "asked: username -> totp -> password | page \"Access Denied\" at https://idm.hlspike.test:28743/ui/oauth2/resume: Access Denied If you believe this is an error, please quote the below Operation ID to support persons. Operation ID: eda6ae6a-690d-4561-8a22-f42f3f939cb1 Powere"
+    },
+    {
+      "name": "kid still cannot reach the app afterwards",
+      "ok": true,
+      "detail": "ended at https://idm.hlspike.test:28743/ui/oauth2"
+    },
+    {
+      "name": "copied identity headers carry the real identity, not the forged values",
+      "ok": true,
+      "detail": "{\"X-Auth-Request-User\":\"9d0243e2-9cdd-4db8-9528-94a0b5069cf2\",\"X-Auth-Request-Email\":\"ada@hlspike.test\",\"X-Auth-Request-Preferred-Username\":\"ada\",\"X-Auth-Request-Groups\":\"idm_all_persons,idm_all_accounts,idm_people_self_name_write,adults,household\",\"X-Spike-Unlisted\":\"forged-unlisted\"}"
+    },
+    {
+      "name": "a copied header that oauth2-proxy did not return is deleted (Caddy >= 2.11.2)",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "headers the edge strips explicitly (Remote-User, X-Forwarded-User) are gone",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "no prompt: code issued silently (SSO)",
+      "ok": true,
+      "detail": "{\"prompted\":[],\"asked\":[],\"landed\":\"https://app.hlspike.test:28744/stepup/callback\",\"auth_time\":1794251572,\"nonce\":\"AMOQ5Gl5gotKgHW-\",\"amr\":null,\"acr\":null}"
+    },
+    {
+      "name": "max_age=3600: no prompt, session is fresh enough",
+      "ok": true,
+      "detail": "{\"prompted\":[],\"asked\":[],\"landed\":\"https://app.hlspike.test:28744/stepup/callback\",\"auth_time\":1794251572,\"nonce\":\"alKGAOucCYQupQJI\",\"amr\":null,\"acr\":null}"
+    },
+    {
+      "name": "prompt=login: Kanidm asks again, then auth_time is fresh",
+      "ok": true,
+      "detail": "{\"prompted\":[\"totp\"],\"asked\":[\"totp\",\"password\"],\"landed\":\"https://app.hlspike.test:28744/stepup/callback\",\"auth_time\":1794251581,\"nonce\":\"plan-Xos0pqrqawIFEXVT\",\"amr\":null,\"acr\":null}"
+    },
+    {
+      "name": "the step-up is bound to the plan through the nonce",
+      "ok": true,
+      "detail": "nonce=plan-Xos0pqrqawIFEXVT"
+    },
+    {
+      "name": "max_age=0: Kanidm asks again, then auth_time is fresh",
+      "ok": true,
+      "detail": "{\"prompted\":[\"totp\"],\"asked\":[\"totp\",\"password\"],\"landed\":\"https://app.hlspike.test:28744/stepup/callback\",\"auth_time\":1794251611,\"nonce\":\"6HFKjDspRdZ3ZpH8\",\"amr\":null,\"acr\":null}"
+    },
+    {
+      "name": "prompt=none with a session: code issued silently",
+      "ok": true,
+      "detail": "{\"prompted\":[],\"asked\":[],\"landed\":\"https://app.hlspike.test:28744/stepup/callback\",\"auth_time\":1794251611,\"nonce\":\"DeTipA9VOrxDo3Zy\",\"amr\":null,\"acr\":null}"
+    },
+    {
+      "name": "prompt=none without a session: error=login_required, no UI",
+      "ok": true,
+      "detail": "{\"prompted\":[],\"asked\":[],\"landed\":\"https://app.hlspike.test:28744/stepup/callback\",\"error\":\"login_required\"}"
+    },
+    {
+      "name": "adult is refused on a kids-only route (403 from oauth2-proxy, passed on by Caddy)",
+      "ok": true,
+      "detail": "status 403 at https://app.hlspike.test:28744/kids-only/api"
+    },
+    {
+      "name": "kid passes Kanidm but is refused by oauth2-proxy (allowed group)",
+      "ok": true,
+      "detail": "status 403 at https://app.hlspike.test:28744/oauth2/callback: 403 Forbidden More Info Go back Sign in Secured with OAuth2 Proxy version v7.15.6"
+    },
+    {
+      "name": "second adult (ada2) gets 200",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "deleted person loses access to the guarded app",
+      "ok": true,
+      "detail": "after 60.871s (cookie-refresh 1m)"
+    },
+    {
+      "name": "adult still has access before the client is deleted",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "deleting the client in Kanidm revokes the existing guard session",
+      "ok": false,
+      "detail": "after nulls (cookie-refresh 1m)"
+    },
+    {
+      "name": "a new sign-in for the deleted client fails",
+      "ok": true,
+      "detail": "HTTP 200 at https://idm.hlspike.test:28743/ui/oauth2: Kanidm idm.hlspike.test Error An unrecoverable error occurred. Please contact your administrator with the details below. Operation ID: 7cf729be-326d-4ccf-86f2-2"
+    }
+  ]
+}

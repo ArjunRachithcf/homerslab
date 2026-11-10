@@ -1,0 +1,8 @@
+{
+  "name": "kanidm-forward-auth-spike",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "playwright": "1.63.0"
+  }
+}
