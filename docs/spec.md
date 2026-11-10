@@ -277,6 +277,14 @@ such as a NAS or a GPU box. It is private by default and never needs a router po
     signed by CI, so that the app can still reach the Verified tier.
 92. As a household admin, I want an upstream security release offered at once, guarded at the edge, when HomersLab's
     sign-in patch for that app isn't ready yet, so that security fixes never wait on a patch.
+93. As a household admin, I want HomersLab to create the public DNS records it needs and touch nothing else in my zone,
+    so that making an app public needs no visit to my DNS provider and my mail keeps working.
+94. As a household admin, I want to add more domains that every app answers on, so that family members can use the
+    address they know.
+95. As a person, I want to sign in once with one passkey whichever domain I used, so that more domains never mean
+    more passkeys.
+96. As a household admin, I want to rename the household's main domain through a guided migration, so that a new
+    domain doesn't mean starting over.
 
 ## Implementation Decisions
 
@@ -356,7 +364,7 @@ such as a NAS or a GPU box. It is private by default and never needs a router po
 |---|---|---|
 | Identity provider | Authentik; Kanidm with oauth2-proxy | See below |
 | Mesh | NetBird (cloud or self-hosted); Tailscale (cloud); Headscale (self-hosted, with Tailscale's clients) | See below |
-| DNS provider | libdns providers | Create and clean up ACME DNS challenge records |
+| DNS provider | libdns providers | Create, update and delete only records HomersLab owns (ACME challenges, the public path's CNAME and validation), each with an ownership marker; check that a name is free; never touch other records |
 | Container engine | Docker; Podman rootful; Podman rootless | Run, stop and inspect a compose project; logs and health; device and capability extras; GPUs (NVIDIA through CDI, Intel through its render devices) |
 | Backup target | Disk, SFTP, S3, B2 (restic); Proton Drive (official CLI, as a copy target) | Store, list and prune; immutable where the target supports it |
 
@@ -478,6 +486,24 @@ The manager refuses an app definition unless:
 - **On Tailscale without a domain**, every app is its own tagged tsnet node, named `<name>.<tailnet>.ts.net`, with
   Tailscale's per-node certificate, which is public in the CT logs. The free plan allows 50 tagged devices, so this is
   chosen over Tailscale Services, which allows 10.
+
+### Domains
+
+- **Records HomersLab writes**, through the DNS token ([ADR 0016](adr/0016-domains-own-records-equal-domains-one-sign-in.md)):
+  - the certificate challenges;
+  - when the first app goes public through NetBird's proxy, its wildcard CNAME and validation record, shown in the
+    plan and removed when nothing is public any more.
+- **Only its own records**: each one carries an ownership marker. Other records (MX, SPF, DKIM, DMARC, the apex) are
+  never edited or deleted, and a name already taken by someone else's record is refused with a reason.
+- **More domains**: Admin's settings add them, each with its own DNS token and wildcard certificate. Every app answers
+  on every domain, with no redirect.
+- **One sign-in domain**: the identity provider lives on the main domain only, so one passkey works everywhere. Each
+  app's OIDC client lists one address per domain, and guards set a cookie per domain.
+- **Renaming the main domain**: a guided migration (a plan with step-up).
+  - A new certificate; every app re-pointed, and every sign-in client updated.
+  - The old domain keeps answering for 90 days.
+  - Everyone adds a passkey on the new address.
+  - It can be rehearsed and rolled back.
 
 ### First-time setup in two halves
 
@@ -792,3 +818,8 @@ Every answer of the grilling (2026-11-09) and where it lives:
 | 97 | Patches under each app's licence | ADR 0015 |
 | 98 | HomersLab builds shown in Admin's details only | ADR 0015 |
 | 99 | A bot and CI keep feedstocks current | ADR 0015; story 91 |
+| 100 | HomersLab writes the public path's DNS records itself | ADR 0016; Domains; story 93 |
+| 101 | Only its own DNS records, marked; never others | ADR 0016; Adapter contracts; story 93 |
+| 102 | Every domain equal for the apps | ADR 0016; Domains; story 94 |
+| 103 | One sign-in domain, one passkey everywhere | ADR 0016; Domains; story 95 |
+| 104 | Renaming the main domain is a guided migration | ADR 0016; Domains; story 96 |

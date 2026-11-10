@@ -165,6 +165,10 @@ _Avoid_: proxy, reverse proxy, ingress, gateway
 Whether an app is reachable only over the mesh (the default) or is also **public**.
 _Avoid_: visibility, publishing
 
+**Main domain**:
+The household's domain where people sign in; other domains of the household serve the same apps.
+_Avoid_: primary domain (the primary is a node), root domain
+
 **Public path**:
 The way a public app is reached from the internet without opening the household's router.
 _Avoid_: tunnel, port forward
