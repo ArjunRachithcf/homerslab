@@ -46,6 +46,20 @@ Admin manages each node's disks well beyond classic's one-time "second disk" scr
     console.
   - This generalises the procedure rehearsed for the maintainer's own machine (29/29 in a VM).
 
+**The disk analyzer**, for admins only, works like a desktop disk tool:
+- **Views**:
+  - a space map and a list sortable by size, age, type and owner (app or storage location);
+  - the biggest files and files not opened in a year;
+  - duplicates, which can be freed or shared as reflinks;
+  - space per person, as far as apps report it.
+- **The passkey**: opening it asks for the passkey (it shows file names across the household's data), and the session
+  lasts up to 10 minutes. Every delete asks again, bound to the exact list of items and their size.
+- **Where it may delete**: freely only in storage locations and in HomersLab's own leftovers (removed apps' data, old
+  snapshots, old move copies, caches, logs). Inside an installed app's data it offers that app's own cleanup instead,
+  because deleting behind an app's back corrupts it.
+- **Undo**: deleted items stay in "Recently deleted" for 7 days, kept by a btrfs snapshot, and can be restored with the
+  passkey. "Free the space now" empties it, also with the passkey.
+
 ## Considered options
 
 - **ext4.** Simpler, but no snapshots, checksums or mirrors.

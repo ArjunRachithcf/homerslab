@@ -301,6 +301,11 @@ such as a NAS or a GPU box. It is private by default and never needs a router po
      keep running, so that one app can't take the household down.
 104. As a household admin, I want to encrypt the system disk in place through a rehearsed, guided migration, so that
      the whole machine is protected without reinstalling.
+105. As a household admin, I want a disk analyzer (a space map, lists sorted by size and age, the biggest and oldest
+     files, duplicates, space per person), so that I find what fills a disk.
+106. As a household admin, I want to delete what I find in storage locations and HomersLab's leftovers, with my passkey
+     for every delete and an app's own cleanup inside its data, so that freeing space never breaks an app.
+107. As a household admin, I want deleted items kept for 7 days, so that a wrong delete can be undone.
 
 ## Implementation Decisions
 
@@ -544,6 +549,12 @@ Details are in [ADR 0017](adr/0017-disks-btrfs-encrypted-mirrored.md).
   Per-app size limits are optional.
 - **The system disk**: an in-place encryption migration, offered and rehearsable. It needs a VM dry run and a
   verified full copy first.
+- **The disk analyzer** (admins only):
+  - **Views**: a space map; lists sorted by size, age, type and owner; the biggest and oldest files; duplicates, which
+    can be freed or shared as reflinks; space per person.
+  - **The passkey**: to open it (a session of up to 10 minutes), and again for every delete, bound to the exact items.
+  - **Where it may delete**: storage locations and HomersLab's leftovers. Inside an app's data, that app's own cleanup.
+  - **Undo**: "Recently deleted" keeps items for 7 days, through a btrfs snapshot.
 - **The agent's contract** gains disks, LUKS with TPM enrolment, btrfs operations and SMART. Every write is a plan,
   and the destructive ones need step-up.
 
@@ -876,3 +887,7 @@ Every answer of the grilling (2026-11-09) and where it lives:
 | 113 | Moving data: snapshot, copy, verify, switch, 7 days back | ADR 0017; story 102 |
 | 114 | Low space: warn, then pause what can wait | ADR 0017; story 103 |
 | 115 | In-place system-disk encryption offered | ADR 0017; story 104 |
+| 116 | Disk analyzer: map, sorted lists, large/old files, duplicates, per person | ADR 0017; Disks; story 105 |
+| 117 | It deletes only in safe places; apps' own cleanup inside their data | ADR 0017; story 106 |
+| 118 | Passkey to open the analyzer and for every delete | ADR 0017; story 106 |
+| 119 | Recently deleted, 7 days | ADR 0017; story 107 |
