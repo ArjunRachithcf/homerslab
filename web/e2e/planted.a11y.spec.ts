@@ -12,7 +12,12 @@ test.skip(!process.env.HOMERSLAB_PLANTED, 'run by a11y-check.spec.ts');
 // hideOnScroll: the first scroll (accessible() bringing the cut lead into view) hides the lead, so axe's second run
 // can't see it at all
 // after: where html goes (after the lead, unless it says)
-const plants: { name: string; look: Look; css?: [string, string, string][]; html?: string; after?: string; cut?: boolean; hideOnScroll?: boolean }[] = [
+// sheet: rules for what the CSSOM's inline style can't reach (pseudo-elements), in a constructed style sheet
+// scroll: [selector, top]: that box scrolled so far down
+const plants: {
+  name: string; look: Look; css?: [string, string, string][]; html?: string; after?: string; sheet?: string; scroll?: [string, number];
+  cut?: boolean; hideOnScroll?: boolean;
+}[] = [
   { name: 'a field without a label, light', look: { theme: 'light', motion: 'reduce', transparency: 'no-preference' },
     html: '<input id="planted-unlabelled" type="text">' },
   { name: 'a field without a label, dark', look: { theme: 'dark', motion: 'reduce', transparency: 'no-preference' },
@@ -53,6 +58,43 @@ const plants: { name: string; look: Look; css?: [string, string, string][]; html
   { name: 'dark words in a faded grey group', look: { theme: 'light', motion: 'reduce', transparency: 'reduce' },
     html: '<p id="planted-dim">Dark words on a faded grey</p>',
     css: [['#planted-dim', 'background-color', '#787878'], ['#planted-dim', 'color', '#000'], ['#planted-dim', 'opacity', '0.7']] },
+  // a faint word under an opaque bar inside the glass card: the card's rim (an ::after over all of it) doesn't hide
+  // what covers the word
+  { name: 'a faint word under an opaque bar in the card', look: { theme: 'light', motion: 'reduce', transparency: 'no-preference' },
+    html: '<div id="planted-barbox"><p id="planted-under">Hidden under a bar</p><div id="planted-bar"></div></div>',
+    css: [['#planted-barbox', 'position', 'relative'], ['#planted-bar', 'position', 'absolute'], ['#planted-bar', 'inset', '0'],
+      ['#planted-bar', 'background-color', '#222'], ['#planted-under', 'color', '#d0d0d0']] },
+  // a faint word in a scrolling box, scrolled under its sticky header: measured once scrolled out from under it, not
+  // against the header
+  { name: 'a faint word in a scrolling box under a sticky header', look: { theme: 'light', motion: 'reduce', transparency: 'no-preference' },
+    html: '<div id="planted-scroller"><div id="planted-sticky">A header</div><p id="planted-scrolled">A faint scrolled word</p><div id="planted-room"></div></div>',
+    css: [['#planted-scroller', 'height', '120px'], ['#planted-scroller', 'overflow', 'auto'], ['#planted-scroller', 'background-color', '#fff'],
+      ['#planted-sticky', 'position', 'sticky'], ['#planted-sticky', 'top', '0'], ['#planted-sticky', 'height', '40px'],
+      ['#planted-sticky', 'background-color', '#222'], ['#planted-sticky', 'color', '#fff'], ['#planted-scrolled', 'margin', '0'],
+      ['#planted-scrolled', 'color', '#c4c4c4'], ['#planted-room', 'height', '300px']],
+    scroll: ['#planted-scroller', 40] },
+  // what fields show: a select's option, a button's value
+  { name: 'a faint option in a select', look: { theme: 'light', motion: 'reduce', transparency: 'reduce' },
+    html: '<select id="planted-select" aria-label="Planted"><option>A faint option</option></select>',
+    css: [['#planted-select', 'color', '#c8c8c8']] },
+  { name: 'a faint submit button’s value', look: { theme: 'light', motion: 'reduce', transparency: 'reduce' },
+    html: '<input id="planted-submit" type="submit" value="A faint value">',
+    css: [['#planted-submit', 'color', '#c8c8c8']] },
+  // words the check can't measure fail as not measured, faint or not
+  { name: 'words drawn by CSS content', look: { theme: 'light', motion: 'reduce', transparency: 'reduce' },
+    html: '<p id="planted-gen"></p>', sheet: '#planted-gen::before { content: "Generated words"; }' },
+  { name: 'words painted through background-clip: text', look: { theme: 'light', motion: 'reduce', transparency: 'reduce' },
+    html: '<p id="planted-clip">Clipped words</p>',
+    sheet: '#planted-clip { background-image: linear-gradient(#ccc, #ddd); -webkit-background-clip: text; background-clip: text; color: transparent; }' },
+  { name: 'a first letter in its own colour', look: { theme: 'light', motion: 'reduce', transparency: 'reduce' },
+    html: '<p id="planted-first">First letter</p>', sheet: '#planted-first::first-letter { color: #ddd; }' },
+  { name: 'words under a filter', look: { theme: 'light', motion: 'reduce', transparency: 'reduce' },
+    html: '<div id="planted-filter"><p>Filtered words</p></div>', css: [['#planted-filter', 'filter', 'brightness(1.8)']] },
+  { name: 'words that blend', look: { theme: 'light', motion: 'reduce', transparency: 'reduce' },
+    html: '<p id="planted-blend">Blended words</p>', css: [['#planted-blend', 'mix-blend-mode', 'difference']] },
+  // large text needs 3:1, and gets no more slack: 3.2:1 passes at 24px (setup.a11y.spec.ts), and fails at 18px
+  { name: 'words at 3.2:1 below large', look: { theme: 'light', motion: 'reduce', transparency: 'reduce' },
+    html: '<p id="planted-small">Not quite large</p>', css: [['#planted-small', 'font-size', '18px'], ['#planted-small', 'color', '#909090']] }, // 3.19:1 on white
 ];
 
 for (const plant of plants) {
@@ -65,6 +107,15 @@ for (const plant of plants) {
     for (const [sel, prop, value] of plant.css ?? []) {
       await page.locator(sel).evaluate((el, pv) => (el as HTMLElement).style.setProperty(pv.prop, pv.value, 'important'), { prop, value });
     }
+    if (plant.sheet) {
+      await page.evaluate((rules) => {
+        const sheet = new CSSStyleSheet();
+        sheet.replaceSync(rules);
+        document.adoptedStyleSheets = [...document.adoptedStyleSheets, sheet];
+      }, plant.sheet);
+    }
+    const scroll = plant.scroll;
+    if (scroll) await page.locator(scroll[0]).evaluate((el, top) => { el.scrollTop = top; }, scroll[1]);
     if (plant.cut) {
       const r = await page.locator('.as-lead').evaluate((lead) => lead.getBoundingClientRect().toJSON() as DOMRect);
       await page.setViewportSize({ width: page.viewportSize()?.width ?? 1280, height: Math.round(r.top + r.height / 2) });

@@ -6,7 +6,7 @@
 // each element; axe's findings and the contrasts measured are attached to the HTML report.
 import AxeBuilder from '@axe-core/playwright';
 import { expect, type Page, test } from '@playwright/test';
-import { boxContrast, decodePng, hideWords, needed, PERCENTILE, refade, type Shot, type TextRun, textRuns } from './pixels';
+import { boxContrast, decodePng, hideWords, needed, PATCH, refade, type Shot, type TextRun, textRuns } from './pixels';
 
 // axe-core's types, as the AxeBuilder in use has them (axe-core itself is its dependency, not ours)
 type AxeResults = Awaited<ReturnType<AxeBuilder['analyze']>>;
@@ -107,7 +107,7 @@ export type Measured = { where: string; text: string; size: number; weight: numb
  * - it hides every word's glyphs and takes one screenshot of the area the words in view cover, so the shot holds what
  *   is behind them: glass, its blur, the wallpaper;
  * - each word's contrast is its ink (from its computed style) alpha-composited over each pixel of its box, against that
- *   pixel, at the 5th percentile of the box (pixels.ts says why); a word in a faded group is composited inside the
+ *   pixel; the box's worst patch over a tenth of it each way decides (pixels.ts says why); a word in a faded group is composited inside the
  *   group, from a second shot with the group opaque;
  * - a run's contrast is its worst word's, and it fails below 4.5:1 (3:1 for large text).
  * Words outside the viewport, under a scroller's edge or covered (by a sticky bar, say) are scrolled to the middle and
@@ -123,10 +123,13 @@ export async function legible(page: Page, glass?: Glass): Promise<{ runs: Measur
   }, glass ?? null);
   try {
     if (glass) expect.soft(await settle(page), `the page settles at glass level ${glass}`).toEqual([]);
-    const level = await page.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue('--glass').trim());
+    const [level, reduced] = await page.evaluate(() => [getComputedStyle(document.documentElement).getPropertyValue('--glass').trim(),
+      matchMedia('(prefers-reduced-transparency: reduce)').matches] as const);
     const own = glassLevels.find((l) => l === before);
     const preset = glass ?? own ?? ({ 0: 'clear', 0.5: 'balanced', 1: 'frosted' } as Record<string, Glass | undefined>)[level];
-    const levelName = !level ? 'no glass level' : `glass ${preset ? preset[0]?.toUpperCase() + preset.slice(1) : 'of its own'} (--glass: ${level})`;
+    // reduced transparency makes every material solid, whatever the level
+    const levelName = reduced ? 'glass Solid (reduced transparency)' : !level ? 'no glass level'
+      : `glass ${preset ? preset[0]?.toUpperCase() + preset.slice(1) : 'of its own'} (--glass: ${level})`;
     await page.evaluate(hideWords, true);
     let { runs, signature } = await page.evaluate(textRuns, null);
     if (!runs.length) throw new Error('no words found on the page');
@@ -185,7 +188,7 @@ export async function legible(page: Page, glass?: Glass): Promise<{ runs: Measur
         needs: needed(r.size, r.weight), unmeasured: r.boxes.flatMap((b) => unmeasured.get(b.key) ?? []) };
     });
     const excerpt = (t: string) => (t.length > 60 ? `${t.slice(0, 59)}…` : t);
-    const font = (m: Measured) => `(${m.size}px, weight ${m.weight}; the ${PERCENTILE * 100}th percentile of its worst word’s pixels)`;
+    const font = (m: Measured) => `(${m.size}px, weight ${m.weight}; its worst word’s worst patch, over ${PATCH * 100}% of the box each way)`;
     const why = (m: Measured) => {
       const n = m.unmeasured.length;
       return `not measured, ${n} ${n === 1 ? 'word' : 'words'}: ${[...new Set(m.unmeasured)].join('; ')}`;

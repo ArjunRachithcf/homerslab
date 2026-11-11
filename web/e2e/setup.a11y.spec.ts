@@ -101,3 +101,41 @@ test('the pixel check measures at the glass level it is given', async ({ page, p
   expect(Math.abs(at.clear.contrast - at.frosted.contrast)).toBeGreaterThan(0.1);
   expect(Math.abs(at.frosted.contrast - at.solid.contrast)).toBeGreaterThan(0.1);
 });
+
+// What reads well passes, wherever it sits: a button in a shadow root in the card, words with a hairline through their
+// box, a select's option and a button's value, and large text at 3.2:1 (large means 24px, or 14pt (56/3 px) in bold).
+test('the pixel check passes words that read well', async ({ page, primary }) => {
+  await wear(page, { theme: 'light', motion: 'reduce', transparency: 'reduce' });
+  await page.goto((await primary.newLink()).localUrl);
+  await expect(page.getByRole('heading', { level: 1 })).toContainText('Let’s set up HomersLab');
+  await page.locator('.as-lead').evaluate((lead) => {
+    lead.insertAdjacentHTML('afterend', ['<div id="ok-host"></div><p id="ok-lined">Words with a line through</p>',
+      '<select id="ok-select" aria-label="A select"><option>A shown option</option></select>',
+      '<input id="ok-submit" type="submit" value="A value">',
+      '<p id="ok-large">Large words</p><p id="ok-bold">Bold words</p><p id="ok-edge">Nearly large</p>'].join(''));
+    document.querySelector('#ok-host')?.attachShadow({ mode: 'open' }).append(Object.assign(document.createElement('button'), { textContent: 'A shadow button' }));
+  });
+  const css: [string, string, string][] = [
+    // a 1px line, #777 (2.8:1 under #333), through the middle of a 16px line of words
+    ['#ok-lined', 'color', '#333'], ['#ok-lined', 'font-size', '16px'],
+    ['#ok-lined', 'background-image', 'linear-gradient(transparent calc(50% - 0.5px), #777 calc(50% - 0.5px), #777 calc(50% + 0.5px), transparent calc(50% + 0.5px))'],
+    ['#ok-large', 'font-size', '24px'], ['#ok-large', 'font-weight', '400'], ['#ok-large', 'color', '#909090'], // 3.19:1 on white
+    ['#ok-bold', 'font-size', `${56 / 3 + 0.01}px`], ['#ok-bold', 'font-weight', '700'], ['#ok-bold', 'color', '#909090'],
+    ['#ok-edge', 'font-size', '18.66px'], ['#ok-edge', 'font-weight', '700'], ['#ok-edge', 'color', '#909090'],
+  ];
+  for (const [sel, prop, value] of css) {
+    await page.locator(sel).evaluate((el, pv) => (el as HTMLElement).style.setProperty(pv.prop, pv.value, 'important'), { prop, value });
+  }
+  const { runs } = await legible(page);
+  const run = (text: string) => runs.find((r) => r.text === text);
+  for (const text of ['A shadow button', 'Words with a line through', 'A shown option', 'A value', 'Large words', 'Bold words']) {
+    const r = run(text);
+    expect(r, text).toBeDefined();
+    expect(r?.unmeasured, text).toEqual([]);
+    expect(r?.contrast, text).toBeGreaterThanOrEqual(r?.needs ?? Infinity);
+  }
+  expect(run('Large words')?.needs).toBe(3);
+  expect(run('Large words')?.contrast).toBeLessThan(3.5);
+  expect(run('Bold words')?.needs).toBe(3);
+  expect(run('Nearly large')?.needs).toBe(4.5);
+});

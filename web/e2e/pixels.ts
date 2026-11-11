@@ -4,15 +4,15 @@
 import { inflateSync } from 'node:zlib';
 
 /**
- * Which of a box's background pixels decides its contrast: the 5th percentile of the contrasts its pixels give. The
- * worst pixel alone would fail a word that reads well over a 1px line the box happens to cross (the glass's rim, a
- * field's border, a focus ring), while a word on a background that is too light under a twentieth of its box, about a
- * stroke's width under every letter, fails.
+ * Which of a box's background pixels decide its contrast: the worst patch of them that is more than a tenth of the box
+ * wide and more than a tenth of it high (the patch's contrast is its best pixel's). A line across the box no thicker
+ * than a tenth of it (the glass's rim, a field's border, a focus ring, a 1px rule through 16px words) decides nothing;
+ * a light patch under part of a word that size or larger, a few letters wide and a stroke or two high, decides it.
  */
-export const PERCENTILE = 0.05;
+export const PATCH = 0.1;
 
-/** WCAG 2.2's AA minimum (1.4.3): 4.5:1, or 3:1 for large text (24px and up, or 18.66px and up in bold). */
-export const needed = (size: number, weight: number): number => (size >= 24 || (size >= 18.66 && weight >= 700) ? 3 : 4.5);
+/** WCAG 2.2's AA minimum (1.4.3): 4.5:1, or 3:1 for large text (18pt, 24px and up; or 14pt, 56/3 px and up, in bold). */
+export const needed = (size: number, weight: number): number => (size >= 24 || (size >= 56 / 3 && weight >= 700) ? 3 : 4.5);
 
 /**
  * A word's box on the screen, in CSS pixels from the viewport's corner. `inView` once the viewport and every scroller
@@ -48,17 +48,21 @@ export function textRuns(task: { scrollTo?: string; unfade?: number[] } | null):
   // that a word under pointer-events: none is still found where it is (all in one task, so nothing is painted)
   const hidden = w.a11yHidden;
   const hits = new CSSStyleSheet();
-  hits.replaceSync('*, *::before, *::after { pointer-events: auto !important; }');
+  hits.replaceSync('* { pointer-events: auto !important; }'); // elements only: the glass's rim is an ::after over all the card
   const roots: (Document | ShadowRoot)[] = [document];
-  const found: (Text | HTMLInputElement | HTMLTextAreaElement)[] = [];
+  type Field = HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement;
+  const found: (Text | Field)[] = [];
+  const elements: Element[] = [];
   const walk = (root: Node) => {
     const tw = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT);
     for (let n = tw.nextNode(); n; n = tw.nextNode()) {
       if (n instanceof Text) {
         if (/\S/.test(n.data)) found.push(n);
-      } else if (n instanceof HTMLTextAreaElement || (n instanceof HTMLInputElement && /^(text|search|email|url|tel|number|password)$/.test(n.type))) {
+      } else if (n instanceof HTMLTextAreaElement || n instanceof HTMLSelectElement ||
+        (n instanceof HTMLInputElement && /^(text|search|email|url|tel|number|password|submit|button|reset)$/.test(n.type))) {
         found.push(n);
       }
+      if (n instanceof Element) elements.push(n);
       if (n instanceof Element && n.shadowRoot) {
         roots.push(n.shadowRoot);
         walk(n.shadowRoot);
@@ -68,9 +72,21 @@ export function textRuns(task: { scrollTo?: string; unfade?: number[] } | null):
   walk(document.body);
   if (hidden) hidden.disabled = true;
   for (const r of roots) r.adoptedStyleSheets = [...r.adoptedStyleSheets, hits];
+  // an inline !important beats the sheet: those elements are set inline too, and put back
+  const inline: [HTMLElement | SVGElement, string, string][] = [];
+  for (const e of elements) {
+    if ((e instanceof HTMLElement || e instanceof SVGElement) && getComputedStyle(e).pointerEvents === 'none') {
+      inline.push([e, e.style.getPropertyValue('pointer-events'), e.style.getPropertyPriority('pointer-events')]);
+      e.style.setProperty('pointer-events', 'auto', 'important');
+    }
+  }
   try {
     return collect();
   } finally {
+    for (const [e, value, priority] of inline) {
+      if (value) e.style.setProperty('pointer-events', value, priority);
+      else e.style.removeProperty('pointer-events');
+    }
     for (const r of roots) r.adoptedStyleSheets = r.adoptedStyleSheets.filter((s) => s !== hits);
     if (hidden) hidden.disabled = false;
   }
@@ -118,6 +134,29 @@ export function textRuns(task: { scrollTo?: string; unfade?: number[] } | null):
       clipCache.set(el, c);
       return c;
     };
+    // a filter or a blend on the element or an ancestor changes what its words look like over what is below them
+    const effectCache = new Map<Element, string | null>();
+    const effect = (e: Element | null): string | null => {
+      if (!e) return null;
+      let f = effectCache.get(e);
+      if (f === undefined) {
+        const s = css(e);
+        f = s.filter !== 'none' ? `under a filter (${where(e)})` : s.mixBlendMode !== 'normal' ? `blended with what is below (${where(e)})` : effect(up(e));
+        effectCache.set(e, f);
+      }
+      return f;
+    };
+    // what covers a point of an element's words: anything above it there that isn't one of its ancestors (the
+    // ancestors' own paint is the background being measured). Hit-tested with every element taking pointer events.
+    const coveredBy = (el: Element, root: Document | ShadowRoot, x: number, y: number): string | null => {
+      for (const e of root.elementsFromPoint(x, y)) {
+        if (e === el || el.contains(e)) return null;
+        let mine = false;
+        for (let a = up(el); a && !mine; a = up(a)) mine = a === e;
+        if (!mine) return where(e);
+      }
+      return 'nothing it can find';
+    };
     const fadeCache = new Map<Element, number>();
     const fadeOf = (e: Element | null): number => {
       if (!e) return 1;
@@ -159,14 +198,19 @@ export function textRuns(task: { scrollTo?: string; unfade?: number[] } | null):
       const field = node instanceof Text ? null : node;
       const el = field ?? (node as Text).parentElement;
       if (!el) continue;
-      const placeholder = !!field && !field.value;
-      // a field's value is never quoted (it may be a secret someone typed): the report names it instead
-      const text = field ? (placeholder ? `placeholder: ${field.placeholder}` : 'what’s typed in the field') : (node as Text).data;
+      // what a field shows: a select its option, a button its value, a text field what's typed or its placeholder. What's
+      // typed is never quoted (it may be a secret): the report names it instead
+      const select = field instanceof HTMLSelectElement ? field : null;
+      const button = field instanceof HTMLInputElement && /^(submit|button|reset)$/.test(field.type) ? field : null;
+      const typed = field && !(field instanceof HTMLSelectElement) && !button ? field : null;
+      const shown = select ? select.selectedOptions[0]?.text ?? '' : button ? button.value || ({ submit: 'Submit', reset: 'Reset' } as Record<string, string>)[button.type] || '' : '';
+      const placeholder = !!typed && !typed.value;
+      const text = !field ? (node as Text).data : typed ? (placeholder ? `placeholder: ${typed.placeholder}` : 'what’s typed in the field') : shown;
       signature += `\n${text}`;
       if (target !== null && id !== target) continue;
       if (task?.unfade && !task.unfade.includes(id)) continue;
       if (!field && el.closest('script, style, noscript, template, title, textarea, select, option')) continue;
-      if (field && !/\S/.test(field.value || field.placeholder)) continue;
+      if (field && !/\S/.test(typed ? typed.value || typed.placeholder : shown)) continue;
       if (!el.checkVisibility({ opacityProperty: true, visibilityProperty: true })) continue;
       if (el.closest(':disabled, [aria-disabled="true"], [inert]') || (modal && !modal.contains(el))) continue;
       if (task?.unfade) {
@@ -184,7 +228,13 @@ export function textRuns(task: { scrollTo?: string; unfade?: number[] } | null):
       if (paint === 'none') continue;
       const ink = rgba(paint);
       const fade = fadeOf(el);
-      if (ink && ink[3] * fade === 0) continue; // nothing painted (words in a gradient through background-clip: text, too)
+      // what paints these words otherwise than in their ink, over the pixels below: not measured
+      const letter = field ? null : getComputedStyle(el, '::first-letter');
+      const unreadable = !ink ? `painted with “${paint}”, not one colour`
+        : /text/.test(s.backgroundClip + s.getPropertyValue('-webkit-background-clip')) ? 'painted by its background (background-clip: text)'
+          : letter && (letter.color !== s.color || letter.webkitTextFillColor !== s.webkitTextFillColor) ? 'its first letter has a colour of its own (::first-letter)'
+            : effect(el);
+      if (!unreadable && ink && ink[3] * fade === 0) continue; // nothing painted
 
       // each box (a field's: its content box, as a whole), and how to find it again once its element has scrolled
       const rects: { k: string; at: () => Edges }[] = [];
@@ -239,16 +289,34 @@ export function textRuns(task: { scrollTo?: string; unfade?: number[] } | null):
         let shown = cut(b, view);
         for (const c of scrollers) shown = cut(shown, inner(c));
         const whole = shown.l === b.l && shown.t === b.t && shown.r === b.r && shown.b === b.b;
-        const hit = whole ? root.elementFromPoint((b.l + b.r) / 2, (b.t + b.b) / 2) : null;
-        const covered = whole && !(hit && (hit === el || el.contains(hit) || hit.contains(el))) ? (hit ? where(hit) : 'nothing it can find') : null;
+        const covered = whole ? coveredBy(el, root, (b.l + b.r) / 2, (b.t + b.b) / 2) : null;
         boxes.push({ key, x: b.l, y: b.t, w: b.r - b.l, h: b.b - b.t, inView: whole && !covered, covered });
       }
       if (boxes.length) {
         runs.push({ id, where: where(el), text: text.replace(/\s+/g, ' ').trim(), size: parseFloat(s.fontSize), weight: parseInt(s.fontWeight, 10),
-          ink: ink ?? [0, 0, 0, 1], fade, ...(ink ? {} : { unreadable: `painted with “${paint}”, not one colour` }), boxes });
+          ink: ink ?? [0, 0, 0, 1], fade, ...(unreadable ? { unreadable } : {}), boxes });
       }
     }
-    return task ? { runs: [], signature } : { runs, signature };
+    if (task) return { runs: [], signature };
+
+    // words drawn by CSS content (::before, ::after): no Range reaches them, so they are not measured
+    for (const [i, e] of elements.entries()) {
+      if (e.closest('script, style, noscript, template') || !e.checkVisibility({ opacityProperty: true, visibilityProperty: true })) continue;
+      if (e.closest(':disabled, [aria-disabled="true"], [inert]') || (modal && !modal.contains(e))) continue;
+      for (const pseudo of ['::before', '::after'] as const) {
+        const ps = getComputedStyle(e, pseudo);
+        if (ps.display === 'none' || ps.content === 'none' || ps.content === 'normal') continue;
+        const words = [...ps.content.matchAll(/"((?:[^"\\]|\\.)*)"/g)].map((m) => m[1]).join('');
+        if (!/\S/.test(words) && !/counter|attr\(|quote/.test(ps.content)) continue;
+        let b = cut(inner(e), { l: -Infinity, t: -Infinity, r: Infinity, b: Infinity });
+        for (const c of clips(e).hard) b = cut(b, c);
+        if (b.r - b.l < 2 || b.b - b.t < 2) continue;
+        runs.push({ id: -1 - (2 * i + (pseudo === '::after' ? 1 : 0)), where: `${where(e)}${pseudo}`, text: words || ps.content,
+          size: parseFloat(ps.fontSize), weight: parseInt(ps.fontWeight, 10), ink: [0, 0, 0, 1], fade: 1, unreadable: 'drawn by CSS content',
+          boxes: [{ key: `content:${i}${pseudo}`, x: b.l, y: b.t, w: b.r - b.l, h: b.b - b.t, inView: false, covered: null }] });
+      }
+    }
+    return { runs, signature };
   }
 }
 
@@ -364,7 +432,7 @@ const ratio = (a: number, b: number) => (Math.max(a, b) + 0.05) / (Math.min(a, b
 
 /**
  * A box's contrast: the ink alpha-composited over each background pixel in the box as the browser paints it (in sRGB),
- * against that pixel; the box's contrast is the PERCENTILE of them. A word in a faded group (an ancestor's opacity) is
+ * against that pixel; the box's contrast is its worst patch's (PATCH). A word in a faded group (an ancestor's opacity) is
  * painted inside the group first, over what the group itself paints there (`unfaded`, the same area shot with the group
  * opaque), and the group then fades over what is below it: on screen, the background plus fade × alpha × (ink − the
  * group's own pixel). Without `unfaded`, the group paints nothing of its own there. `dpr` turns CSS pixels into the
@@ -377,16 +445,41 @@ export function boxContrast(shot: Shot, box: Box, ink: TextRun['ink'], fade: num
   const a = ink[3] * fade;
   const own = unfaded ?? shot;
   const over = (t: number, u: number, v: number) => Math.min(255, Math.max(0, Math.round(u + a * (t - v))));
-  const found: number[] = [];
+  const [width, height] = [x1 - x0, y1 - y0];
+  if (width <= 0 || height <= 0) return NaN;
+  const contrast = new Float64Array(width * height);
   for (let y = y0; y < y1; y++) {
     for (let x = x0; x < x1; x++) {
       const o = (y * shot.width + x) * 4;
       const [br, bg, bb] = [shot.rgba[o] ?? 0, shot.rgba[o + 1] ?? 0, shot.rgba[o + 2] ?? 0];
       const [gr, gg, gb] = [own.rgba[o] ?? 0, own.rgba[o + 1] ?? 0, own.rgba[o + 2] ?? 0];
-      found.push(ratio(luminance(over(r, br, gr), over(g, bg, gg), over(b, bb, gb)), luminance(br, bg, bb)));
+      contrast[(y - y0) * width + (x - x0)] = ratio(luminance(over(r, br, gr), over(g, bg, gg), over(b, bb, gb)), luminance(br, bg, bb));
     }
   }
-  if (!found.length) return NaN;
-  found.sort((p, q) => p - q);
-  return found[Math.floor(PERCENTILE * (found.length - 1))] ?? NaN;
+  return worstPatch(contrast, width, height);
+}
+
+/**
+ * The worst patch of a grid of contrasts that is more than PATCH of its width wide and of its height high: the lowest,
+ * over every such patch, of the best contrast in it (a sliding maximum along the rows, then down the columns).
+ */
+export function worstPatch(contrast: Float64Array, width: number, height: number): number {
+  const [kw, kh] = [Math.min(width, Math.floor(PATCH * width) + 1), Math.min(height, Math.floor(PATCH * height) + 1)];
+  const across = new Float64Array((width - kw + 1) * height);
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x + kw <= width; x++) {
+      let best = 0;
+      for (let i = 0; i < kw; i++) best = Math.max(best, contrast[y * width + x + i] ?? 0);
+      across[y * (width - kw + 1) + x] = best;
+    }
+  }
+  let worst = Infinity;
+  for (let x = 0; x + kw <= width; x++) {
+    for (let y = 0; y + kh <= height; y++) {
+      let best = 0;
+      for (let i = 0; i < kh; i++) best = Math.max(best, across[(y + i) * (width - kw + 1) + x] ?? 0);
+      worst = Math.min(worst, best);
+    }
+  }
+  return worst;
 }

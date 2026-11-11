@@ -59,13 +59,13 @@ test('a rule’s paragraph ends with its error', () => {
 });
 
 test('accessible() fails the test, naming the screen and the rule', async () => {
-  test.slow(); // a Playwright inside a Playwright
+  test.setTimeout(180_000); // a Playwright inside a Playwright, with 22 planted tests
   const out = await mkdtemp(path.join(tmpdir(), 'homerslab-planted-'));
   try {
-    // this worker's own Playwright variables stay out of the child's environment; two workers for twelve tests
+    // this worker's own Playwright variables stay out of the child's environment; three workers for 22 tests
     const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => !/^(TEST_|PW_)/.test(k)));
     const child = await playwright(['test', 'e2e/planted.a11y.spec.ts', '--project', test.info().project.name,
-      '--reporter', 'json', '--output', out, '--retries', '0', '--workers', '2'], { ...env, HOMERSLAB_PLANTED: '1' },
+      '--reporter', 'json', '--output', out, '--retries', '0', '--workers', '3'], { ...env, HOMERSLAB_PLANTED: '1' },
     test.info().timeout - 15_000); // it fails, as it should
     let report: Suite & { suites: Suite[] };
     try {
@@ -94,6 +94,22 @@ test('accessible() fails the test, naming the screen and the rule', async () => 
       ['planted: a faint label floating over a field', { check: pixelCheck, says: findsWord('span#planted-float', '4\\.5:1') }],
       ['planted: a faint toast in a box that hides its overflow', { check: pixelCheck, says: findsWord('p#planted-toast', '4\\.5:1') }],
       ['planted: dark words in a faded grey group', { check: pixelCheck, says: findsWord('p#planted-dim', '4\\.5:1') }],
+      ['planted: a faint word under an opaque bar in the card', { check: pixelCheck,
+        says: /\n\s*- p#planted-under “Hidden under a bar”: not measured, \d+ words?: covered by div#planted-bar/ }],
+      ['planted: a faint word in a scrolling box under a sticky header', { check: pixelCheck, says: findsWord('p#planted-scrolled', '4\\.5:1') }],
+      ['planted: a faint option in a select', { check: pixelCheck, says: findsWord('select#planted-select', '4\\.5:1') }],
+      ['planted: a faint submit button’s value', { check: pixelCheck, says: findsWord('input#planted-submit', '4\\.5:1') }],
+      ['planted: words drawn by CSS content', { check: pixelCheck,
+        says: /\n\s*- p#planted-gen::before “Generated words”: not measured, 1 word: drawn by CSS content/ }],
+      ['planted: words painted through background-clip: text', { check: pixelCheck,
+        says: /\n\s*- p#planted-clip “Clipped words”: not measured, \d+ words?: painted by its background \(background-clip: text\)/ }],
+      ['planted: a first letter in its own colour', { check: pixelCheck,
+        says: /\n\s*- p#planted-first “First letter”: not measured, \d+ words?: its first letter has a colour of its own \(::first-letter\)/ }],
+      ['planted: words under a filter', { check: pixelCheck,
+        says: /\n\s*- div#planted-filter > p “Filtered words”: not measured, \d+ words?: under a filter \(div#planted-filter\)/ }],
+      ['planted: words that blend', { check: pixelCheck,
+        says: /\n\s*- p#planted-blend “Blended words”: not measured, \d+ words?: blended with what is below \(p#planted-blend\)/ }],
+      ['planted: words at 3.2:1 below large', { check: pixelCheck, says: findsWord('p#planted-small', '4\\.5:1') }],
       ['planted: a word half off the screen', { check: pixelCheck,
         says: /\n\s*- p#planted-offscreen “Half off the screen”: not measured, \d+ words?: never wholly in view/ }],
     ];
