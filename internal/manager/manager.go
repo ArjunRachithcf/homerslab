@@ -18,6 +18,7 @@ import (
 	"net/http"
 	"net/netip"
 	"os"
+	"sync/atomic"
 	"time"
 
 	"github.com/ArjunRachithcf/homerslab/internal/lan"
@@ -42,20 +43,26 @@ type Config struct {
 	// Hosts are the names the setup listener answers to, with SetupPort: the link's own addresses, loopback and the
 	// machine's hostname. Any other Host is refused, against DNS rebinding.
 	Hosts func() []string
-	// Steps adds step handlers to the built ones (setup.Built).
+	// Steps adds step handlers to the built ones (setup.Built and the manager's own).
 	Steps map[string]setup.Handler
-	Web   fs.FS // the built pages; surfaces.Dist() when nil
-	Log   *slog.Logger
+	// NetBird reaches NetBird's management API; the netbird package when nil.
+	NetBird NetBird
+	// ScheduleEvery is how often the scheduler looks for due jobs.
+	ScheduleEvery time.Duration
+	Web           fs.FS // the built pages; surfaces.Dist() when nil
+	Log           *slog.Logger
 }
 
 // Manager is a running manager.
 type Manager struct {
-	cfg   Config
-	db    *store.Store
-	setup *setup.Setup
-	agent *agentClient
-	web   fs.FS
-	log   *slog.Logger
+	cfg       Config
+	db        *store.Store
+	setup     *setup.Setup
+	agent     *agentClient
+	netbird   NetBird
+	web       fs.FS
+	log       *slog.Logger
+	lanClosed atomic.Bool
 }
 
 // New opens the manager's database.
@@ -81,25 +88,32 @@ func New(c Config) (*Manager, error) {
 	if c.Web == nil {
 		c.Web = surfaces.Dist()
 	}
+	if c.NetBird == nil {
+		c.NetBird = realNetBird{}
+	}
+	if c.ScheduleEvery == 0 {
+		c.ScheduleEvery = time.Hour
+	}
 	db, err := store.Open(c.DB, setup.StoreSteps())
 	if err != nil {
 		return nil, err
 	}
-	handlers := map[string]setup.Handler{}
+	m := &Manager{cfg: c, db: db, agent: newAgentClient(c.AgentSocket), netbird: c.NetBird, web: c.Web, log: c.Log}
+	handlers := map[string]setup.Handler{"network": m.network}
 	for id, h := range setup.Built {
 		handlers[id] = h
 	}
 	for id, h := range c.Steps {
 		handlers[id] = h
 	}
-	return &Manager{
-		cfg:   c,
-		db:    db,
-		setup: setup.New(db, c.Now, handlers),
-		agent: newAgentClient(c.AgentSocket),
-		web:   c.Web,
-		log:   c.Log,
-	}, nil
+	m.setup = setup.New(db, c.Now, handlers, map[string]setup.SecretHandler{"mesh": m.meshSecret})
+	answers, err := db.Answers(context.Background())
+	if err != nil {
+		db.Close()
+		return nil, err
+	}
+	m.lanClosed.Store(answers[ansLANClosed] != "")
+	return m, nil
 }
 
 // Close closes the database.
@@ -108,9 +122,14 @@ func (m *Manager) Close() error { return m.db.Close() }
 // Serve answers on the setup listener and the control socket until ctx ends.
 func (m *Manager) Serve(ctx context.Context, setupLn, controlLn net.Listener) error {
 	servers := []*http.Server{
-		{Handler: m.Setup(), ReadHeaderTimeout: 10 * time.Second, ReadTimeout: 30 * time.Second, WriteTimeout: 30 * time.Second, IdleTimeout: 2 * time.Minute},
+		{Handler: m.Setup(), ReadHeaderTimeout: 10 * time.Second, ReadTimeout: 30 * time.Second,
+			// The network step bootstraps a mesh and joins it, waiting for the client to connect: up to a few minutes.
+			WriteTimeout: 3 * time.Minute, IdleTimeout: 2 * time.Minute},
 		{Handler: m.Control(), ReadHeaderTimeout: 10 * time.Second},
 	}
+	scheduled, stop := context.WithCancel(ctx)
+	defer stop()
+	go m.schedule(scheduled)
 	errc := make(chan error, 2)
 	go func() { errc <- servers[0].Serve(setupLn) }()
 	go func() { errc <- servers[1].Serve(controlLn) }()
@@ -134,6 +153,10 @@ func (m *Manager) Serve(ctx context.Context, setupLn, controlLn net.Listener) er
 func (m *Manager) Control() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /api/v1/setup/links", m.newLink)
+	mux.HandleFunc("PUT /api/v1/setup/secrets/{name}", m.putSecret)
+	mux.HandleFunc("GET /api/v1/drift", m.getDrift)
+	mux.HandleFunc("GET /api/v1/mesh", m.getMesh)
+	mux.HandleFunc("GET /api/v1/mesh/owner-password", m.getOwnerPassword)
 	mux.HandleFunc("GET /api/v1/setup", m.getSetup)
 	mux.HandleFunc("GET /api/v1/nodes/primary", m.getPrimary)
 	mux.HandleFunc("/", notFound)
@@ -147,6 +170,10 @@ type linkResponse struct {
 }
 
 func (m *Manager) newLink(w http.ResponseWriter, r *http.Request) {
+	if m.lanClosed.Load() {
+		fail(w, http.StatusConflict, "lan-closed")
+		return
+	}
 	l, err := m.setup.NewLink(r.Context())
 	if errors.Is(err, setup.ErrLANHalfDone) {
 		fail(w, http.StatusConflict, err.Error())
@@ -199,9 +226,14 @@ func (m *Manager) putStep(w http.ResponseWriter, r *http.Request) {
 	}
 	st, err := m.setup.Answer(r.Context(), r.PathValue("id"), setup.LAN, raw)
 	var invalid *setup.Invalid
+	var overHTTP *setup.SecretOverHTTP
 	switch {
 	case err == nil:
 		writeJSON(w, http.StatusOK, st)
+	case errors.As(err, &overHTTP):
+		// Refused whatever its value: no secret travels over plain HTTP (#64). The page shows the command.
+		m.log.Warn("refused a secret sent over the LAN page", "step", r.PathValue("id"))
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "secret-over-http", "command": overHTTP.Command})
 	case errors.As(err, &invalid):
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid", "fields": invalid.Fields})
 	case errors.Is(err, setup.ErrUnknownStep):
