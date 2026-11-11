@@ -90,19 +90,6 @@ func Parse(domain string, chain []byte, key mesh.Secret) (Certificate, error) {
 	return leafCertificate(domain, chain, key, leaf)
 }
 
-// ParseChain reads a domain's certificate chain alone, without its key.
-func ParseChain(domain string, chain []byte) (Certificate, error) {
-	b, _ := pem.Decode(chain)
-	if b == nil || b.Type != "CERTIFICATE" {
-		return Certificate{}, errors.New("not a PEM certificate")
-	}
-	leaf, err := x509.ParseCertificate(b.Bytes)
-	if err != nil {
-		return Certificate{}, err
-	}
-	return leafCertificate(domain, chain, "", leaf)
-}
-
 func leafCertificate(domain string, chain []byte, key mesh.Secret, leaf *x509.Certificate) (Certificate, error) {
 	if err := leaf.VerifyHostname("homerslab-check." + domain); err != nil || len(leaf.DNSNames) != 1 || leaf.DNSNames[0] != "*."+domain {
 		return Certificate{}, fmt.Errorf("the certificate is for %v, not *.%s alone", leaf.DNSNames, domain)

@@ -112,7 +112,6 @@ var migrations = []string{
 		type        TEXT NOT NULL,
 		value       TEXT NOT NULL,
 		ttl_seconds INTEGER NOT NULL,
-		provider_id TEXT NOT NULL DEFAULT '',
 		created_at  INTEGER NOT NULL,
 		PRIMARY KEY (zone, name, type, value)
 	);

@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/libdns/libdns"
 
@@ -44,17 +45,24 @@ func (p *provider) AppendRecords(_ context.Context, _ string, recs []libdns.Reco
 	return recs, nil
 }
 
+// DeleteRecords deletes exact matches, as libdns says: a TTL of 0 matches any TTL, an empty value any value. It returns
+// what it deleted.
 func (p *provider) DeleteRecords(_ context.Context, _ string, recs []libdns.Record) ([]libdns.Record, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	var deleted []libdns.Record
 	for _, r := range recs {
 		rr := r.RR()
 		p.records = slices.DeleteFunc(p.records, func(x libdns.RR) bool {
-			return x.Name == rr.Name && x.Type == rr.Type && x.Data == rr.Data
+			hit := x.Name == rr.Name && x.Type == rr.Type && (rr.Data == "" || x.Data == rr.Data) && (rr.TTL == 0 || x.TTL == rr.TTL)
+			if hit {
+				deleted = append(deleted, x)
+			}
+			return hit
 		})
 		p.writes = append(p.writes, "delete "+rr.Name+" "+rr.Type)
 	}
-	return recs, nil
+	return deleted, nil
 }
 
 func (p *provider) has(name, typ string) []string {
@@ -220,5 +228,70 @@ func TestTheProvidersSettingsHoldNoSecret(t *testing.T) {
 	}
 	if _, err := dns.Open(dns.Settings{Provider: "infomaniak"}, " "); err == nil {
 		t.Error("opened a provider without a token")
+	}
+}
+
+// A delete never orphans a record: it matches any TTL, never an empty value (which would delete every value at the
+// name), and a record the provider didn't delete stays in the book (#16's review).
+func TestADeleteNeverOrphansARecord(t *testing.T) {
+	testenv.Isolate(t)
+	p, b := household(), &book{}
+	o := &dns.Owned{Provider: p, Zone: "example.test.", Domain: "example.test", Book: b}
+	ctx := context.Background()
+	if err := o.Create(ctx, dns.Record{Name: "_acme-challenge", Type: "TXT", Value: "digest", TTL: time.Minute}); err != nil {
+		t.Fatal(err)
+	}
+	// The provider keeps its own TTL: 300 seconds where HomersLab asked for 60 (Infomaniak's minimum, say).
+	p.mu.Lock()
+	for i := range p.records {
+		p.records[i].TTL = 5 * time.Minute
+	}
+	p.mu.Unlock()
+	if err := o.Delete(ctx, dns.Record{Name: "_acme-challenge", Type: "TXT", Value: "digest"}); err != nil {
+		t.Fatalf("deleting the challenge whose TTL the provider changed: %v", err)
+	}
+	if got := p.has("_acme-challenge", "TXT"); slices.Contains(got, "digest") || !slices.Contains(got, "left-by-another-acme-client") {
+		t.Errorf("_acme-challenge holds %v after the delete", got)
+	}
+
+	for _, r := range []dns.Record{{Name: "_acme-challenge", Type: "TXT"}, {Name: "photos", Type: "CNAME"}} {
+		if err := o.Create(ctx, r); !errors.Is(err, dns.ErrNoValue) {
+			t.Errorf("creating %s %s without a value: %v, want ErrNoValue", r.Type, r.Name, err)
+		}
+		if err := o.Delete(ctx, r); !errors.Is(err, dns.ErrNoValue) {
+			t.Errorf("deleting %s %s without a value: %v, want ErrNoValue", r.Type, r.Name, err)
+		}
+	}
+	if got := p.has("_acme-challenge", "TXT"); !slices.Contains(got, "left-by-another-acme-client") {
+		t.Error("another client's challenge record is gone")
+	}
+
+	// Someone deleted HomersLab's record at the provider: nothing was deleted, and the book still lists it.
+	r := dns.Record{Name: "photos", Type: "CNAME", Value: "proxy.cluster.test."}
+	if err := o.Create(ctx, r); err != nil {
+		t.Fatal(err)
+	}
+	p.mu.Lock()
+	p.records = slices.DeleteFunc(p.records, func(x libdns.RR) bool { return x.Name == "photos" })
+	p.mu.Unlock()
+	if err := o.Delete(ctx, r); !errors.Is(err, dns.ErrNotDeleted) {
+		t.Errorf("a delete the provider did nothing for: %v, want ErrNotDeleted", err)
+	}
+	if recs, _ := b.Records(ctx, "example.test."); !slices.ContainsFunc(recs, func(k dns.Record) bool { return k.Name == "photos" }) {
+		t.Error("the book forgot a record the provider never deleted")
+	}
+}
+
+// Only the challenge's own name shares with other ACME clients: a look-alike name is taken like any other.
+func TestOnlyTheChallengesOwnNameIsShared(t *testing.T) {
+	testenv.Isolate(t)
+	p := household()
+	p.records = append(p.records, libdns.RR{Name: "_acme-challengex", Type: "TXT", Data: "someone else's"},
+		libdns.RR{Name: "_acme-challenge.photos", Type: "TXT", Data: "someone else's"})
+	o := &dns.Owned{Provider: p, Zone: "example.test.", Domain: "example.test", Book: &book{}}
+	for _, name := range []string{"_acme-challengex", "_acme-challenge.photos"} {
+		if err := o.Create(context.Background(), dns.Record{Name: name, Type: "TXT", Value: "ours"}); !errors.Is(err, dns.ErrTaken) {
+			t.Errorf("a TXT at %s beside someone else's: %v, want ErrTaken", name, err)
+		}
 	}
 }

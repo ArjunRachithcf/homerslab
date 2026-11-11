@@ -41,8 +41,8 @@ RestartSec=2s
 NoNewPrivileges=yes
 CapabilityBoundingSet=CAP_CHOWN CAP_DAC_READ_SEARCH CAP_NET_ADMIN
 ProtectSystem=strict
-# NetBird's drop-in only (the folder comes from tmpfiles.d/homerslab.conf).
-ReadWritePaths=/etc/systemd/system/netbird.service.d
+# NetBird's and the edge's drop-ins only (agent.RootWrites; the folders come from tmpfiles.d/homerslab.conf).
+ReadWritePaths=/etc/systemd/system/netbird.service.d /etc/systemd/system/homerslab-edge.service.d
 ProtectHome=read-only
 PrivateTmp=yes
 PrivateNetwork=no

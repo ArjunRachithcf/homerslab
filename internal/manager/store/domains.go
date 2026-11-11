@@ -15,7 +15,7 @@ func (s *Store) Book() dns.Book { return book{s} }
 type book struct{ s *Store }
 
 func (b book) Records(ctx context.Context, zone string) ([]dns.Record, error) {
-	rows, err := b.s.db.QueryContext(ctx, `SELECT name, type, value, ttl_seconds, provider_id FROM dns_record
+	rows, err := b.s.db.QueryContext(ctx, `SELECT name, type, value, ttl_seconds FROM dns_record
 		WHERE zone = ? ORDER BY created_at, rowid`, zone)
 	if err != nil {
 		return nil, err
@@ -25,7 +25,7 @@ func (b book) Records(ctx context.Context, zone string) ([]dns.Record, error) {
 	for rows.Next() {
 		var r dns.Record
 		var ttl int64
-		if err := rows.Scan(&r.Name, &r.Type, &r.Value, &ttl, &r.ID); err != nil {
+		if err := rows.Scan(&r.Name, &r.Type, &r.Value, &ttl); err != nil {
 			return nil, err
 		}
 		r.TTL = time.Duration(ttl) * time.Second
@@ -35,8 +35,8 @@ func (b book) Records(ctx context.Context, zone string) ([]dns.Record, error) {
 }
 
 func (b book) Keep(ctx context.Context, zone string, r dns.Record) error {
-	_, err := b.s.db.ExecContext(ctx, `INSERT INTO dns_record (zone, name, type, value, ttl_seconds, provider_id, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING`, zone, r.Name, r.Type, r.Value, int64(r.TTL/time.Second), r.ID, time.Now().UnixMilli())
+	_, err := b.s.db.ExecContext(ctx, `INSERT INTO dns_record (zone, name, type, value, ttl_seconds, created_at)
+		VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING`, zone, r.Name, r.Type, r.Value, int64(r.TTL/time.Second), time.Now().UnixMilli())
 	return err
 }
 

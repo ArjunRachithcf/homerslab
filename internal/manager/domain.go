@@ -40,7 +40,6 @@ type Issuance struct {
 	Zone, Domain string
 	Account      mesh.Secret
 	Contact      string
-	Fresh        bool
 }
 
 type realDomains struct {
@@ -73,8 +72,8 @@ func (d realDomains) Ensure(ctx context.Context, i Issuance, have *certs.Certifi
 	if err != nil {
 		return certs.Certificate{}, false, err
 	}
-	zone := &dns.Owned{Provider: p, Zone: i.Zone, Domain: i.Domain, Book: d.book}
-	return d.a.Ensure(ctx, certs.Request{Domain: i.Domain, Zone: zone, AccountKey: i.Account, Contact: i.Contact, Fresh: i.Fresh}, have, now)
+	zone := &dns.Owned{Provider: p, Zone: i.Zone, Domain: i.Domain, Book: d.book, Log: d.a.Log}
+	return d.a.Ensure(ctx, certs.Request{Domain: i.Domain, Zone: zone, AccountKey: i.Account, Contact: i.Contact}, have, now)
 }
 
 func (d realDomains) Authority() string { return d.a.Name }
@@ -184,13 +183,13 @@ func (m *Manager) takeDNSToken(ctx context.Context, token mesh.Secret, ans map[s
 		return nil, false, err
 	}
 	ans[ansZone] = zone
-	issued, err := m.ensureCertificate(ctx, ans, token, false)
+	issued, err := m.ensureCertificate(ctx, ans, token)
 	return keep, issued, err
 }
 
 // ensureCertificate keeps the main domain's certificate while it is valid, or issues it, then puts it on the edge and
 // the household's names on the mesh. It says whether it issued.
-func (m *Manager) ensureCertificate(ctx context.Context, ans map[string]string, token mesh.Secret, fresh bool) (bool, error) {
+func (m *Manager) ensureCertificate(ctx context.Context, ans map[string]string, token mesh.Secret) (bool, error) {
 	domain := ans[ansDomain]
 	account, err := m.agent.unseal(ctx, credACME)
 	switch {
@@ -210,7 +209,7 @@ func (m *Manager) ensureCertificate(ctx context.Context, ans map[string]string, 
 		return false, err // never a new certificate because the agent didn't answer
 	}
 	c, issued, err := m.domains.Ensure(ctx, Issuance{Settings: settingsOf(ans), Token: token, Zone: ans[ansZone], Domain: domain,
-		Account: account, Contact: ans["mail"], Fresh: fresh}, have, m.cfg.Now())
+		Account: account, Contact: ans["mail"]}, have, m.cfg.Now())
 	if err != nil {
 		m.log.Warn("the domain's certificate", "domain", domain, "err", err)
 		return false, fmt.Errorf("%w: %v", errIssue, err)
@@ -332,7 +331,7 @@ func (m *Manager) renew(ctx context.Context) error {
 	}
 	token, err := m.agent.unseal(ctx, credDNSToken)
 	if err == nil {
-		_, err = m.ensureCertificate(ctx, ans, token, false)
+		_, err = m.ensureCertificate(ctx, ans, token)
 	}
 	if err != nil {
 		return m.renewalFailed(ctx, row, err)

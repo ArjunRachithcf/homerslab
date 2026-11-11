@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"slices"
 	"strings"
 	"time"
@@ -19,13 +20,13 @@ type Provider interface {
 }
 
 // Record is one record HomersLab created, as the manager's database keeps it: the source of truth for what is
-// HomersLab's in a zone (#79). Name is relative to the zone; ID is the provider's own, where it has one.
+// HomersLab's in a zone (#79). Name is relative to the zone. (The spec's provider ID isn't kept: neither provider's
+// libdns package gives one back.)
 type Record struct {
 	Name  string        `json:"name"`
 	Type  string        `json:"type"`
 	Value string        `json:"value"`
 	TTL   time.Duration `json:"ttl"`
-	ID    string        `json:"id,omitempty"`
 }
 
 // Book keeps the records HomersLab created, per zone.
@@ -41,6 +42,10 @@ var (
 	ErrTaken = errors.New("the name holds a record that isn't HomersLab's")
 	// ErrNotOurs is a record HomersLab didn't create: it is never changed or deleted.
 	ErrNotOurs = errors.New("the record isn't HomersLab's")
+	// ErrNoValue is a record without its value: with libdns, a delete without one deletes every value at the name.
+	ErrNoValue = errors.New("a record needs its value")
+	// ErrNotDeleted is a delete the provider did nothing for: the record stays in the book, so it is found again.
+	ErrNotDeleted = errors.New("the provider deleted nothing")
 )
 
 // Inventory is the name, under the domain, of the one TXT record that lists HomersLab's records by name and type, so
@@ -56,6 +61,7 @@ type Owned struct {
 	Zone     string // as libdns names it, with a trailing dot
 	Domain   string // the household's domain, at or under the zone
 	Book     Book
+	Log      *slog.Logger // where a delete the provider did nothing for is said; none when nil
 }
 
 func (o *Owned) zone() string { return strings.ToLower(libdns.AbsoluteName("@", o.Zone)) }
@@ -106,6 +112,9 @@ func (o *Owned) Create(ctx context.Context, r Record) error {
 }
 
 func (o *Owned) create(ctx context.Context, r Record) error {
+	if r.Value == "" || r.Type == "" {
+		return fmt.Errorf("%w: %s %s", ErrNoValue, r.Type, r.Name)
+	}
 	there, err := o.at(ctx, r.Name)
 	if err != nil {
 		return err
@@ -114,7 +123,7 @@ func (o *Owned) create(ctx context.Context, r Record) error {
 	if err != nil {
 		return err
 	}
-	challenge := strings.EqualFold(r.Type, "TXT") && strings.HasPrefix(strings.ToLower(r.Name), Challenge)
+	challenge := strings.EqualFold(r.Type, "TXT") && same(r.Name, o.rel(Challenge))
 	for _, rr := range there {
 		mine := slices.ContainsFunc(ours, func(k Record) bool { return k.matches(rr) })
 		switch {
@@ -126,12 +135,8 @@ func (o *Owned) create(ctx context.Context, r Record) error {
 			return fmt.Errorf("%w: %s holds a %s record", ErrTaken, r.Name, rr.Type)
 		}
 	}
-	made, err := o.Provider.AppendRecords(ctx, o.zone(), []libdns.Record{r.libdns()})
-	if err != nil {
+	if _, err := o.Provider.AppendRecords(ctx, o.zone(), []libdns.Record{r.libdns()}); err != nil {
 		return fmt.Errorf("adding %s %s: %w", r.Type, r.Name, err)
-	}
-	if len(made) == 1 {
-		r.ID = providerID(made[0])
 	}
 	return o.Book.Keep(ctx, o.zone(), r)
 }
@@ -145,6 +150,9 @@ func (o *Owned) Delete(ctx context.Context, r Record) error {
 }
 
 func (o *Owned) delete(ctx context.Context, r Record) error {
+	if r.Value == "" || r.Type == "" {
+		return fmt.Errorf("%w: %s %s", ErrNoValue, r.Type, r.Name)
+	}
 	ours, err := o.Book.Records(ctx, o.zone())
 	if err != nil {
 		return err
@@ -153,8 +161,18 @@ func (o *Owned) delete(ctx context.Context, r Record) error {
 	if i < 0 {
 		return fmt.Errorf("%w: %s %s", ErrNotOurs, r.Type, r.Name)
 	}
-	if _, err := o.Provider.DeleteRecords(ctx, o.zone(), []libdns.Record{ours[i].libdns()}); err != nil {
+	// Any TTL: a provider may keep its own (a minimum of its own), and the record is HomersLab's all the same.
+	exact := ours[i]
+	exact.TTL = 0
+	deleted, err := o.Provider.DeleteRecords(ctx, o.zone(), []libdns.Record{exact.libdns()})
+	if err != nil {
 		return fmt.Errorf("deleting %s %s: %w", r.Type, r.Name, err)
+	}
+	if len(deleted) == 0 {
+		if o.Log != nil {
+			o.Log.Warn("the DNS provider deleted nothing: the record stays listed as HomersLab's", "zone", o.zone(), "name", r.Name, "type", r.Type)
+		}
+		return fmt.Errorf("%w: %s %s", ErrNotDeleted, r.Type, r.Name)
 	}
 	return o.Book.Forget(ctx, o.zone(), ours[i])
 }
@@ -209,24 +227,4 @@ func (r Record) same(o Record) bool {
 
 func (r Record) matches(rr libdns.RR) bool {
 	return same(r.Name, rr.Name) && strings.EqualFold(r.Type, rr.Type) && r.Value == rr.Data
-}
-
-// providerID is the provider's own ID of a record, where its libdns package gives one.
-func providerID(r libdns.Record) string {
-	var data any
-	switch x := r.(type) {
-	case libdns.TXT:
-		data = x.ProviderData
-	case libdns.CNAME:
-		data = x.ProviderData
-	case libdns.Address:
-		data = x.ProviderData
-	}
-	switch v := data.(type) {
-	case string:
-		return v
-	case fmt.Stringer:
-		return v.String()
-	}
-	return ""
 }

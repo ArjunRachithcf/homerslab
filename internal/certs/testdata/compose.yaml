@@ -50,6 +50,8 @@ configs:
       @       IN SOA ns.example.test. admin.example.test. 1 7200 3600 1209600 60
       @       IN NS  ns.example.test.
       ns      IN A   10.216.0.53
+      ; The name server on IPv6 too, which the primary (IPv4 only) can't reach: the propagation check skips it.
+      ns      IN AAAA 2001:db8::53
       @       IN MX  10 mx.mail.test.
       @       IN TXT "v=spf1 include:_spf.mail.test ~all"
       _dmarc  IN TXT "v=DMARC1; p=quarantine"

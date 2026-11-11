@@ -38,6 +38,7 @@ import (
 	"time"
 
 	"github.com/ArjunRachithcf/homerslab/internal/edge"
+	"github.com/ArjunRachithcf/homerslab/internal/firewall"
 	"github.com/ArjunRachithcf/homerslab/internal/testenv"
 )
 
@@ -186,6 +187,14 @@ func TestTheEdgesRequestMatrix(t *testing.T) {
 	})
 
 	w.load(t, want)
+	toMesh := request{Addr: edgeMesh + ":443", SNI: "admin.example.test", Host: "admin.example.test"}
+	t.Run("control: without the firewall table, a LAN host routing the mesh's addresses through the edge reaches Admin", func(t *testing.T) {
+		// So the row below is red without the table: the route is real.
+		if got := ask("laptop-on-the-lan", toMesh); !strings.HasPrefix(got, "200 Admin") {
+			t.Fatalf("the LAN host's route to the mesh address: %q", got)
+		}
+	})
+	w.firewall(t)
 	t.Run("the agent's configuration is what the edge runs, and holds no key", func(t *testing.T) {
 		got := w.helper(t, "edge", "0:"+edgeUID, "config", nil, "")
 		if !edge.Same([]byte(got), want) {
@@ -219,8 +228,8 @@ func TestTheEdgesRequestMatrix(t *testing.T) {
 			q: request{Addr: edgeMesh + ":443", Host: "admin.example.test", Plain: true}, want: "400 ", notWants: "Admin"},
 		{name: "Admin's name, from the LAN, at the edge's LAN address: nothing listens", from: "laptop-on-the-lan",
 			q: request{Addr: edgeLAN + ":443", SNI: "admin.example.test", Host: "admin.example.test"}, want: "error: ", notWants: "Admin"},
-		{name: "Admin's name, from the LAN, at the mesh address: no way there", from: "laptop-on-the-lan",
-			q: request{Addr: edgeMesh + ":443", SNI: "admin.example.test", Host: "admin.example.test"}, want: "error: ", notWants: "Admin"},
+		{name: "Admin's name, from the LAN, at the mesh address routed through the edge's machine: the firewall table drops it",
+			from: "laptop-on-the-lan", q: toMesh, want: "error: ", notWants: "Admin"},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			got := ask(row.from, row.q)
@@ -269,6 +278,38 @@ func TestTheEdgesRequestMatrix(t *testing.T) {
 	})
 }
 
+// firewall applies the agent's table in the edge's machine: its mesh interface (the stand-in for wt0) and its LAN
+// interface, found by their addresses.
+func (w *world) firewall(t *testing.T) {
+	t.Helper()
+	out, err := w.cmd(nil, "exec", container("firewall"), "ip", "-o", "-4", "addr", "show").CombinedOutput()
+	if err != nil {
+		t.Fatalf("the edge's interfaces: %v %s", err, out)
+	}
+	var meshIf, lanIf string
+	for _, line := range strings.Split(string(out), "\n") {
+		f := strings.Fields(line)
+		if len(f) < 4 {
+			continue
+		}
+		name, _, _ := strings.Cut(f[1], "@")
+		switch {
+		case strings.HasPrefix(f[3], edgeMesh+"/"):
+			meshIf = name
+		case strings.HasPrefix(f[3], edgeLAN+"/"):
+			lanIf = name
+		}
+	}
+	if meshIf == "" || lanIf == "" {
+		t.Fatalf("the edge's mesh and LAN interfaces aren't there:\n%s", out)
+	}
+	table := firewall.Render(firewall.State{Mesh: []string{meshIf}, LAN: []string{lanIf},
+		LANPrefixes: []netip.Prefix{netip.MustParsePrefix("10.216.2.0/24")}})
+	if out, err := w.cmd(strings.NewReader(table), "exec", "-i", container("firewall"), "nft", "-f", "-").CombinedOutput(); err != nil {
+		t.Fatalf("applying the firewall table: %v %s\n%s", err, out, table)
+	}
+}
+
 // testCA is a CA a test's browsers trust, and a wildcard certificate for *.example.test it issued, with its key.
 func testCA(t *testing.T) (ca, chain, key string) {
 	t.Helper()
@@ -311,7 +352,7 @@ func up(t *testing.T, engine, chain, key string) *world {
 		}
 		w.compose(t, "down", "-v", "--remove-orphans")
 	})
-	w.compose(t, "create", "--quiet-pull")
+	w.compose(t, "create", "--quiet-pull", "--build")
 	boot, err := os.ReadFile(filepath.Join(w.dir, "..", "..", "..", "packaging", "edge", "boot.json"))
 	if err != nil {
 		t.Fatal(err)

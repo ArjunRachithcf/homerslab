@@ -3,8 +3,14 @@ package dns_test
 import (
 	"context"
 	"errors"
+	"net"
+	"os"
 	"slices"
+	"strings"
+	"syscall"
 	"testing"
+
+	mdns "github.com/miekg/dns"
 
 	"github.com/ArjunRachithcf/homerslab/internal/dns"
 	"github.com/ArjunRachithcf/homerslab/internal/testenv"
@@ -114,5 +120,32 @@ func TestCAARecordsSayWhichAuthorityMayIssue(t *testing.T) {
 	}
 	if dns.AllowsIssuer([]dns.CAA{{Tag: "issue", Value: ";"}}, le) {
 		t.Error(`issue ";" allows an authority`)
+	}
+}
+
+// A primary without IPv6 can't reach a name server's IPv6 address: the propagation check counts the addresses that
+// answer, at least one per name server, and every one that answers must hold the record (#16's review).
+func TestThePropagationCheckSkipsAddressesThatCantBeReached(t *testing.T) {
+	testenv.Isolate(t)
+	z := serve(t, append(publicZone,
+		"ns.example.test. 60 IN AAAA 2001:db8::53",
+		"ns2.example.test. 60 IN AAAA 2001:db8::54",
+		"_acme-challenge.example.test. 60 IN TXT \"v\"")...)
+	ipv4Only := func(ctx context.Context, q *mdns.Msg, server string) (*mdns.Msg, error) {
+		if strings.HasPrefix(server, "[") {
+			return nil, &net.OpError{Op: "dial", Net: "udp", Err: os.NewSyscallError("connect", syscall.ENETUNREACH)}
+		}
+		resp, _, err := (&mdns.Client{}).ExchangeContext(ctx, q, server)
+		return resp, err
+	}
+	r := dns.WithExchange(resolverFor(z), ipv4Only)
+	ctx := context.Background()
+	if ok, err := r.HasTXT(ctx, "example.test.", "_acme-challenge.example.test.", "v"); err != nil || !ok {
+		t.Fatalf("an IPv4-only primary, the name server also on IPv6: %v %v, want the record found", ok, err)
+	}
+	// A second name server reachable only over IPv6: nothing of it answers, so nothing says it holds the record.
+	z.add(t, "example.test. 60 IN NS ns2.example.test.")
+	if ok, _ := r.HasTXT(ctx, "example.test.", "_acme-challenge.example.test.", "v"); ok {
+		t.Error("a name server none of whose addresses answered counted as holding the record")
 	}
 }

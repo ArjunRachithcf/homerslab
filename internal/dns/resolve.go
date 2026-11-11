@@ -31,6 +31,8 @@ type Resolver struct {
 	// elsewhere).
 	Port    string
 	Timeout time.Duration
+	// exchange sends one question to one server; the network's when nil (a test's stand-in otherwise).
+	exchange func(ctx context.Context, q *mdns.Msg, server string) (*mdns.Msg, error)
 }
 
 // ErrNoZone is a name no public zone holds.
@@ -59,12 +61,7 @@ func (r Resolver) ask(ctx context.Context, servers []string, name string, qtype 
 	q.SetEdns0(1232, false)
 	var last error = errors.New("no server to ask")
 	for _, s := range servers {
-		resp, _, err := r.client().ExchangeContext(ctx, q, s)
-		if err == nil && resp.Truncated {
-			c := r.client()
-			c.Net = "tcp"
-			resp, _, err = c.ExchangeContext(ctx, q, s)
-		}
+		resp, err := r.send(ctx, q, s)
 		switch {
 		case err != nil:
 			last = err
@@ -78,6 +75,20 @@ func (r Resolver) ask(ctx context.Context, servers []string, name string, qtype 
 		}
 	}
 	return nil, last
+}
+
+// send sends one question to one server, again over TCP when the answer was truncated.
+func (r Resolver) send(ctx context.Context, q *mdns.Msg, server string) (*mdns.Msg, error) {
+	if r.exchange != nil {
+		return r.exchange(ctx, q, server)
+	}
+	resp, _, err := r.client().ExchangeContext(ctx, q, server)
+	if err == nil && resp.Truncated {
+		c := r.client()
+		c.Net = "tcp"
+		resp, _, err = c.ExchangeContext(ctx, q, server)
+	}
+	return resp, err
 }
 
 // Zone is the public zone that holds name, as libdns names it (with a trailing dot). It looks for the zone's SOA,
@@ -114,8 +125,8 @@ func hasCNAME(resp *mdns.Msg, name string) bool {
 	})
 }
 
-// Authoritative are the addresses of a zone's authoritative servers, host:port.
-func (r Resolver) Authoritative(ctx context.Context, zone string) ([]string, error) {
+// Authoritative are a zone's authoritative servers, by name, with their addresses, host:port.
+func (r Resolver) Authoritative(ctx context.Context, zone string) (map[string][]string, error) {
 	resp, err := r.ask(ctx, r.servers(), zone, mdns.TypeNS, true)
 	if err != nil {
 		return nil, fmt.Errorf("the name servers of %s: %w", zone, err)
@@ -124,12 +135,13 @@ func (r Resolver) Authoritative(ctx context.Context, zone string) ([]string, err
 	if port == "" {
 		port = "53"
 	}
-	var out []string
+	out := map[string][]string{}
 	for _, rr := range resp.Answer {
 		ns, ok := rr.(*mdns.NS)
 		if !ok || !strings.EqualFold(ns.Hdr.Name, zone) {
 			continue
 		}
+		name := strings.ToLower(ns.Ns)
 		for _, t := range []uint16{mdns.TypeA, mdns.TypeAAAA} {
 			a, err := r.ask(ctx, r.servers(), ns.Ns, t, true)
 			if err != nil {
@@ -138,38 +150,53 @@ func (r Resolver) Authoritative(ctx context.Context, zone string) ([]string, err
 			for _, rr := range a.Answer {
 				switch x := rr.(type) {
 				case *mdns.A:
-					out = append(out, net.JoinHostPort(x.A.String(), port))
+					out[name] = append(out[name], net.JoinHostPort(x.A.String(), port))
 				case *mdns.AAAA:
-					out = append(out, net.JoinHostPort(x.AAAA.String(), port))
+					out[name] = append(out[name], net.JoinHostPort(x.AAAA.String(), port))
 				}
 			}
 		}
+		if _, ok := out[name]; !ok {
+			out[name] = nil // a name server without an address: nothing of it can say it holds a record
+		}
 	}
 	if len(out) == 0 {
-		return nil, fmt.Errorf("no name server of %s has an address", zone)
+		return nil, fmt.Errorf("%s has no name server", zone)
 	}
-	slices.Sort(out)
-	return slices.Compact(out), nil
+	return out, nil
 }
 
-// HasTXT says whether every authoritative server of zone holds a TXT record at exactly fqdn with exactly value. It
-// asks them directly, without recursion, and a CNAME never counts.
+// HasTXT says whether the zone's authoritative servers hold a TXT record at exactly fqdn with exactly value. It asks
+// each of their addresses directly, without recursion; an address that doesn't answer at all (an IPv6 address on a
+// primary without IPv6, a server that is down) is skipped. Every name server needs at least one address that answers,
+// and every address that answers must hold the record. A CNAME never counts.
 func (r Resolver) HasTXT(ctx context.Context, zone, fqdn, value string) (bool, error) {
 	servers, err := r.Authoritative(ctx, zone)
 	if err != nil {
 		return false, err
 	}
-	for _, s := range servers {
-		resp, err := r.ask(ctx, []string{s}, fqdn, mdns.TypeTXT, false)
-		if err != nil {
-			return false, nil // not there yet, or that server is down: ask again later
+	q := new(mdns.Msg)
+	q.SetQuestion(mdns.Fqdn(fqdn), mdns.TypeTXT)
+	q.RecursionDesired = false
+	q.SetEdns0(1232, false)
+	for _, addrs := range servers {
+		answered := false
+		for _, s := range addrs {
+			resp, err := r.send(ctx, q, s)
+			if err != nil {
+				continue // no answer from this address: another of the server's may answer
+			}
+			answered = true
+			found := resp.Rcode == mdns.RcodeSuccess && slices.ContainsFunc(resp.Answer, func(rr mdns.RR) bool {
+				txt, ok := rr.(*mdns.TXT)
+				return ok && strings.EqualFold(txt.Hdr.Name, mdns.Fqdn(fqdn)) && strings.Join(txt.Txt, "") == value
+			})
+			if !found {
+				return false, nil
+			}
 		}
-		found := slices.ContainsFunc(resp.Answer, func(rr mdns.RR) bool {
-			txt, ok := rr.(*mdns.TXT)
-			return ok && strings.EqualFold(txt.Hdr.Name, mdns.Fqdn(fqdn)) && strings.Join(txt.Txt, "") == value
-		})
-		if !found {
-			return false, nil
+		if !answered {
+			return false, nil // not one address of this server answered: ask again later
 		}
 	}
 	return true, nil

@@ -58,11 +58,6 @@ type State struct {
 	// addresses). With none (no default route yet), nothing is let in from outside but the machine's own basics.
 	LAN         []string       `json:"lan"`
 	LANPrefixes []netip.Prefix `json:"lanPrefixes"`
-	// AppsReachEdge are the edge's listeners that apps on this machine's bridges may open: the hook through which apps
-	// reach the sign-in's address (its token, userinfo and JWKS calls) through the edge only. The agent leaves it empty
-	// until the install plan wires an app's sign-in (#19, #20); then apps_in accepts exactly these, and nothing else of
-	// the node's.
-	AppsReachEdge []netip.AddrPort `json:"appsReachEdge,omitempty"`
 	// Bridges are the container engines' bridges, by their exact names, as the engines list them. A LAN interface
 	// is never one, whatever the engines say.
 	Bridges []string `json:"bridges"`
@@ -120,17 +115,9 @@ func Render(s State) string {
 	w("\t\tjump outbound")
 	w("\t}")
 
-	// Apps to this machine: only the DNS an engine serves on a bridge's gateway, and the edge's listeners the hook
-	// names.
+	// Apps to this machine: only the DNS an engine serves on a bridge's gateway.
 	w("\tchain apps_in {")
 	w("\t\tmeta l4proto { tcp, udp } th dport 53 accept")
-	for _, ap := range s.AppsReachEdge {
-		family := "ip"
-		if ap.Addr().Is6() && !ap.Addr().Is4In6() {
-			family = "ip6"
-		}
-		w("\t\t%s daddr %s tcp dport %d accept", family, ap.Addr().Unmap(), ap.Port())
-	}
 	w("\t\tdrop")
 	w("\t}")
 	w("\tchain apps_out {")

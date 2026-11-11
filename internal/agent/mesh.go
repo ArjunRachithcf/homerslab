@@ -72,7 +72,7 @@ func (a *Agent) join(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	n := netbird.Node{Run: a.cfg.Run}
 	steps := []func() error{
-		func() error { return writeFile(filepath.Join(a.cfg.Root, netbird.DropInPath), netbird.DropIn()) },
+		func() error { return a.writeAt(netbird.DropInPath, netbird.DropIn()) },
 		func() error { return a.run(ctx, "systemctl", "daemon-reload") },
 		func() error { return a.run(ctx, "systemctl", "enable", "netbird.service") },
 		func() error { return a.run(ctx, "systemctl", "restart", "netbird.service") },
@@ -143,6 +143,19 @@ func (a *Agent) join(w http.ResponseWriter, r *http.Request) {
 func (a *Agent) run(ctx context.Context, name string, args ...string) error {
 	_, err := a.cfg.Run(ctx, host.Cmd{Name: name, Args: args})
 	return err
+}
+
+// RootWrites are the folders, under the machine's root, where the agent writes: systemd drop-ins for the mesh client
+// and the edge. Its unit makes them writable (ReadWritePaths, under ProtectSystem=strict) and tmpfiles.d makes them;
+// writeAt refuses any other.
+var RootWrites = []string{filepath.Dir(netbird.DropInPath), "etc/systemd/system/" + DefaultEdge.Unit + ".d"}
+
+// writeAt writes a file under the machine's root, in one of RootWrites.
+func (a *Agent) writeAt(rel string, b []byte) error {
+	if !slices.Contains(RootWrites, filepath.Dir(rel)) {
+		return fmt.Errorf("the agent writes nothing in /%s", filepath.Dir(rel))
+	}
+	return writeFile(filepath.Join(a.cfg.Root, rel), b)
 }
 
 func writeFile(path string, b []byte) error {
@@ -388,7 +401,7 @@ func (a *Agent) checkNATMapper(ctx context.Context) error {
 	}
 	a.log.Warn("NetBird's client could ask the router for a port: putting its setting back", "what", what)
 	for _, step := range []func() error{
-		func() error { return writeFile(filepath.Join(a.cfg.Root, netbird.DropInPath), netbird.DropIn()) },
+		func() error { return a.writeAt(netbird.DropInPath, netbird.DropIn()) },
 		func() error { return a.run(ctx, "systemctl", "daemon-reload") },
 		func() error { return a.run(ctx, "systemctl", "restart", "netbird.service") },
 	} {

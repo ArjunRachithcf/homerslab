@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path"
+	"slices"
 	"strings"
 	"testing"
 
@@ -81,5 +82,32 @@ func TestAdminsSocketIsForTheEdgeOnly(t *testing.T) {
 	}
 	if got := unit(t, "homerslab-manager.service")["Sockets"]; len(got) != 1 || got[0] != "homerslab-admin.socket" {
 		t.Errorf("the manager's Sockets = %v", got)
+	}
+}
+
+// Every folder the agent writes in under the machine's root is writable in its unit (ProtectSystem=strict leaves the
+// rest read-only) and made by tmpfiles.d before it starts (#16's review).
+func TestTheAgentsUnitLetsItWriteWhereItWrites(t *testing.T) {
+	testenv.Isolate(t)
+	rw := strings.Fields(strings.Join(unit(t, "homerslab-agent.service")["ReadWritePaths"], " "))
+	tmpfiles, err := os.ReadFile("tmpfiles.d/homerslab.conf")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(agent.RootWrites) == 0 {
+		t.Fatal("the agent lists nowhere it writes")
+	}
+	for _, dir := range agent.RootWrites {
+		if !slices.Contains(rw, "/"+dir) {
+			t.Errorf("the agent writes in /%s, which its unit's ReadWritePaths %v leave read-only", dir, rw)
+		}
+		if !strings.Contains(string(tmpfiles), "\nd /"+dir+" 0755 root root -\n") {
+			t.Errorf("tmpfiles.d doesn't make /%s", dir)
+		}
+	}
+	for _, p := range rw {
+		if !slices.Contains(agent.RootWrites, strings.TrimPrefix(p, "/")) {
+			t.Errorf("the agent's unit lets it write in %s, where it writes nothing", p)
+		}
 	}
 }

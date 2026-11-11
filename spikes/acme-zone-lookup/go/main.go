@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -62,7 +63,14 @@ func main() {
 	err = s.Present(ctx, acme.Challenge{Identifier: acme.Identifier{Type: "dns", Value: "example.test"}, Token: "t", KeyAuthorization: "t.k"})
 	mu.Lock()
 	defer mu.Unlock()
-	fmt.Printf("resolv.conf:\n%s\n", must(os.ReadFile("/etc/resolv.conf")))
+	// Only the nameserver lines: the rest of the container's resolv.conf comes from the machine that ran it.
+	var servers []string
+	for _, l := range strings.Split(must(os.ReadFile("/etc/resolv.conf")), "\n") {
+		if strings.HasPrefix(l, "nameserver ") {
+			servers = append(servers, l)
+		}
+	}
+	fmt.Printf("the machine's resolver (/etc/resolv.conf): %s\n", strings.Join(servers, "; "))
 	fmt.Printf("Present: err=%v\nzones handed to the provider: %v\nqueries the system resolver saw: %v\n", err, p.zones, asked)
 }
 

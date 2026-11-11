@@ -77,7 +77,7 @@ func (f *fakeDomains) Ensure(_ context.Context, i manager.Issuance, have *certs.
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.last = i
-	if have != nil && !i.Fresh && !have.Due(now) {
+	if have != nil && !have.Due(now) {
 		return *have, false, nil
 	}
 	if i.Token.Reveal() != f.token {

@@ -226,7 +226,7 @@ func (a *Agent) saveEdge(w http.ResponseWriter, r *http.Request, next edgeState,
 	ctx := r.Context()
 	if started != nil {
 		steps := []func() error{
-			func() error { return writeFile(filepath.Join(a.cfg.Root, a.edgeDropIn()), a.edgeCredentials()) },
+			func() error { return a.writeAt(a.edgeDropIn(), a.edgeCredentials()) },
 			func() error { return a.run(ctx, "systemctl", "daemon-reload") },
 			func() error { return a.run(ctx, "systemctl", "enable", a.cfg.Edge.Unit) },
 			func() error { return a.run(ctx, "systemctl", "restart", a.cfg.Edge.Unit) },
