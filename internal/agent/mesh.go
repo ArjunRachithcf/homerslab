@@ -11,7 +11,6 @@ import (
 	"path/filepath"
 	"regexp"
 	"slices"
-	"strconv"
 	"strings"
 	"time"
 
@@ -379,27 +378,33 @@ func (a *Agent) getMesh(w http.ResponseWriter, r *http.Request) {
 // natMapper says whether NetBird's drop-in is as the agent writes it, and whether the running service has its
 // environment.
 //
-// The environment is the running process's own (/proc/<MainPID>/environ), not what systemd would give it next time.
+// The agent can't read the running process's environment: /proc/<pid>/environ of a root process with every capability
+// is refused to a reader without them all (the kernel's ptrace check), and the agent's unit hides other processes
+// (ProtectProc=invisible). So it asks systemd: the service has the drop-in's environment when systemd lists the
+// drop-in, has nothing to reload, and the main process started after the drop-in's last write.
 func (a *Agent) natMapper(ctx context.Context) (dropIn, env bool) {
-	b, err := os.ReadFile(filepath.Join(a.cfg.Root, netbird.DropInPath))
+	path := filepath.Join(a.cfg.Root, netbird.DropInPath)
+	b, err := os.ReadFile(path)
 	dropIn = err == nil && string(b) == string(netbird.DropIn())
-	out, err := a.cfg.Run(ctx, host.Cmd{Name: "systemctl", Args: []string{"show", "netbird.service", "--property=MainPID", "--value"}})
-	pid, perr := strconv.Atoi(strings.TrimSpace(string(out)))
-	if err != nil || perr != nil || pid <= 0 {
+	fi, err := os.Stat(path)
+	if !dropIn || err != nil {
 		return dropIn, false
 	}
-	raw, err := os.ReadFile(filepath.Join(a.cfg.Proc, strconv.Itoa(pid), "environ"))
+	out, err := a.cfg.Run(ctx, host.Cmd{Name: "systemctl", Args: []string{"show", "netbird.service", "--timestamp=us+utc",
+		"--property=DropInPaths,NeedDaemonReload,ExecMainStartTimestamp"}})
 	if err != nil {
 		return dropIn, false
 	}
-	vars := strings.Split(string(raw), "\x00")
-	env = true
-	for _, e := range netbird.ServiceEnv {
-		if !slices.Contains(vars, e) {
-			env = false
+	props := map[string]string{}
+	for _, l := range strings.Split(string(out), "\n") {
+		if k, v, ok := strings.Cut(l, "="); ok {
+			props[k] = strings.TrimSpace(v)
 		}
 	}
-	return dropIn, env
+	started, err := time.Parse("Mon 2006-01-02 15:04:05.000000 MST", props["ExecMainStartTimestamp"])
+	return dropIn, err == nil && props["NeedDaemonReload"] == "no" &&
+		slices.Contains(strings.Fields(props["DropInPaths"]), "/"+netbird.DropInPath) &&
+		!started.Before(fi.ModTime().Truncate(time.Microsecond))
 }
 
 // checkNATMapper puts NetBird's drop-in back, and queues the client's restart with it, when either drifted; the drift

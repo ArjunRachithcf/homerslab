@@ -17,7 +17,6 @@ import (
 	"path/filepath"
 	"runtime"
 	"slices"
-	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -64,9 +63,6 @@ func StartWith(t testing.TB, c agent.Config) (string, *Host) {
 	}
 	if c.IsBridge == nil {
 		c.IsBridge = h.IsBridge
-	}
-	if c.Proc == "" {
-		c.Proc = filepath.Join(h.Root, "proc")
 	}
 	if c.Resolve == nil {
 		c.Resolve = func(context.Context, string) ([]string, error) { return []string{"192.0.2.1"}, nil }
@@ -122,8 +118,15 @@ type Host struct {
 	// Edge is the node's edge: Caddy's admin API, as a stand-in.
 	Edge *Edge
 	pid  int // NetBird's main process, 0 while it doesn't run
-	// restartedWith is NetBird's drop-in as it was when the service last restarted: the running service's environment.
+	// restartedWith is NetBird's drop-in as systemd had it loaded when the service last restarted: the running
+	// service's environment. started is when its main process started; loaded is the drop-in as systemd last loaded
+	// it (daemon-reload), and listed whether systemd lists it among the unit's drop-ins. The agent can't read the
+	// running process's environment (its /proc entry is a root process with every capability), so it asks systemd.
 	restartedWith []byte
+	started       time.Time
+	loaded        []byte
+	listed        bool
+	ignored       bool              // systemd doesn't apply the drop-in to the unit
 	docker        map[string]string // the engine's bridge networks: ID → the bridge's name option ("" for none)
 	notBridges    map[string]bool   // names the engines give that the kernel doesn't show as bridges
 	block         bool              // the engines and systemd never answer
@@ -213,21 +216,15 @@ func (h *Host) Run(ctx context.Context, c host.Cmd) ([]byte, error) {
 	case line == "systemctl restart homerslab-edge.service" && h.Edge != nil:
 		h.Edge.Restart()
 		return nil, nil
+	case line == "systemctl daemon-reload":
+		h.loaded, h.listed = h.dropInAt[line], h.dropInAt[line] != nil && !h.ignored
+		return nil, nil
 	case line == "systemctl restart netbird.service" || line == "systemctl --no-block restart netbird.service":
-		h.restartedWith = h.dropInAt[line]
-		env := ""
-		for _, l := range strings.Split(string(h.restartedWith), "\n") {
-			if v, ok := strings.CutPrefix(l, "Environment="); ok {
-				env += v + "\x00"
-			}
-		}
+		h.restartedWith, h.started = h.loaded, time.Now()
 		h.pid++
-		if err := os.MkdirAll(filepath.Join(h.Root, "proc", strconv.Itoa(h.pid)), 0o755); err != nil {
-			return nil, err
-		}
-		return nil, os.WriteFile(filepath.Join(h.Root, "proc", strconv.Itoa(h.pid), "environ"), []byte("PATH=/usr/bin\x00"+env), 0o644)
-	case line == "systemctl show netbird.service --property=MainPID --value":
-		return fmt.Appendf(nil, "%d\n", h.pid), nil
+		return nil, nil
+	case line == "systemctl show netbird.service --timestamp=us+utc --property=DropInPaths,NeedDaemonReload,ExecMainStartTimestamp":
+		return h.showNetBird(), nil
 	case line == "systemctl is-active --quiet docker.service":
 		if h.docker == nil {
 			return nil, &host.Error{Cmd: line, Err: errors.New("exit status 3")}
@@ -268,6 +265,29 @@ func (h *Host) Run(ctx context.Context, c host.Cmd) ([]byte, error) {
 	return nil, &host.Error{Cmd: line, Err: errors.New("not something this test's machine does")}
 }
 
+// showNetBird is `systemctl show netbird.service` for the drop-ins, whether a reload is due, and when the main process
+// started, as systemd writes them.
+func (h *Host) showNetBird() []byte {
+	var b strings.Builder
+	path := "/etc/systemd/system/netbird.service.d/10-homerslab.conf"
+	file, err := os.ReadFile(filepath.Join(h.Root, path))
+	fmt.Fprintf(&b, "ExecMainStartTimestamp=")
+	if h.pid > 0 {
+		b.WriteString(h.started.UTC().Format("Mon 2006-01-02 15:04:05.000000 MST"))
+	}
+	b.WriteString("\nDropInPaths=")
+	if h.listed {
+		b.WriteString(path)
+	}
+	// systemd notices a unit file changed on disk since it loaded it.
+	if !h.ignored && (err == nil) != h.listed || err == nil && string(file) != string(h.loaded) {
+		b.WriteString("\nNeedDaemonReload=yes\n")
+	} else {
+		b.WriteString("\nNeedDaemonReload=no\n")
+	}
+	return []byte(b.String())
+}
+
 // Cmds are the commands the agent ran, in order.
 func (h *Host) Cmds() []host.Cmd {
 	h.mu.Lock()
@@ -304,26 +324,58 @@ func (h *Host) Table() (string, bool) {
 	return h.table, h.hasTable
 }
 
-// RestartNetBirdWithoutItsDropIn stands for someone removing the drop-in and restarting NetBird's service.
+// RestartNetBirdWithoutItsDropIn stands for someone removing the drop-in, reloading systemd and restarting NetBird's
+// service.
 func (h *Host) RestartNetBirdWithoutItsDropIn() {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	_ = os.Remove(filepath.Join(h.Root, "etc/systemd/system/netbird.service.d/10-homerslab.conf"))
-	h.restartedWith = nil
+	h.loaded, h.listed, h.restartedWith, h.started = nil, false, nil, time.Now()
 	h.pid++
-	_ = os.MkdirAll(filepath.Join(h.Root, "proc", strconv.Itoa(h.pid)), 0o755)
-	_ = os.WriteFile(filepath.Join(h.Root, "proc", strconv.Itoa(h.pid), "environ"), []byte("PATH=/usr/bin\x00"), 0o644)
 }
 
-// RestartNetBirdBeforeItsDropIn stands for NetBird's service restarted with an environment of its own: the drop-in is
-// there, but the running service doesn't have it.
+// RestartNetBirdBeforeItsDropIn stands for NetBird's service running without the drop-in's environment, though the
+// drop-in is there: it started before the drop-in's last write (someone wrote it again, but nobody restarted it).
 func (h *Host) RestartNetBirdBeforeItsDropIn() {
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	path := filepath.Join(h.Root, "etc/systemd/system/netbird.service.d/10-homerslab.conf")
 	h.restartedWith = nil
 	h.pid++
-	_ = os.MkdirAll(filepath.Join(h.Root, "proc", strconv.Itoa(h.pid)), 0o755)
-	_ = os.WriteFile(filepath.Join(h.Root, "proc", strconv.Itoa(h.pid), "environ"), []byte("PATH=/usr/bin\x00"), 0o644)
+	h.started = time.Now().Add(-time.Minute)
+	_ = os.Chtimes(path, time.Now(), time.Now())
+}
+
+// NetBirdLoadedAnOlderDropIn stands for systemd running NetBird with a drop-in it loaded before the file on disk was
+// written as it is now, and not reloaded since: the file is right, but the service runs with the old one.
+func (h *Host) NetBirdLoadedAnOlderDropIn() {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.loaded, h.listed = []byte("[Service]\nEnvironment=NB_SOMETHING_ELSE=1\n"), true
+	h.restartedWith, h.started = h.loaded, time.Now().Add(time.Minute)
+	h.pid++
+}
+
+// NetBirdIgnoresItsDropIn stands for systemd not applying the drop-in to the unit NetBird runs as (another unit's
+// name, say): systemd lists no drop-in, though the file is there and nothing waits for a reload.
+func (h *Host) NetBirdIgnoresItsDropIn() {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.loaded, _ = os.ReadFile(filepath.Join(h.Root, "etc/systemd/system/netbird.service.d/10-homerslab.conf"))
+	h.listed, h.ignored = false, true
+	h.restartedWith, h.started = nil, time.Now().Add(time.Minute)
+	h.pid++
+}
+
+// NetBirdRestarts is how often NetBird's service was restarted.
+func (h *Host) NetBirdRestarts() int {
+	n := 0
+	for _, c := range h.Cmds() {
+		if l := c.String(); l == "systemctl restart netbird.service" || l == "systemctl --no-block restart netbird.service" {
+			n++
+		}
+	}
+	return n
 }
 
 // Tamper changes the firewall table behind the agent's back: "missing" deletes it, anything else edits it.

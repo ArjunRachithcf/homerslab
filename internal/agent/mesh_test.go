@@ -559,3 +559,77 @@ func TestTheSetupKeyNeverReachesTheLogs(t *testing.T) {
 		}
 	}
 }
+
+// Once NetBird's client runs with the drop-in's setting, checking again restarts nothing: the agent tells by asking
+// systemd, as it can't read the client's own environment (a root process with every capability, behind
+// ProtectProc=invisible) (#99, the fifth review).
+func TestTheNATMapperSettingOnceAppliedIsLeftAlone(t *testing.T) {
+	testenv.Isolate(t)
+	sock, h := agenttest.StartWith(t, agent.Config{})
+	call(t, sock, "POST", "/v1/mesh/join", joinBody())
+	after := h.NetBirdRestarts()
+	for range 5 {
+		call(t, sock, "POST", "/v1/firewall/check", nil)
+	}
+	if n := h.NetBirdRestarts() - after; n != 0 {
+		t.Errorf("five checks after the join restarted NetBird %d times, want none", n)
+	}
+	_, body := call(t, sock, "GET", "/v1/mesh", nil)
+	var s agent.MeshStatus
+	if err := json.Unmarshal(body, &s); err != nil {
+		t.Fatal(err)
+	}
+	if !s.PortMappingOff || len(s.Drift) != 0 {
+		t.Errorf("after the checks: %+v, want the NAT mapper off and no drift", s)
+	}
+}
+
+// The agent never opens another process's /proc/<pid>/environ: the kernel refuses it to a reader without every
+// capability of the target's, and the agent's unit hides other processes (ProtectProc=invisible).
+func TestTheAgentNeverReadsAnotherProcesssEnvironment(t *testing.T) {
+	testenv.Isolate(t)
+	files, err := filepath.Glob("*.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range files {
+		if strings.HasSuffix(f, "_test.go") {
+			continue
+		}
+		b, err := os.ReadFile(f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		// In code, not in comments: a path in a string ends with "environ", or a path starts at "/proc".
+		if bytes.Contains(b, []byte(`environ"`)) || bytes.Contains(b, []byte(`"/proc`)) {
+			t.Errorf("%s reads a process's environment from /proc", f)
+		}
+	}
+}
+
+// The client runs with the drop-in's environment only when systemd has loaded the drop-in as it is now, and applies it
+// to the unit.
+func TestTheNATMapperSettingNeedsSystemdToHaveLoadedIt(t *testing.T) {
+	testenv.Isolate(t)
+	for _, c := range []struct {
+		what string
+		do   func(*agenttest.Host)
+	}{
+		{"systemd runs an older drop-in, not reloaded", (*agenttest.Host).NetBirdLoadedAnOlderDropIn},
+		{"systemd applies no drop-in to the unit", (*agenttest.Host).NetBirdIgnoresItsDropIn},
+	} {
+		t.Run(c.what, func(t *testing.T) {
+			sock, h := agenttest.StartWith(t, agent.Config{})
+			call(t, sock, "POST", "/v1/mesh/join", joinBody())
+			c.do(h)
+			_, body := call(t, sock, "GET", "/v1/mesh", nil)
+			var s agent.MeshStatus
+			if err := json.Unmarshal(body, &s); err != nil {
+				t.Fatal(err)
+			}
+			if s.PortMappingOff {
+				t.Errorf("%s: the report says the NAT mapper is off", c.what)
+			}
+		})
+	}
+}

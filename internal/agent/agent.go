@@ -50,8 +50,6 @@ type Config struct {
 	// IsBridge confirms (the kernel's /sys/class/net/<name>/bridge, from Sysroot, when nil) are used.
 	Bridges  func(ctx context.Context) []string
 	IsBridge func(name string) bool
-	// Proc is the machine's /proc, for the mesh client's running environment.
-	Proc string
 	// SetupPort is the setup link's LAN listener, the firewall table's one exception until it closes.
 	SetupPort int
 	// CheckEvery is how often the firewall table is checked for drift: often, so an `nft flush ruleset` is undone
@@ -141,9 +139,6 @@ func New(ctx context.Context, c Config) (*Agent, error) {
 			fi, err := fs.Stat(root, "sys/class/net/"+name+"/bridge")
 			return err == nil && fi.IsDir()
 		}
-	}
-	if c.Proc == "" {
-		c.Proc = "/proc"
 	}
 	a := &Agent{cfg: c, log: c.Log, fw: &firewall.Firewall{Run: c.Run, Now: c.Now}, refused: map[string]bool{}}
 	if c.StateDir != "" {
