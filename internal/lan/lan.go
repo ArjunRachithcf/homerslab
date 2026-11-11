@@ -1,15 +1,18 @@
 // Package lan says what this machine's home network is: the private networks on the interfaces that carry its
-// default route. Containers' bridges and the mesh carry no default route, so they are not the LAN.
+// default route, and the global IPv6 prefixes on those links. Containers' bridges and the mesh carry no default
+// route, so they are not the LAN.
 package lan
 
 import (
 	"bufio"
 	"bytes"
+	"encoding/hex"
 	"io/fs"
 	"net"
 	"net/netip"
 	"os"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -44,23 +47,70 @@ func FromHere(addr netip.Addr, l LAN) bool {
 }
 
 // Current is the LAN, read from the live machine.
-func Current() LAN {
-	l := LAN{Interfaces: DefaultRouteInterfaces(os.DirFS("/proc"))}
+func Current() LAN { return Read(os.DirFS("/proc"), ipv4Addrs) }
+
+// Read is the LAN of the machine whose /proc is proc, with v4 listing an interface's IPv4 addresses (nil: none).
+//
+// The LAN is, on the interfaces that carry the default route:
+//   - the private IPv4 networks (RFC 1918) and IPv6 ULAs (#14, Q5);
+//   - the global IPv6 prefixes on the link itself, so that a home whose ISP hands out only those can set up (#73):
+//     a prefix of one of the machine's own addresses, a /64 or narrower, that the routing table says is on the link
+//     (no router in between). Never a wider prefix, the default route's, or one reached through a router.
+//
+// Its addresses are the machine's own on those networks, the best first: stable before temporary (privacy) ones, and
+// none that is still tentative or failed duplicate address detection.
+func Read(proc fs.FS, v4 func(iface string) []netip.Prefix) LAN {
+	l := LAN{Interfaces: DefaultRouteInterfaces(proc)}
+	onLink := onLinkPrefixes(proc)
+	var later []netip.Addr // temporary addresses, after the stable ones
+	addPrefix := func(p netip.Prefix) {
+		if !slices.Contains(l.Prefixes, p) {
+			l.Prefixes = append(l.Prefixes, p)
+		}
+	}
 	for _, name := range l.Interfaces {
-		for _, p := range addrs(name) {
-			if private(p.Addr()) {
-				l.Prefixes = append(l.Prefixes, p.Masked())
-				l.Addresses = append(l.Addresses, p.Addr())
+		if v4 != nil {
+			for _, p := range v4(name) {
+				if p.Addr().Is4() && p.Addr().IsPrivate() {
+					addPrefix(p.Masked())
+					l.Addresses = append(l.Addresses, p.Addr())
+				}
+			}
+		}
+		var ula, global []ipv6Addr
+		for _, a := range ipv6Addrs(proc, name) {
+			switch {
+			case a.prefix.Addr().IsPrivate():
+				ula = append(ula, a)
+			case a.prefix.Addr().IsGlobalUnicast() && a.prefix.Bits() >= 64 && onLink[name][a.prefix.Masked()]:
+				global = append(global, a)
+			}
+		}
+		for _, a := range append(ula, global...) {
+			addPrefix(a.prefix.Masked())
+			switch {
+			case a.flags&(ifaTentative|ifaDADFailed) != 0:
+			case a.flags&(ifaTemporary|ifaDeprecated) != 0:
+				later = append(later, a.prefix.Addr())
+			default:
+				l.Addresses = append(l.Addresses, a.prefix.Addr())
 			}
 		}
 	}
+	l.Addresses = append(l.Addresses, later...)
 	return l
 }
 
-// Address is this machine's IPv4 address on the LAN, for the links it prints; or the zero Addr if it has none.
+// Address is this machine's address on the LAN, for the links it prints: its IPv4 address if it has one, else its
+// best IPv6 address on the LAN (a ULA before a global one); or the zero Addr if it has none.
 func (l LAN) Address() netip.Addr {
 	for _, a := range l.Addresses {
 		if a.Is4() {
+			return a
+		}
+	}
+	for _, a := range l.Addresses {
+		if a.Is6() && !a.IsLinkLocalUnicast() {
 			return a
 		}
 	}
@@ -85,10 +135,8 @@ func Names(hostname string, l LAN) []string {
 	return names
 }
 
-// private is an address of a home network: RFC 1918 or an IPv6 ULA. Link-local addresses go by their zone instead.
-func private(a netip.Addr) bool { return a.IsPrivate() }
-
-func addrs(name string) []netip.Prefix {
+// ipv4Addrs lists an interface's IPv4 addresses with their prefixes.
+func ipv4Addrs(name string) []netip.Prefix {
 	ifc, err := net.InterfaceByName(name)
 	if err != nil {
 		return nil
@@ -100,12 +148,80 @@ func addrs(name string) []netip.Prefix {
 	var out []netip.Prefix
 	for _, a := range list {
 		if n, ok := a.(*net.IPNet); ok {
-			if p, err := netip.ParsePrefix(n.String()); err == nil {
+			if p, err := netip.ParsePrefix(n.String()); err == nil && p.Addr().Is4() {
 				out = append(out, p)
 			}
 		}
 	}
 	return out
+}
+
+// The flags of an IPv6 address in /proc/net/if_inet6 (linux/if_addr.h).
+const (
+	ifaTemporary  = 0x01
+	ifaDADFailed  = 0x08
+	ifaDeprecated = 0x20
+	ifaTentative  = 0x40
+)
+
+type ipv6Addr struct {
+	prefix netip.Prefix // the address, with its prefix length
+	flags  uint64
+}
+
+// ipv6Addrs lists an interface's IPv6 addresses from /proc/net/if_inet6: the address, the interface's index, the
+// prefix length, the scope and the flags in hex, then the interface's name.
+func ipv6Addrs(proc fs.FS, name string) []ipv6Addr {
+	var out []ipv6Addr
+	for _, f := range lines(proc, "net/if_inet6") {
+		if len(f) != 6 || f[5] != name {
+			continue
+		}
+		a, ok := hexAddr(f[0])
+		bits, err1 := strconv.ParseUint(f[2], 16, 8)
+		flags, err2 := strconv.ParseUint(f[4], 16, 32)
+		if !ok || err1 != nil || err2 != nil || bits > 128 {
+			continue
+		}
+		out = append(out, ipv6Addr{prefix: netip.PrefixFrom(a, int(bits)), flags: flags})
+	}
+	return out
+}
+
+// onLinkPrefixes are the IPv6 routes with no router in between, per interface, from /proc/net/ipv6_route: the
+// destination and its prefix length, the source and its, the next hop, metric, use and reference counts, the flags,
+// and the interface. Read takes only those that are an address's own prefix, a /64 or narrower: never the default
+// route, ::/0.
+func onLinkPrefixes(proc fs.FS) map[string]map[netip.Prefix]bool {
+	const rtfUp, rtfGateway, rtfReject = 0x0001, 0x0002, 0x0200
+	out := map[string]map[netip.Prefix]bool{}
+	for _, f := range lines(proc, "net/ipv6_route") {
+		if len(f) != 10 {
+			continue
+		}
+		dest, ok1 := hexAddr(f[0])
+		via, ok2 := hexAddr(f[4])
+		bits, err1 := strconv.ParseUint(f[1], 16, 8)
+		flags, err2 := strconv.ParseUint(f[8], 16, 32)
+		if !ok1 || !ok2 || err1 != nil || err2 != nil || bits > 128 ||
+			flags&rtfUp == 0 || flags&(rtfGateway|rtfReject) != 0 || !via.IsUnspecified() {
+			continue
+		}
+		if out[f[9]] == nil {
+			out[f[9]] = map[netip.Prefix]bool{}
+		}
+		out[f[9]][netip.PrefixFrom(dest, int(bits)).Masked()] = true
+	}
+	return out
+}
+
+// hexAddr is an IPv6 address as /proc writes it: 32 hex digits.
+func hexAddr(s string) (netip.Addr, bool) {
+	b, err := hex.DecodeString(s)
+	if err != nil || len(b) != 16 {
+		return netip.Addr{}, false
+	}
+	return netip.AddrFrom16([16]byte(b)), true
 }
 
 // DefaultRouteInterfaces lists the interfaces that carry a default route, IPv4 or IPv6, from a /proc.

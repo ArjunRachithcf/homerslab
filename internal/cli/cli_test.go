@@ -24,9 +24,14 @@ import (
 	"github.com/ArjunRachithcf/homerslab/internal/testenv"
 )
 
-// running starts an agent and a manager in the test's own directories, and returns the manager's control socket.
-func running(t *testing.T) string {
+// running starts an agent and a manager in the test's own directories, and returns the manager's control socket. The
+// machine's address on the LAN is 192.168.1.20, or the one given (the zero Addr: none).
+func running(t *testing.T, lanAddress ...netip.Addr) string {
 	t.Helper()
+	onLAN := netip.MustParseAddr("192.168.1.20")
+	if len(lanAddress) > 0 {
+		onLAN = lanAddress[0]
+	}
 	dir := t.TempDir()
 	m, err := manager.New(manager.Config{
 		DB:          filepath.Join(dir, "manager.db"),
@@ -34,7 +39,7 @@ func running(t *testing.T) string {
 		SetupPort:   7020,
 		Local:       netip.MustParseAddr("127.0.0.1"),
 		LAN:         func() lan.LAN { return lan.LAN{} },
-		LANAddress:  func() netip.Addr { return netip.MustParseAddr("192.168.1.20") },
+		LANAddress:  func() netip.Addr { return onLAN },
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -243,5 +248,41 @@ func TestSetupLinkSaysWhenTheManagersDiskIsFull(t *testing.T) {
 	code, _, errOut := run(t, "setup", "link", "--control-socket", ctl)
 	if want := "The disk that holds /var/lib/homerslab is full: free some space and try again"; code == 0 || !strings.Contains(errOut, want) {
 		t.Errorf("setup link on a full disk: %d %q, want %q", code, errOut, want)
+	}
+}
+
+// On an IPv6-only home network, the link and its QR code carry the machine's IPv6 address (#68).
+func TestSetupLinkCarriesTheLANsIPv6Address(t *testing.T) {
+	testenv.Isolate(t)
+	ctl := running(t, netip.MustParseAddr("fd00:1::20"))
+	code, out, errOut := run(t, "setup", "link", "--control-socket", ctl)
+	if code != 0 {
+		t.Fatalf("homerslab setup link: %d %s", code, errOut)
+	}
+	link := regexp.MustCompile(`http://\[fd00:1::20\]:7020/setup#k=[A-Za-z0-9_-]{43}`).FindString(out)
+	if link == "" {
+		t.Fatalf("no IPv6 link in:\n%s", out)
+	}
+	if got := decodeQR(t, out); got != link {
+		t.Errorf("the QR code says %q, want the link %q", got, link)
+	}
+}
+
+// With no address on a home network, the link works only on this machine: no QR code, and words that say so (#68).
+func TestSetupLinkSaysWhenItWorksOnlyOnThisMachine(t *testing.T) {
+	testenv.Isolate(t)
+	ctl := running(t, netip.Addr{})
+	code, out, errOut := run(t, "setup", "link", "--control-socket", ctl)
+	if code != 0 {
+		t.Fatalf("homerslab setup link: %d %s", code, errOut)
+	}
+	if !regexp.MustCompile(`http://127\.0\.0\.1:7020/setup#k=[A-Za-z0-9_-]{43}`).MatchString(out) {
+		t.Errorf("no link on this machine in:\n%s", out)
+	}
+	if !strings.Contains(out, "works on this machine only") {
+		t.Errorf("the output should say the link works on this machine only:\n%s", out)
+	}
+	if strings.ContainsAny(out, "█▀▄") || strings.Contains(out, "phone") || strings.Contains(out, "another device") {
+		t.Errorf("a link for this machine only is offered to another device:\n%s", out)
 	}
 }

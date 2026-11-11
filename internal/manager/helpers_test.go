@@ -82,6 +82,8 @@ type primary struct {
 	// lanReads counts how often the manager asks for the machine's LAN address.
 	lanReads atomic.Int32
 	steps    map[string]setup.Handler
+	// lanAddress is this machine's address on the LAN, for the links.
+	lanAddress netip.Addr
 	// claimedBrowser is a browser a test keeps across a restart.
 	claimedBrowser *browser
 }
@@ -109,6 +111,8 @@ func newPrimary(t *testing.T, opts ...option) *primary {
 		local: netip.MustParseAddr("127.0.0.1"),
 		hosts: []string{"192.168.1.20", "fd00:1::20", "study-pc", "127.0.0.1", "::1", "localhost"},
 		port:  7020,
+
+		lanAddress: netip.MustParseAddr("192.168.1.20"),
 	}
 	for _, o := range opts {
 		o(p)
@@ -136,7 +140,7 @@ func (p *primary) open() {
 			}
 		},
 		Hosts:      func() []string { return p.hosts },
-		LANAddress: func() netip.Addr { p.lanReads.Add(1); return netip.MustParseAddr("192.168.1.20") },
+		LANAddress: func() netip.Addr { p.lanReads.Add(1); return p.lanAddress },
 		Web:        p.web,
 		Steps:      p.steps,
 	})
