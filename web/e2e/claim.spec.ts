@@ -22,11 +22,11 @@ test('a claim lost to the network once is tried again by itself', async ({ page,
   await expect(page).toHaveURL(/\/setup#\/welcome$/); // claimed: the key is gone from the address bar
 });
 
-test('a reload while the claim is under way still opens setup', async ({ page, primary }) => {
+test('a reload while the claim is on its way to the manager still opens setup', async ({ page, primary }) => {
   const link = await primary.newLink();
   let held: Route | undefined;
   await page.route(CLAIM, async (route) => {
-    if (!held) held = route; // the claim never reaches the manager: the browser is reloaded first
+    if (!held) held = route; // the claim hasn't reached the manager yet: the browser is reloaded first
     else await route.continue();
   });
   await page.goto(link.localUrl);
@@ -109,4 +109,48 @@ test('the key goes only into the claim, however often it is sent', async ({ page
   for (const r of sent.filter((r) => !r.url.endsWith('/api/v1/setup/claim'))) expect(r.body).not.toContain(key);
   expect(primary.log()).toContain('setup link claimed'); // the log is read
   expect(primary.log()).not.toContain(key);
+});
+
+test('a claim the manager refuses from here says so, and keeps the link', async ({ page, primary }) => {
+  const link = await primary.newLink();
+  await page.route(CLAIM, (route) =>
+    route.fulfill({ status: 403, contentType: 'application/json', body: '{"error":"not-from-lan"}' }));
+  await page.goto(link.localUrl);
+  await expect(page.getByText('HomersLab takes setup only from this machine or your home network')).toBeVisible();
+  await expect(page.getByText('didn’t answer')).toHaveCount(0); // it did answer
+  await expect(page).toHaveURL(link.localUrl);
+});
+
+test('a late answer to an earlier link’s claim doesn’t replace the newer link’s session', async ({ page, primary }) => {
+  const first = await primary.newLink();
+  let late: (() => Promise<void>) | undefined;
+  await page.route(CLAIM, async (route) => {
+    if (late) return route.continue();
+    const answer = await route.fetch(); // the manager takes the first link…
+    late = () => route.fulfill({ response: answer }); // …and its answer is held up on the way back
+  });
+  await page.goto(first.localUrl);
+  await expect.poll(() => late).toBeDefined();
+
+  await page.goto((await primary.newLink()).localUrl); // a newer link, in the same tab: it ends the first one's session
+  await expect(page.getByRole('heading', { level: 1 })).toContainText(welcome);
+  await late?.();
+  await page.getByRole('button', { name: 'Get started' }).click();
+  await expect(page.getByRole('heading', { level: 1 })).toContainText('What’s your name?');
+});
+
+test('a late answer from before a link arrived doesn’t replace setup', async ({ page, primary }) => {
+  const link = await primary.newLink();
+  let late: Route | undefined;
+  await page.route('**/api/v1/setup', async (route) => {
+    if (late) return route.continue();
+    late = route; // the page without a link asks for setup, and the answer (no session) is held up
+  });
+  await page.goto(link.localUrl.replace(/#.*/, ''));
+  await expect.poll(() => late).toBeDefined();
+  await page.goto(link.localUrl); // then the link arrives in the same tab
+  await expect(page.getByRole('heading', { level: 1 })).toContainText(welcome);
+  await late?.continue();
+  await page.waitForTimeout(500);
+  await expect(page.getByRole('heading', { level: 1 })).toContainText(welcome);
 });

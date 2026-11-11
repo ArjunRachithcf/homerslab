@@ -86,9 +86,21 @@ async function call<T>(method: string, path: string, body?: unknown): Promise<T>
   return data as T;
 }
 
-export async function claim(key: string): Promise<void> {
-  write(TOKEN, (await call<{ token: string }>('POST', '/api/v1/setup/claim', { key })).token);
+const claiming = new Map<string, Promise<string>>();
+
+/** Claims the link's key, and gives its session token. The same key, claimed again while its claim is out, shares it. */
+export function claim(key: string): Promise<string> {
+  let claimed = claiming.get(key);
+  if (!claimed) {
+    claimed = call<{ token: string }>('POST', '/api/v1/setup/claim', { key }).then((r) => r.token)
+      .finally(() => claiming.delete(key));
+    claiming.set(key, claimed);
+  }
+  return claimed;
 }
+
+/** Keeps the session a claim opened: this tab's, for every later request. */
+export const keepSession = (token: string) => write(TOKEN, token);
 export const getSetup = () => call<Setup>('GET', '/api/v1/setup');
 export const getPrimary = () => call<Facts>('GET', '/api/v1/nodes/primary');
 export const answer = (step: string, body: Record<string, string>) => call<Setup>('PUT', `/api/v1/setup/steps/${encodeURIComponent(step)}`, body);

@@ -22,6 +22,7 @@
   "setup.fail.moved": "Setup moved on in another tab or browser. Reload to carry on from where it is now.",
   "setup.fail.lanDone": "The home network’s part of setup is done, so this can’t change here any more. Reload to carry on over the mesh.",
   "setup.fail.mesh": "This step is answered over the mesh, not on your home network.",
+  "setup.fail.refused": "HomersLab didn’t take this answer. Reload this page to carry on from where setup is.",
   "setup.fail.here": "HomersLab takes setup only from this machine or your home network, on its own page. Open the link again from there.",
   "setup.fail.reload": "Reload",
 

@@ -30,6 +30,7 @@ const failures: { name: string; status: number; error: string; says: string; rel
   { name: 'the step is answered over the mesh', status: 403, error: 'over-the-mesh', says: 'This step is answered over the mesh' },
   { name: 'it comes from outside the home network', status: 403, error: 'not-from-lan', says: 'only from this machine or your home network' },
   { name: 'it comes from another page', status: 403, error: 'cross-origin', says: 'only from this machine or your home network' },
+  { name: 'the manager doesn’t know the step', status: 404, error: 'unknown-step', says: 'HomersLab didn’t take this answer', reload: true },
 ];
 
 for (const f of failures) {
