@@ -50,6 +50,7 @@ from acting on another's apps. So:
 - **Each catalog acts only on its own apps.** App ids are scoped to their catalog; an installed app updates only from
   the catalog and publisher key it came from; the plan names the catalog and publisher beside the tier.
 - **Upstream releases wait three days**, unless the catalog marks one a security release. In the official catalog, a
-  pin bump is merged by the maintainer, never by an agent; adding catalog pins to `CLAUDE.md`'s security core is
-  the maintainer's own change. Where an upstream signs its images, the catalog pins the expected signer, and the agent
+  pin bump goes through the same CI and independent review as any change, and the loop may merge it: the maintainer
+  decided on 2026-11-11 (#89) that pins are not part of the security core. The three-day wait, the install and
+  restore tests in CI, and the signer check carry the protection. Where an upstream signs its images, the catalog pins the expected signer, and the agent
   checks it.

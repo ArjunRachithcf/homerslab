@@ -611,7 +611,8 @@ Recommended in #89; the maintainer may overrule. Details are in the amended
 - **Updates.**
   - Each catalog release pins versions; a bot proposes bumps.
   - **Upstream releases wait, unless they are security releases** (recommended in #89; the maintainer may overrule):
-    - in the official catalog, a pin bump is merged by the maintainer, never by an agent;
+    - in the official catalog, a pin bump goes through CI and the independent review like any change, and the loop
+      may merge it (the maintainer, 2026-11-11, #89: pins are not security core);
     - a new upstream version is offered three days after its release, unless the catalog marks it a security release;
     - where an upstream signs its images, the catalog pins the expected signer, and the agent checks it as it does a
       feedstock's.
@@ -1317,7 +1318,7 @@ Every answer of the grilling (2026-11-09) and where it lives:
 | 167 | Restore plans compare secrets with data; a TPM that no longer opens the secrets is reported at boot | ADR 0011 (amended); Backups and the archive (#88) |
 | 168 | Catalog versions only go up, and expire (recommended) | ADR 0009 (amended); Catalogs (#89) |
 | 169 | Each catalog acts only on its own apps and signers (recommended) | ADR 0009, ADR 0015 (amended); Catalogs; The install plan (#89) |
-| 170 | Official pin bumps merged by the maintainer; upstream releases wait three days; upstream signers checked (recommended) | ADR 0009 (amended); Updates, removal, eject (#89) |
+| 170 | Official pin bumps through CI and review, not security core (the maintainer, #89); upstream releases wait three days; upstream signers checked (recommended) | ADR 0009 (amended); Updates, removal, eject (#89) |
 | 171 | One restic repository per node (recommended) | ADR 0010 (amended); Backups and the archive (#90) |
 | 172 | Apps reach the sign-in through a sign-in listener of their own on the household's port, and the LDAP outpost on its port 636; the agent's probes reach apps (recommended, #82) | ADR 0020; Modules (Agent); Testing Decisions (#82, reviews of #94) |
 | 173 | The provider's first-admin flow applies to nobody before the sign-in is served, the executor API included | ADR 0004 (amended); Adapter contracts; Testing Decisions (#84, review of #94) |
