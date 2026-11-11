@@ -1,5 +1,6 @@
 # Go tests, the web app's checks and build, and the flow tests of first-time setup in a real browser.
-# Actions and images are pinned by digest; the comments name the versions. Nothing here holds a secret.
+# Actions and images are pinned by digest; the comments name the versions. Nothing here holds a secret. Every command
+# that prints third-party text runs through .github/scripts/stop-commands.sh, so that text can't be a workflow command.
 name: ci
 
 on:
@@ -57,7 +58,7 @@ jobs:
           node-version: 24
           cache: npm
           cache-dependency-path: web/package-lock.json
-      - run: npm ci --ignore-scripts
+      - run: sh ../.github/scripts/stop-commands.sh npm ci --ignore-scripts
       - run: npm run lint
       - run: npm run test:unit
       - run: npm run build
@@ -79,11 +80,11 @@ jobs:
           cache-dependency-path: web/package-lock.json
       - name: Build the pages, then the binary that carries them
         run: |
-          (cd web && npm ci --ignore-scripts && npm run build)
+          (cd web && sh ../.github/scripts/stop-commands.sh npm ci --ignore-scripts && npm run build)
           CGO_ENABLED=0 go build -trimpath -o bin/homerslab ./cmd/homerslab
       - name: Install the browser
         working-directory: web
-        run: npx playwright install --with-deps chromium
+        run: sh ../.github/scripts/stop-commands.sh npx playwright install --with-deps chromium
       - name: Flow tests
         working-directory: web
         # Test isolation, as in the Go job.

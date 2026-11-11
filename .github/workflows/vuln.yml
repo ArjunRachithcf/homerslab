@@ -2,7 +2,8 @@
 # The rule for both: a finding in code we call, or in a package that ships in the binary, fails the job. A finding
 # only in the module graph, or only in a development tool, is listed in the log and doesn't fail.
 # Runs on every PR, and nightly on main and integration (a schedule runs from main's copy of this file).
-# Actions and images are pinned by digest; the comments name the versions. Nothing here holds a secret.
+# Actions and images are pinned by digest; the comments name the versions. Nothing here holds a secret. Every command
+# that prints third-party text runs through .github/scripts/stop-commands.sh, so that text can't be a workflow command.
 name: vuln
 
 on:
@@ -44,8 +45,8 @@ jobs:
       # scans below can name another target without govulncheck itself being built for it.
       - name: Build govulncheck
         run: |
-          go -C tools mod tidy -diff
-          go -C tools build -o /usr/local/bin/govulncheck golang.org/x/vuln/cmd/govulncheck
+          sh .github/scripts/stop-commands.sh go -C tools mod tidy -diff
+          sh .github/scripts/stop-commands.sh go -C tools build -o /usr/local/bin/govulncheck golang.org/x/vuln/cmd/govulncheck
       # Each target the packages ship for, as the binary is built (CGO_ENABLED=0). Exit 3 means the code calls a
       # vulnerable symbol, the standard library's included. Findings only in imported packages or required modules
       # are listed under "Package Results" and "Module Results" and exit 0. A hypothetical example, since x/crypto
@@ -56,14 +57,14 @@ jobs:
           GOOS: linux
           GOARCH: amd64
           CGO_ENABLED: "0"
-        run: govulncheck -show verbose ./...
+        run: sh .github/scripts/stop-commands.sh govulncheck -show verbose ./...
       - name: govulncheck ./... (linux/arm64)
         if: ${{ !cancelled() }}
         env:
           GOOS: linux
           GOARCH: arm64
           CGO_ENABLED: "0"
-        run: govulncheck -show verbose ./...
+        run: sh .github/scripts/stop-commands.sh govulncheck -show verbose ./...
 
   npm:
     name: npm audit${{ matrix.ref && format(' ({0})', matrix.ref) || '' }}
@@ -84,20 +85,16 @@ jobs:
         with:
           node-version: 24
       # npm audit reads package-lock.json; nothing is installed and no package script runs. The first step lists every
-      # advisory and warns only for one not in audit-baseline.json (the known dev-only ones), or when npm gave no
-      # report; it never fails on an advisory (a broken baseline does fail it). npm's own listing follows, each
-      # advisory's path and fix, with workflow commands stopped. The second step fails on any advisory in a package
-      # that ships: the baseline can't excuse it.
-      - name: Every advisory, development tools included (warns on one not in the baseline, never fails on one)
+      # advisory and warns only for one not in audit-accepted.json (the known dev-only ones), or when npm gave no
+      # report; it never fails on an advisory (a broken audit-accepted.json does fail it). npm's own listing follows,
+      # each advisory's path and fix. The second step fails on any advisory in a package that ships: accepting it in
+      # audit-accepted.json doesn't excuse it.
+      - name: Every advisory, development tools included (warns on one not accepted, never fails on one)
         run: |
           status=0
-          npm audit --json > "$RUNNER_TEMP/npm-audit.json" || status=$?
+          sh ../.github/scripts/stop-commands.sh sh -c 'npm audit --json > "$1"' sh "$RUNNER_TEMP/npm-audit.json" || status=$?
           echo "npm audit exited $status"
-          node scripts/audit-baseline.mjs audit-baseline.json < "$RUNNER_TEMP/npm-audit.json"
-          # The registry's text can't run workflow commands while they are stopped.
-          token=$(od -An -tx1 -N16 /dev/urandom | tr -d ' \n')
-          echo "::stop-commands::$token"
-          npm audit || true
-          echo "::$token::"
+          node scripts/audit-accepted.mjs audit-accepted.json < "$RUNNER_TEMP/npm-audit.json"
+          sh ../.github/scripts/stop-commands.sh npm audit || true
       - name: Advisories in the packages that ship (fail the job)
-        run: npm audit --omit=dev
+        run: sh ../.github/scripts/stop-commands.sh npm audit --omit=dev

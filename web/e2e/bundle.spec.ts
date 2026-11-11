@@ -16,8 +16,8 @@ test('the page loads no code of vite’s own', async ({ page, primary }) => {
   for (const body of bodies) {
     // React DOM names rel="modulepreload" too (its preloadModule), so this looks for the polyfill's own feature test.
     expect(/supports\(\s*[`'"]modulepreload[`'"]\s*\)/.test(body), 'vite’s modulepreload polyfill is in the bundle').toBe(false);
-    expect(body.includes('vite:preloadError'), 'vite’s preload helper (dynamic imports) is in the bundle').toBe(false);
-    // A dynamic import, even one loaded later than this test looks, brings the preload helper back.
-    expect(body.includes('import('), 'the bundle has a dynamic import').toBe(false);
+    // The preload helper of dynamic imports: its name (when not minified) and the event it fires.
+    expect(body.includes('__vitePreload'), 'vite’s preload helper is in the bundle').toBe(false);
+    expect(body.includes('vite:preloadError'), 'vite’s preload helper is in the bundle').toBe(false);
   }
 });

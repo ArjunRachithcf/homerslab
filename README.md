@@ -56,7 +56,7 @@ CGO_ENABLED=0 go build -o bin/homerslab ./cmd/homerslab
 (cd web && npx playwright test)                 # first-time setup in a browser, against bin/homerslab
 go -C tools tool govulncheck -C .. ./...        # known vulnerabilities in called code (Go 1.27.4 or later)
 (cd web && npm audit --omit=dev)                # known vulnerabilities in the web packages that ship
-(cd web && npm audit --json | node scripts/audit-baseline.mjs)  # all of them: new ones against audit-baseline.json
+(cd web && npm audit --json | node scripts/audit-accepted.mjs)  # all of them: warns on one not in audit-accepted.json
 ```
 
 Tests keep to their own world: each has its own home directory, and any container engine points at nowhere.
