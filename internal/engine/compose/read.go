@@ -101,6 +101,9 @@ func plain(file []byte) error {
 	if len(file) > maxFileBytes {
 		return fmt.Errorf("%w: over %d KiB", ErrNotPlain, maxFileBytes>>10)
 	}
+	if err := shallow(file); err != nil {
+		return err
+	}
 	dec := yaml.NewDecoder(bytes.NewReader(file))
 	for {
 		var doc yaml.Node
@@ -133,6 +136,33 @@ func plain(file []byte) error {
 			}
 		}
 	}
+}
+
+// shallow refuses flow nesting ([ and {) deeper than maxDepth before the YAML parser walks it: brackets in quotes and
+// comments don't count. walk checks every kind of nesting once the file is parsed.
+func shallow(file []byte) error {
+	depth, quote, comment := 0, byte(0), false
+	for i, c := range file {
+		switch {
+		case comment:
+			comment = c != '\n'
+		case quote != 0:
+			if c == quote && (quote == '\'' || file[i-1] != '\\') {
+				quote = 0
+			}
+		case c == '"' || c == '\'':
+			quote = c
+		case c == '#':
+			comment = true
+		case c == '[' || c == '{':
+			if depth++; depth > maxDepth {
+				return fmt.Errorf("%w: nested deeper than %d", ErrNotPlain, maxDepth)
+			}
+		case c == ']' || c == '}':
+			depth--
+		}
+	}
+	return nil
 }
 
 // walk refuses aliases and nesting deeper than maxDepth.

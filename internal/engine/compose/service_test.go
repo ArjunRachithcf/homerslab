@@ -94,3 +94,17 @@ func TestOnlyTheAdapterUsesTheSDK(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// Deep flow nesting is refused before the YAML parser walks it; brackets in quotes and comments don't count.
+func TestDeepFlowNestingIsRefusedBeforeParsing(t *testing.T) {
+	testenv.Isolate(t)
+	deep := strings.Repeat("[", 9000) + strings.Repeat("]", 9000)
+	if err := shallow([]byte("x: " + deep)); !errors.Is(err, ErrNotPlain) {
+		t.Errorf("9000 deep: %v, want ErrNotPlain", err)
+	}
+	for _, s := range []string{"x: '" + deep + "'", `x: "` + deep + `"`, "# " + deep + "\nx: 1", "x: " + strings.Repeat("[", 64) + strings.Repeat("]", 64)} {
+		if err := shallow([]byte(s)); err != nil {
+			t.Errorf("%.20s…: %v", s, err)
+		}
+	}
+}
