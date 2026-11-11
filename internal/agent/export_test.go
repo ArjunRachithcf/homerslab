@@ -37,6 +37,9 @@ func ChildDir() (string, error) { return childDir() }
 // RaceDetector says whether the tests run under the race detector, which the child's memory limit leaves alone.
 const RaceDetector = raceDetector
 
+// CgoOn says whether the tests are built with cgo.
+const CgoOn = cgoOn
+
 // ChildReads gives reads d and a soft CPU limit of cpu seconds, and runs every read's child as this test binary in
 // the given mode (main_test.go): a real Go child that confines itself as the agent's does, then does what the mode
 // says instead of reading.

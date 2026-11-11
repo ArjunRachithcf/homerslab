@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"sync"
 	"strings"
 	"syscall"
 
@@ -87,9 +88,15 @@ func readProjectMain(args []string, stdin io.Reader, stdout io.Writer, read func
 	// limit kills it without a word.
 	xcpu := make(chan os.Signal, 1)
 	signal.Notify(xcpu, syscall.SIGXCPU)
+	// The signal's goroutine and the main answer both write to stdout: one JSON object, whichever comes first.
+	var once sync.Once
+	answer := func(r readResult) (err error) {
+		once.Do(func() { err = json.NewEncoder(stdout).Encode(r) })
+		return err
+	}
 	go func() {
 		<-xcpu
-		_ = json.NewEncoder(stdout).Encode(readResult{Error: "cpu-limit"})
+		_ = answer(readResult{Error: "cpu-limit"})
 		os.Exit(1)
 	}()
 	var err error
@@ -113,7 +120,7 @@ func readProjectMain(args []string, stdin io.Reader, stdout io.Writer, read func
 	default:
 		res.Error, res.Detail = "invalid-compose", err.Error()
 	}
-	if err := json.NewEncoder(stdout).Encode(res); err != nil {
+	if err := answer(res); err != nil {
 		return 1
 	}
 	return 0
@@ -140,7 +147,7 @@ func confine(cpuSeconds int) (Confined, error) {
 	}
 	c := Confined{UID: os.Getuid(), GID: os.Getgid(), Limits: map[string]uint64{}}
 	// The CPU limit is soft at cpuSeconds and hard a second later: the kernel tells the child (SIGXCPU, which Go
-	// reports and exits on) before it kills it.
+	// ignores unless notified, as readProjectMain does) before it kills it.
 	cpu := uint64(cpuSeconds)
 	if err := syscall.Setrlimit(syscall.RLIMIT_CPU, &syscall.Rlimit{Cur: cpu, Max: cpu + 1}); err != nil {
 		return c, fmt.Errorf("cpu: %w", err)

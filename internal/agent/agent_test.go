@@ -464,6 +464,9 @@ func TestAReadOutOfMemoryIsTooBig(t *testing.T) {
 	if agent.RaceDetector {
 		t.Skip("the race detector leaves the data limit off; CI runs this without it")
 	}
+	if agent.CgoOn {
+		t.Skip("with cgo the child can die of runtime/cgo or the GC before it says why; CI runs this with CGO_ENABLED=0")
+	}
 	agent.ChildReads(t, agenttest.Executable(t), "read-project-hog", 20*time.Second, 10)
 	sock := agenttest.Start(t, agenttest.Primary())
 	body := map[string]string{"project": "homerslab-web", "compose": "services: {web: {image: x}}\n"}
