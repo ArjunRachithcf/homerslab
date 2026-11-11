@@ -21,28 +21,39 @@ const (
 	DefaultDB            = "/var/lib/homerslab/manager.db"
 	DefaultListen        = ":7020"
 	DefaultAdminListen   = "127.0.0.1:7021"
+	DefaultSetupPort     = 7020
+	DefaultAgentState    = "/var/lib/homerslab-agent"
 	DefaultGroup         = "homerslab"
 )
 
 // Env is what a command reaches of the world.
 type Env struct {
+	Stdin          io.Reader
 	Stdout, Stderr io.Writer
 	Euid           func() int
 }
 
 // OS is the real environment.
-func OS() Env { return Env{Stdout: os.Stdout, Stderr: os.Stderr, Euid: os.Geteuid} }
+func OS() Env { return Env{Stdin: os.Stdin, Stdout: os.Stdout, Stderr: os.Stderr, Euid: os.Geteuid} }
 
 const usage = `Usage:
   homerslab agent      run the agent (as root, from homerslab-agent.service)
   homerslab manager    run the manager (unprivileged, from homerslab-manager.service)
   homerslab setup link make a one-time link to first-time setup, and show it with its QR code
+  homerslab setup secret mesh
+                       give first-time setup the mesh's token, from this machine's terminal (read from stdin,
+                       never shown)
   homerslab node       show this primary as its agent reports it
   homerslab catalog    list the apps in the catalog
   homerslab plan APP   make an install plan for an app, and show it in plain words
   homerslab plan show ID
                        show an install plan by its id
   homerslab admin      say where Admin opens, on this machine
+  homerslab mesh owner-password
+                       show the owner's password of a NetBird HomersLab set up, for its dashboard (as root)
+  homerslab firewall restore
+                       load the firewall table the agent last applied, or a closed one on the first boot (as root,
+                       from homerslab-firewall-restore.service)
 
 Each command takes --help.
 `
@@ -60,6 +71,12 @@ func Main(ctx context.Context, args []string, env Env) int {
 		return agent.ReadProjectMain(args[2:], os.Stdin, env.Stdout)
 	case "plan show":
 		err = showPlanByID(ctx, args[2:], env)
+	case "setup secret":
+		err = setupSecret(ctx, args[2:], env)
+	case "firewall restore":
+		err = firewallRestore(ctx, args[2:], env)
+	case "mesh owner-password":
+		err = meshOwnerPassword(ctx, args[2:], env)
 	default:
 		switch strings.Join(first(args, 1), " ") {
 		case "agent":

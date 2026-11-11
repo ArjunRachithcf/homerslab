@@ -1,7 +1,9 @@
 package cli
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -38,7 +40,7 @@ func showCatalog(ctx context.Context, args []string, env Env) error {
 			SignIn                  catalog.SignInMethod `json:"signIn"`
 		}
 	}
-	body, err := newControl(*socket).do(ctx, "GET", "/api/v1/catalog", nil, 0, &c)
+	body, err := newControl(*socket).do(ctx, "GET", "/api/v1/catalog", 0, &c)
 	if err != nil {
 		return err
 	}
@@ -97,7 +99,15 @@ func showPlanByID(ctx context.Context, args []string, env Env) error {
 
 func showPlan(ctx context.Context, env Env, socket string, asJSON bool, method, path string, body any, notFound string) error {
 	var p plan.Plan
-	raw, err := newControl(socket).do(ctx, method, path, body, 0, &p)
+	var payload *bytes.Reader
+	if body != nil {
+		b, err := json.Marshal(body)
+		if err != nil {
+			return err
+		}
+		payload = bytes.NewReader(b)
+	}
+	raw, err := newControl(socket).request(ctx, method, path, 0, payload, &p)
 	var ae *apiError
 	if errors.As(err, &ae) {
 		switch ae.Code {
@@ -260,7 +270,7 @@ func showAdmin(ctx context.Context, args []string, env Env) error {
 		return err
 	}
 	var a struct{ URL string }
-	if _, err := newControl(*socket).do(ctx, "GET", "/api/v1/admin", nil, 0, &a); err != nil {
+	if _, err := newControl(*socket).do(ctx, "GET", "/api/v1/admin", 0, &a); err != nil {
 		return err
 	}
 	_, err := fmt.Fprintln(env.Stdout, a.URL)

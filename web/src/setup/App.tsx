@@ -11,7 +11,7 @@ import { diskSize, memory } from './format';
 // An error says the manager didn't answer, unless it said why: then `says` holds that.
 type Phase = { kind: 'loading' } | { kind: 'refused' } | { kind: 'error'; says?: Key } | { kind: 'ready'; setup: Setup; facts: Facts | null };
 
-const BUILT = new Set(['welcome', 'you', 'household']);
+const BUILT = new Set(['welcome', 'you', 'household', 'network']);
 const validMail = (m: string) => /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(m.trim());
 
 export function App() {
@@ -196,14 +196,36 @@ function useStep(id: string, setup: Setup, facts: Facts | null, next: () => void
   const [busy, setBusy] = useState(false);
   const [failed, setFailed] = useState<{ step: string; why: Failure } | null>(null);
   const householdValue = touched || !surname ? household : t('step.household.default', { surname });
+  const [plane, setPlane] = useState<'cloud' | 'self-hosted'>(a.meshControlPlane === 'self-hosted' ? 'self-hosted' : 'cloud');
+  const [url, setUrl] = useState(a.meshControlPlane === 'self-hosted' ? (a.meshUrl ?? '') : '');
+  const network = setup.steps.find((s) => s.id === 'network');
+  const waiting = id === 'network' && network?.state === 'waiting' && !!network.secret;
+  const confirming = id === 'network' && network?.state === 'waiting' && network.confirm === 'mesh-policies';
+  const latest = useRef({ onAnswered, next });
+  useEffect(() => {
+    latest.current = { onAnswered, next };
+  });
+  useEffect(() => {
+    // The token arrives in this machine's terminal, never through this page: wait for the step to turn done.
+    if (!waiting) return;
+    const timer = window.setInterval(() => {
+      void getSetup().then((s) => {
+        latest.current.onAnswered(s);
+        if (s.steps.find((x) => x.id === 'network')?.state === 'done') latest.current.next();
+      }).catch(() => undefined);
+    }, 2000);
+    return () => window.clearInterval(timer);
+  }, [waiting]);
 
-  const send = async (body: Record<string, string>) => {
+  const send = async (body: Record<string, string | boolean>) => {
     setBusy(true);
     setFailed(null); // a failure that happens again is a new notice, read out again
     try {
-      onAnswered(await answer(id, body));
+      const s = await answer(id, body);
+      onAnswered(s);
       setBad([]);
-      next();
+      if (s.steps.find((x) => x.id === id)?.state === 'done') next(); // a step waiting for a secret stays
+
     } catch (e) {
       if (e instanceof Refused && e.code === 'invalid') setBad(e.fields);
       else if (e instanceof Refused && e.status === 401) location.reload();
@@ -256,6 +278,64 @@ function useStep(id: string, setup: Setup, facts: Facts | null, next: () => void
         primary: { label: t('setup.continue'), ok: !!householdValue.trim(), why: t('step.household.why'), busy },
         onPrimary: () => send({ name: householdValue }),
       };
+    case 'network': {
+      const own = plane === 'self-hosted';
+      const choices: ['cloud' | 'self-hosted', Key, Key][] = [
+        ['cloud', 'step.network.cloud', 'step.network.cloudSub'], ['self-hosted', 'step.network.own', 'step.network.ownSub'],
+      ];
+      const answerNow: Record<string, string> = own ? { mesh: 'netbird', controlPlane: plane, url: url.trim() } : { mesh: 'netbird', controlPlane: plane };
+      if (confirming) {
+        const names = (a.meshConflicts ?? '').split('\n').filter(Boolean);
+        return {
+          illo: 'network', title: t('step.network.conflictsTitle'), lead: t('step.network.conflictsLead'),
+          body: <ul className="group" aria-label={t('step.network.conflictsList')}>
+            {names.map((n) => (
+              <li className="row" key={n}><span className="row-main"><span className="row-label wrap">{n}</span></span></li>
+            ))}
+          </ul>,
+          more: <p className="hint">{t('step.network.conflictsKept')}</p>,
+          primary: { label: t('step.network.switchOff'), busy },
+          onPrimary: () => send({ ...answerNow, switchOff: true }),
+        };
+      }
+      if (waiting) {
+        return {
+          illo: 'network', title: t('step.network.waitTitle'), lead: t('step.network.waitLead'),
+          body: <>
+            <div className="cmd"><code>{network?.command ?? 'sudo homerslab setup secret mesh'}</code></div>
+            <p className="hint as-waiting" role="status"><span className="spinner" aria-hidden="true" />{t('step.network.waiting')}</p>
+          </>,
+          moreLabel: t('step.network.help'),
+          more: <>
+            <ol className="group help-steps">
+              {(['step.network.help1', 'step.network.help2', 'step.network.help3'] as Key[]).map((k) => <li key={k}><span>{t(k)}</span></li>)}
+            </ol>
+            <p className="subhead">{t('step.network.helpWhy')}</p>
+          </>,
+          primary: { label: t('setup.continue'), ok: false, why: t('step.network.waitWhy') },
+        };
+      }
+      return {
+        illo: 'network', title: t('step.network.title'), lead: t('step.network.lead'),
+        body: <>
+          <div className="group" role="radiogroup" aria-label={t('step.network.where')}>
+            {choices.map(([v, label, sub]) => (
+              <label className="row row-choice" key={v}>
+                <input type="radio" name="plane" value={v} checked={plane === v} onChange={() => setPlane(v)} />
+                <span className="row-main"><span className="row-label">{t(label)}</span><span className="row-sub wrap">{t(sub)}</span></span>
+                <span className="row-trail"><Icon name="check2" cls="icon checkmark" /></span>
+              </label>
+            ))}
+          </div>
+          {own && <Field id="url" label={t('step.network.url')} value={url} onChange={setUrl} type="url" hint={t('step.network.urlHint')}
+            error={bad.includes('url') ? t('step.network.urlInvalid') : undefined} />}
+          {network?.state === 'done' && <div className="as-check"><Icon name="check" /><span>{t('step.network.done')}</span></div>}
+        </>,
+        more: <p className="hint">{t('step.network.later')}</p>,
+        primary: { label: t('setup.continue'), ok: !own || /^https:\/\/\S+$/.test(url.trim()), why: t('step.network.why'), busy },
+        onPrimary: () => send(answerNow),
+      };
+    }
     case 'join':
     case 'passkey':
     case 'done':

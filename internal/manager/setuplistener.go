@@ -30,7 +30,18 @@ func (m *Manager) Setup() http.Handler {
 	api.HandleFunc("GET /setup", func(w http.ResponseWriter, _ *http.Request) { m.servePage(w, "setup.html") })
 	api.HandleFunc("GET /assets/{file}", m.asset)
 	api.HandleFunc("/", notFound)
-	return securityHeaders(m.fromHere(m.ownHost(sameOrigin(api))))
+	return securityHeaders(m.open(m.fromHere(m.ownHost(sameOrigin(api)))))
+}
+
+// open answers nothing once the LAN listener is closed for good, at the admin's first sign-in over the mesh.
+func (m *Manager) open(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if m.lanClosed.Load() {
+			fail(w, http.StatusGone, "lan-closed")
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 func securityHeaders(next http.Handler) http.Handler {

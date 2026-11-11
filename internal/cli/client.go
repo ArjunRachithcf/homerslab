@@ -38,19 +38,20 @@ type apiError struct {
 
 func (e *apiError) Error() string { return fmt.Sprintf("the manager answered %d %s", e.Status, e.Code) }
 
-// do sends a request, with body as JSON unless it is nil, and decodes the JSON answer into v; with wait, it waits
-// that long for the manager to start.
-func (c *control) do(ctx context.Context, method, path string, body any, wait time.Duration, v any) ([]byte, error) {
+// do sends a request and decodes the JSON answer into v; with wait, it waits that long for the manager to start.
+func (c *control) do(ctx context.Context, method, path string, wait time.Duration, v any) ([]byte, error) {
+	return c.request(ctx, method, path, wait, nil, v)
+}
+
+func (c *control) request(ctx context.Context, method, path string, wait time.Duration, body *bytes.Reader, v any) ([]byte, error) {
 	deadline := time.Now().Add(wait)
-	var payload []byte
-	if body != nil {
-		var err error
-		if payload, err = json.Marshal(body); err != nil {
-			return nil, err
-		}
-	}
 	for {
-		req, err := http.NewRequestWithContext(ctx, method, "http://manager"+path, bytes.NewReader(payload))
+		var r io.Reader
+		if body != nil {
+			_, _ = body.Seek(0, io.SeekStart)
+			r = body
+		}
+		req, err := http.NewRequestWithContext(ctx, method, "http://manager"+path, r)
 		if err != nil {
 			return nil, err
 		}

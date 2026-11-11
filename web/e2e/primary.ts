@@ -25,7 +25,8 @@ export class Primary {
     const dir = await mkdtemp(path.join(tmpdir(), 'homerslab-flow-'));
     const env = { PATH: process.env.PATH, HOME: dir, DOCKER_HOST: 'unix:///nonexistent', CONTAINER_HOST: 'unix:///nonexistent' };
     const p = new Primary(dir, env);
-    p.agent = p.spawn('agent', '--socket', p.at('agent.sock'), '--socket-group', String(process.getgid?.() ?? 0), '--sysroot', sysroot);
+    p.agent = p.spawn('agent', '--socket', p.at('agent.sock'), '--socket-group', String(process.getgid?.() ?? 0), '--sysroot', sysroot,
+      '--state-dir', p.at('agent-state'));
     await waitForSocket(p.at('agent.sock'));
     await p.startManager();
     return p;
