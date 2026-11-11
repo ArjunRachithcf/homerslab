@@ -163,9 +163,14 @@ export function textRuns(task: { scrollTo?: string; unfade?: number[] } | null):
     // ::first-letter and ::first-line paint their own colour on a block's first letter and first line, and a block
     // inside it that starts it starts its first line: a text is not measured when any block around it paints its own
     // colour so, and the text is that block's first (shown) text, or on the first text's line
-    const blocksOf = (e: Element): Element[] => {
-      const out: Element[] = [];
-      for (let b: Element | null = e; b; b = up(b)) if (!/^(inline|contents)$/.test(css(b).display)) out.push(b);
+    const blockCache = new Map<Element, Element[]>();
+    const blocksOf = (e: Element | null): Element[] => {
+      if (!e) return [];
+      let out = blockCache.get(e);
+      if (!out) {
+        const above = blocksOf(up(e));
+        blockCache.set(e, (out = /^(inline|contents)$/.test(css(e).display) ? above : [e, ...above]));
+      }
       return out;
     };
     const lineOf = (t: Text) => {
@@ -173,13 +178,12 @@ export function textRuns(task: { scrollTo?: string; unfade?: number[] } | null):
       r.selectNodeContents(t);
       return r.getClientRects()[0];
     };
+    // the texts in a block that it shows, in order
+    const shownTexts = (block: Element) => document.createTreeWalker(block, NodeFilter.SHOW_TEXT,
+      { acceptNode: (n) => (/\S/.test((n as Text).data) && lineOf(n as Text) ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_SKIP) });
     const firstTexts = new Map<Element, Text | null>();
     const firstText = (block: Element) => {
-      if (!firstTexts.has(block)) {
-        const tw = document.createTreeWalker(block, NodeFilter.SHOW_TEXT,
-          { acceptNode: (n) => (/\S/.test((n as Text).data) && lineOf(n as Text) ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_SKIP) });
-        firstTexts.set(block, tw.nextNode() as Text | null);
-      }
+      if (!firstTexts.has(block)) firstTexts.set(block, shownTexts(block).nextNode() as Text | null);
       return firstTexts.get(block) ?? null;
     };
     const colours = { '::first-letter': new Map<Element, boolean>(), '::first-line': new Map<Element, boolean>() };
@@ -191,9 +195,22 @@ export function textRuns(task: { scrollTo?: string; unfade?: number[] } | null):
       }
       return own;
     };
+    // the first letter takes the punctuation before it, which may be a text of its own: every text up to the first
+    // with a letter or a digit
+    const letterTexts = new Map<Element, Text[]>();
+    const firstLetterTexts = (block: Element) => {
+      let texts = letterTexts.get(block);
+      if (!texts) {
+        texts = [];
+        const tw = shownTexts(block);
+        for (let t = tw.nextNode() as Text | null; t; t = /[\p{L}\p{N}]/u.test(t.data) ? null : (tw.nextNode() as Text | null)) texts.push(t);
+        letterTexts.set(block, texts);
+      }
+      return texts;
+    };
     const firstLetter = (node: Text) =>
-      blocksOf(node.parentElement ?? document.body).some((block) => ownColour(block, '::first-letter') && firstText(block) === node);
-    const firstLine = (node: Text) => blocksOf(node.parentElement ?? document.body).some((block) => {
+      blocksOf(node.parentElement).some((block) => ownColour(block, '::first-letter') && firstLetterTexts(block).includes(node));
+    const firstLine = (node: Text) => blocksOf(node.parentElement).some((block) => {
       if (!ownColour(block, '::first-line')) return false;
       const first = firstText(block);
       const [mine, line] = [lineOf(node), first && lineOf(first)];
@@ -373,6 +390,9 @@ export function refade(): void {
   delete w.a11yUnfaded;
 }
 
+/** What the report says of a word whose glyphs glyphsShow finds don't show. */
+export const COVERED = 'its glyphs don’t show, or show dimmed: something is drawn over them';
+
 /** The colour hideWords paints every glyph in for `sentinel`, to see where words show. */
 export const SENTINEL: [number, number, number] = [255, 0, 255];
 
@@ -398,11 +418,12 @@ export function hideWords(mode: 'hide' | 'sentinel' | 'show'): void {
   if (mode !== 'show') {
     const glyphs = mode === 'hide' ? 'transparent' : 'rgb(255, 0, 255)';
     const stroke = mode === 'hide' ? '-webkit-text-stroke-color: transparent' : `-webkit-text-stroke: 2px ${glyphs}`;
+    const svgStroke = mode === 'hide' ? 'stroke: transparent' : `stroke: ${glyphs} !important; stroke-width: 2px`;
     const sheet = w.a11yHidden ?? new CSSStyleSheet();
     sheet.replaceSync(`*, *::before, *::after, *::placeholder { -webkit-text-fill-color: ${glyphs} !important;
       ${stroke} !important; text-shadow: none !important; text-decoration-color: transparent !important;
       transition: none !important; } *::marker { color: transparent !important; }
-      svg text, svg tspan, svg textPath { fill: ${glyphs} !important; stroke: transparent !important; }`);
+      svg text, svg tspan, svg textPath { fill: ${glyphs} !important; ${svgStroke} !important; }`);
     if (!w.a11yHidden) for (const r of roots) r.adoptedStyleSheets = [...r.adoptedStyleSheets, sheet];
     w.a11yHidden = sheet;
   } else {
@@ -545,14 +566,15 @@ export const SHOWS = 0.9;
  * Whether a word's glyphs show in its box: in `marked` (the area shot with every glyph in SENTINEL) some pixel differs
  * from `shot` (the glyphs hidden) by at least SHOWS of what the sentinel, faded as the word is, would change it by
  * there, from what the word is painted on: the pixel in `unfaded` (the area shot with the word's faded group opaque),
- * or in `shot`. Glyphs under something drawn over them, wholly or in part, don't show, whatever hit-testing says. null
- * when the background itself is the sentinel's colour, and nothing can be told.
+ * or in `shot`. Glyphs under something drawn over them, opaque or not, don't show, whatever hit-testing says (one
+ * pixel decides: a cover over only part of the box isn't seen). null when the background, or the part of it that
+ * doesn't show them, is near the sentinel's colour, and nothing can be told.
  */
 export function glyphsShow(shot: Shot, marked: Shot, box: Box, fade: number, dpr: number, unfaded?: Shot): boolean | null {
   const [x0, y0] = [Math.max(0, Math.round(box.x * dpr)), Math.max(0, Math.round(box.y * dpr))];
   const [x1, y1] = [Math.min(shot.width, Math.round((box.x + box.w) * dpr)), Math.min(shot.height, Math.round((box.y + box.h) * dpr))];
   const own = unfaded ?? shot;
-  let [most, far, n] = [0, 0, 0];
+  let [most, far, n, near] = [0, 0, 0, false];
   for (let y = y0; y < y1; y++) {
     for (let x = x0; x < x1; x++) {
       const o = (y * shot.width + x) * 4;
@@ -561,11 +583,13 @@ export function glyphsShow(shot: Shot, marked: Shot, box: Box, fade: number, dpr
         moved += Math.abs((marked.rgba[o + c] ?? 0) - (shot.rgba[o + c] ?? 0));
         away += Math.abs((SENTINEL[c] ?? 0) - (own.rgba[o + c] ?? 0));
       }
-      if (away >= 60) most = Math.max(most, moved / away); // nearer the sentinel's colour, the change says little
+      // nearer the sentinel's colour, the change says little
+      if (away >= 60) most = Math.max(most, moved / away);
+      else near = true;
       far += away;
       n++;
     }
   }
   if (!n || far / n < 60) return null;
-  return most >= SHOWS * fade;
+  return most >= SHOWS * fade ? true : near ? null : false;
 }

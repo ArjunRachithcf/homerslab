@@ -60,4 +60,8 @@ test('glyphsShow: glyphs under a cover that lets part of them through don’t sh
   expect(glyphsShow(...marked(white, 0.3), whole, 0.5, 1), 'faded to 0.5, under a cover at 40%').toBe(false);
   expect(glyphsShow(...marked(white, 0), whole, 1, 1), 'under an opaque cover').toBe(false);
   expect(glyphsShow(...marked(SENTINEL, 1), whole, 1, 1), 'on the sentinel’s colour').toBe(null);
+  // a pink badge under the glyphs, in a white box: what shows of them can't be told there
+  const pink: RGB = [255, 51, 255];
+  const badge = (x: number): RGB => (x < 20 ? pink : white);
+  expect(glyphsShow(shot(badge), shot((x) => (glyph(x) && x < 20 ? mix(pink, SENTINEL, 1) : badge(x))), whole, 1, 1), 'on a pink badge').toBe(null);
 });

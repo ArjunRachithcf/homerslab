@@ -6,7 +6,7 @@
 // each element; axe's findings and the contrasts measured are attached to the HTML report.
 import AxeBuilder from '@axe-core/playwright';
 import { expect, type Page, test } from '@playwright/test';
-import { boxContrast, decodePng, glyphsShow, hideWords, needed, PATCH, refade, type Shot, type TextRun, textRuns } from './pixels';
+import { boxContrast, COVERED, decodePng, glyphsShow, hideWords, needed, PATCH, refade, type Shot, type TextRun, textRuns } from './pixels';
 
 // axe-core's types, as the AxeBuilder in use has them (axe-core itself is its dependency, not ours)
 type AxeResults = Awaited<ReturnType<AxeBuilder['analyze']>>;
@@ -174,7 +174,7 @@ export async function legible(page: Page, glass?: Glass): Promise<{ runs: Measur
           const at = { ...b, x: b.x - left, y: b.y - top };
           const shows = glyphsShow(shot, marked, at, r.fade, shot.width / clip.width, r.fade < 1 ? unfaded : undefined);
           if (shows !== true) {
-            unmeasured.set(b.key, shows === null ? 'on a background of the sentinel’s colour, so nobody can tell whether its glyphs show' : 'its glyphs don’t show, or not wholly: something is drawn over them');
+            unmeasured.set(b.key, shows === null ? 'on a background near the sentinel’s colour, so nobody can tell whether its glyphs show' : COVERED);
             pending.delete(b.key);
             continue;
           }

@@ -121,6 +121,9 @@ const plants: {
   // (a hidden text before it starts no line)
   { name: 'a first line in its own colour, set on the block around', look: { theme: 'light', motion: 'reduce', transparency: 'reduce' },
     html: '<div id="planted-outer-line"><p hidden>Hidden</p><p id="planted-inner-line">First line inside</p></div>', sheet: '#planted-outer-line::first-line { color: #eee; }' },
+  // the first letter takes the punctuation before it, here a text of its own
+  { name: 'a first letter in its own colour, after a quotation mark', look: { theme: 'light', motion: 'reduce', transparency: 'reduce' },
+    html: '<p id="planted-quote">“<span id="planted-quoted">Quoted</span> words”</p>', sheet: '#planted-quote::first-letter { color: #eee; }' },
   { name: 'a first letter in its own colour, set on the block around', look: { theme: 'light', motion: 'reduce', transparency: 'reduce' },
     html: '<div id="planted-outer-letter"><p hidden>Hidden</p><div><p id="planted-inner-letter">First letter inside</p></div></div>', sheet: '#planted-outer-letter::first-letter { color: #eee; }' },
   // large text needs 3:1, and gets no more slack: 3.2:1 passes at 24px (setup.a11y.spec.ts), and fails at 18px
