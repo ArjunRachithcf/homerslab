@@ -16,7 +16,7 @@ Someone in the household who has a household account.
 _Avoid_: user, member, account
 
 **Role**:
-What a person may do: **admin**, **adult** or **kid**.
+What a person may do: **admin**, **adult** or **kid**. A guest has none.
 _Avoid_: group, permission level
 
 **Household admin**:
@@ -38,6 +38,11 @@ _Avoid_: parental mode, child profile
 **Invite**:
 How a new person joins: an account, a role, and guidance for getting their devices onto the mesh.
 _Avoid_: registration, onboarding link
+
+**Guest**:
+A person invited until an end date, with no role, who sees only the apps named for them and leaves the household on
+that date.
+_Avoid_: visitor, temporary account, guest role
 
 ### Apps and catalogs
 
@@ -193,7 +198,10 @@ _Avoid_: re-authentication, sudo mode, elevation
 
 **Risky change**:
 A change that needs step-up: deleting data, nodes, roles, sign-in settings, anything public, extras, restoring an app,
-eject, trusting a catalog, making a join code, replacing a mesh token, and making a new recovery kit.
+eject, trusting a catalog, making a join code, replacing a mesh token, making a new recovery kit, the archive's key,
+adding, removing or changing a backup target, adding or removing a domain, replacing a DNS token, changing the mail
+account, and making an API or MCP token. Sign-in settings are the identity provider, self sign-up and its domains,
+invite lifetimes, and the passkey rules.
 _Avoid_: dangerous action, admin action
 
 ### Keeping watch
@@ -217,7 +225,8 @@ The frequent, deduplicated, encrypted copy of every app's data.
 _Avoid_: snapshot (that is for updates), sync
 
 **Archive**:
-The weekly copy of the small, sensitive things, which nobody on the household's machines can read.
+The copy of the small, sensitive things, made after every change to them and at least weekly, which nobody on the
+household's machines can read.
 _Avoid_: cold backup, export
 
 **Restore test**:
