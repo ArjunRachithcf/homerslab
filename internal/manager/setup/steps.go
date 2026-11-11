@@ -84,9 +84,23 @@ func text(s string, max int) (string, string) {
 	return s, ""
 }
 
-// hidden is a control character (C0, DEL, C1) or a bidi override or isolate (U+202A–U+202E, U+2066–U+2069).
+// hidden is a character that changes how the text around it reads or breaks, without being seen:
+//   - a control character (C0, DEL, C1);
+//   - a bidi override or isolate (U+202A–U+202E, U+2066–U+2069), or a bidi mark (U+200E, U+200F, U+061C);
+//   - a line or paragraph separator (U+2028, U+2029);
+//   - a zero-width space, word joiner or byte order mark (U+200B, U+2060, U+FEFF).
+//
+// The zero-width joiner and non-joiner (U+200C, U+200D) stay: Persian, Indic scripts and emoji need them.
 func hidden(r rune) bool {
-	return unicode.IsControl(r) || r >= '\u202a' && r <= '\u202e' || r >= '\u2066' && r <= '\u2069'
+	switch {
+	case unicode.IsControl(r), r >= '\u202a' && r <= '\u202e', r >= '\u2066' && r <= '\u2069':
+		return true
+	}
+	switch r {
+	case '\u200e', '\u200f', '\u061c', '\u2028', '\u2029', '\u200b', '\u2060', '\ufeff':
+		return true
+	}
+	return false
 }
 
 // isMail is a bare address, name@domain with a dot in the domain.

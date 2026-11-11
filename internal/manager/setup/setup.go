@@ -294,42 +294,58 @@ func (s *Setup) Claim(ctx context.Context, key, client string) (string, error) {
 }
 
 // Session checks a session's token, from client, and keeps the session open. The token travels in clear on the LAN,
-// so it is good only from the device that claimed the link, and for a while. It writes to the database at most every
-// SeenEvery, and a write that fails doesn't refuse the session: reading setup must work on a full disk.
+// so it is good only from the device that claimed the link, and for a while. The database says whether the session
+// exists and wasn't ended; this process's monotonic clock says how old it is. Its last use is written at most every
+// SeenEvery, outside the lock, and a write that fails doesn't refuse the session: reading setup must work on a full
+// disk.
 func (s *Setup) Session(ctx context.Context, tok, client string) error {
 	hash := digest(tok)
+	now, ok, err := s.check(ctx, hash, client)
+	if err != nil || !ok {
+		return err
+	}
+	if !now.IsZero() {
+		_ = s.db.SeeSession(ctx, hash, now) // tried again a minute later
+	}
+	return nil
+}
+
+// check checks a session under the lock, and returns the wall-clock time to record as its last use, if it is time
+// to write it.
+func (s *Setup) check(ctx context.Context, hash []byte, client string) (time.Time, bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	elapsed := s.clock.Elapsed()
+	row, err := s.db.Session(ctx, hash)
+	if errors.Is(err, store.ErrNotFound) {
+		if s.session != nil && bytes.Equal(s.session.hash, hash) {
+			s.session = nil
+		}
+		return time.Time{}, false, ErrNoSession
+	}
+	if err != nil {
+		return time.Time{}, false, err
+	}
+	elapsed, now := s.clock.Elapsed(), s.clock.Now()
 	live := s.session
 	if live == nil || !bytes.Equal(live.hash, hash) {
 		// Not this process's: a session opened before a restart carries on if the wall clock says it is within its
 		// limits. Its age by the wall clock is all there is, and an age below zero is unknown.
-		row, err := s.db.Session(ctx, hash)
-		if errors.Is(err, store.ErrNotFound) {
-			return ErrNoSession
-		}
-		if err != nil {
-			return err
-		}
-		now := s.clock.Now()
 		opened, idle := now.Sub(row.CreatedAt), now.Sub(row.LastSeen)
 		if !within(opened, SessionMax) || !within(idle, SessionIdle) {
-			return ErrNoSession
+			return time.Time{}, false, ErrNoSession
 		}
 		live = &liveSession{hash: hash, client: row.Client, opened: elapsed - opened, seen: elapsed - idle, kept: elapsed - idle}
 		s.session = live
 	}
 	if live.client != client || !within(elapsed-live.opened, SessionMax) || !within(elapsed-live.seen, SessionIdle) {
-		return ErrNoSession
+		return time.Time{}, false, ErrNoSession
 	}
 	live.seen = elapsed
-	if elapsed-live.kept >= SeenEvery {
-		if err := s.db.SeeSession(ctx, hash, s.clock.Now()); err == nil {
-			live.kept = elapsed
-		}
+	if elapsed-live.kept < SeenEvery {
+		return time.Time{}, true, nil
 	}
-	return nil
+	live.kept = elapsed
+	return now, true, nil
 }
 
 // within says whether an age is known and below limit.

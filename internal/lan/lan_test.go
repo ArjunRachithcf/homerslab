@@ -116,6 +116,9 @@ func ipv6OnlyMachine() fstest.MapFS {
 				ipv6Route("2001:db8:2::", 64, "fe80::1", rtfUp|rtfGateway, "eth0") + // behind the router
 				ipv6Route("2001:db8:3::", 64, "::", rtfUp, "docker0") + // a bridge's
 				ipv6Route("2001:db8:7::", 48, "::", rtfUp, "eth0") + // a /48 on the link: too wide to be a home's
+				ipv6Route("2001:db8:4::", 64, "::", rtfUp, "eth0") +
+				ipv6Route("2001:db8:9::5", 128, "::", 0x80200001, "eth0") + // the local table's own /128
+				ipv6Route("2001:db8:7::5", 128, "::", 0x80200001, "eth0") +
 				ipv6Route("::", 0, "::", rtfUp, "eth0") + // a default route without a router
 				ipv6Route("fe80::", 64, "::", rtfUp, "eth0"))},
 		"net/if_inet6": {Data: []byte(
@@ -125,6 +128,7 @@ func ipv6OnlyMachine() fstest.MapFS {
 				ifInet6("2001:db8:1::99", 64, global, tentative, "eth0") + // not yet usable
 				ifInet6("2001:db8:2::7", 64, global, permanent, "eth0") + // its /64 is reached through the router
 				ifInet6("2001:db8:9::5", 128, global, permanent, "eth0") + // DHCPv6, with no prefix on the link
+				ifInet6("2001:db8:4::5", 128, global, permanent, "eth0") + // DHCPv6, on a /64 the router says is on the link
 				ifInet6("2001:db8:7::5", 48, global, permanent, "eth0") +
 				ifInet6("2001:db8:8::5", 0, global, permanent, "eth0") +
 				ifInet6("fe80::20", 64, linkScope, permanent, "eth0") +
@@ -139,19 +143,21 @@ func TestTheLANIncludesTheOnLinkGlobalIPv6Prefix(t *testing.T) {
 	if want := []string{"eth0"}; !reflect.DeepEqual(l.Interfaces, want) {
 		t.Errorf("interfaces = %v, want %v", l.Interfaces, want)
 	}
-	wantPrefixes := []netip.Prefix{netip.MustParsePrefix("2001:db8:1::/64"), netip.MustParsePrefix("fd00:1::/64")}
+	wantPrefixes := []netip.Prefix{netip.MustParsePrefix("2001:db8:1::/64"), netip.MustParsePrefix("2001:db8:4::/64"),
+		netip.MustParsePrefix("fd00:1::/64")}
 	if !sameSet(l.Prefixes, wantPrefixes) {
 		t.Errorf("prefixes = %v, want %v", l.Prefixes, wantPrefixes)
 	}
-	want := []netip.Addr{netip.MustParseAddr("fd00:1::20"), netip.MustParseAddr("2001:db8:1::20"), netip.MustParseAddr("2001:db8:1::abcd")}
+	want := []netip.Addr{netip.MustParseAddr("fd00:1::20"), netip.MustParseAddr("2001:db8:1::20"),
+		netip.MustParseAddr("2001:db8:4::5"), netip.MustParseAddr("2001:db8:1::abcd")}
 	if !reflect.DeepEqual(l.Addresses, want) {
-		t.Errorf("addresses = %v, want %v: the ULA, then the stable global address, then the privacy one", l.Addresses, want)
+		t.Errorf("addresses = %v, want %v: the ULA, then the stable global addresses (SLAAC's, then DHCPv6's), then the privacy one", l.Addresses, want)
 	}
 	if got := l.Address(); got != netip.MustParseAddr("fd00:1::20") {
 		t.Errorf("Address() = %v, want the ULA", got)
 	}
 	for addr, wantHere := range map[string]bool{
-		"2001:db8:1::42": true, "fd00:1::42": true, "fe80::42%eth0": true,
+		"2001:db8:1::42": true, "fd00:1::42": true, "fe80::42%eth0": true, "2001:db8:4::42": true,
 		"2001:db8:2::9": false, "2001:db8:9::1": false, "2001:db8:7::9": false, "2001:db8:8::9": false, "2a00::1": false, "2001:db8:5::1": false, "2001:db8:3::2": false, "2001:db9::1": false,
 	} {
 		if got := lan.FromHere(netip.MustParseAddr(addr), l); got != wantHere {

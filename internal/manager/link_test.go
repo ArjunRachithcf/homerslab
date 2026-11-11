@@ -457,3 +457,20 @@ func TestALinkIsOnlyLocalWhenTheMachineIsOnNoLAN(t *testing.T) {
 		t.Errorf("url = %s, localUrl = %s: want this machine's own link", l.URL, l.LocalURL)
 	}
 }
+
+// The database says whether a session was ended, whoever ended it: here a second manager on the same database.
+func TestASessionEndedInTheDatabaseEnds(t *testing.T) {
+	testenv.Isolate(t)
+	p := newPrimary(t)
+	b := p.claimed()
+	first := p.m
+	p.open() // another manager on the same database makes a new link
+	p.newLink()
+	if r := serve(first.Setup(), func() *http.Request {
+		req := newRequest("GET", "/api/v1/setup", nil, b.from)
+		req.Header.Set("Authorization", "Bearer "+b.token)
+		return req
+	}()); r.Code != http.StatusUnauthorized {
+		t.Errorf("a session another manager ended, at the first manager: %d, want 401", r.Code)
+	}
+}

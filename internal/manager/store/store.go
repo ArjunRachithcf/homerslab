@@ -8,11 +8,13 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"syscall"
 	"time"
 
+	"golang.org/x/sys/unix"
 	"modernc.org/sqlite" // pure Go, so the binary stays static
 	sqlite3 "modernc.org/sqlite/lib"
 )
@@ -24,19 +26,48 @@ var ErrNotFound = errors.New("not found")
 // happen, and writes work again once there is room.
 var ErrDiskFull = errors.New("the disk that holds the database is full")
 
-// written says which write errors are a full disk.
-func written(err error) error {
+// written says which write errors are a full disk, under the database's folder dir.
+func written(err error, dir string) error {
 	var se *sqlite.Error
-	if errors.As(err, &se) && se.Code()&0xff == sqlite3.SQLITE_FULL || errors.Is(err, syscall.ENOSPC) {
+	if err == nil {
+		return nil
+	}
+	if errors.As(err, &se) && full(se.Code(), func() (uint64, bool) { return room(dir) }) || errors.Is(err, syscall.ENOSPC) {
 		return fmt.Errorf("%w: %w", ErrDiskFull, err)
 	}
 	return err
 }
 
+// LittleRoom is how little room left on the database's disk makes an I/O error a full disk.
+const LittleRoom = 64 << 20
+
+// full says whether an SQLite result code is a full disk: SQLITE_FULL, or an I/O error (SQLite reports ENOSPC that
+// way when it meets fsync, ftruncate or the shared-memory file) while the disk has little room left.
+func full(code int, free func() (uint64, bool)) bool {
+	switch code & 0xff {
+	case sqlite3.SQLITE_FULL:
+		return true
+	case sqlite3.SQLITE_IOERR:
+		n, ok := free()
+		return ok && n < LittleRoom
+	}
+	return false
+}
+
+// room is how many bytes an unprivileged process can still write under dir.
+func room(dir string) (uint64, bool) {
+	var st unix.Statfs_t
+	if err := unix.Statfs(dir, &st); err != nil {
+		return 0, false
+	}
+	return st.Bavail * uint64(st.Bsize), true
+}
+
 // Store is the open database.
 type Store struct {
 	db   *sql.DB
-	full atomic.Bool
+	dir  string // the database's folder
+	fill atomic.Bool
 }
 
 // Step is one of first-time setup's steps, as the database keeps it.
@@ -90,7 +121,7 @@ func Open(path string, steps []Step) (*Store, error) {
 		return nil, err
 	}
 	db.SetMaxOpenConns(1) // one writer: no "database is locked" between our own connections
-	s := &Store{db: db}
+	s := &Store{db: db, dir: filepath.Dir(path)}
 	if err := s.migrate(steps); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("opening %s: %w", path, err)
@@ -136,12 +167,12 @@ func (s *Store) migrate(steps []Step) error {
 
 // FillDisk makes every later write fail as on a full disk, for tests of what a full disk looks like from outside
 // the manager. SQLite's own SQLITE_FULL is ErrDiskFull just the same (store_test.go).
-func (s *Store) FillDisk() { s.full.Store(true) }
+func (s *Store) FillDisk() { s.fill.Store(true) }
 
 // noRoom is what a write meets once FillDisk was called: the error the system gives on a full disk.
 func (s *Store) noRoom() error {
-	if s.full.Load() {
-		return written(&os.PathError{Op: "write", Path: "manager.db-wal", Err: syscall.ENOSPC})
+	if s.fill.Load() {
+		return written(&os.PathError{Op: "write", Path: "manager.db-wal", Err: syscall.ENOSPC}, s.dir)
 	}
 	return nil
 }
@@ -153,13 +184,13 @@ func (s *Store) tx(ctx context.Context, fn func(*sql.Tx) error) error {
 	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return written(err)
+		return written(err, s.dir)
 	}
 	if err := fn(tx); err != nil {
 		_ = tx.Rollback()
-		return written(err)
+		return written(err, s.dir)
 	}
-	return written(tx.Commit())
+	return written(tx.Commit(), s.dir)
 }
 
 // Steps lists setup's steps in order, with their state.
@@ -300,5 +331,5 @@ func (s *Store) SeeSession(ctx context.Context, tokenHash []byte, at time.Time) 
 		return err
 	}
 	_, err := s.db.ExecContext(ctx, `UPDATE setup_session SET last_seen = ? WHERE token_hash = ?`, at.UnixMilli(), tokenHash)
-	return written(err)
+	return written(err, s.dir)
 }

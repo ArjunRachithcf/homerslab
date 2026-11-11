@@ -36,3 +36,30 @@ func TestAFullDiskIsErrDiskFull(t *testing.T) {
 		t.Errorf("reading on a full disk: %v", err)
 	}
 }
+
+// Where ENOSPC meets fsync, ftruncate or the shared-memory file, SQLite says only "disk I/O error"; then the disk is
+// full if the folder has next to no room left.
+func TestAnIOErrorOnADiskWithNoRoomIsErrDiskFull(t *testing.T) {
+	testenv.Isolate(t)
+	const fsync, truncate, shmSize = 10 | 4<<8, 10 | 6<<8, 10 | 19<<8 // SQLITE_IOERR_FSYNC, _TRUNCATE, _SHMSIZE
+	room := func(n uint64) func() (uint64, bool) { return func() (uint64, bool) { return n, true } }
+	unknown := func() (uint64, bool) { return 0, false }
+	for _, c := range []struct {
+		code int
+		free func() (uint64, bool)
+		want bool
+	}{
+		{13, room(1 << 40), true}, // SQLITE_FULL, whatever statfs says
+		{fsync, room(0), true},
+		{truncate, room(4096), true},
+		{shmSize, room(1 << 20), true},
+		{fsync, room(1 << 30), false}, // an I/O error with room to spare is something else
+		{fsync, unknown, false},
+		{5, room(0), false}, // SQLITE_BUSY
+	} {
+		if got := full(c.code, c.free); got != c.want {
+			n, _ := c.free()
+			t.Errorf("code %#x with %d bytes free: full = %v, want %v", c.code, n, got, c.want)
+		}
+	}
+}

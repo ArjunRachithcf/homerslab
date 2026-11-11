@@ -249,7 +249,8 @@ func TestAnswersRefuseControlAndBidiCharacters(t *testing.T) {
 	b := newPrimary(t).claimed()
 	b.mustAnswer("welcome", nil)
 	hidden := []string{"\x1b[2J\x1b[31m", "\x07", "\x00", "\x7f", "a\tb", "a\nb", "\u0085", "\u009b31m",
-		"\u202a", "\u202b", "\u202c", "\u202d", "\u202e", "\u2066", "\u2067", "\u2068", "\u2069"}
+		"\u202a", "\u202b", "\u202c", "\u202d", "\u202e", "\u2066", "\u2067", "\u2068", "\u2069",
+		"\u200e", "\u200f", "\u061c", "\u200b", "\u2060", "\ufeff", "\u2028", "\u2029"}
 	for _, h := range hidden {
 		r := b.answer("you", map[string]string{"name": "Inês" + h + "evil", "mail": "ines@example.org"})
 		if r.Code != http.StatusBadRequest || !strings.Contains(string(r.Body), `"name":"hidden-characters"`) {
@@ -267,8 +268,10 @@ func TestAnswersRefuseControlAndBidiCharacters(t *testing.T) {
 			t.Errorf("a household name with %q: %d %s, want 400 hidden-characters", h, r.Code, r.Body)
 		}
 	}
-	// Letters, marks and right-to-left scripts are names like any other.
-	for _, name := range []string{"Zoë Ångström-Ñúñez", "مريم", "אסתר", "李小龍", "Đặng Thị"} {
+	// Letters, marks and right-to-left scripts are names like any other, and so are the joiners Persian, Indic scripts
+	// and emoji need.
+	for _, name := range []string{"Zoë Ångström-Ñúñez", "مريم", "אסתר", "李小龍", "Đặng Thị",
+		"خانه\u200cی ما", "The \U0001f468\u200d\U0001f469\u200d\U0001f467 household"} { // ZWNJ in Persian, ZWJ in an emoji
 		b.mustAnswer("household", map[string]string{"name": name})
 	}
 }

@@ -68,8 +68,7 @@ func New(c Config) (*Manager, error) {
 		c.Now = time.Now
 	}
 	if c.Elapsed == nil {
-		start := time.Now()
-		c.Elapsed = func() time.Duration { return time.Since(start) } // monotonic: time.Now carries that reading
+		c.Elapsed = elapsed()
 	}
 	if c.LAN == nil {
 		c.LAN = lan.Cached(lan.Current, 5*time.Second)
@@ -160,14 +159,9 @@ func (m *Manager) newLink(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusConflict, err.Error())
 		return
 	}
-	if errors.Is(err, store.ErrDiskFull) {
-		// Only root and the manager's user reach the control socket, so its answer may name the folder.
-		m.log.Error("making a link", "err", err)
-		writeJSON(w, http.StatusInsufficientStorage, map[string]string{"error": "disk-full", "folder": filepath.Dir(m.cfg.DB)})
-		return
-	}
 	if err != nil {
-		m.internal(w, "making a link", err)
+		// Only root and the manager's user reach the control socket, so its answer may name the database's folder.
+		m.fault(w, "making a link", err, map[string]string{"folder": filepath.Dir(m.cfg.DB)})
 		return
 	}
 	// The key rides in the fragment, which browsers never send: it stays out of logs and Referer headers.
@@ -232,13 +226,20 @@ func (m *Manager) putStep(w http.ResponseWriter, r *http.Request) {
 }
 
 // internal answers an error the request can't help: 507 disk-full when the disk under the database is full, else 500.
-func (m *Manager) internal(w http.ResponseWriter, what string, err error) {
+func (m *Manager) internal(w http.ResponseWriter, what string, err error) { m.fault(w, what, err, nil) }
+
+// fault is internal, with more to say when the disk is full.
+func (m *Manager) fault(w http.ResponseWriter, what string, err error, onFullDisk map[string]string) {
 	m.log.Error(what, "err", err)
-	if errors.Is(err, store.ErrDiskFull) {
-		fail(w, http.StatusInsufficientStorage, "disk-full")
+	if !errors.Is(err, store.ErrDiskFull) {
+		fail(w, http.StatusInternalServerError, "internal")
 		return
 	}
-	fail(w, http.StatusInternalServerError, "internal")
+	body := map[string]string{"error": "disk-full"}
+	for k, v := range onFullDisk {
+		body[k] = v
+	}
+	writeJSON(w, http.StatusInsufficientStorage, body)
 }
 
 func notFound(w http.ResponseWriter, _ *http.Request) { fail(w, http.StatusNotFound, "not-found") }
