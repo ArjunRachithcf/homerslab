@@ -36,6 +36,10 @@ MemoryDenyWriteExecute=yes
 SystemCallArchitectures=native
 SystemCallFilter=@system-service
 SystemCallErrorNumber=EPERM
+# It parses the compose files it is sent as root: at most one core and 512 MB, far above what it uses (tens of MB,
+# one read at a time), so a hostile file costs the agent a restart, not the machine.
+MemoryMax=512M
+CPUQuota=100%
 
 [Install]
 WantedBy=multi-user.target

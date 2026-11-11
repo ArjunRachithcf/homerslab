@@ -2,6 +2,9 @@ package catalog
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/binary"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -25,6 +28,7 @@ func Load(fsys fs.FS) (*Catalog, error) {
 	if err := decode(fsys, "catalog.yaml", &c); err != nil {
 		return nil, err
 	}
+	catalogFile, _ := fs.ReadFile(fsys, "catalog.yaml")
 	if c.ID == "" || c.Name == "" || c.Publisher == "" {
 		return nil, errors.New("catalog.yaml: id, name and publisher are required")
 	}
@@ -47,6 +51,8 @@ func Load(fsys fs.FS) (*Catalog, error) {
 		if err != nil {
 			return nil, fmt.Errorf("app %s: %w", d.Name(), err)
 		}
+		manifest, _ := fs.ReadFile(fsys, path.Join("apps", d.Name(), "app.yaml"))
+		a.Digest = digest([]byte(c.ID), catalogFile, manifest, a.Compose)
 		c.Apps = append(c.Apps, a)
 	}
 	slices.SortFunc(c.Apps, func(a, b App) int { return strings.Compare(a.ID, b.ID) })
@@ -62,6 +68,16 @@ func (c *Catalog) App(id string) (App, bool) {
 	return c.Apps[i], true
 }
 
+// digest is a SHA-256 of parts, each prefixed by its length so that no two sets of parts read the same.
+func digest(parts ...[]byte) string {
+	h := sha256.New()
+	for _, p := range parts {
+		_ = binary.Write(h, binary.BigEndian, uint64(len(p)))
+		h.Write(p)
+	}
+	return "sha256:" + hex.EncodeToString(h.Sum(nil))
+}
+
 // decode reads one YAML file strictly: a field the schema doesn't know is an error.
 func decode(fsys fs.FS, name string, v any) error {
 	b, err := fs.ReadFile(fsys, name)
@@ -72,6 +88,10 @@ func decode(fsys fs.FS, name string, v any) error {
 	dec.KnownFields(true)
 	if err := dec.Decode(v); err != nil && !errors.Is(err, io.EOF) {
 		return fmt.Errorf("%s: %w", name, err)
+	}
+	var more yaml.Node
+	if err := dec.Decode(&more); !errors.Is(err, io.EOF) {
+		return fmt.Errorf("%s: one document only", name)
 	}
 	return nil
 }

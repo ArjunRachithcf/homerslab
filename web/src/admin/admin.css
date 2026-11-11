@@ -29,7 +29,8 @@
 .plan-card { display: grid; gap: 14px; }
 .plan-card .card-title { margin: 0; }
 .plan-card .lines { list-style: none; margin: 0; padding: 0; }
-.plan-card .plan-id, .stepup-bound .plan-id { white-space: normal; overflow-wrap: anywhere; }
+/* a plan's id is one word: it moves to its own line whole, never breaking after "p-" */
+.plan-card .plan-id, .stepup-bound .plan-id, .plan-meta .plan-id { display: inline-block; max-width: 100%; white-space: nowrap; overflow-x: auto; vertical-align: bottom; }
 .a-warnings { margin-bottom: 12px; }
 .a-warnings .notice-body > b { display: block; }
 .icon-md { width: 20px; height: 20px; }

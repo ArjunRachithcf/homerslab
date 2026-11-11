@@ -65,7 +65,10 @@ func TestTheLoaderReadsEveryFieldOfTheManifest(t *testing.T) {
 	if !strings.HasPrefix(string(got.Compose), "services:") {
 		t.Errorf("its compose file: %q", got.Compose)
 	}
-	got.Compose = nil
+	if !strings.HasPrefix(got.Digest, "sha256:") {
+		t.Errorf("its digest: %q", got.Digest)
+	}
+	got.Compose, got.Digest = nil, "" // TestADefinitionsDigestCoversEveryFileItIsMadeOf
 	if !reflect.DeepEqual(got, want) {
 		g, _ := json.MarshalIndent(got, "", " ")
 		w, _ := json.MarshalIndent(want, "", " ")
@@ -120,52 +123,53 @@ func TestTheLoaderRefusesADefinitionOutsideTheSchema(t *testing.T) {
 		edit func(fstest.MapFS)
 		says string
 	}{
-		"an unknown field":            {replace(everything, "tier: verified", "tier: verified\nprivileged: true"), "privileged"},
-		"no id":                       {replace(everything, "id: everything\n", ""), "id is required"},
-		"an id that isn't its folder": {replace(everything, "id: everything", "id: other"), "folder"},
-		"a name with capitals":        {replace(everything, "name: everything", "name: Everything"), "names.name"},
-		"no name":                     {replace(everything, "name: Everything\n", ""), "name is required"},
-		"no description":              {replace(everything, "description: An app that uses every field of the manifest.\n", ""), "description is required"},
-		"an unknown category":         {replace(everything, "category: photos", "category: games"), "category"},
-		"an unknown tier":             {replace(everything, "tier: verified", "tier: gold"), "tier"},
-		"no icon file":                {remove("apps/everything/icon.svg"), "icon.svg"},
-		"no screenshot file":          {remove("apps/everything/screenshots/one.png"), "screenshots/one.png"},
-		"a path out of its folder":    {replace(everything, "icon: icon.svg", "icon: ../vendor/icon.svg"), "icon"},
-		"no version":                  {replace(everything, "app: v1.2.3", "app: \"\""), "versions.app"},
-		"an image without digests":    {replace(everything, "      digests:\n", "      digests: {}\n      x:\n"), "x"},
-		"a digest that isn't one":     {replace(everything, "arm64: sha256:2222", "arm64: latest2222"), "digest"},
-		"an unknown engine":           {replace(everything, "        podman:", "        lxc:"), "engine"},
-		"an unknown architecture":     {replace(everything, "          arm64:", "          riscv:"), "architecture"},
-		"one service pinned twice":    {replace(everything, "    - service: web\n", "    - service: web\n      digests: {docker: {x86_64: sha256:3333333333333333333333333333333333333333333333333333333333333333}}\n    - service: web\n"), "twice"},
-		"no sign-in method":           {replace(everything, "  - method: oidc\n    redirectUris: [/auth/callback, app.everything:///callback]\n    scopes: [openid, email, profile]\n  - method: ldap\n    attributes: [uid, mail]\n  - method: guard\n", "  []\n"), "signIn"},
-		"an unknown sign-in method":   {replace(everything, "method: ldap", "method: saml"), "signIn"},
-		"a sign-in method twice":      {replace(everything, "method: ldap", "method: oidc"), "signIn"},
-		"a name for the sign-in":      {replace(everything, "  name: everything\n", "  name: auth\n"), "reserved (platform)"},
-		"a name for Admin":            {replace(everything, "  name: everything\n", "  name: admin\n"), "reserved (platform)"},
-		"a name for Home":             {replace(everything, "  name: everything\n", "  name: home\n"), "reserved (platform)"},
-		"NetBird's validation name":   {replace(everything, "  name: everything\n", "  name: validation\n"), "reserved (mesh)"},
-		"the web's name":              {replace(everything, "  name: everything\n", "  name: www\n"), "reserved (web)"},
-		"mail's name":                 {replace(everything, "  name: everything\n", "  name: mail\n"), "reserved (mail)"},
-		"mail clients' setup name":    {replace(everything, "  name: everything\n", "  name: autodiscover\n"), "reserved (mail)"},
-		"mail's policy name":          {replace(everything, "  name: everything\n", "  name: mta-sts\n"), "reserved (mail)"},
-		"a DNS service name":          {replace(everything, "  name: everything\n", "  name: _dmarc\n"), "reserved (dns)"},
-		"no port for its name":        {replace(everything, "  port: 8080\n", ""), "names.port"},
-		"an exposure that isn't mesh": {replace(everything, "exposure: mesh", "exposure: public"), "exposure"},
-		"an unknown audience":         {replace(everything, "default: adults", "default: neighbours"), "audience"},
-		"data with no path or dump":   {replace(everything, "{what: The library, service: web, path: /data}", "{what: The library, service: web}"), "data"},
-		"data not backed up, no why":  {replace(everything, ", why: They are made again from the library", ""), "why"},
-		"a secret with no name":       {replace(everything, "name: db-password, ", ""), "secrets"},
-		"no health check":             {replace(everything, "health:\n  - service: web\n    http: {port: 8080, path: /health}\n  - {service: web, compose: true}\n", "health: []\n"), "health"},
-		"no memory":                   {replace(everything, "memoryMiB: 2048", "memoryMiB: 0"), "memoryMiB"},
-		"an unknown GPU need":         {replace(everything, "need: optional", "need: maybe"), "gpu"},
-		"an unknown GPU maker":        {replace(everything, "vendors: [nvidia, intel]", "vendors: [nvidia, voodoo]"), "gpu"},
-		"an unknown extra":            {replace(everything, "kind: capability", "kind: privileged"), "extras"},
-		"an extra with no reason":     {replace(everything, ", why: It finds the TVs at home", ""), "extras"},
-		"no compose file":             {remove("apps/everything/compose.yaml"), "compose.yaml"},
-		"a host app with compose":     {func(m fstest.MapFS) { m["apps/vendor/compose.yaml"] = &fstest.MapFile{Data: []byte("services: {}")} }, "compose.yaml"},
-		"a host app with no package":  {replace("apps/vendor/app.yaml", "      package: vendor-server\n", ""), "host"},
-		"a host app with no packages": {replace("apps/vendor/app.yaml", "  packages:\n    - distros: [fedora]\n      repository: https://downloads.example.com/repo/rpm/\n      key: https://downloads.example.com/key.asc\n      package: vendor-server\n", "  packages: []\n"), "host: at least"},
-		"no catalog file":             {remove("catalog.yaml"), "catalog.yaml"},
+		"an unknown field":              {replace(everything, "tier: verified", "tier: verified\nprivileged: true"), "privileged"},
+		"no id":                         {replace(everything, "id: everything\n", ""), "id is required"},
+		"an id that isn't its folder":   {replace(everything, "id: everything", "id: other"), "folder"},
+		"a name with capitals":          {replace(everything, "name: everything", "name: Everything"), "names.name"},
+		"no name":                       {replace(everything, "name: Everything\n", ""), "name is required"},
+		"no description":                {replace(everything, "description: An app that uses every field of the manifest.\n", ""), "description is required"},
+		"an unknown category":           {replace(everything, "category: photos", "category: games"), "category"},
+		"an unknown tier":               {replace(everything, "tier: verified", "tier: gold"), "tier"},
+		"no icon file":                  {remove("apps/everything/icon.svg"), "icon.svg"},
+		"no screenshot file":            {remove("apps/everything/screenshots/one.png"), "screenshots/one.png"},
+		"a path out of its folder":      {replace(everything, "icon: icon.svg", "icon: ../vendor/icon.svg"), "icon"},
+		"no version":                    {replace(everything, "app: v1.2.3", "app: \"\""), "versions.app"},
+		"an image without digests":      {replace(everything, "      digests:\n", "      digests: {}\n      x:\n"), "x"},
+		"a digest that isn't one":       {replace(everything, "arm64: sha256:2222", "arm64: latest2222"), "digest"},
+		"an unknown engine":             {replace(everything, "        podman:", "        lxc:"), "engine"},
+		"an unknown architecture":       {replace(everything, "          arm64:", "          riscv:"), "architecture"},
+		"one service pinned twice":      {replace(everything, "    - service: web\n", "    - service: web\n      digests: {docker: {x86_64: sha256:3333333333333333333333333333333333333333333333333333333333333333}}\n    - service: web\n"), "twice"},
+		"no sign-in method":             {replace(everything, "  - method: oidc\n    redirectUris: [/auth/callback, app.everything:///callback]\n    scopes: [openid, email, profile]\n  - method: ldap\n    attributes: [uid, mail]\n  - method: guard\n", "  []\n"), "signIn"},
+		"an unknown sign-in method":     {replace(everything, "method: ldap", "method: saml"), "signIn"},
+		"a sign-in method twice":        {replace(everything, "method: ldap", "method: oidc"), "signIn"},
+		"a name for the sign-in":        {replace(everything, "  name: everything\n", "  name: auth\n"), "reserved (platform)"},
+		"a name for Admin":              {replace(everything, "  name: everything\n", "  name: admin\n"), "reserved (platform)"},
+		"a name for Home":               {replace(everything, "  name: everything\n", "  name: home\n"), "reserved (platform)"},
+		"NetBird's validation name":     {replace(everything, "  name: everything\n", "  name: validation\n"), "reserved (mesh)"},
+		"the web's name":                {replace(everything, "  name: everything\n", "  name: www\n"), "reserved (web)"},
+		"mail's name":                   {replace(everything, "  name: everything\n", "  name: mail\n"), "reserved (mail)"},
+		"mail clients' setup name":      {replace(everything, "  name: everything\n", "  name: autodiscover\n"), "reserved (mail)"},
+		"mail's policy name":            {replace(everything, "  name: everything\n", "  name: mta-sts\n"), "reserved (mail)"},
+		"a DNS service name":            {replace(everything, "  name: everything\n", "  name: _dmarc\n"), "reserved (dns)"},
+		"no port for its name":          {replace(everything, "  port: 8080\n", ""), "names.port"},
+		"an exposure that isn't mesh":   {replace(everything, "exposure: mesh", "exposure: public"), "exposure"},
+		"an unknown audience":           {replace(everything, "default: adults", "default: neighbours"), "audience"},
+		"data with no path or dump":     {replace(everything, "{what: The library, service: web, path: /data}", "{what: The library, service: web}"), "data"},
+		"data not backed up, no why":    {replace(everything, ", why: They are made again from the library", ""), "why"},
+		"a secret with no name":         {replace(everything, "name: db-password, ", ""), "secrets"},
+		"no health check":               {replace(everything, "health:\n  - service: web\n    http: {port: 8080, path: /health}\n  - {service: web, compose: true}\n", "health: []\n"), "health"},
+		"no memory":                     {replace(everything, "memoryMiB: 2048", "memoryMiB: 0"), "memoryMiB"},
+		"an unknown GPU need":           {replace(everything, "need: optional", "need: maybe"), "gpu"},
+		"an unknown GPU maker":          {replace(everything, "vendors: [nvidia, intel]", "vendors: [nvidia, voodoo]"), "gpu"},
+		"an unknown extra":              {replace(everything, "kind: capability", "kind: privileged"), "extras"},
+		"an extra with no reason":       {replace(everything, ", why: It finds the TVs at home", ""), "extras"},
+		"no compose file":               {remove("apps/everything/compose.yaml"), "compose.yaml"},
+		"a host app with compose":       {func(m fstest.MapFS) { m["apps/vendor/compose.yaml"] = &fstest.MapFile{Data: []byte("services: {}")} }, "compose.yaml"},
+		"a host app with no package":    {replace("apps/vendor/app.yaml", "      package: vendor-server\n", ""), "host"},
+		"a host app with no packages":   {replace("apps/vendor/app.yaml", "  packages:\n    - distros: [fedora]\n      repository: https://downloads.example.com/repo/rpm/\n      key: https://downloads.example.com/key.asc\n      package: vendor-server\n", "  packages: []\n"), "host: at least"},
+		"a second manifest in app.yaml": {func(m fstest.MapFS) { m[everything].Data = append(m[everything].Data, []byte("---\nid: other\n")...) }, "one document"},
+		"no catalog file":               {remove("catalog.yaml"), "catalog.yaml"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			_, err := catalog.Load(fixture(t, c.edit))
@@ -176,5 +180,36 @@ func TestTheLoaderRefusesADefinitionOutsideTheSchema(t *testing.T) {
 				t.Errorf("%v, want it to name %q", err, c.says)
 			}
 		})
+	}
+}
+
+// A definition's digest covers its manifest, its compose file and its catalog, so a plan can say exactly what it
+// was made from.
+func TestADefinitionsDigestCoversEveryFileItIsMadeOf(t *testing.T) {
+	testenv.Isolate(t)
+	digest := func(edit func(fstest.MapFS)) string {
+		t.Helper()
+		c, err := catalog.Load(fixture(t, edit))
+		if err != nil {
+			t.Fatal(err)
+		}
+		a, _ := c.App("everything")
+		return a.Digest
+	}
+	first := digest(func(fstest.MapFS) {})
+	if !strings.HasPrefix(first, "sha256:") || len(first) != len("sha256:")+64 {
+		t.Fatalf("digest %q", first)
+	}
+	if again := digest(func(fstest.MapFS) {}); again != first {
+		t.Errorf("the same files gave %s, then %s", first, again)
+	}
+	for name, edit := range map[string]func(fstest.MapFS){
+		"the compose file's environment": replace("apps/everything/compose.yaml", "    image:", "    environment: {TZ: UTC}\n    image:"),
+		"the manifest":                   replace(everything, "notes: The first version in the catalog.", "notes: Another note."),
+		"the catalog":                    replace("catalog.yaml", "name: The test catalog", "name: Another name"),
+	} {
+		if d := digest(edit); d == first {
+			t.Errorf("a change to %s kept the digest", name)
+		}
 	}
 }

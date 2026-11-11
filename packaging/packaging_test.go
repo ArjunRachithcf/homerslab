@@ -72,7 +72,9 @@ func TestTheManagerRunsUnprivilegedAndTheAgentAsRoot(t *testing.T) {
 		"ProtectKernelTunables": "yes", "ProtectControlGroups": "yes", "RestrictSUIDSGID": "yes",
 		"CapabilityBoundingSet": "CAP_CHOWN CAP_DAC_READ_SEARCH", "RestrictAddressFamilies": "AF_UNIX",
 		"PrivateNetwork": "yes", "SystemCallFilter": "@system-service", "SystemCallErrorNumber": "EPERM",
-		"MemoryDenyWriteExecute": "yes", "LockPersonality": "yes"} {
+		"MemoryDenyWriteExecute": "yes", "LockPersonality": "yes",
+		// It parses compose files as root: a file it is sent can't take the machine with it.
+		"MemoryMax": "512M", "CPUQuota": "100%"} {
 		if got := agent[k]; len(got) != 1 || got[0] != want {
 			t.Errorf("the agent's %s = %v, want %s", k, got, want)
 		}

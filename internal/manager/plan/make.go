@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"regexp"
 	"slices"
 	"strings"
 	"time"
@@ -28,6 +29,9 @@ const (
 	restoreTest = "week"
 )
 
+// pinned is an image named by its digest.
+var pinned = regexp.MustCompile(`@sha256:[0-9a-f]{64}$`)
+
 // creates is what the identity provider gets for each sign-in method.
 var creates = map[catalog.SignInMethod]string{catalog.OIDC: "oidc-client", catalog.LDAP: "ldap-access", catalog.Guard: "guard"}
 
@@ -48,7 +52,7 @@ func Make(d catalog.App, from From, p engine.Project, h Household, made time.Tim
 	host, why := name(d.Names.Name, h)
 	pl := Plan{
 		Kind:     "install",
-		App:      App{ID: d.ID, Name: d.Name, Purpose: d.Purpose, Version: d.Versions.App, Tier: d.Tier, Catalog: from.ID, Publisher: from.Publisher},
+		App:      App{ID: d.ID, Name: d.Name, Purpose: d.Purpose, Version: d.Versions.App, Tier: d.Tier, Catalog: from.ID, Publisher: from.Publisher, Definition: d.Digest},
 		Name:     Name{Host: host + "." + h.Domain, Meshes: orEmpty(h.Meshes), Exposure: d.Names.Exposure, PublicAllowed: d.Names.Public},
 		Audience: Audience{Default: d.Audience.Default, People: audience(d.Audience.Default, h.People), KidView: d.Audience.KidView},
 		SignIn:   SignIn{Method: method, Provider: h.Provider, Creates: creates[method]},
@@ -141,7 +145,7 @@ func placement(d catalog.App, p engine.Project, n Node) ([]Service, error) {
 		if !ok {
 			return nil, fmt.Errorf("%w: the compose file runs %s, which the manifest doesn't pin", ErrDefinition, s.Name)
 		}
-		if !strings.Contains(s.Image, "@sha256:") {
+		if !pinned.MatchString(s.Image) {
 			return nil, fmt.Errorf("%w: %s's image %s isn't pinned by digest", ErrDefinition, s.Name, s.Image)
 		}
 		delete(pins, s.Name)
@@ -194,8 +198,8 @@ func backups(data []catalog.Data) Backups {
 	return b
 }
 
-// resources checks what the app needs against what the primary has: its memory less what the household's apps
-// take, the free space for apps' data, its GPUs, and a build of every image for its engine and architecture.
+// resources checks what the app needs against what the primary has: the memory available now, and never more than
+// its memory less what the household's apps take, the free space for apps' data, its GPUs, and a build of every image for its engine and architecture.
 func resources(r catalog.Resources, h Household, services []Service) Resources {
 	f := h.Primary.Facts
 	out := Resources{
@@ -206,6 +210,10 @@ func resources(r catalog.Resources, h Household, services []Service) Resources {
 	}
 	for _, a := range h.Installed {
 		out.Memory.FreeBytes -= min(out.Memory.FreeBytes, mib(a.MemoryMiB))
+	}
+	// What the kernel says is available now, when it says: what the memory the apps take leaves is the most there is.
+	if f.MemoryAvailableBytes > 0 {
+		out.Memory.FreeBytes = min(out.Memory.FreeBytes, f.MemoryAvailableBytes)
 	}
 	if out.Memory.FreeBytes < out.Memory.NeedsBytes {
 		out.Warnings = append(out.Warnings, Warning{Kind: "memory", NeedsBytes: out.Memory.NeedsBytes, FreeBytes: out.Memory.FreeBytes})

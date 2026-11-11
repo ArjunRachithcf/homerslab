@@ -47,6 +47,9 @@ type App struct {
 
 	// Compose is the app's plain compose file; nil for a host app.
 	Compose []byte `yaml:"-" json:"-"`
+	// Digest is a SHA-256 of what the definition is made of: its catalog's id and catalog.yaml, its app.yaml and its
+	// compose file ("sha256:<hex>").
+	Digest string `yaml:"-" json:"digest"`
 }
 
 // Tier is how deeply an app is integrated (ADR 0009).

@@ -4,7 +4,10 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/ArjunRachithcf/homerslab/internal/engine"
 	"github.com/ArjunRachithcf/homerslab/internal/engine/compose"
@@ -99,4 +102,57 @@ func TestAMalformedProjectSaysWhyWithoutTheAgentsPaths(t *testing.T) {
 			t.Errorf("the error names the agent's own folder: %v", err)
 		}
 	}
+}
+
+// laughs is a billion-laughs file: n aliases on each of levels levels, a few hundred bytes that expand to n^levels.
+func laughs(n, levels int) string {
+	var b strings.Builder
+	b.WriteString("x-l0: &l0 [\"lol\"]\n")
+	for l := 1; l <= levels; l++ {
+		fmt.Fprintf(&b, "x-l%d: &l%d [", l, l)
+		for i := range n {
+			if i > 0 {
+				b.WriteString(",")
+			}
+			fmt.Fprintf(&b, "*l%d", l-1)
+		}
+		b.WriteString("]\n")
+	}
+	b.WriteString("services: {web: {image: x}}\n")
+	return b.String()
+}
+
+// The agent reads as root, so a small file can't make it work hard: aliases, deep nesting and big files are refused
+// before anything parses them in full.
+func TestAProjectThatWouldExhaustTheAgentIsRefusedFast(t *testing.T) {
+	testenv.Isolate(t)
+	r := reader(t)
+	for name, file := range map[string]string{
+		"a billion laughs":   laughs(9, 9),
+		"one alias":          "x-a: &a {image: x}\nservices: {web: *a}\n",
+		"nesting 9000 deep":  "services: {web: {image: x, x-deep: " + strings.Repeat("[", 9000) + strings.Repeat("]", 9000) + "}}\n",
+		"nesting 65 deep":    "services: {web: {image: x, x-deep: " + strings.Repeat("[", 62) + strings.Repeat("]", 62) + "}}\n",
+		"a file over 64 KiB": "services: {web: {image: x}}\n" + strings.Repeat("# padding\n", 7000),
+		"a hidden profile":   "services: {web: {image: x@sha256:" + strings.Repeat("1", 64) + "}, extra: {image: 'evil:latest', profiles: [later]}}\n",
+		"block nesting":      "services:\n  web:\n    image: x\n    x-deep:\n" + deepBlock(70),
+	} {
+		start := time.Now()
+		_, err := r.Read(context.Background(), "homerslab-example", []byte(file))
+		if took := time.Since(start); !errors.Is(err, compose.ErrNotPlain) || took > 100*time.Millisecond {
+			t.Errorf("%s: %v after %s, want ErrNotPlain within 100 ms", name, err, took)
+		}
+	}
+	// 64 levels is still a plain file.
+	ok := "services: {web: {image: x, x-deep: " + strings.Repeat("[", 60) + strings.Repeat("]", 60) + "}}\n"
+	if _, err := r.Read(context.Background(), "homerslab-example", []byte(ok)); err != nil {
+		t.Errorf("nesting 64 deep: %v", err)
+	}
+}
+
+func deepBlock(n int) string {
+	var b strings.Builder
+	for i := range n {
+		fmt.Fprintf(&b, "%s- \n", strings.Repeat("  ", i+3))
+	}
+	return b.String()
 }

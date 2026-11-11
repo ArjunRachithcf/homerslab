@@ -1,5 +1,5 @@
 {
-  "id": "p-e8928a3ecb6dd59c9cf277694b213bb7",
+  "id": "p-0438f7911a8f4029a88e32a74f0c1555",
   "kind": "install",
   "madeAt": "2026-11-10T13:30:00Z",
   "app": {
@@ -9,7 +9,8 @@
     "version": "v3.3.5",
     "tier": "verified",
     "catalog": "official",
-    "publisher": "HomersLab"
+    "publisher": "HomersLab",
+    "definition": "sha256:055302683ab949f9333bed35de7554b87f1f34e8183e1b33ad7a5cc1c7a08fe2"
   },
   "name": {
     "host": "photos.ferreira.family",
@@ -99,7 +100,7 @@
   "resources": {
     "memory": {
       "needsBytes": 6442450944,
-      "freeBytes": 33554432000
+      "freeBytes": 20480000000
     },
     "disk": {
       "needsBytes": 10737418240,

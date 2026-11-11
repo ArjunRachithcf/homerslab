@@ -34,9 +34,16 @@ func TestTheComposeSDKIsPinnedWithItsOwnModules(t *testing.T) {
 			t.Errorf("%s is %s, but compose %s is built against %s", m, selected[m], sdk, requires[m])
 		}
 	}
-	// GHSA-rp3h-jf77-q9p4, GHSA-pg57-6jwg-q645 and GHSA-7jxh-36q5-gcqv are fixed in containerd 2.4.1.
-	if c := selected["github.com/containerd/containerd/v2"]; c == "" || semver.Compare(c, "v2.4.1") < 0 {
-		t.Errorf("github.com/containerd/containerd/v2 is %q, want v2.4.1 or later", c)
+	// Modules the SDK brings, held past known advisories.
+	for m, least := range map[string]string{
+		"github.com/containerd/containerd/v2": "v2.4.1",  // GHSA-rp3h-jf77-q9p4, GHSA-pg57-6jwg-q645, GHSA-7jxh-36q5-gcqv
+		"github.com/klauspost/compress":       "v1.20.2", // GO-2026-6865
+		"golang.org/x/net":                    "v0.62.0", // GO-2026-6860, GO-2026-6866
+		"golang.org/x/text":                   "v0.3.8",  // GHSA-69ch-w2m2-3vjp
+	} {
+		if v := selected[m]; v == "" || semver.Compare(v, least) < 0 {
+			t.Errorf("%s is %q, want %s or later", m, v, least)
+		}
 	}
 }
 

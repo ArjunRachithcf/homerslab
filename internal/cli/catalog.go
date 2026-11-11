@@ -233,11 +233,11 @@ func planWords(w io.Writer, p plan.Plan) {
 	case r.GPU.Need == "required":
 		gpu = "GPU: none it can use"
 	}
-	row("Resources", fmt.Sprintf("Memory: needs %s, %s free. %s. %s.", gb(r.Memory.NeedsBytes), gb(r.Memory.FreeBytes), disk, gpu))
+	row("Resources", fmt.Sprintf("Memory: needs %s, %s available. %s. %s.", gb(r.Memory.NeedsBytes), gb(r.Memory.FreeBytes), disk, gpu))
 	for _, x := range r.Warnings {
 		switch x.Kind {
 		case "memory":
-			row("Warning", fmt.Sprintf("Not enough memory: %s needs %s, %s has %s free.", p.App.Name, gb(x.NeedsBytes), p.Placement.Node, gb(x.FreeBytes)))
+			row("Warning", fmt.Sprintf("Not enough memory: %s needs %s, %s has %s available.", p.App.Name, gb(x.NeedsBytes), p.Placement.Node, gb(x.FreeBytes)))
 		case "disk":
 			if x.Unknown {
 				row("Warning", fmt.Sprintf("%s can't say how much disk is free; %s needs %s.", p.Placement.Node, p.App.Name, DiskSize(x.NeedsBytes)))

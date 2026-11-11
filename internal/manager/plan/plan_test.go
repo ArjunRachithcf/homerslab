@@ -27,7 +27,7 @@ var (
 func definition() catalog.App {
 	no := false
 	return catalog.App{
-		ID: "pictures", Name: "Pictures", Purpose: "Photos", Category: "photos", Tier: catalog.Verified,
+		ID: "pictures", Name: "Pictures", Purpose: "Photos", Category: "photos", Tier: catalog.Verified, Digest: "sha256:" + strings.Repeat("d", 64),
 		Versions: catalog.Versions{App: "v2.0.1", Images: []catalog.Image{
 			{Service: "web", Digests: map[catalog.Engine]map[catalog.Arch]string{
 				catalog.Docker: {catalog.X86_64: digestA, catalog.ARM64: digestB},
@@ -70,7 +70,7 @@ func household() plan.Household {
 		Name: "The Ferreira household", Domain: "ferreira.family", Meshes: []string{"NetBird"}, Provider: authentik(),
 		People: []plan.Person{{Name: "Inês Ferreira", Role: "admin"}, {Name: "Rui Ferreira", Role: "adult"}, {Name: "Tomás Ferreira", Role: "kid"}},
 		Primary: plan.Node{Engine: catalog.Docker, Facts: node.Facts{
-			Hostname: "study-pc", Architecture: "x86_64", MemoryBytes: 32 * gib, TPM: node.TPM{Present: true, Version: "2.0"},
+			Hostname: "study-pc", Architecture: "x86_64", MemoryBytes: 32 * gib, MemoryAvailableBytes: 20 * gib, TPM: node.TPM{Present: true, Version: "2.0"},
 			GPUs:  []node.GPU{{Vendor: "NVIDIA", Model: "GeForce RTX 3060", PCIID: "10de:2504"}},
 			Space: &node.Space{Path: "/var/lib/homerslab", FreeBytes: 400e9, SizeBytes: 1e12},
 		}},
@@ -103,7 +103,7 @@ func TestAPlanSaysWhatInstallingDoes(t *testing.T) {
 			t.Errorf("%s:\n got %+v\nwant %+v", what, got, want)
 		}
 	}
-	check("app", p.App, plan.App{ID: "pictures", Name: "Pictures", Purpose: "Photos", Version: "v2.0.1", Tier: catalog.Verified, Catalog: "official", Publisher: "HomersLab"})
+	check("app", p.App, plan.App{ID: "pictures", Name: "Pictures", Purpose: "Photos", Version: "v2.0.1", Tier: catalog.Verified, Catalog: "official", Publisher: "HomersLab", Definition: "sha256:" + strings.Repeat("d", 64)})
 	check("name", p.Name, plan.Name{Host: "pictures.ferreira.family", Meshes: []string{"NetBird"}, Exposure: "mesh", PublicAllowed: true})
 	check("audience", p.Audience, plan.Audience{Default: "adults", People: []plan.Person{{Name: "Inês Ferreira", Role: "admin"}, {Name: "Rui Ferreira", Role: "adult"}}})
 	check("sign-in", p.SignIn, plan.SignIn{Method: catalog.OIDC, Provider: authentik(), Creates: "oidc-client"})
@@ -115,7 +115,7 @@ func TestAPlanSaysWhatInstallingDoes(t *testing.T) {
 	check("extras", p.Extras, []plan.Extra{{ID: "render", Kind: "device", Service: "web", Device: "/dev/dri/renderD128", Why: "Smaller videos", Optional: true}})
 	check("secrets", p.Secrets, []plan.Secret{{Name: "db-password", What: "the database password", SealedTo: "tpm"}})
 	check("resources", p.Resources, plan.Resources{
-		Memory: plan.Amount{NeedsBytes: 2 * gib, FreeBytes: 32 * gib}, Disk: plan.Amount{NeedsBytes: 10 * gib, FreeBytes: 400e9, Grows: "the library"},
+		Memory: plan.Amount{NeedsBytes: 2 * gib, FreeBytes: 20 * gib}, Disk: plan.Amount{NeedsBytes: 10 * gib, FreeBytes: 400e9, Grows: "the library"},
 		GPU: plan.GPU{Need: "none", Usable: []string{}}, Warnings: []plan.Warning{}})
 	if !p.Risky {
 		t.Error("a plan with an extra needs the passkey")
@@ -178,6 +178,8 @@ func TestTheResourcesCheckWarnsWhenThePrimaryLacks(t *testing.T) {
 	}{
 		"enough of everything": {func(*catalog.App, *plan.Household) {}, []plan.Warning{}, []string{}},
 		"not enough memory": {func(d *catalog.App, h *plan.Household) { h.Primary.Facts.MemoryBytes = 1 * gib },
+			[]plan.Warning{{Kind: "memory", NeedsBytes: 2 * gib, FreeBytes: 1 * gib}}, []string{}},
+		"memory in use": {func(d *catalog.App, h *plan.Household) { h.Primary.Facts.MemoryAvailableBytes = 1 * gib },
 			[]plan.Warning{{Kind: "memory", NeedsBytes: 2 * gib, FreeBytes: 1 * gib}}, []string{}},
 		"memory the household's apps already take": {func(d *catalog.App, h *plan.Household) {
 			h.Installed = []plan.Installed{{App: "films", MemoryMiB: 31 * 1024}}
@@ -253,6 +255,7 @@ func TestAPlanIsKnownByWhatItSays(t *testing.T) {
 			h.Installed = []plan.Installed{{App: "films", MemoryMiB: 31 * 1024}}
 		},
 		"a newer version":      func(d *catalog.App, _ *plan.Household) { d.Versions.App = "v2.0.2" },
+		"another definition":   func(d *catalog.App, _ *plan.Household) { d.Digest = "sha256:" + strings.Repeat("e", 64) },
 		"another default view": func(d *catalog.App, _ *plan.Household) { d.Audience.Default = "everyone" },
 	} {
 		d, h := definition(), household()
@@ -273,7 +276,12 @@ func TestADefinitionWhoseComposeFileDisagreesMakesNoPlan(t *testing.T) {
 	missing.Services = missing.Services[1:]
 	unpinned := project()
 	unpinned.Services[0].Image = "postgres:16"
-	for name, p := range map[string]engine.Project{"a service the manifest doesn't pin": extra, "a pin with no service": missing, "an image by tag": unpinned} {
+	short := project()
+	short.Services[0].Image = "postgres:16@sha256:abc"
+	trailing := project()
+	trailing.Services[0].Image = "postgres:16@sha256:" + strings.Repeat("b", 64) + "-or-latest"
+	for name, p := range map[string]engine.Project{"a service the manifest doesn't pin": extra, "a pin with no service": missing,
+		"an image by tag": unpinned, "a digest too short": short, "a digest and more": trailing} {
 		if _, err := plan.Make(definition(), official, p, household(), made); !errors.Is(err, plan.ErrDefinition) {
 			t.Errorf("%s: %v, want ErrDefinition", name, err)
 		}

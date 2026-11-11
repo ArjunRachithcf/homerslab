@@ -17,6 +17,9 @@ import (
 // v5.5–v5.7, with an output or error stream set, NewComposeService wraps the original client and drops the dry-run one.
 var ErrDryRunWithStreams = errors.New("a dry run with an output or error stream would apply its changes for real")
 
+// NoEngine is an engine endpoint where nothing listens: for a reader, which needs no engine and must reach none.
+const NoEngine = "unix:///nonexistent"
+
 // options are the SDK service options this adapter uses.
 type options struct {
 	dryRun   bool

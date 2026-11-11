@@ -1,5 +1,5 @@
 {
-  "id": "p-8430f91677a10c34007a959c1b36fcbc",
+  "id": "p-8c125cd2f9f38dfdd95c9c0ba3cd2663",
   "kind": "install",
   "madeAt": "2026-11-10T13:30:00Z",
   "app": {
@@ -9,7 +9,8 @@
     "version": "2.8.10",
     "tier": "community",
     "catalog": "official",
-    "publisher": "HomersLab"
+    "publisher": "HomersLab",
+    "definition": "sha256:282b9a5ebce1dbc485c504b99e864c25e9147343bf63001957c38d84df437880"
   },
   "name": {
     "host": "pdf.ferreira.family",
@@ -60,7 +61,7 @@
   "resources": {
     "memory": {
       "needsBytes": 134217728,
-      "freeBytes": 33554432000
+      "freeBytes": 20480000000
     },
     "disk": {
       "needsBytes": 1073741824,

@@ -59,6 +59,8 @@ type primary struct {
 	hosts []string
 	port  int
 	web   fs.FS
+	// catalog is the Store's catalog; the official one when nil.
+	catalog fs.FS
 	// lanReads counts how often the manager asks for the machine's LAN address.
 	lanReads atomic.Int32
 	steps    map[string]setup.Handler
@@ -116,6 +118,7 @@ func (p *primary) open() {
 		Hosts:      func() []string { return p.hosts },
 		LANAddress: func() netip.Addr { p.lanReads.Add(1); return netip.MustParseAddr("192.168.1.20") },
 		Web:        p.web,
+		Catalog:    p.catalog,
 		Steps:      p.steps,
 	})
 	if err != nil {

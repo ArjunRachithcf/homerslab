@@ -24,7 +24,7 @@ var projectName = regexp.MustCompile(`^` + engine.ProjectPrefix + `[a-z0-9]([a-z
 // The ways a read is refused.
 var (
 	ErrNotOurs  = errors.New("not one of HomersLab's compose project names (homerslab-<app>)")
-	ErrNotPlain = errors.New("an app's compose file is one plain file: no include, extends, env_file or label_file")
+	ErrNotPlain = errors.New("an app's compose file is one plain file: no include, extends, env_file, label_file, profiles or aliases, nested at most 64 deep, at most 64 KiB")
 )
 
 // readerOptions make the reader's service: a dry run with no stream, so nothing it is asked can change an engine.
@@ -87,15 +87,23 @@ func (r *Reader) Read(ctx context.Context, name string, file []byte) (engine.Pro
 	return out, nil
 }
 
-// plain refuses a compose file that would make the loader read another file, in any of its YAML documents: the
-// loader merges them all.
+// The bounds of a plain compose file: the agent parses it as root, so a small file must not make it work hard.
+const (
+	maxFileBytes = 64 << 10
+	maxDepth     = 64
+)
+
+// plain refuses a compose file that would make the loader read another file or work hard, in any of its YAML
+// documents (the loader merges them all): one over 64 KiB, an alias (whose expansion a few hundred bytes can make
+// billions of nodes), nesting deeper than 64, or a service the default run leaves out (profiles), which the plan
+// wouldn't see.
 func plain(file []byte) error {
+	if len(file) > maxFileBytes {
+		return fmt.Errorf("%w: over %d KiB", ErrNotPlain, maxFileBytes>>10)
+	}
 	dec := yaml.NewDecoder(bytes.NewReader(file))
 	for {
-		var doc struct {
-			Include  any                       `yaml:"include"`
-			Services map[string]map[string]any `yaml:"services"`
-		}
+		var doc yaml.Node
 		err := dec.Decode(&doc)
 		if errors.Is(err, io.EOF) {
 			return nil
@@ -103,15 +111,57 @@ func plain(file []byte) error {
 		if err != nil {
 			return fmt.Errorf("the compose file: %w", err)
 		}
-		if doc.Include != nil {
-			return ErrNotPlain
+		if err := walk(&doc, 0); err != nil {
+			return err
 		}
-		for _, s := range doc.Services {
-			for _, k := range []string{"extends", "env_file", "label_file"} {
-				if _, ok := s[k]; ok {
-					return ErrNotPlain
+		root := &doc
+		if root.Kind == yaml.DocumentNode && len(root.Content) == 1 {
+			root = root.Content[0]
+		}
+		if v := value(root, "include"); v != nil {
+			return fmt.Errorf("%w: include", ErrNotPlain)
+		}
+		services := value(root, "services")
+		if services == nil || services.Kind != yaml.MappingNode {
+			continue
+		}
+		for i := 1; i < len(services.Content); i += 2 {
+			for _, k := range []string{"extends", "env_file", "label_file", "profiles"} {
+				if value(services.Content[i], k) != nil {
+					return fmt.Errorf("%w: %s", ErrNotPlain, k)
 				}
 			}
 		}
 	}
+}
+
+// walk refuses aliases and nesting deeper than maxDepth.
+func walk(n *yaml.Node, depth int) error {
+	if n.Kind == yaml.AliasNode {
+		return fmt.Errorf("%w: an alias (*%s)", ErrNotPlain, n.Value)
+	}
+	if n.Kind == yaml.MappingNode || n.Kind == yaml.SequenceNode {
+		if depth++; depth > maxDepth {
+			return fmt.Errorf("%w: nested deeper than %d", ErrNotPlain, maxDepth)
+		}
+	}
+	for _, c := range n.Content {
+		if err := walk(c, depth); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// value is a mapping node's value for key, or nil.
+func value(m *yaml.Node, key string) *yaml.Node {
+	if m.Kind != yaml.MappingNode {
+		return nil
+	}
+	for i := 0; i+1 < len(m.Content); i += 2 {
+		if m.Content[i].Value == key {
+			return m.Content[i+1]
+		}
+	}
+	return nil
 }

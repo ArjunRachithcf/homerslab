@@ -10,9 +10,12 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"testing/fstest"
+	"time"
 
+	"github.com/ArjunRachithcf/homerslab/internal/agent"
 	"github.com/ArjunRachithcf/homerslab/internal/agent/agenttest"
 	"github.com/ArjunRachithcf/homerslab/internal/engine"
 	"github.com/ArjunRachithcf/homerslab/internal/node"
@@ -49,10 +52,11 @@ func TestAgentReportsTheNodesFacts(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := node.Facts{
-		Hostname:     "study-pc",
-		Distro:       node.Distro{ID: "fedora", Name: "Fedora Linux", Version: "43", Pretty: "Fedora Linux 43 (Workstation Edition)"},
-		Architecture: "x86_64",
-		MemoryBytes:  32768000 * 1024,
+		Hostname:             "study-pc",
+		Distro:               node.Distro{ID: "fedora", Name: "Fedora Linux", Version: "43", Pretty: "Fedora Linux 43 (Workstation Edition)"},
+		Architecture:         "x86_64",
+		MemoryBytes:          32768000 * 1024,
+		MemoryAvailableBytes: 20000000 * 1024,
 		Disks: []node.Disk{
 			{Name: "nvme0n1", Model: "Samsung SSD 980 PRO 1TB", SizeBytes: 1953525168 * 512},
 			{Name: "sda", Model: "WDC WD40EFRX-68N", SizeBytes: 7814037168 * 512, Rotational: true},
@@ -206,5 +210,58 @@ func TestAgentReadsAComposeProjectForPlanning(t *testing.T) {
 		if resp.StatusCode != c.status || e.Error != c.code {
 			t.Errorf("%s: %d %s, want %d %s", name, resp.StatusCode, body, c.status, c.code)
 		}
+	}
+}
+
+// One read at a time, with a deadline: a read that doesn't finish in time is answered, and the next waits for the
+// slot instead of piling up beside it.
+func TestAgentReadsOneProjectAtATimeWithADeadline(t *testing.T) {
+	testenv.Isolate(t)
+	release := make(chan struct{})
+	agent.StuckReads(t, 50*time.Millisecond, release)
+	sock := agenttest.Start(t, agenttest.Primary())
+	body := map[string]string{"project": "homerslab-web", "compose": "services: {web: {image: x}}\n"}
+
+	start := time.Now()
+	resp, out := post(t, sock, "/v1/projects/read", body)
+	if resp.StatusCode != http.StatusGatewayTimeout || !strings.Contains(string(out), "read-timeout") || time.Since(start) > time.Second {
+		t.Errorf("a stuck read: %d %s after %s, want 504 read-timeout at its deadline", resp.StatusCode, out, time.Since(start))
+	}
+	if resp, out := post(t, sock, "/v1/projects/read", body); resp.StatusCode != http.StatusServiceUnavailable || !strings.Contains(string(out), "busy") {
+		t.Errorf("a read while one is stuck: %d %s, want 503 busy", resp.StatusCode, out)
+	}
+	close(release)
+	time.Sleep(20 * time.Millisecond)
+	if resp, out := post(t, sock, "/v1/projects/read", body); resp.StatusCode != http.StatusOK {
+		t.Errorf("once the stuck read ends: %d %s", resp.StatusCode, out)
+	}
+}
+
+// Reading a compose project never reaches a container engine, wherever the environment points.
+func TestAgentReadsWithoutReachingAnEngine(t *testing.T) {
+	testenv.Isolate(t)
+	engineSock := filepath.Join(t.TempDir(), "docker.sock")
+	ln, err := net.Listen("unix", engineSock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	var reached atomic.Int32
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			reached.Add(1)
+			c.Close()
+		}
+	}()
+	t.Setenv("DOCKER_HOST", "unix://"+engineSock)
+	sock := agenttest.Start(t, agenttest.Primary())
+	resp, out := post(t, sock, "/v1/projects/read", map[string]string{"project": "homerslab-web", "compose": "services: {web: {image: x}}\n"})
+	time.Sleep(50 * time.Millisecond)
+	if resp.StatusCode != http.StatusOK || reached.Load() != 0 {
+		t.Errorf("%d %s; the engine was reached %d times, want none", resp.StatusCode, out, reached.Load())
 	}
 }

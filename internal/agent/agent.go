@@ -16,6 +16,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/ArjunRachithcf/homerslab/internal/engine"
 	"github.com/ArjunRachithcf/homerslab/internal/engine/compose"
 	"github.com/ArjunRachithcf/homerslab/internal/node"
 )
@@ -48,21 +49,7 @@ func Handler(sysroot Sysroot, log *slog.Logger) http.Handler {
 		}
 		writeJSON(w, http.StatusOK, facts)
 	})
-	// The reader is made once it works: a failure to make it is tried again on the next request.
-	var mu sync.Mutex
-	var made *compose.Reader
-	reader := func() (*compose.Reader, error) {
-		mu.Lock()
-		defer mu.Unlock()
-		if made != nil {
-			return made, nil
-		}
-		r, err := compose.NewReader("")
-		if err == nil {
-			made = r
-		}
-		return r, err
-	}
+	reads := newReads()
 	mux.HandleFunc("POST /v1/projects/read", func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
 			Project string `json:"project"`
@@ -72,20 +59,22 @@ func Handler(sysroot Sysroot, log *slog.Logger) http.Handler {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "not-json"})
 			return
 		}
-		rd, err := reader()
-		if err != nil {
-			log.Error("making the compose reader", "err", err)
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "no-reader"})
-			return
-		}
-		p, err := rd.Read(r.Context(), req.Project, []byte(req.Compose))
+		p, err := reads.read(r.Context(), req.Project, []byte(req.Compose))
 		switch {
 		case err == nil:
 			writeJSON(w, http.StatusOK, p)
+		case errors.Is(err, errBusy):
+			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "busy"})
+		case errors.Is(err, errReadTimeout):
+			log.Warn("a compose read ran out of time", "project", req.Project)
+			writeJSON(w, http.StatusGatewayTimeout, map[string]string{"error": "read-timeout"})
+		case errors.Is(err, errNoReader):
+			log.Error("making the compose reader", "err", err)
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "no-reader"})
 		case errors.Is(err, compose.ErrNotOurs):
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "not-ours"})
 		case errors.Is(err, compose.ErrNotPlain):
-			writeJSON(w, http.StatusUnprocessableEntity, map[string]string{"error": "not-plain"})
+			writeJSON(w, http.StatusUnprocessableEntity, map[string]string{"error": "not-plain", "detail": err.Error()})
 		default:
 			writeJSON(w, http.StatusUnprocessableEntity, map[string]string{"error": "invalid-compose", "detail": err.Error()})
 		}
@@ -153,4 +142,77 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(v)
+}
+
+// readDeadline is how long a compose read may take before the agent answers that it couldn't.
+var readDeadline = 10 * time.Second
+
+type projectReader interface {
+	Read(ctx context.Context, name string, file []byte) (engine.Project, error)
+}
+
+// newProjectReader makes the compose reader. It points at no engine: reading needs none, and the agent never lets a
+// read reach one.
+var newProjectReader = func() (projectReader, error) { return compose.NewReader(compose.NoEngine) }
+
+var (
+	errBusy        = errors.New("another compose read is running")
+	errReadTimeout = errors.New("the compose read ran out of time")
+	errNoReader    = errors.New("no compose reader")
+)
+
+// reads runs compose reads one at a time, each with a deadline. A read past its deadline is answered, but keeps its
+// slot until the SDK returns, so stuck reads never pile up beside each other. The plain-file rules
+// (engine/compose) bound how long a read can take; the agent's unit bounds its memory and CPU.
+type reads struct {
+	slot chan struct{}
+	mu   sync.Mutex
+	r    projectReader
+}
+
+func newReads() *reads { return &reads{slot: make(chan struct{}, 1)} }
+
+// reader is made once it works: a failure to make it is tried again on the next read.
+func (rs *reads) reader() (projectReader, error) {
+	rs.mu.Lock()
+	defer rs.mu.Unlock()
+	if rs.r == nil {
+		r, err := newProjectReader()
+		if err != nil {
+			return nil, fmt.Errorf("%w: %w", errNoReader, err)
+		}
+		rs.r = r
+	}
+	return rs.r, nil
+}
+
+func (rs *reads) read(ctx context.Context, name string, file []byte) (engine.Project, error) {
+	ctx, cancel := context.WithTimeout(ctx, readDeadline)
+	defer cancel()
+	select {
+	case rs.slot <- struct{}{}:
+	case <-ctx.Done():
+		return engine.Project{}, errBusy
+	}
+	rd, err := rs.reader()
+	if err != nil {
+		<-rs.slot
+		return engine.Project{}, err
+	}
+	type result struct {
+		p   engine.Project
+		err error
+	}
+	done := make(chan result, 1)
+	go func() {
+		defer func() { <-rs.slot }()
+		p, err := rd.Read(ctx, name, file)
+		done <- result{p, err}
+	}()
+	select {
+	case res := <-done:
+		return res.p, res.err
+	case <-ctx.Done():
+		return engine.Project{}, errReadTimeout
+	}
 }

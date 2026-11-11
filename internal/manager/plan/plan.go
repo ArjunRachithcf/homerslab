@@ -39,6 +39,8 @@ type App struct {
 	Tier      catalog.Tier `json:"tier"`
 	Catalog   string       `json:"catalog"`
 	Publisher string       `json:"publisher"`
+	// Definition is the digest of what the app's definition is made of (catalog.App.Digest): the plan is made from it.
+	Definition string `json:"definition"`
 }
 
 // Name is the app's name on the household's main domain, and who can reach it. When the name the app asked for is
@@ -131,7 +133,7 @@ type Resources struct {
 	Warnings []Warning `json:"warnings"`
 }
 
-// Amount is what the app needs and what the node has free, in bytes.
+// Amount is what the app needs and what the node has free, in bytes: for memory, what is available now.
 type Amount struct {
 	NeedsBytes uint64 `json:"needsBytes"`
 	FreeBytes  uint64 `json:"freeBytes"`

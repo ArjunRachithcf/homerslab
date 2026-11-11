@@ -20,9 +20,11 @@ type Facts struct {
 	Distro       Distro `json:"distro"`
 	Architecture string `json:"architecture"` // x86_64 or arm64
 	MemoryBytes  uint64 `json:"memoryBytes"`
-	Disks        []Disk `json:"disks"`
-	TPM          TPM    `json:"tpm"`
-	GPUs         []GPU  `json:"gpus"`
+	// MemoryAvailableBytes is what the kernel says new work can have now (MemAvailable); 0 when it doesn't say.
+	MemoryAvailableBytes uint64 `json:"memoryAvailableBytes,omitempty"`
+	Disks                []Disk `json:"disks"`
+	TPM                  TPM    `json:"tpm"`
+	GPUs                 []GPU  `json:"gpus"`
 	// Space is the filesystem that holds apps' data, when the system root can say.
 	Space *Space `json:"space,omitempty"`
 }
@@ -82,7 +84,7 @@ func Read(root fs.FS) (Facts, error) {
 	if f.Distro, err = distro(root); err != nil {
 		return f, err
 	}
-	if f.MemoryBytes, err = memory(root); err != nil {
+	if f.MemoryBytes, f.MemoryAvailableBytes, err = memory(root); err != nil {
 		return f, err
 	}
 	if f.Disks, err = disks(root); err != nil {
@@ -142,21 +144,32 @@ func distro(root fs.FS) (Distro, error) {
 	return Distro{ID: kv["ID"], Name: kv["NAME"], Version: kv["VERSION_ID"], Pretty: kv["PRETTY_NAME"]}, nil
 }
 
-func memory(root fs.FS) (uint64, error) {
+func memory(root fs.FS) (total, available uint64, err error) {
 	b, err := fs.ReadFile(root, "proc/meminfo")
 	if err != nil {
-		return 0, fmt.Errorf("reading meminfo: %w", err)
+		return 0, 0, fmt.Errorf("reading meminfo: %w", err)
+	}
+	kb := func(rest string) (uint64, error) {
+		return strconv.ParseUint(strings.TrimSuffix(strings.TrimSpace(rest), " kB"), 10, 64)
 	}
 	for line := range strings.SplitSeq(string(b), "\n") {
 		if rest, ok := strings.CutPrefix(line, "MemTotal:"); ok {
-			kb, err := strconv.ParseUint(strings.TrimSuffix(strings.TrimSpace(rest), " kB"), 10, 64)
+			n, err := kb(rest)
 			if err != nil {
-				return 0, fmt.Errorf("meminfo's MemTotal: %w", err)
+				return 0, 0, fmt.Errorf("meminfo's MemTotal: %w", err)
 			}
-			return kb * 1024, nil
+			total = n * 1024
+		}
+		if rest, ok := strings.CutPrefix(line, "MemAvailable:"); ok {
+			if n, err := kb(rest); err == nil {
+				available = n * 1024
+			}
 		}
 	}
-	return 0, errors.New("meminfo has no MemTotal")
+	if total == 0 {
+		return 0, 0, errors.New("meminfo has no MemTotal")
+	}
+	return total, available, nil
 }
 
 // architecture names the machine's architecture as HomersLab does: x86_64 or arm64.

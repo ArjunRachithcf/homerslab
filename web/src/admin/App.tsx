@@ -375,7 +375,7 @@ function PlanSections({ p }: { p: Plan }) {
           </div>
         )}
         <div className="group lead-sm">
-          <Row lead="memory" title={t('plan.memory')} sub={amount(r.memory, memory)} trail={enough('memory')} />
+          <Row lead="memory" title={t('plan.memory')} sub={t('plan.amount.memory', { needs: memory(r.memory.needsBytes), free: memory(r.memory.freeBytes) })} trail={enough('memory')} />
           <Row lead="disk" title={t('plan.disk')} sub={amount(r.disk, disk)} trail={enough('disk')} />
           <Row lead="gpu" title={t('plan.gpu')} sub={gpu} trail={r.gpu.need === 'none' ? undefined : enough('gpu')} />
         </div>

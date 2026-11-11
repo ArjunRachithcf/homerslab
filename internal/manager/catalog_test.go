@@ -5,12 +5,15 @@ import (
 	"database/sql"
 	"encoding/json"
 	"flag"
+	"io/fs"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"testing/fstest"
 
+	"github.com/ArjunRachithcf/homerslab/catalogs"
 	"github.com/ArjunRachithcf/homerslab/internal/testenv"
 )
 
@@ -173,8 +176,18 @@ func TestAPlanIsImmutableAndKnownByItsID(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer db.Close()
-	if _, err := db.Exec(`UPDATE plan SET body = '{}' WHERE id = ?`, one.ID); err == nil {
-		t.Error("the database let a plan change")
+	for name, q := range map[string]string{
+		"an update":            `UPDATE plan SET body = '{}' WHERE id = ?`,
+		"a delete":             `DELETE FROM plan WHERE id = ?`,
+		"an insert or replace": `INSERT OR REPLACE INTO plan (id, app, body, made_at) VALUES (?, 'immich', '{}', 0)`,
+		"a replace":            `REPLACE INTO plan (id, app, body, made_at) VALUES (?, 'immich', '{}', 0)`,
+	} {
+		if _, err := db.Exec(q, one.ID); err == nil {
+			t.Errorf("the database let %s change a plan", name)
+		}
+	}
+	if r := p.admin("GET", "/api/v1/plans/"+one.ID, nil); !bytes.Equal(r.Body, first.Body) {
+		t.Errorf("the first plan changed: %s", r.Body)
 	}
 }
 
@@ -273,5 +286,45 @@ func TestTheControlSocketSaysWhereAdminIs(t *testing.T) {
 	r.json(t, &a)
 	if r.Code != http.StatusOK || a.URL != "http://127.0.0.1:7021/store" {
 		t.Errorf("%d %s", r.Code, r.Body)
+	}
+}
+
+// A plan's id covers the definition it was made from: the same app with another compose file is another plan.
+func TestAPlanCoversItsDefinition(t *testing.T) {
+	testenv.Isolate(t)
+	plans := map[string]string{}
+	for name, compose := range map[string]func([]byte) []byte{
+		"as shipped": func(b []byte) []byte { return b },
+		"another time zone": func(b []byte) []byte {
+			return bytes.Replace(b, []byte("    security_opt:"), []byte("    environment: {TZ: UTC}\n    security_opt:"), 1)
+		},
+	} {
+		cat := fstest.MapFS{}
+		err := fs.WalkDir(catalogs.Official(), ".", func(p string, d fs.DirEntry, err error) error {
+			if err != nil || d.IsDir() {
+				return err
+			}
+			b, err := fs.ReadFile(catalogs.Official(), p)
+			if p == "apps/bentopdf/compose.yaml" {
+				b = compose(b)
+			}
+			cat[p] = &fstest.MapFile{Data: b}
+			return err
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		p := newPrimary(t, func(p *primary) { p.catalog = cat })
+		p.setUp()
+		var made madePlan
+		r := p.admin("POST", "/api/v1/plans", map[string]string{"app": "bentopdf"})
+		r.json(t, &made)
+		if r.Code != http.StatusCreated {
+			t.Fatalf("%s: %d %s", name, r.Code, r.Body)
+		}
+		plans[name] = made.ID
+	}
+	if plans["as shipped"] == plans["another time zone"] {
+		t.Errorf("a changed compose file kept plan %s", plans["as shipped"])
 	}
 }
