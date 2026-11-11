@@ -12,6 +12,12 @@ import (
 // unit reads a systemd unit's [Service] settings.
 func unit(t *testing.T, name string) map[string][]string {
 	t.Helper()
+	return section(t, name, "[Service]")
+}
+
+// section reads one section of a systemd unit.
+func section(t *testing.T, name, want string) map[string][]string {
+	t.Helper()
 	f, err := os.Open("systemd/" + name)
 	if err != nil {
 		t.Fatal(err)
@@ -26,7 +32,7 @@ func unit(t *testing.T, name string) map[string][]string {
 			section = line
 			continue
 		}
-		if k, v, ok := strings.Cut(line, "="); ok && section == "[Service]" && !strings.HasPrefix(line, "#") {
+		if k, v, ok := strings.Cut(line, "="); ok && section == want && !strings.HasPrefix(line, "#") {
 			out[k] = append(out[k], v)
 		}
 	}
@@ -75,7 +81,7 @@ func TestTheManagerRunsUnprivilegedAndTheAgentAsRoot(t *testing.T) {
 		"CapabilityBoundingSet": "CAP_CHOWN CAP_DAC_READ_SEARCH CAP_NET_ADMIN CAP_SETUID CAP_SETGID", "RestrictAddressFamilies": "AF_UNIX AF_NETLINK AF_INET AF_INET6",
 		"PrivateNetwork": "no", "SystemCallFilter": "@system-service", "SystemCallErrorNumber": "EPERM",
 		"MemoryDenyWriteExecute": "yes", "LockPersonality": "yes", "StateDirectory": "homerslab-agent",
-		"StateDirectoryMode": "0700", "Type": "notify", "NotifyAccess": "main", "ReadWritePaths": "/etc/systemd/system/netbird.service.d", "ExecStartPre": "+/usr/bin/systemd-creds setup", "TimeoutStartSec": "30s",
+		"StateDirectoryMode": "0700", "Type": "notify", "NotifyAccess": "main", "ExecStartPre": "+/usr/bin/systemd-creds setup", "TimeoutStartSec": "30s",
 		// It parses compose files as root: a file it is sent can't take the machine with it.
 		"MemoryMax": "512M", "CPUQuota": "100%",
 		// A read's child killed for memory is the child's end, not the agent's.

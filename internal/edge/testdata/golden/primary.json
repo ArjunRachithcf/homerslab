@@ -1,0 +1,88 @@
+{
+  "admin": {
+    "config": {
+      "persist": false
+    },
+    "listen": "unix//run/homerslab-edge/admin.sock|0660"
+  },
+  "apps": {
+    "http": {
+      "servers": {
+        "mesh": {
+          "automatic_https": {
+            "disable": true
+          },
+          "listen": [
+            "100.88.7.186:443"
+          ],
+          "protocols": [
+            "h1",
+            "h2"
+          ],
+          "routes": [
+            {
+              "handle": [
+                {
+                  "handler": "reverse_proxy",
+                  "upstreams": [
+                    {
+                      "dial": "unix//run/homerslab-admin.sock"
+                    }
+                  ]
+                }
+              ],
+              "match": [
+                {
+                  "host": [
+                    "admin.example.test"
+                  ]
+                }
+              ],
+              "terminal": true
+            },
+            {
+              "handle": [
+                {
+                  "handler": "static_response",
+                  "status_code": 421
+                }
+              ]
+            }
+          ],
+          "tls_connection_policies": [
+            {
+              "certificate_selection": {
+                "any_tag": [
+                  "example.test"
+                ]
+              },
+              "match": {
+                "sni": [
+                  "*.example.test"
+                ]
+              }
+            }
+          ]
+        }
+      }
+    },
+    "tls": {
+      "certificates": {
+        "load_files": [
+          {
+            "certificate": "/run/credentials/homerslab-edge.service/tls-example.test.crt",
+            "key": "/run/credentials/homerslab-edge.service/tls-example.test.key",
+            "tags": [
+              "example.test"
+            ]
+          }
+        ]
+      },
+      "disable_ocsp_stapling": true
+    }
+  },
+  "storage": {
+    "module": "file_system",
+    "root": "/var/lib/homerslab-edge"
+  }
+}

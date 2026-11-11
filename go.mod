@@ -6,7 +6,12 @@ require (
 	github.com/compose-spec/compose-go/v2 v2.16.2
 	github.com/docker/cli v29.9.2+incompatible
 	github.com/docker/compose/v5 v5.7.0
+	github.com/libdns/infomaniak v0.2.0
+	github.com/libdns/libdns v1.1.1
+	github.com/libdns/rfc2136 v1.0.1
 	github.com/makiuchi-d/gozxing v0.1.1
+	github.com/mholt/acmez/v3 v3.1.7
+	github.com/miekg/dns v1.1.73
 	go.yaml.in/yaml/v3 v3.0.5
 	go.yaml.in/yaml/v4 v4.0.0-rc.6
 	golang.org/x/mod v0.42.0

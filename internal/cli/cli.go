@@ -20,7 +20,6 @@ const (
 	DefaultControlSocket = "/run/homerslab/manager.sock"
 	DefaultDB            = "/var/lib/homerslab/manager.db"
 	DefaultListen        = ":7020"
-	DefaultAdminListen   = "127.0.0.1:7021"
 	DefaultSetupPort     = 7020
 	DefaultAgentState    = "/var/lib/homerslab-agent"
 	DefaultGroup         = "homerslab"
@@ -40,15 +39,16 @@ const usage = `Usage:
   homerslab agent      run the agent (as root, from homerslab-agent.service)
   homerslab manager    run the manager (unprivileged, from homerslab-manager.service)
   homerslab setup link make a one-time link to first-time setup, and show it with its QR code
-  homerslab setup secret mesh
-                       give first-time setup the mesh's token, from this machine's terminal (read from stdin,
-                       never shown)
+  homerslab setup secret mesh|dns
+                       give first-time setup the mesh's or the DNS provider's token, from this machine's terminal
+                       (read from stdin, never shown)
+  homerslab dns token  replace the DNS provider's token, from this machine's console, and renew the certificate if it
+                       is due
   homerslab node       show this primary as its agent reports it
   homerslab catalog    list the apps in the catalog
   homerslab plan APP   make an install plan for an app, and show it in plain words
   homerslab plan show ID
                        show an install plan by its id
-  homerslab admin      say where Admin opens, on this machine
   homerslab mesh owner-password
                        show the owner's password of a NetBird HomersLab set up, for its dashboard (as root)
   homerslab firewall restore
@@ -73,6 +73,8 @@ func Main(ctx context.Context, args []string, env Env) int {
 		err = showPlanByID(ctx, args[2:], env)
 	case "setup secret":
 		err = setupSecret(ctx, args[2:], env)
+	case "dns token":
+		err = dnsToken(ctx, args[2:], env)
 	case "firewall restore":
 		err = firewallRestore(ctx, args[2:], env)
 	case "mesh owner-password":
@@ -89,8 +91,6 @@ func Main(ctx context.Context, args []string, env Env) int {
 			err = showCatalog(ctx, args[1:], env)
 		case "plan":
 			err = makePlan(ctx, args[1:], env)
-		case "admin":
-			err = showAdmin(ctx, args[1:], env)
 		default:
 			fmt.Fprint(env.Stderr, usage)
 			return 2

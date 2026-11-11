@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 
@@ -57,22 +58,27 @@ func TestASecretNeverPrintsOrMarshals(t *testing.T) {
 
 func TestEveryRoleHasItsPolicyAndNothingElseIsOpen(t *testing.T) {
 	testenv.Isolate(t)
-	ps := mesh.Policies()
-	seen := map[string]bool{}
-	for _, p := range ps {
-		seen[p.From] = true
-		for _, port := range p.Ports {
-			if port != 80 && port != 443 {
-				t.Errorf("policy %s opens port %d", p.Name, port)
+	for _, household := range []int{443, 9443} {
+		ps := mesh.Policies(household)
+		seen := map[string]bool{}
+		for _, p := range ps {
+			seen[p.From] = true
+			for _, port := range p.Ports {
+				if port != 80 && port != household {
+					t.Errorf("policy %s opens port %d, with the household's port %d", p.Name, port, household)
+				}
+			}
+			if !slices.Contains(p.Ports, household) {
+				t.Errorf("policy %s doesn't open the household's port %d", p.Name, household)
+			}
+			if p.To != mesh.NodesGroup {
+				t.Errorf("policy %s reaches %s, not the nodes", p.Name, p.To)
 			}
 		}
-		if p.To != mesh.NodesGroup {
-			t.Errorf("policy %s reaches %s, not the nodes", p.Name, p.To)
-		}
-	}
-	for _, r := range mesh.Roles {
-		if !seen[mesh.RoleGroup(r)] {
-			t.Errorf("no policy for %s", r)
+		for _, r := range mesh.Roles {
+			if !seen[mesh.RoleGroup(r)] {
+				t.Errorf("no policy for %s", r)
+			}
 		}
 	}
 }

@@ -19,12 +19,13 @@ import (
 
 var rewrite = flag.Bool("rewrite-golden", false, "write the golden plans from what the manager makes")
 
-// admin is a request to Admin's listener from a browser on this machine, as Admin's own page sends it.
+// admin is a request to Admin's socket, as the edge forwards it from Admin's own page at admin.<domain>. Admin answers
+// only once the domain is chosen (withDomain).
 func (p *primary) admin(method, path string, body any, edit ...func(*http.Request)) response {
-	req := newRequest(method, path, body, thisMachine)
-	req.Host = "127.0.0.1:7021"
+	req := newRequest(method, path, body, "@")
+	req.Host = "admin.ferreira.family"
 	if method != http.MethodGet {
-		req.Header.Set("Origin", "http://127.0.0.1:7021")
+		req.Header.Set("Origin", "https://admin.ferreira.family")
 		req.Header.Set("Sec-Fetch-Site", "same-origin")
 	}
 	for _, e := range edit {
@@ -33,10 +34,26 @@ func (p *primary) admin(method, path string, body any, edit ...func(*http.Reques
 	return serve(p.m.Admin(), req)
 }
 
-// setUp walks first-time setup's built steps, so the household has a name and an admin.
+// withDomain stands in for setup's domain step, ferreira.family, which setup reaches only after the sign-in step
+// (#17): Admin answers at admin.<domain> once there is one.
+func withDomain(p *primary) {
+	p.t.Helper()
+	db, err := sql.Open("sqlite", p.db)
+	if err != nil {
+		p.t.Fatal(err)
+	}
+	defer db.Close()
+	if _, err := db.Exec(`INSERT INTO setup_answer (key, value) VALUES ('domain', 'ferreira.family')
+		ON CONFLICT (key) DO UPDATE SET value = excluded.value`); err != nil {
+		p.t.Fatal(err)
+	}
+}
+
+// setUp walks first-time setup's built steps, so the household has a name and an admin, and stands in for its domain.
 func (p *primary) setUp() {
 	p.t.Helper()
 	p.claimed().firstThree()
+	withDomain(p)
 }
 
 type catalogList struct {
@@ -53,6 +70,7 @@ type catalogList struct {
 func TestAdminBrowsesTheOfficialCatalog(t *testing.T) {
 	testenv.Isolate(t)
 	p := newPrimary(t)
+	withDomain(p)
 	r := p.admin("GET", "/api/v1/catalog", nil)
 	if r.Code != http.StatusOK {
 		t.Fatalf("%d %s", r.Code, r.Body)
@@ -132,8 +150,9 @@ func TestGoldenPlans(t *testing.T) {
 }
 
 type madePlan struct {
-	ID   string
-	Name struct{ Host string }
+	ID       string
+	Name     struct{ Host string }
+	Audience struct{ People []struct{ Name string } }
 }
 
 // A plan is immutable and known by its id: the same household gets the same plan, a change in it gives a new plan,
@@ -143,6 +162,7 @@ func TestAPlanIsImmutableAndKnownByItsID(t *testing.T) {
 	p := newPrimary(t)
 	b := p.claimed()
 	b.firstThree()
+	withDomain(p)
 
 	first := p.admin("POST", "/api/v1/plans", map[string]string{"app": "immich"})
 	if first.Code != http.StatusCreated {
@@ -160,12 +180,12 @@ func TestAPlanIsImmutableAndKnownByItsID(t *testing.T) {
 		}
 	}
 
-	b.mustAnswer("you", map[string]string{"name": "Inês Ferreira", "mail": "ines@ferreira.casa"}) // a change in the household
+	b.mustAnswer("you", map[string]string{"name": "Inês Ferreira Rocha", "mail": "ines@ferreira.family"}) // a change in the household
 	changed := p.admin("POST", "/api/v1/plans", map[string]string{"app": "immich"})
 	var two madePlan
 	changed.json(t, &two)
-	if changed.Code != http.StatusCreated || two.ID == one.ID || two.Name.Host != "photos.ferreira.casa" {
-		t.Errorf("after the household changed: %d, plan %s for %s, want a new plan for photos.ferreira.casa", changed.Code, two.ID, two.Name.Host)
+	if changed.Code != http.StatusCreated || two.ID == one.ID || len(two.Audience.People) != 1 || two.Audience.People[0].Name != "Inês Ferreira Rocha" {
+		t.Errorf("after the household changed: %d, plan %s for %+v, want a new plan", changed.Code, two.ID, two.Audience)
 	}
 	if r := p.admin("GET", "/api/v1/plans/"+one.ID, nil); !bytes.Equal(r.Body, first.Body) {
 		t.Errorf("the first plan changed: %s", r.Body)
@@ -194,6 +214,7 @@ func TestAPlanIsImmutableAndKnownByItsID(t *testing.T) {
 func TestNoPlanUntilTheHouseholdIsSetUp(t *testing.T) {
 	testenv.Isolate(t)
 	p := newPrimary(t)
+	withDomain(p)
 	if r := p.admin("POST", "/api/v1/plans", map[string]string{"app": "immich"}); r.Code != http.StatusConflict || r.errorCode(t) != "household-not-set-up" {
 		t.Errorf("before setup: %d %s, want 409 household-not-set-up", r.Code, r.Body)
 	}
@@ -217,75 +238,46 @@ func TestNoPlanUntilTheHouseholdIsSetUp(t *testing.T) {
 	}
 }
 
-// Until Admin has the household account's sign-in, its listener answers only this machine itself, by one of its
-// loopback names at Admin's port, and takes changes only as JSON from Admin's own page.
-func TestAdminAnswersOnlyThisMachine(t *testing.T) {
+// Admin takes a change only as JSON from its own page, served over HTTPS at its name; it serves its pages at their
+// addresses, and nothing of setup's.
+func TestAdminTakesChangesOnlyFromItsOwnPage(t *testing.T) {
 	testenv.Isolate(t)
 	p := newPrimary(t, withPages)
+	p.setUp()
 	plan := map[string]string{"app": "immich"}
 	for name, c := range map[string]struct {
-		method string
-		body   any
-		edit   func(*http.Request)
-		code   int
-		err    string
+		edit func(*http.Request)
+		code int
+		err  string
 	}{
-		"from the LAN":        {"GET", nil, func(r *http.Request) { r.RemoteAddr = onTheLAN + ":5000" }, http.StatusForbidden, "not-this-machine"},
-		"from the mesh":       {"GET", nil, func(r *http.Request) { r.RemoteAddr = onTheMesh + ":5000" }, http.StatusForbidden, "not-this-machine"},
-		"from a container":    {"GET", nil, func(r *http.Request) { r.RemoteAddr = aContainer + ":5000" }, http.StatusForbidden, "not-this-machine"},
-		"a rebound name":      {"GET", nil, func(r *http.Request) { r.Host = "evil.example:7021" }, http.StatusMisdirectedRequest, "wrong-host"},
-		"another port":        {"GET", nil, func(r *http.Request) { r.Host = "127.0.0.1:7020" }, http.StatusMisdirectedRequest, "wrong-host"},
-		"another site's post": {"POST", plan, func(r *http.Request) { r.Header.Set("Origin", "http://evil.example") }, http.StatusForbidden, "cross-origin"},
-		"a cross-site fetch":  {"POST", plan, func(r *http.Request) { r.Header.Set("Sec-Fetch-Site", "cross-site") }, http.StatusForbidden, "cross-origin"},
-		"a form, not JSON":    {"POST", plan, func(r *http.Request) { r.Header.Set("Content-Type", "text/plain") }, http.StatusUnsupportedMediaType, "not-json"},
-		"setup's API":         {"GET", nil, func(r *http.Request) { r.URL.Path = "/api/v1/setup" }, http.StatusNotFound, "not-found"},
-		"setup's links":       {"GET", nil, func(r *http.Request) { r.URL.Path = "/api/v1/setup/links" }, http.StatusNotFound, "not-found"},
+		"another site's post":    {func(r *http.Request) { r.Header.Set("Origin", "https://evil.example") }, http.StatusForbidden, "cross-origin"},
+		"Admin's name over HTTP": {func(r *http.Request) { r.Header.Set("Origin", "http://admin.ferreira.family") }, http.StatusForbidden, "cross-origin"},
+		"a cross-site fetch":     {func(r *http.Request) { r.Header.Set("Sec-Fetch-Site", "cross-site") }, http.StatusForbidden, "cross-origin"},
+		"a form, not JSON":       {func(r *http.Request) { r.Header.Set("Content-Type", "text/plain") }, http.StatusUnsupportedMediaType, "not-json"},
+		"another name":           {func(r *http.Request) { r.Host = "photos.ferreira.family" }, http.StatusMisdirectedRequest, "wrong-host"},
 	} {
-		path := "/api/v1/catalog"
-		if c.method == "POST" {
-			path = "/api/v1/plans"
-		}
-		r := p.admin(c.method, path, c.body, c.edit)
-		if r.Code != c.code || r.errorCode(t) != c.err {
+		if r := p.admin("POST", "/api/v1/plans", plan, c.edit); r.Code != c.code || r.errorCode(t) != c.err {
 			t.Errorf("%s: %d %s, want %d %s", name, r.Code, r.Body, c.code, c.err)
 		}
 	}
-	for _, host := range []string{"localhost:7021", "[::1]:7021"} {
-		if r := p.admin("GET", "/api/v1/catalog", nil, func(r *http.Request) { r.Host = host }); r.Code != http.StatusOK {
-			t.Errorf("Host %s: %d", host, r.Code)
+	if r := p.admin("POST", "/api/v1/plans", plan, func(r *http.Request) { r.Header.Set("Origin", "https://admin.ferreira.family:9443") }); r.Code/100 != 2 {
+		t.Errorf("from Admin's page on the public port: %d %s", r.Code, r.Body)
+	}
+	for _, path := range []string{"/", "/store", "/store/apps/immich", "/plans/p-0123"} {
+		r := p.admin("GET", path, nil)
+		if r.Code != http.StatusOK || !strings.Contains(string(r.Body), "<title>admin</title>") {
+			t.Errorf("GET %s: %d %s", path, r.Code, r.Body)
+		}
+		for _, h := range []string{"Content-Security-Policy", "X-Frame-Options", "X-Content-Type-Options", "Referrer-Policy"} {
+			if r.Header.Get(h) == "" {
+				t.Errorf("GET %s has no %s", path, h)
+			}
 		}
 	}
-	r := p.admin("GET", "/store", nil)
-	if r.Code != http.StatusOK || !strings.Contains(string(r.Body), "<title>admin</title>") {
-		t.Fatalf("GET /store: %d %s", r.Code, r.Body)
-	}
-	for _, h := range []string{"Content-Security-Policy", "X-Frame-Options", "X-Content-Type-Options", "Referrer-Policy"} {
-		if r.Header.Get(h) == "" {
-			t.Errorf("Admin's page has no %s", h)
+	for _, path := range []string{"/setup", "/api/v1/setup", "/api/v1/setup/links", "/api/v1/nodes/primary"} {
+		if r := p.admin("GET", path, nil); r.Code != http.StatusNotFound {
+			t.Errorf("Admin serves %s: %d", path, r.Code)
 		}
-	}
-	for _, path := range []string{"/store/apps/immich", "/plans/p-0123"} {
-		if r := p.admin("GET", path, nil); r.Code != http.StatusOK || !strings.Contains(string(r.Body), "<title>admin</title>") {
-			t.Errorf("GET %s: %d", path, r.Code)
-		}
-	}
-	if r := p.admin("GET", "/", nil); r.Code != http.StatusSeeOther || r.Header.Get("Location") != "/store" {
-		t.Errorf("GET /: %d %s", r.Code, r.Header.Get("Location"))
-	}
-	if r := p.admin("GET", "/setup", nil); r.Code != http.StatusNotFound {
-		t.Errorf("Admin serves setup's page: %d", r.Code)
-	}
-}
-
-// The CLI finds Admin through the control socket.
-func TestTheControlSocketSaysWhereAdminIs(t *testing.T) {
-	testenv.Isolate(t)
-	p := newPrimary(t)
-	var a struct{ URL string }
-	r := p.control("GET", "/api/v1/admin", nil)
-	r.json(t, &a)
-	if r.Code != http.StatusOK || a.URL != "http://127.0.0.1:7021/store" {
-		t.Errorf("%d %s", r.Code, r.Body)
 	}
 }
 

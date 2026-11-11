@@ -37,17 +37,26 @@ type World interface {
 	AskedForAPort(t *testing.T, m Machine) bool
 	// Resolves says whether a machine's own resolver answers a name.
 	Resolves(t *testing.T, m Machine, name string) bool
+	// Lookup is what a machine's own resolver answers for a name, asked once: its addresses, or none.
+	Lookup(t *testing.T, m Machine, name string) []netip.Addr
+	// JoinOutsider joins a machine that is in none of HomersLab's groups: a peer the household made by hand.
+	JoinOutsider(t *testing.T, m Machine) netip.Addr
 	// MeshName is a joined machine's name on the mesh; OutsideName is a name the mesh doesn't serve, from the
 	// machine's own DNS.
 	MeshName(t *testing.T, m Machine) string
 	OutsideName() string
 }
 
+// Domain is the household's domain in the suite.
+const Domain = "example.test"
+
 // Machines the suite uses.
 type Machines struct {
 	Primary Machine // a node with the client as the agent configures it
 	Second  Machine // a node whose resolver is systemd-resolved
 	Device  Machine // a person's device, with the client's own defaults
+	// Outsider is a machine on the mesh that isn't HomersLab's: in none of its groups.
+	Outsider Machine
 }
 
 // Run runs the contract against a World, and returns the adapter with HomersLab's token as the suite left it
@@ -67,17 +76,17 @@ func Run(t *testing.T, w World, ms Machines, want mesh.Report) mesh.Mesh {
 	})
 
 	t.Run("policies per role, and the mesh's own default removed where HomersLab set the mesh up", func(t *testing.T) {
-		if err := m.EnsurePolicies(ctx); err != nil {
+		if err := m.EnsurePolicies(ctx, want.Port); err != nil {
 			t.Fatal(err)
 		}
 		if err := m.RemoveDefault(ctx); err != nil {
 			t.Fatal(err)
 		}
-		checkPolicies(t, w.Policies(t))
-		if err := m.EnsurePolicies(ctx); err != nil { // again: nothing more, nothing less
+		checkPolicies(t, w.Policies(t), want.Port)
+		if err := m.EnsurePolicies(ctx, want.Port); err != nil { // again: nothing more, nothing less
 			t.Fatal(err)
 		}
-		checkPolicies(t, w.Policies(t))
+		checkPolicies(t, w.Policies(t), want.Port)
 	})
 
 	var primary netip.Addr
@@ -116,6 +125,38 @@ func Run(t *testing.T, w World, ms Machines, want mesh.Report) mesh.Mesh {
 		}
 		if w.Reaches(t, ms.Device, primary, 22) {
 			t.Error("an adult's device reaches the primary on 22, which no policy allows")
+		}
+	})
+
+	t.Run("the household's names reach the node, for HomersLab's groups only", func(t *testing.T) {
+		for range 2 { // again: nothing changes
+			if err := m.EnsureNames(ctx, Domain, primary); err != nil {
+				t.Fatal(err)
+			}
+		}
+		w.JoinOutsider(t, ms.Outsider)
+		// A client takes its zones a moment after they change: the household's machines are asked until they answer.
+		eventually := func(mc Machine, name string) []netip.Addr {
+			var got []netip.Addr
+			for range 30 {
+				if got = w.Lookup(t, mc, name); len(got) > 0 {
+					break
+				}
+				time.Sleep(300 * time.Millisecond)
+			}
+			return got
+		}
+		for _, mc := range []Machine{ms.Device, ms.Primary} {
+			if got := eventually(mc, "admin."+Domain); !slices.Equal(got, []netip.Addr{primary}) {
+				t.Errorf("%s resolves admin.%s to %v, want the primary's %v", mc, Domain, got, primary)
+			}
+			if got := eventually(mc, "photos."+Domain); !slices.Equal(got, []netip.Addr{primary}) {
+				t.Errorf("%s resolves photos.%s to %v: the wildcard should answer every name", mc, Domain, got)
+			}
+		}
+		// The outsider joined before the household's machines were asked: had the zone reached it, it would answer now.
+		if got := w.Lookup(t, ms.Outsider, "admin."+Domain); len(got) != 0 {
+			t.Errorf("a peer in none of HomersLab's groups resolves admin.%s to %v", Domain, got)
 		}
 	})
 
@@ -174,14 +215,15 @@ func Run(t *testing.T, w World, ms Machines, want mesh.Report) mesh.Mesh {
 	return m
 }
 
-// checkPolicies wants HomersLab's policies exactly, none other of its name, and none of the mesh's own default.
-func checkPolicies(t *testing.T, have map[string]mesh.Rule) {
+// checkPolicies wants HomersLab's policies for the household's port exactly, none other of its name, and none of the
+// mesh's own default.
+func checkPolicies(t *testing.T, have map[string]mesh.Rule, port int) {
 	t.Helper()
 	if _, ok := have["Default"]; ok {
 		t.Error("the mesh's Default policy is still there")
 	}
 	want := map[string]bool{}
-	for _, w := range mesh.Policies() {
+	for _, w := range mesh.Policies(port) {
 		want[w.Name] = true
 		got, ok := have[w.Name]
 		if !ok {

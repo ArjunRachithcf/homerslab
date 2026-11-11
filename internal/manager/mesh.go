@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -280,7 +281,19 @@ func (m *Manager) joinMesh(ctx context.Context, url string, t mesh.Token, keep, 
 	if err != nil {
 		return nil, err
 	}
-	if err := nb.EnsurePolicies(ctx); err != nil {
+	// The household's port, chosen once, here (ADR 0021): every URL HomersLab writes carries it from now on.
+	port := householdPort(earlier)
+	if earlier[ansPort] == "" {
+		rep, err := nb.Report(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("what the mesh can do: %w", err)
+		}
+		if rep.Port > 0 {
+			port = rep.Port
+		}
+	}
+	keep[ansPort] = strconv.Itoa(port)
+	if err := nb.EnsurePolicies(ctx, port); err != nil {
 		return nil, fmt.Errorf("the mesh's groups and policies: %w", err)
 	}
 	if bootstrapped {
@@ -345,20 +358,11 @@ func (m *Manager) putSecret(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	st, err := m.setup.Secret(r.Context(), r.PathValue("name"), body.Value)
-	switch {
-	case err == nil:
-		writeJSON(w, http.StatusOK, st)
-	case errors.Is(err, setup.ErrNotWaiting):
-		fail(w, http.StatusConflict, err.Error())
-	case errors.Is(err, mesh.ErrTokenRefused):
-		fail(w, http.StatusBadRequest, "secret-refused")
-	case errors.Is(err, mesh.ErrUnreachable):
-		fail(w, http.StatusBadGateway, "mesh-unreachable")
-	case errors.Is(err, errJoin):
-		fail(w, http.StatusBadGateway, "join-failed")
-	default:
-		m.internal(w, "taking a secret", err)
+	if err != nil {
+		m.secretFailed(w, err)
+		return
 	}
+	writeJSON(w, http.StatusOK, st)
 }
 
 // rotate replaces HomersLab's mesh token before it expires. The two overlap (#88): the old token is revoked only
@@ -437,8 +441,13 @@ func (m *Manager) checkMesh(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	if err := nb.EnsurePolicies(ctx); err != nil {
+	if err := nb.EnsurePolicies(ctx, householdPort(ans)); err != nil {
 		return err
+	}
+	if _, err := m.db.Certificate(ctx, ans[ansDomain]); err == nil && ans[ansDomain] != "" {
+		if err := m.ensureNames(ctx, ans); err != nil {
+			return err
+		}
 	}
 	conflicts, err := nb.Conflicts(ctx)
 	if err != nil {
@@ -516,10 +525,14 @@ func (m *Manager) currentToken(ctx context.Context, ans map[string]string) (mesh
 	return mesh.Token{Value: value, UserID: ans[ansTokenUser], ID: ans[ansTokenID], ExpiresAt: expires}, nil
 }
 
-// RunDue runs the scheduler's jobs that are due: so far, the mesh token's rotation and the mesh's drift check.
+// RunDue runs the scheduler's jobs that are due: so far, the mesh token's rotation, the mesh's drift check, and the
+// certificate's renewal.
 func (m *Manager) RunDue(ctx context.Context) {
 	if err := m.rotate(ctx); err != nil {
 		m.log.Error("the mesh token's rotation", "err", err)
+	}
+	if err := m.renew(ctx); err != nil {
+		m.log.Error("the certificate's renewal", "err", err)
 	}
 	if err := m.checkMesh(ctx); err != nil {
 		m.log.Error("checking the mesh", "err", err)

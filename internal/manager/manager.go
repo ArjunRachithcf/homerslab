@@ -5,7 +5,7 @@
 // It answers on three listeners:
 //   - the control socket, a Unix socket only root and the manager's own user can open, for the CLI on this machine;
 //   - the setup listener, on this machine and its LAN, for first-time setup's page, opened by a one-time link;
-//   - Admin's listener, on this machine's loopback until Admin signs people in over the mesh (#17).
+//   - Admin's socket, which only the edge opens, for admin.<main domain> over the mesh.
 package manager
 
 import (
@@ -19,12 +19,14 @@ import (
 	"net/http"
 	"net/netip"
 	"os"
+	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/ArjunRachithcf/homerslab/catalogs"
 	"github.com/ArjunRachithcf/homerslab/internal/agent"
 	"github.com/ArjunRachithcf/homerslab/internal/catalog"
+	"github.com/ArjunRachithcf/homerslab/internal/certs"
 	"github.com/ArjunRachithcf/homerslab/internal/lan"
 	"github.com/ArjunRachithcf/homerslab/internal/manager/setup"
 	"github.com/ArjunRachithcf/homerslab/internal/manager/store"
@@ -36,7 +38,6 @@ type Config struct {
 	DB          string // the database file
 	AgentSocket string // the primary's agent
 	SetupPort   int    // the setup listener's port, for the links
-	AdminPort   int    // Admin's listener's port, on loopback
 	// Local is the loopback address the setup listener answers on, for the link on this machine itself; the zero
 	// Addr when it doesn't.
 	Local netip.Addr
@@ -52,6 +53,11 @@ type Config struct {
 	Steps map[string]setup.Handler
 	// NetBird reaches NetBird's management API; the netbird package when nil.
 	NetBird NetBird
+	// Authority is the certificate authority (Let's Encrypt when its Directory is empty; its staging endpoint for
+	// rehearsals and CI), and Domains how the manager reaches it and the DNS provider: Authority through the dns and
+	// certs packages when nil.
+	Authority certs.Authority
+	Domains   Domains
 	// ScheduleEvery is how often the scheduler looks for due jobs.
 	ScheduleEvery time.Duration
 	Web           fs.FS // the built pages; surfaces.Dist() when nil
@@ -67,11 +73,13 @@ type Manager struct {
 	setup     *setup.Setup
 	agent     *agentClient
 	netbird   NetBird
+	domains   Domains
 	web       fs.FS
 	catalog   *catalog.Catalog
 	catalogFS fs.FS
 	log       *slog.Logger
 	lanClosed atomic.Bool
+	certMu    sync.Mutex // one issuance or renewal at a time
 }
 
 // New opens the manager's database.
@@ -100,6 +108,9 @@ func New(c Config) (*Manager, error) {
 	if c.NetBird == nil {
 		c.NetBird = realNetBird{}
 	}
+	if c.Authority.Directory == "" {
+		c.Authority = certs.LetsEncrypt
+	}
 	if c.ScheduleEvery == 0 {
 		c.ScheduleEvery = time.Hour
 	}
@@ -114,16 +125,21 @@ func New(c Config) (*Manager, error) {
 	if err != nil {
 		return nil, err
 	}
-	m := &Manager{cfg: c, db: db, agent: newAgentClient(c.AgentSocket), netbird: c.NetBird, web: c.Web, log: c.Log,
+	if c.Domains == nil {
+		a := c.Authority
+		a.Log = c.Log
+		c.Domains = realDomains{a: a, book: db.Book()}
+	}
+	m := &Manager{cfg: c, db: db, agent: newAgentClient(c.AgentSocket), netbird: c.NetBird, domains: c.Domains, web: c.Web, log: c.Log,
 		catalog: cat, catalogFS: c.Catalog}
-	handlers := map[string]setup.Handler{"network": m.network}
+	handlers := map[string]setup.Handler{"network": m.network, "domain": m.domain}
 	for id, h := range setup.Built {
 		handlers[id] = h
 	}
 	for id, h := range c.Steps {
 		handlers[id] = h
 	}
-	m.setup = setup.New(db, c.Now, handlers, map[string]setup.SecretHandler{"mesh": m.meshSecret})
+	m.setup = setup.New(db, c.Now, handlers, map[string]setup.SecretHandler{"mesh": m.meshSecret, "dns": m.dnsSecret})
 	answers, err := db.Answers(context.Background())
 	if err != nil {
 		db.Close()
@@ -136,7 +152,8 @@ func New(c Config) (*Manager, error) {
 // Close closes the database.
 func (m *Manager) Close() error { return m.db.Close() }
 
-// Serve answers on the setup listener, the control socket and Admin's listener until ctx ends.
+// Serve answers on the setup listener, the control socket and Admin's socket (for the edge; none when adminLn is
+// nil) until ctx ends.
 func (m *Manager) Serve(ctx context.Context, setupLn, controlLn, adminLn net.Listener) error {
 	servers := []*http.Server{
 		{Handler: m.Setup(), ReadHeaderTimeout: 10 * time.Second, ReadTimeout: 30 * time.Second,
@@ -147,6 +164,9 @@ func (m *Manager) Serve(ctx context.Context, setupLn, controlLn, adminLn net.Lis
 			WriteTimeout: agent.ReadDeadline + 30*time.Second, IdleTimeout: 2 * time.Minute},
 	}
 	listeners := []net.Listener{setupLn, controlLn, adminLn}
+	if adminLn == nil {
+		servers, listeners = servers[:2], listeners[:2]
+	}
 	scheduled, stop := context.WithCancel(ctx)
 	defer stop()
 	go m.schedule(scheduled)
@@ -180,7 +200,9 @@ func (m *Manager) Control() http.Handler {
 	mux.HandleFunc("GET /api/v1/mesh/owner-password", m.getOwnerPassword)
 	mux.HandleFunc("GET /api/v1/setup", m.getSetup)
 	mux.HandleFunc("GET /api/v1/nodes/primary", m.getPrimary)
-	mux.HandleFunc("GET /api/v1/admin", m.getAdmin)
+	mux.HandleFunc("GET /api/v1/dns", m.getDNS)
+	mux.HandleFunc("PUT /api/v1/dns/token", m.putDNSToken)
+	mux.HandleFunc("GET /api/v1/warnings", m.getWarnings)
 	m.catalogRoutes(mux)
 	mux.HandleFunc("/", notFound)
 	return mux

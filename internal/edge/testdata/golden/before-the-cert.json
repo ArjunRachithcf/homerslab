@@ -1,0 +1,12 @@
+{
+  "admin": {
+    "config": {
+      "persist": false
+    },
+    "listen": "unix//run/homerslab-edge/admin.sock|0660"
+  },
+  "storage": {
+    "module": "file_system",
+    "root": "/var/lib/homerslab-edge"
+  }
+}

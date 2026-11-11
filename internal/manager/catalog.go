@@ -119,9 +119,9 @@ var providers = map[string]plan.Provider{
 }
 
 // household is the household's state as the planner needs it: first-time setup's answers so far, and the primary as
-// its agent reports it. Where setup's step isn't built yet, its default stands in: the domain from the admin's mail
-// address, NetBird alone, and Authentik, the one identity provider until Kanidm's slice (spec: Design decisions,
-// round 4; #17).
+// its agent reports it. Where setup's step isn't answered or built yet, its default stands in: the domain from the
+// admin's mail address, NetBird alone, and Authentik, the one identity provider until Kanidm's slice (spec: Design
+// decisions, round 4; #17).
 func (m *Manager) household(ctx context.Context) (plan.Household, error) {
 	a, err := m.db.Answers(ctx)
 	if err != nil {
@@ -130,6 +130,10 @@ func (m *Manager) household(ctx context.Context) (plan.Household, error) {
 	if a["household"] == "" || a["mail"] == "" {
 		return plan.Household{}, errNotSetUp
 	}
+	domain := a[ansDomain] // the domain step's answer; until it is given, setup's default: the admin's mail domain
+	if domain == "" {
+		domain = a["mail"][strings.LastIndex(a["mail"], "@")+1:]
+	}
 	facts, err := m.agent.node(ctx)
 	if err != nil {
 		m.log.Warn("asking the agent for its facts", "err", err)
@@ -137,7 +141,7 @@ func (m *Manager) household(ctx context.Context) (plan.Household, error) {
 	}
 	return plan.Household{
 		Name:     a["household"],
-		Domain:   strings.ToLower(a["mail"][strings.LastIndex(a["mail"], "@")+1:]),
+		Domain:   strings.ToLower(domain),
 		Meshes:   []string{"NetBird"},
 		Provider: providers["authentik"],
 		People:   []plan.Person{{Name: a["name"], Role: "admin"}},

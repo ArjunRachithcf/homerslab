@@ -103,6 +103,35 @@ var migrations = []string{
 		source TEXT NOT NULL,
 		what   TEXT NOT NULL
 	);`,
+	// The DNS records HomersLab created: the source of truth for what is its own in a zone (#79). A domain's wildcard
+	// certificate, which isn't secret (its key is sealed by the agent), and how its renewals go. And warnings for
+	// admins, such as a renewal that failed for the first time (#80).
+	`CREATE TABLE dns_record (
+		zone        TEXT NOT NULL,
+		name        TEXT NOT NULL,
+		type        TEXT NOT NULL,
+		value       TEXT NOT NULL,
+		ttl_seconds INTEGER NOT NULL,
+		created_at  INTEGER NOT NULL,
+		PRIMARY KEY (zone, name, type, value)
+	);
+	CREATE TABLE certificate (
+		domain        TEXT PRIMARY KEY,
+		chain         TEXT NOT NULL,
+		serial        TEXT NOT NULL,
+		not_before    INTEGER NOT NULL,
+		not_after     INTEGER NOT NULL,
+		authority     TEXT NOT NULL,
+		failing_since INTEGER,
+		failures      INTEGER NOT NULL DEFAULT 0,
+		last_error    TEXT NOT NULL DEFAULT ''
+	);
+	CREATE TABLE warning (
+		at          INTEGER NOT NULL,
+		source      TEXT NOT NULL,
+		what        TEXT NOT NULL,
+		resolved_at INTEGER
+	);`,
 	// Install plans: kept as they were made, never changed. A change in the household is a new plan, with a new id.
 	`CREATE TABLE plan (
 		id      TEXT PRIMARY KEY,

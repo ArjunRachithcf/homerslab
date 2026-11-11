@@ -3,9 +3,6 @@ package cli_test
 import (
 	"bytes"
 	"encoding/json"
-	"io"
-	"net/http"
-	"path/filepath"
 	"strings"
 	"testing"
 
@@ -26,8 +23,8 @@ func TestTheCLIListsTheCatalog(t *testing.T) {
 	}
 }
 
-// The CLI makes and shows the same plan Admin shows: one object, by its id.
-func TestTheCLIShowsTheSamePlanAsAdmin(t *testing.T) {
+// The CLI makes a plan and shows it by its id, the one object Admin shows too (the manager's tests compare the two).
+func TestTheCLIShowsAPlanByItsID(t *testing.T) {
 	testenv.Isolate(t)
 	ctl := running(t, true)
 	code, out, errOut := run(t, "plan", "immich", "--json", "--control-socket", ctl)
@@ -38,17 +35,8 @@ func TestTheCLIShowsTheSamePlanAsAdmin(t *testing.T) {
 	if err := json.Unmarshal([]byte(out), &p); err != nil || !strings.HasPrefix(p.ID, "p-") {
 		t.Fatalf("%v: %s", err, out)
 	}
-
-	_, adminURL, _ := run(t, "admin", "--control-socket", ctl)
-	base := strings.TrimSuffix(strings.TrimSpace(adminURL), "/store")
-	resp, err := http.Get(base + "/api/v1/plans/" + p.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	inAdmin, _ := io.ReadAll(resp.Body)
-	resp.Body.Close()
-	if resp.StatusCode != http.StatusOK || !bytes.Equal(bytes.TrimSpace(inAdmin), bytes.TrimSpace([]byte(out))) {
-		t.Errorf("Admin's plan %s:\n%d %s\nthe CLI's:\n%s", p.ID, resp.StatusCode, inAdmin, out)
+	if _, byID, _ := run(t, "plan", "show", p.ID, "--json", "--control-socket", ctl); !bytes.Equal(bytes.TrimSpace([]byte(byID)), bytes.TrimSpace([]byte(out))) {
+		t.Errorf("plan show %s --json:\n%s\nwant\n%s", p.ID, byID, out)
 	}
 
 	code, words, errOut := run(t, "plan", "show", p.ID, "--control-socket", ctl)
@@ -84,16 +72,5 @@ func TestTheCLISaysWhyThereIsNoPlan(t *testing.T) {
 	}
 	if code, _, _ := run(t, "plan"); code != 2 {
 		t.Errorf("plan with no app: %d, want 2", code)
-	}
-}
-
-// Admin answers on this machine's loopback only, until it signs people in over the mesh.
-func TestTheManagerRefusesAdminOffLoopback(t *testing.T) {
-	testenv.Isolate(t)
-	for _, at := range []string{"0.0.0.0:7021", "192.168.1.20:7021", "[::]:7021", "localhost"} {
-		code, _, errOut := run(t, "manager", "--admin-listen", at, "--db", filepath.Join(t.TempDir(), "m.db"))
-		if code != 1 || !strings.Contains(errOut, "loopback") {
-			t.Errorf("--admin-listen %s: %d %q", at, code, errOut)
-		}
 	}
 }

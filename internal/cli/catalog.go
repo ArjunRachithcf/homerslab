@@ -263,20 +263,6 @@ func planWords(w io.Writer, p plan.Plan) {
 	fmt.Fprint(w, "\nNothing happens until the plan is applied; applying comes with a later version of HomersLab.\n")
 }
 
-func showAdmin(ctx context.Context, args []string, env Env) error {
-	fs := flags("admin", env)
-	socket := fs.String("control-socket", DefaultControlSocket, "the manager's control socket")
-	if err := parse(fs, args); err != nil {
-		return err
-	}
-	var a struct{ URL string }
-	if _, err := newControl(*socket).do(ctx, "GET", "/api/v1/admin", 0, &a); err != nil {
-		return err
-	}
-	_, err := fmt.Fprintln(env.Stdout, a.URL)
-	return err
-}
-
 // gb is memory in whole gigabytes (GiB), rounded, or in megabytes (MiB) below one.
 func gb(b uint64) string {
 	if b < 1<<30 {

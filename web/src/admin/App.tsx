@@ -11,7 +11,7 @@ type Route = { page: 'store' } | { page: 'app'; id: string } | { page: 'plan'; i
 
 function route(path: string): Route {
   let m: RegExpExecArray | null;
-  if (path === '/store') return { page: 'store' };
+  if (path === '/' || path === '/store') return { page: 'store' };
   if ((m = /^\/store\/apps\/([\w-]+)$/.exec(path))) return { page: 'app', id: m[1] ?? '' };
   if ((m = /^\/plans\/(p-[0-9a-f]+)$/.exec(path))) return { page: 'plan', id: m[1] ?? '' };
   return { page: 'none' };

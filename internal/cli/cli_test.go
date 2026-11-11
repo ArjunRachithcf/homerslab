@@ -46,13 +46,8 @@ func running(t *testing.T, setUp ...bool) string {
 		}
 		db.Close()
 	}
-	adminLn, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
 	m, err := manager.New(manager.Config{
 		DB:          filepath.Join(dir, "manager.db"),
-		AdminPort:   adminLn.Addr().(*net.TCPAddr).Port,
 		AgentSocket: agenttest.Start(t, agenttest.Primary()),
 		SetupPort:   7020,
 		Local:       netip.MustParseAddr("127.0.0.1"),
@@ -73,7 +68,7 @@ func running(t *testing.T, setUp ...bool) string {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
-	go func() { done <- m.Serve(ctx, setupLn, ctlLn, adminLn) }()
+	go func() { done <- m.Serve(ctx, setupLn, ctlLn, nil) }()
 	t.Cleanup(func() {
 		cancel()
 		if err := <-done; err != nil {

@@ -9,6 +9,7 @@ for (const look of looks) {
     await wear(page, look);
     const h1 = page.getByRole('heading', { level: 1 });
 
+    primary.withDomain();
     await page.goto(await primary.adminURL());
     await expect(h1).toHaveText('Store');
     await page.getByRole('button', { name: 'Get Immich: see its install plan' }).click();

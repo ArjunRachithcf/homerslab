@@ -3,9 +3,11 @@
 import { test as base } from '@playwright/test';
 import { type ChildProcess, execFile, spawn } from 'node:child_process';
 import { mkdtemp, rm } from 'node:fs/promises';
+import http from 'node:http';
 import net from 'node:net';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import { promisify } from 'node:util';
 
 const run = promisify(execFile);
@@ -18,6 +20,7 @@ export type Link = { url: string; localUrl: string; expiresAt: string };
 export class Primary {
   private agent?: ChildProcess;
   private manager?: ChildProcess;
+  private edge?: http.Server;
   private readonly logs: string[] = [];
   private constructor(readonly dir: string, private readonly env: NodeJS.ProcessEnv) {}
 
@@ -47,7 +50,7 @@ export class Primary {
 
   async startManager(): Promise<void> {
     this.manager = this.spawn('manager', '--db', this.at('manager.db'), '--agent-socket', this.at('agent.sock'),
-      '--control-socket', this.at('manager.sock'), '--listen', '127.0.0.1:0', '--admin-listen', '127.0.0.1:0');
+      '--control-socket', this.at('manager.sock'), '--listen', '127.0.0.1:0', '--admin-socket', this.at('admin.sock'));
     await waitForSocket(this.at('manager.sock'));
   }
 
@@ -80,9 +83,45 @@ export class Primary {
     return stdout;
   }
 
-  // Where Admin opens, as `homerslab admin` says.
+  // Admin's name: the household's domain, as the domain step leaves it (withDomain stands in for that step).
+  static readonly adminName = 'admin.ferreira.family';
+
+  /**
+   * Where the browser opens Admin. The edge isn't part of these tests, so a small server stands in for it: it passes
+   * the browser's requests on to Admin's socket as the edge does, at Admin's name over HTTPS (Host, and the page's
+   * own Origin), and Admin's answers back.
+   */
   async adminURL(): Promise<string> {
-    return (await this.cli('admin')).trim();
+    if (!this.edge) {
+      const edge = http.createServer((req, res) => {
+        const own = `http://${req.headers.host ?? ''}`;
+        const headers = { ...req.headers, host: Primary.adminName };
+        if (headers.origin === own) headers.origin = `https://${Primary.adminName}`;
+        const up = http.request({ socketPath: this.at('admin.sock'), path: req.url, method: req.method, headers }, (r) => {
+          res.writeHead(r.statusCode ?? 502, r.headers);
+          r.pipe(res);
+        });
+        up.on('error', () => res.writeHead(502).end());
+        req.pipe(up);
+      });
+      await new Promise<void>((resolve) => edge.listen(0, '127.0.0.1', resolve));
+      this.edge = edge;
+    }
+    const { port } = this.edge.address() as net.AddressInfo;
+    return `http://127.0.0.1:${port}/store`;
+  }
+
+  // Stands in for setup's domain step, which setup reaches only after the sign-in step (#17): its answer, as the
+  // step keeps it in the manager's database.
+  withDomain(): void {
+    const db = new DatabaseSync(this.at('manager.db'));
+    try {
+      db.exec('PRAGMA busy_timeout = 5000');
+      db.prepare(`INSERT INTO setup_answer (key, value) VALUES ('domain', 'ferreira.family')
+        ON CONFLICT (key) DO UPDATE SET value = excluded.value`).run();
+    } finally {
+      db.close();
+    }
   }
 
   // First-time setup's built steps, answered through the setup page's API: the Ferreira household, Inês its admin.
@@ -101,6 +140,7 @@ export class Primary {
     await api('PUT', '/api/v1/setup/steps/welcome', {}, token);
     await api('PUT', '/api/v1/setup/steps/you', { name: 'Inês Ferreira', mail: 'ines@ferreira.family' }, token);
     await api('PUT', '/api/v1/setup/steps/household', { name: 'The Ferreira household' }, token);
+    this.withDomain();
   }
 
   // What the agent and the manager have logged so far.
@@ -109,6 +149,7 @@ export class Primary {
   }
 
   async stop(): Promise<void> {
+    this.edge?.close();
     await Promise.all([stop(this.manager), stop(this.agent)]);
     await rm(this.dir, { recursive: true, force: true });
   }

@@ -4,9 +4,7 @@ import { expect, test } from './primary';
 
 test('Admin browses the catalog and opens an app’s install plan, the same plan the CLI shows', async ({ page, primary }) => {
   await primary.setUp();
-  const admin = await primary.adminURL();
-  expect(admin).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/store$/);
-  await page.goto(admin);
+  await page.goto(await primary.adminURL());
 
   await expect(page.getByRole('heading', { level: 1 })).toHaveText('Store');
   await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark'); // Admin is dark by default
@@ -58,6 +56,7 @@ test('a guarded app’s plan says the edge signs people in', async ({ page, prim
 });
 
 test('before first-time setup, Get says what’s missing', async ({ page, primary }) => {
+  primary.withDomain();
   await page.goto(await primary.adminURL());
   await page.getByRole('button', { name: 'Get Immich: see its install plan' }).click();
   await expect(page.getByRole('alert')).toContainText('Finish first-time setup first');

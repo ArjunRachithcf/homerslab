@@ -73,7 +73,7 @@ func (a *Agent) join(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	n := netbird.Node{Run: a.cfg.Run}
 	steps := []func() error{
-		func() error { return writeFile(filepath.Join(a.cfg.Root, netbird.DropInPath), netbird.DropIn()) },
+		func() error { return a.writeAt(netbird.DropInPath, netbird.DropIn()) },
 		func() error { return a.run(ctx, "systemctl", "daemon-reload") },
 		func() error { return a.run(ctx, "systemctl", "enable", "netbird.service") },
 		func() error { return a.run(ctx, "systemctl", "restart", "netbird.service") },
@@ -119,6 +119,8 @@ func (a *Agent) join(w http.ResponseWriter, r *http.Request) {
 	if !slices.Contains(next.WireGuard, netbird.WireGuardPort) {
 		next.WireGuard = append(slices.Clone(next.WireGuard), netbird.WireGuardPort)
 	}
+	// The node's address on its mesh, as the mesh gives it now: a rejoin may bring another, and the old one is gone.
+	next.MeshIPs = []netip.Addr{st.IP}
 	// Kept first, so a restart always brings the table back; undone if the table can't be applied.
 	prev := a.state
 	a.state = next
@@ -142,6 +144,19 @@ func (a *Agent) join(w http.ResponseWriter, r *http.Request) {
 func (a *Agent) run(ctx context.Context, name string, args ...string) error {
 	_, err := a.cfg.Run(ctx, host.Cmd{Name: name, Args: args})
 	return err
+}
+
+// RootWrites are the folders, under the machine's root, where the agent writes: systemd drop-ins for the mesh client
+// and the edge. Its unit makes them writable (ReadWritePaths, under ProtectSystem=strict) and tmpfiles.d makes them;
+// writeAt refuses any other.
+var RootWrites = []string{filepath.Dir(netbird.DropInPath), "etc/systemd/system/" + DefaultEdge.Unit + ".d"}
+
+// writeAt writes a file under the machine's root, in one of RootWrites.
+func (a *Agent) writeAt(rel string, b []byte) error {
+	if !slices.Contains(RootWrites, filepath.Dir(rel)) {
+		return fmt.Errorf("the agent writes nothing in /%s", filepath.Dir(rel))
+	}
+	return writeFile(filepath.Join(a.cfg.Root, rel), b)
 }
 
 func writeFile(path string, b []byte) error {
@@ -304,19 +319,29 @@ func (a *Agent) getCredential(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"value": string(out)})
 }
 
-// seal seals a value with the TPM where the machine has one, and the host key always: explicitly, never "auto"
-// (ADR 0011).
+// seal seals one of the manager's credentials.
 func (a *Agent) seal(ctx context.Context, name string, value []byte) error {
+	path := a.credentialPath(name)
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	return a.sealAt(ctx, path, name, value)
+}
+
+// unsealAt decrypts a credential the agent sealed at path, under its name.
+func (a *Agent) unsealAt(ctx context.Context, path, name string) ([]byte, error) {
+	return a.cfg.Run(ctx, host.Cmd{Name: "systemd-creds", Args: []string{"decrypt", "--name=" + name, path, "-"}})
+}
+
+// sealAt seals a value under its name at path, with the TPM where the machine has one, and the host key always:
+// explicitly, never "auto" (ADR 0011).
+func (a *Agent) sealAt(ctx context.Context, path, name string, value []byte) error {
 	key := "host"
 	if a.cfg.Sysroot != nil {
 		// TPM 2.0 only: systemd-creds can't seal to a TPM 1.2.
 		if t := node.ReadTPM(a.cfg.Sysroot); t.Present && t.Version == "2.0" {
 			key = "host+tpm2"
 		}
-	}
-	path := a.credentialPath(name)
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return err
 	}
 	if _, err := a.cfg.Run(ctx, host.Cmd{Name: "systemd-creds",
 		Args: []string{"encrypt", "--with-key=" + key, "--name=" + name, "-", path + ".new"}, Stdin: value}); err != nil {
@@ -402,7 +427,7 @@ func (a *Agent) checkNATMapper(ctx context.Context, force bool) error {
 	}
 	a.log.Warn("NetBird's client could ask the router for a port: putting its setting back", "what", what)
 	for _, step := range []func() error{
-		func() error { return writeFile(filepath.Join(a.cfg.Root, netbird.DropInPath), netbird.DropIn()) },
+		func() error { return a.writeAt(netbird.DropInPath, netbird.DropIn()) },
 		func() error { return a.run(ctx, "systemctl", "daemon-reload") },
 		// Queued, not waited for: the watch loop never blocks on a systemd job.
 		func() error { return a.run(ctx, "systemctl", "--no-block", "restart", "netbird.service") },

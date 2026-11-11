@@ -17,6 +17,8 @@ TimeoutStartSec=30s
 # systemd-creds' host key, made once, outside the sandbox (which keeps /var/lib/systemd read-only).
 ExecStartPre=+/usr/bin/systemd-creds setup
 ExecStart=/usr/bin/homerslab agent
+# The edge's group: the agent alone opens the edge's admin socket.
+SupplementaryGroups=homerslab-edge
 RuntimeDirectory=homerslab-agent
 RuntimeDirectoryMode=0755
 # The agent's state (agent.json: the firewall table's settings) and the manager's sealed credentials.
@@ -31,7 +33,9 @@ RestartSec=2s
 #   - owns the firewall table, inet homerslab, in the host's own network (nft over netlink, CAP_NET_ADMIN);
 #   - joins the mesh: a drop-in for NetBird's service (NAT mapper off), systemctl, netbird up, and a check that the
 #     machine's resolver still answers (AF_INET, AF_INET6);
-#   - seals the manager's credentials with systemd-creds, in its state directory.
+#   - seals the manager's credentials with systemd-creds, in its state directory;
+#   - since #16, seals the edge's certificates, writes the edge's drop-in, restarts the edge (systemctl) and configures
+#     it through its admin socket (the edge's group).
 # Since #18 it reads apps' compose files for planning, each in a child of its own (homerslab agent read-project), in
 # an empty folder of its private /tmp that the agent gives to nobody (CAP_CHOWN); the child starts as nobody, its IDs
 # set in the fork (CAP_SETUID, CAP_SETGID).
@@ -40,8 +44,8 @@ RestartSec=2s
 NoNewPrivileges=yes
 CapabilityBoundingSet=CAP_CHOWN CAP_DAC_READ_SEARCH CAP_NET_ADMIN CAP_SETUID CAP_SETGID
 ProtectSystem=strict
-# NetBird's drop-in only (the folder comes from tmpfiles.d/homerslab.conf).
-ReadWritePaths=/etc/systemd/system/netbird.service.d
+# NetBird's and the edge's drop-ins only (agent.RootWrites; the folders come from tmpfiles.d/homerslab.conf).
+ReadWritePaths=/etc/systemd/system/netbird.service.d /etc/systemd/system/homerslab-edge.service.d
 ProtectHome=read-only
 PrivateTmp=yes
 PrivateNetwork=no
