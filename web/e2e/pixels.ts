@@ -160,41 +160,45 @@ export function textRuns(task: { scrollTo?: string; unfade?: number[] } | null):
       }
       return 'nothing it can find';
     };
-    // ::first-letter and ::first-line paint their own colour on a block's first letter and first line: the block's first
-    // text, and every text on its first line, are not measured when they do
-    const blockOf = (e: Element): Element => {
-      let b: Element = e;
-      for (let u = up(b); u && /^(inline|contents)$/.test(css(b).display); u = up(b)) b = u;
-      return b;
+    // ::first-letter and ::first-line paint their own colour on a block's first letter and first line, and a block
+    // inside it that starts it starts its first line: a text is not measured when any block around it paints its own
+    // colour so, and the text is that block's first (shown) text, or on the first text's line
+    const blocksOf = (e: Element): Element[] => {
+      const out: Element[] = [];
+      for (let b: Element | null = e; b; b = up(b)) if (!/^(inline|contents)$/.test(css(b).display)) out.push(b);
+      return out;
+    };
+    const lineOf = (t: Text) => {
+      const r = document.createRange();
+      r.selectNodeContents(t);
+      return r.getClientRects()[0];
     };
     const firstTexts = new Map<Element, Text | null>();
     const firstText = (block: Element) => {
       if (!firstTexts.has(block)) {
-        const tw = document.createTreeWalker(block, NodeFilter.SHOW_TEXT, { acceptNode: (n) => (/\S/.test((n as Text).data) ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_SKIP) });
+        const tw = document.createTreeWalker(block, NodeFilter.SHOW_TEXT,
+          { acceptNode: (n) => (/\S/.test((n as Text).data) && lineOf(n as Text) ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_SKIP) });
         firstTexts.set(block, tw.nextNode() as Text | null);
       }
       return firstTexts.get(block) ?? null;
     };
-    const ownColour = (block: Element, pseudo: string) => {
-      const [p, b] = [getComputedStyle(block, pseudo), css(block)];
-      return p.color !== b.color || p.webkitTextFillColor !== b.webkitTextFillColor;
+    const colours = { '::first-letter': new Map<Element, boolean>(), '::first-line': new Map<Element, boolean>() };
+    const ownColour = (block: Element, pseudo: keyof typeof colours) => {
+      let own = colours[pseudo].get(block);
+      if (own === undefined) {
+        const [p, b] = [getComputedStyle(block, pseudo), css(block)];
+        colours[pseudo].set(block, (own = p.color !== b.color || p.webkitTextFillColor !== b.webkitTextFillColor));
+      }
+      return own;
     };
-    const firstLetter = (node: Text) => {
-      const block = blockOf(node.parentElement ?? document.body);
-      return firstText(block) === node && ownColour(block, '::first-letter');
-    };
-    const firstLine = (node: Text) => {
-      const block = blockOf(node.parentElement ?? document.body);
+    const firstLetter = (node: Text) =>
+      blocksOf(node.parentElement ?? document.body).some((block) => ownColour(block, '::first-letter') && firstText(block) === node);
+    const firstLine = (node: Text) => blocksOf(node.parentElement ?? document.body).some((block) => {
+      if (!ownColour(block, '::first-line')) return false;
       const first = firstText(block);
-      if (!first || !ownColour(block, '::first-line')) return false;
-      const lineOf = (t: Text) => {
-        const r = document.createRange();
-        r.selectNodeContents(t);
-        return r.getClientRects()[0];
-      };
-      const [mine, line] = [lineOf(node), lineOf(first)];
+      const [mine, line] = [lineOf(node), first && lineOf(first)];
       return !!mine && !!line && mine.top < line.bottom;
-    };
+    });
     const fadeCache = new Map<Element, number>();
     const fadeOf = (e: Element | null): number => {
       if (!e) return 1;
@@ -373,10 +377,11 @@ export function refade(): void {
 export const SENTINEL: [number, number, number] = [255, 0, 255];
 
 /**
- * In the page: hides every word (`hide`), paints every word in SENTINEL (`sentinel`), or shows them as they are again
- * (`show`), without moving anything. Only the glyphs change: -webkit-text-fill-color, not `color`, so an icon, border
- * or fill drawn in currentColor stays as it is. Transitions stop, so the words change at once. The sheet is a
- * constructed one (the pages' CSP refuses inline style), adopted by the document and every open shadow root.
+ * In the page: hides every word (`hide`), paints every word in SENTINEL (`sentinel`; outlined 2px thick in it too, so that
+ * a dot or a hairline still has pixels it covers whole), or shows them as they are again (`show`), without moving
+ * anything. Only the glyphs change: -webkit-text-fill-color, not `color`, so an icon, border or fill drawn in
+ * currentColor stays as it is. Transitions stop, so the words change at once. The sheet is a constructed one (the
+ * pages' CSP refuses inline style), adopted by the document and every open shadow root.
  */
 export function hideWords(mode: 'hide' | 'sentinel' | 'show'): void {
   const w = window as { a11yHidden?: CSSStyleSheet };
@@ -392,9 +397,10 @@ export function hideWords(mode: 'hide' | 'sentinel' | 'show'): void {
   walk(document);
   if (mode !== 'show') {
     const glyphs = mode === 'hide' ? 'transparent' : 'rgb(255, 0, 255)';
+    const stroke = mode === 'hide' ? '-webkit-text-stroke-color: transparent' : `-webkit-text-stroke: 2px ${glyphs}`;
     const sheet = w.a11yHidden ?? new CSSStyleSheet();
     sheet.replaceSync(`*, *::before, *::after, *::placeholder { -webkit-text-fill-color: ${glyphs} !important;
-      -webkit-text-stroke-color: transparent !important; text-shadow: none !important; text-decoration-color: transparent !important;
+      ${stroke} !important; text-shadow: none !important; text-decoration-color: transparent !important;
       transition: none !important; } *::marker { color: transparent !important; }
       svg text, svg tspan, svg textPath { fill: ${glyphs} !important; stroke: transparent !important; }`);
     if (!w.a11yHidden) for (const r of roots) r.adoptedStyleSheets = [...r.adoptedStyleSheets, sheet];
@@ -529,14 +535,23 @@ export function worstPatch(contrast: Float64Array, width: number, height: number
 }
 
 /**
- * Whether a word's glyphs show in its box: in `marked` (the area shot with every glyph in SENTINEL) some pixel differs
- * from `shot` (the glyphs hidden) by at least a third of what the sentinel, faded as the word is, would change it by.
- * Glyphs under something drawn over them don't show, whatever hit-testing says. null when the background itself is
- * the sentinel's colour, and nothing can be told.
+ * How much of a glyph's change a word's box must show to count as showing: a cover that lets less through (a veil of
+ * white at 60%, a grey that screens) dims the words, by an amount nobody can tell from the shots, so they fail as not
+ * measured. 0.9, so that a glyph's antialiased pixels still find one that shows.
  */
-export function glyphsShow(shot: Shot, marked: Shot, box: Box, fade: number, dpr: number): boolean | null {
+export const SHOWS = 0.9;
+
+/**
+ * Whether a word's glyphs show in its box: in `marked` (the area shot with every glyph in SENTINEL) some pixel differs
+ * from `shot` (the glyphs hidden) by at least SHOWS of what the sentinel, faded as the word is, would change it by
+ * there, from what the word is painted on: the pixel in `unfaded` (the area shot with the word's faded group opaque),
+ * or in `shot`. Glyphs under something drawn over them, wholly or in part, don't show, whatever hit-testing says. null
+ * when the background itself is the sentinel's colour, and nothing can be told.
+ */
+export function glyphsShow(shot: Shot, marked: Shot, box: Box, fade: number, dpr: number, unfaded?: Shot): boolean | null {
   const [x0, y0] = [Math.max(0, Math.round(box.x * dpr)), Math.max(0, Math.round(box.y * dpr))];
   const [x1, y1] = [Math.min(shot.width, Math.round((box.x + box.w) * dpr)), Math.min(shot.height, Math.round((box.y + box.h) * dpr))];
+  const own = unfaded ?? shot;
   let [most, far, n] = [0, 0, 0];
   for (let y = y0; y < y1; y++) {
     for (let x = x0; x < x1; x++) {
@@ -544,13 +559,13 @@ export function glyphsShow(shot: Shot, marked: Shot, box: Box, fade: number, dpr
       let [moved, away] = [0, 0];
       for (let c = 0; c < 3; c++) {
         moved += Math.abs((marked.rgba[o + c] ?? 0) - (shot.rgba[o + c] ?? 0));
-        away += Math.abs((SENTINEL[c] ?? 0) - (shot.rgba[o + c] ?? 0));
+        away += Math.abs((SENTINEL[c] ?? 0) - (own.rgba[o + c] ?? 0));
       }
-      most = Math.max(most, moved);
+      if (away >= 60) most = Math.max(most, moved / away); // nearer the sentinel's colour, the change says little
       far += away;
       n++;
     }
   }
   if (!n || far / n < 60) return null;
-  return most >= (fade * far) / n / 3;
+  return most >= SHOWS * fade;
 }

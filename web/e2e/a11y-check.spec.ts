@@ -59,10 +59,10 @@ test('a rule’s paragraph ends with its error', () => {
 });
 
 test('accessible() fails the test, naming the screen and the rule', async () => {
-  test.setTimeout(180_000); // a Playwright inside a Playwright, with 27 planted tests
+  test.setTimeout(180_000); // a Playwright inside a Playwright, with 32 planted tests
   const out = await mkdtemp(path.join(tmpdir(), 'homerslab-planted-'));
   try {
-    // this worker's own Playwright variables stay out of the child's environment; three workers for 27 tests
+    // this worker's own Playwright variables stay out of the child's environment; three workers for 32 tests
     const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => !/^(TEST_|PW_)/.test(k)));
     const child = await playwright(['test', 'e2e/planted.a11y.spec.ts', '--project', test.info().project.name,
       '--reporter', 'json', '--output', out, '--retries', '0', '--workers', '3'], { ...env, HOMERSLAB_PLANTED: '1' },
@@ -117,7 +117,13 @@ test('accessible() fails the test, naming the screen and the rule', async () => 
         says: /\n\s*- div#planted-mask > p “Masked words”: not measured, \d+ words?: under a mask \(div#planted-mask\)/ }],
       ['planted: a word over a narrow dark band', { check: pixelCheck, says: findsWord('p#planted-band', '4\\.5:1') }],
       ['planted: a faint word under its box’s ::after', { check: pixelCheck,
-        says: /\n\s*- p#planted-boxed “Under a pseudo bar”: not measured, \d+ words?: its glyphs don’t show: something is drawn over them/ }],
+        says: /\n\s*- p#planted-boxed “Under a pseudo bar”: not measured, \d+ words?: its glyphs don’t show, or not wholly: something is drawn over them/ }],
+      ...['white at 60%', 'white at opacity 0.6', '#999 that screens'].map((cover, i): [string, Expected] => [`planted: black words under ${cover}`,
+        { check: pixelCheck, says: new RegExp(`\\n\\s*- p#planted-veiled-${i} “Under a veil”: not measured, \\d+ words?: its glyphs don’t show, or not wholly: something is drawn over them`) }]),
+      ['planted: a first line in its own colour, set on the block around', { check: pixelCheck,
+        says: /\n\s*- p#planted-inner-line “First line inside”: not measured, \d+ words?: its first line has a colour of its own \(::first-line\)/ }],
+      ['planted: a first letter in its own colour, set on the block around', { check: pixelCheck,
+        says: /\n\s*- p#planted-inner-letter “First letter inside”: not measured, \d+ words?: its first letter has a colour of its own \(::first-letter\)/ }],
       ['planted: words at 3.2:1 below large', { check: pixelCheck, says: findsWord('p#planted-small', '4\\.5:1') }],
       ['planted: a word half off the screen', { check: pixelCheck,
         says: /\n\s*- p#planted-offscreen “Half off the screen”: not measured, \d+ words?: never wholly in view/ }],

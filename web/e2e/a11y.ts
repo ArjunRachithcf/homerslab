@@ -172,9 +172,9 @@ export async function legible(page: Page, glass?: Glass): Promise<{ runs: Measur
         }
         for (const [r, b] of now) {
           const at = { ...b, x: b.x - left, y: b.y - top };
-          const shows = glyphsShow(shot, marked, at, r.fade, shot.width / clip.width);
+          const shows = glyphsShow(shot, marked, at, r.fade, shot.width / clip.width, r.fade < 1 ? unfaded : undefined);
           if (shows !== true) {
-            unmeasured.set(b.key, shows === null ? 'on a background of the sentinel’s colour, so nobody can tell whether its glyphs show' : 'its glyphs don’t show: something is drawn over them');
+            unmeasured.set(b.key, shows === null ? 'on a background of the sentinel’s colour, so nobody can tell whether its glyphs show' : 'its glyphs don’t show, or not wholly: something is drawn over them');
             pending.delete(b.key);
             continue;
           }

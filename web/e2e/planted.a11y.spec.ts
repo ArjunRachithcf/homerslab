@@ -109,6 +109,20 @@ const plants: {
     html: '<div id="planted-box"><p id="planted-boxed">Under a pseudo bar</p></div>',
     sheet: '#planted-box { position: relative; } #planted-box::after { content: ""; position: absolute; inset: 0; background: #222; pointer-events: none; }',
     css: [['#planted-boxed', 'color', '#d0d0d0']] },
+  // black words under a cover that lets 40% of them through: #999 on white on the screen, 2.85:1, where words
+  // measured as uncovered read 21:1. Not measured: what shows through can't be told from the shots
+  ...([['white at 60%', 'background: rgba(255, 255, 255, 0.6);'], ['white at opacity 0.6', 'background: #fff; opacity: 0.6;'],
+    ['#999 that screens', 'background: #999; mix-blend-mode: screen;']] as const).map(([cover, rule], i) => ({
+    name: `black words under ${cover}`, look: { theme: 'light', motion: 'reduce', transparency: 'reduce' } as Look,
+    html: `<div id="planted-veil-${i}"><p id="planted-veiled-${i}">Under a veil</p></div>`,
+    sheet: `#planted-veil-${i} { position: relative; background: #fff; } #planted-veil-${i}::after { content: ""; position: absolute; inset: 0; ${rule} pointer-events: none; }`,
+    css: [[`#planted-veiled-${i}`, 'color', '#000']] as [string, string, string][] })),
+  // ::first-line and ::first-letter on a block around the words' own: the outer block's first line is the inner's
+  // (a hidden text before it starts no line)
+  { name: 'a first line in its own colour, set on the block around', look: { theme: 'light', motion: 'reduce', transparency: 'reduce' },
+    html: '<div id="planted-outer-line"><p hidden>Hidden</p><p id="planted-inner-line">First line inside</p></div>', sheet: '#planted-outer-line::first-line { color: #eee; }' },
+  { name: 'a first letter in its own colour, set on the block around', look: { theme: 'light', motion: 'reduce', transparency: 'reduce' },
+    html: '<div id="planted-outer-letter"><p hidden>Hidden</p><div><p id="planted-inner-letter">First letter inside</p></div></div>', sheet: '#planted-outer-letter::first-letter { color: #eee; }' },
   // large text needs 3:1, and gets no more slack: 3.2:1 passes at 24px (setup.a11y.spec.ts), and fails at 18px
   { name: 'words at 3.2:1 below large', look: { theme: 'light', motion: 'reduce', transparency: 'reduce' },
     html: '<p id="planted-small">Not quite large</p>', css: [['#planted-small', 'font-size', '18px'], ['#planted-small', 'color', '#909090']] }, // 3.19:1 on white
