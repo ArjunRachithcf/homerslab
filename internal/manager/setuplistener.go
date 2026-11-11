@@ -119,14 +119,19 @@ func sameOrigin(next http.Handler) http.Handler {
 
 func (m *Manager) claim(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		Key string `json:"key"`
+		Key   string `json:"key"`
+		Nonce string `json:"nonce"` // the claiming tab's, so that tab can send the claim again
 	}
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4<<10)).Decode(&body); err != nil || body.Key == "" {
 		fail(w, http.StatusForbidden, setup.ErrLinkRefused.Error())
 		return
 	}
 	from, _ := client(r)
-	tok, err := m.setup.Claim(r.Context(), body.Key, from.String())
+	tok, again, err := m.setup.Claim(r.Context(), body.Key, body.Nonce, from.String())
+	if errors.Is(err, setup.ErrBadNonce) { // the page's own bug, or an old page: not a reason to let go of the key
+		fail(w, http.StatusBadRequest, err.Error())
+		return
+	}
 	if errors.Is(err, setup.ErrLinkRefused) {
 		m.log.Warn("refused a setup link", "from", r.RemoteAddr)
 		fail(w, http.StatusForbidden, err.Error())
@@ -136,7 +141,11 @@ func (m *Manager) claim(w http.ResponseWriter, r *http.Request) {
 		m.internal(w, "claiming a link", err)
 		return
 	}
-	m.log.Info("setup link claimed", "from", r.RemoteAddr)
+	if again {
+		m.log.Info("setup link's claim sent again by the tab that claimed it: the same session, a new token", "from", r.RemoteAddr)
+	} else {
+		m.log.Info("setup link claimed", "from", r.RemoteAddr)
+	}
 	// Not a cookie: cookies ignore ports, so every other service on this machine's addresses would be sent it. The
 	// page keeps the token in its tab and sends it as a bearer token.
 	writeJSON(w, http.StatusOK, map[string]string{"token": tok})

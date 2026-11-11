@@ -886,6 +886,9 @@ point. Nothing needs replacing for:
   password. The threat model accepts this, because the window is narrow:
   - the link works only from this machine or the LAN, for 30 minutes, and once;
   - one claimer holds it, and a new link ends every earlier link and session;
+  - a claim whose answer was lost is answered again only for the tab that sent it: the page sends a random nonce with
+    the key, the manager keeps its hash, and for 60 seconds the same key, nonce and address get the same session back,
+    with a new token, until that session is first used (#101);
   - the listener answers only the machine's own names and addresses;
   - the listener closes for good after the hand-off to the mesh.
 

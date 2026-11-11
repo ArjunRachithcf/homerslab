@@ -76,7 +76,7 @@ func TestADatabaseWithPlansButNoBootClockOpens(t *testing.T) {
 		t.Fatal(err)
 	}
 	var made int
-	for _, m := range migrations {
+	for _, m := range migrations { // every migration before the boot clock
 		if strings.Contains(m, "boot_id") {
 			break // the boot clock, and every migration after it
 		}

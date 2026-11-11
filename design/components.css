@@ -225,7 +225,7 @@ button.widget:active, a.widget:active { transform: scale(0.98); transition-durat
 .row[aria-disabled="true"] .row-label, .row[aria-disabled="true"] .row-title { color: var(--text-2); }
 /* a single choice: the whole row is the label of a hidden radio, a checkmark marks the chosen one */
 .row-choice { cursor: pointer; }
-.row-choice input { position: absolute; opacity: 0; pointer-events: none; }
+.row-choice input { position: absolute; opacity: 0; pointer-events: none; width: 1px; height: 1px; margin: 0; clip-path: inset(50%); }
 .row-choice .checkmark { color: var(--accent); width: 18px; height: 18px; stroke-width: 2.2; opacity: 0; transform: scale(0.6); transition: opacity var(--dur-fast), transform var(--dur-spring) var(--spring); }
 .row-choice:has(input:checked) .checkmark { opacity: 1; transform: none; }
 .row-choice:has(input:focus-visible) { outline: 3px solid var(--focus); outline-offset: -3px; border-radius: var(--radius-inner); }

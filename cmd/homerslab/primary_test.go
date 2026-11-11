@@ -78,7 +78,7 @@ func TestThePrimaryRunsTheManagerUnprivilegedAndTheAgentAsRoot(t *testing.T) {
 	base := "http://127.0.0.1:" + m[1]
 
 	c := &http.Client{Timeout: 5 * time.Second}
-	resp, err := c.Post(base+"/api/v1/setup/claim", "application/json", strings.NewReader(`{"key":"`+m[2]+`"}`))
+	resp, err := c.Post(base+"/api/v1/setup/claim", "application/json", strings.NewReader(`{"key":"`+m[2]+`","nonce":"a-tab-of-its-own-0123456789"}`))
 	must(t, err)
 	var session struct{ Token string }
 	must(t, json.NewDecoder(resp.Body).Decode(&session))

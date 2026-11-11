@@ -4,7 +4,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { flushSync } from 'react-dom';
 import { rich, t, type Key } from '../i18n/t';
-import { answer, claim, dropKey, getPrimary, getSetup, heldKey, holdKey, keepSession, Refused, Unreachable, type Facts, type Reason, type Setup } from './api';
+import { answer, claim, dropLink, getPrimary, getSetup, goodNonce, heldLink, holdLink, keepSession, newNonce, Refused, Unreachable, type Facts, type Link, type Reason, type Setup } from './api';
 import { Assistant, Field, Icon, stepTitle, type Screen } from './Assistant';
 import { diskSize, memory } from './format';
 
@@ -33,25 +33,27 @@ export function App() {
     }
   }, []);
 
-  // The key rides in the fragment, which never reaches a server or a log. It stays there, and in this tab, until the
-  // manager has answered its claim: a claim the network lost is sent again, by itself and then from "Try again", and a
-  // reload finds the key where it was. A link can also arrive in a tab that already shows setup: then only the fragment
-  // changes. Each opening supersedes the one before: a late answer to an earlier one changes nothing.
+  // The key rides in the fragment, which never reaches a server or a log, and so does this tab's nonce for its claim.
+  // Both stay there, and in this page's memory (never in storage), until the manager has answered the claim: a claim
+  // the network lost, or whose answer it lost, is sent again with the same nonce, by itself and then from "Try again",
+  // and a reload finds both where they were. A link can also arrive in a tab that already shows setup: then only the
+  // fragment changes. Each opening supersedes the one before: a late answer to an earlier one changes nothing.
   const opening = useRef(0);
   const open = useCallback(async () => {
     const run = ++opening.current;
     const stale = () => run !== opening.current;
-    const key = new URLSearchParams(location.hash.slice(1)).get('k') ?? heldKey();
-    if (key) {
-      holdKey(key);
-      const answer = await claimed(key, stale);
+    const link = fromAddress() ?? heldLink();
+    if (link) {
+      holdLink(link);
+      history.replaceState(null, '', `${location.pathname}#${new URLSearchParams({ k: link.key, n: link.nonce })}`);
+      const answer = await claimed(link, stale);
       if (stale()) return;
       if (answer.kind === 'unanswered') {
         setPhase(problem(answer.error));
         return;
       }
       if (answer.kind === 'claimed') keepSession(answer.token);
-      dropKey();
+      dropLink();
       history.replaceState(null, '', `${location.pathname}#/welcome`);
       setView('welcome');
     }
@@ -129,6 +131,19 @@ function useTitle(title: string) {
   }, [title]);
 }
 
+/**
+ * The link in the address's fragment, with the nonce this tab claims it with: the one the fragment carries (a reload
+ * while the claim was out), the one this page holds for the same key, or a new one.
+ */
+function fromAddress(): Link | null {
+  const f = new URLSearchParams(location.hash.slice(1));
+  const key = f.get('k');
+  if (!key) return null;
+  const nonce = f.get('n');
+  const held = heldLink();
+  return { key, nonce: goodNonce(nonce) ? nonce : held?.key === key ? held.nonce : newNonce() };
+}
+
 // A claim that got no answer is sent again after each of these pauses, then left to "Try again".
 const CLAIM_RETRIES = [1000, 2000, 4000];
 
@@ -139,10 +154,10 @@ type Claim = { kind: 'claimed'; token: string } | { kind: 'refused' } | { kind: 
  * this tab's own, opened again: its session carries on, and load() says if not. Any other answer, or none, leaves the
  * key to be tried again.
  */
-async function claimed(key: string, superseded: () => boolean): Promise<Claim> {
+async function claimed(link: Link, superseded: () => boolean): Promise<Claim> {
   for (let i = 0; ; i++) {
     try {
-      return { kind: 'claimed', token: await claim(key) };
+      return { kind: 'claimed', token: await claim(link) };
     } catch (e) {
       if (e instanceof Refused && e.code === 'link-refused') return { kind: 'refused' };
       if (!(e instanceof Unreachable) || i >= CLAIM_RETRIES.length || superseded()) return { kind: 'unanswered', error: e };
