@@ -144,16 +144,16 @@ func (m *Manager) Serve(ctx context.Context, setupLn, controlLn, adminLn net.Lis
 		{Handler: m.Control(), ReadHeaderTimeout: 10 * time.Second},
 		{Handler: m.Admin(), ReadHeaderTimeout: 10 * time.Second, ReadTimeout: 30 * time.Second, IdleTimeout: 2 * time.Minute},
 	}
+	listeners := []net.Listener{setupLn, controlLn, adminLn}
+	if adminLn == nil {
+		servers, listeners = servers[:2], listeners[:2]
+	}
 	scheduled, stop := context.WithCancel(ctx)
 	defer stop()
 	go m.schedule(scheduled)
 	errc := make(chan error, len(servers))
-	go func() { errc <- servers[0].Serve(setupLn) }()
-	go func() { errc <- servers[1].Serve(controlLn) }()
-	if adminLn != nil {
-		go func() { errc <- servers[2].Serve(adminLn) }()
-	} else {
-		servers = servers[:2]
+	for i, s := range servers {
+		go func() { errc <- s.Serve(listeners[i]) }()
 	}
 	var err error
 	select {

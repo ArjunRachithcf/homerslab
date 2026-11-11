@@ -45,7 +45,9 @@ func TestTheZoneIsFoundPastThePublicWildcard(t *testing.T) {
 func TestAZoneWithoutSOAIsNoZone(t *testing.T) {
 	testenv.Isolate(t)
 	z := serve(t, "*.example.test. 60 IN A 100.88.7.186")
+	z.mu.Lock()
 	z.mesh = true
+	z.mu.Unlock()
 	r := resolverFor(z)
 	if _, err := r.Zone(context.Background(), "_acme-challenge.example.test"); !errors.Is(err, dns.ErrNoZone) {
 		t.Fatalf("the zone through a mesh's own resolver: %v, want ErrNoZone", err)
