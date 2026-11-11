@@ -21,9 +21,12 @@ type control struct {
 	http   *http.Client
 }
 
-func newControl(socket string) *control {
+func newControl(socket string) *control { return newControlWaiting(socket, 10*time.Second) }
+
+// newControlWaiting is the control socket, waiting up to timeout for an answer: a certificate takes minutes.
+func newControlWaiting(socket string, timeout time.Duration) *control {
 	return &control{socket: socket, http: &http.Client{
-		Timeout: 10 * time.Second,
+		Timeout: timeout,
 		Transport: &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
 			return (&net.Dialer{}).DialContext(ctx, "unix", socket)
 		}},

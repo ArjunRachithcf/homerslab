@@ -38,3 +38,36 @@ parts that only the cloud has are checked here.
    Docker socket-activated. After `sudo nft flush ruleset` the table is back within seconds.
 8. **A self-hosted NetBird HomersLab set up.** `sudo homerslab mesh owner-password` prints the owner's password, with a
    warning, and it signs in at the NetBird dashboard. On an account HomersLab didn't set up, it says there is none.
+
+## The domain, on the maintainer's own DNS provider (#16)
+
+CI runs the DNS provider contract suite against a test CA (Pebble) and a test DNS server (BIND, through RFC 2136), and
+the edge's request matrix against a real Caddy. A real provider and a real CA need an account and a real domain, so
+they are checked here, on a domain kept for rehearsals. Run the manager with
+`--certificate-authority letsencrypt-staging` for every check but the last: rehearsals never use up Let's Encrypt's
+limits.
+
+1. **Infomaniak's token, in the terminal.** Make a token with the domain scope (Your profile › Developer › API tokens).
+   On the setup page give the domain and Infomaniak, then run `sudo homerslab setup secret dns`: the terminal says
+   "This token is for <domain>, and goes to Infomaniak's API" before it reads the token. The page turns to the next
+   step by itself. Setup's "Where do I find the token?" says the same; if Infomaniak's words moved, update
+   `web/src/i18n/en.json` (`step.domain.helpInfomaniak*`).
+2. **Only HomersLab's records.** During the issuance the zone holds `_acme-challenge.<domain>` TXT and
+   `_homerslab.<domain>` TXT, and afterwards neither. MX, SPF, DKIM, DMARC and the apex are as they were (compare the
+   zone export from before).
+3. **Beside the public wildcard.** With a `*` CNAME in the zone (classic's), the certificate is issued all the same:
+   the propagation check asks Infomaniak's name servers for the exact TXT record.
+4. **The certificate.** `openssl s_client -connect <mesh address>:<port> -servername admin.<domain>` from a device on
+   the mesh shows `*.<domain>` alone, issued by Let's Encrypt's staging CA. https://crt.sh/?q=<domain> lists only the
+   wildcard, never an app's name.
+5. **NetBird's cloud port.** On NetBird's cloud, setup's answers say `householdPort` 9443 (`netbird.CloudPort`), and
+   Admin answers at `https://admin.<domain>:9443` from a phone on the mesh. Try a TLS passthrough service on 443 and
+   8443 on the shared cluster too: if one is accepted now, the constant changes (ADR 0021).
+6. **The LAN.** From another device on the LAN, `admin.<domain>` never resolves to a mesh address (the mesh's zone is the mesh's
+   only) and the primary's port answers nothing.
+7. **The console.** Revoke the token at Infomaniak, set the clock aside or wait for a renewal: Admin's warnings list
+   (`sudo curl -s --unix-socket /run/homerslab/manager.sock http://manager/api/v1/warnings`) has one warning that names
+   `sudo homerslab dns token`. Make a new token and give it there: the renewal runs at once, and the warning is resolved.
+8. **CAA.** Add `CAA 0 issue "sectigo.com"` to the zone and give the token again: the terminal says the CAA records
+   don't let the authority issue. Remove it.
+9. **Production, once.** With `--certificate-authority letsencrypt`, issue the household's real certificate.

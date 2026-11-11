@@ -67,7 +67,10 @@ type primary struct {
 	steps    map[string]setup.Handler
 	host     *agenttest.Host // the primary's machine, as its agent sees it
 	netbird  manager.NetBird
-	log      *slog.Logger // the manager's and the agent's, when a test reads them
+	domains  manager.Domains
+	// agentConfig is the agent's, filled in by agenttest.
+	agentConfig agent.Config
+	log         *slog.Logger // the manager's and the agent's, when a test reads them
 }
 
 // withLogs gives the manager and its agent one logger, at debug level, writing to w.
@@ -105,7 +108,9 @@ func newPrimary(t *testing.T, opts ...option) *primary {
 		o(p)
 	}
 	if p.agent == "" {
-		p.agent, p.host = agenttest.StartWith(t, agent.Config{Log: p.log})
+		cfg := p.agentConfig
+		cfg.Log = p.log
+		p.agent, p.host = agenttest.StartWith(t, cfg)
 	}
 	p.open()
 	return p
@@ -130,6 +135,7 @@ func (p *primary) open() {
 		Web:        p.web,
 		Steps:      p.steps,
 		NetBird:    p.netbird,
+		Domains:    p.domains,
 		Log:        p.log,
 	})
 	if err != nil {

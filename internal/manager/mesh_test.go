@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net"
 	"net/http"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"slices"
@@ -50,6 +51,11 @@ type fakeNetBird struct {
 	broken        map[string]bool // token IDs that NetBird refuses
 	// beforeBootstrap runs as the bootstrap starts, before NetBird has heard of the owner.
 	beforeBootstrap func()
+	// cloudPort is the port the fake's report gives (NetBird's cloud: 9443); port is the one the policies were made
+	// for, and names the household's names made on the mesh, as "domain address".
+	cloudPort int
+	port      int
+	names     []string
 }
 
 const setupToken = "nbp_SETUP0000000000000000000000000000000"
@@ -128,7 +134,7 @@ func (m *fakeMesh) Report(context.Context) (mesh.Report, error) {
 	if m.f.broken[m.t.ID] {
 		return mesh.Report{}, mesh.ErrTokenRefused
 	}
-	return mesh.Report{Mesh: "netbird"}, nil
+	return mesh.Report{Mesh: "netbird", Port: m.f.cloudPort}, nil
 }
 func (m *fakeMesh) RemoveDefault(context.Context) error {
 	m.f.mu.Lock()
@@ -149,10 +155,17 @@ func (m *fakeMesh) Disable(_ context.Context, ids []string) error {
 	m.f.conflicts = slices.DeleteFunc(m.f.conflicts, func(p mesh.Policy) bool { return slices.Contains(ids, p.ID) })
 	return nil
 }
-func (m *fakeMesh) EnsurePolicies(context.Context) error {
+func (m *fakeMesh) EnsurePolicies(_ context.Context, port int) error {
 	m.f.mu.Lock()
 	defer m.f.mu.Unlock()
 	m.f.ensured++
+	m.f.port = port
+	return nil
+}
+func (m *fakeMesh) EnsureNames(_ context.Context, domain string, to netip.Addr) error {
+	m.f.mu.Lock()
+	defer m.f.mu.Unlock()
+	m.f.names = append(m.f.names, domain+" "+to.String())
 	return nil
 }
 func (m *fakeMesh) NewJoinKey(context.Context, string) (mesh.JoinKey, error) {

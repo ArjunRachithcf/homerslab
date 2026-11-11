@@ -1,0 +1,4 @@
+the machine's resolver (/etc/resolv.conf): nameserver 127.0.0.1
+Present: err=could not determine zone for domain "_acme-challenge.example.test": could not find the start of authority for _acme-challenge.example.test.: NOERROR
+zones handed to the provider: []
+queries the system resolver saw: [SOA _acme-challenge.example.test. SOA example.test. SOA test.]

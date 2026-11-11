@@ -59,8 +59,10 @@ type Config struct {
 	CheckEvery time.Duration
 	// JoinWait is how long a join waits for the mesh's client to connect.
 	JoinWait time.Duration
-	Now      func() time.Time
-	Log      *slog.Logger
+	// Edge is where the node's edge lives; DefaultEdge when its Unit is empty.
+	Edge EdgeConfig
+	Now  func() time.Time
+	Log  *slog.Logger
 }
 
 // Agent is a running agent.
@@ -75,6 +77,7 @@ type Agent struct {
 	bridgesAt time.Time        // when the engines were last asked for their bridges
 	refused   map[string]bool  // engine bridge names refused, reported once each
 	meshDrift []firewall.Drift // what the agent found changed in the mesh client, and put back
+	edgeDown  string           // the edge's last check's error, so a down edge is logged once
 }
 
 // state is what the agent keeps across restarts, in StateDir/agent.json. None of it is secret.
@@ -86,7 +89,11 @@ type state struct {
 	// SetupClosed: the setup link's LAN listener was closed, for good. SetupPort is that listener's port, as the
 	// manager gave it.
 	SetupClosed bool `json:"setupClosed"`
-	SetupPort   int  `json:"setupPort,omitempty"`
+	// MeshIPs are the node's addresses on its meshes, where its edge listens.
+	MeshIPs []netip.Addr `json:"meshIps,omitempty"`
+	// Edge is the edge's sites and certificates, once the manager has given them.
+	Edge      *edgeState `json:"edge,omitempty"`
+	SetupPort int        `json:"setupPort,omitempty"`
 	// Bridges are the engines' bridges as last confirmed: what the table uses until the engines answer again, at
 	// boot before any of them runs.
 	Bridges []string `json:"bridges,omitempty"`
@@ -111,6 +118,9 @@ func New(ctx context.Context, c Config) (*Agent, error) {
 	}
 	if c.JoinWait == 0 {
 		c.JoinWait = 30 * time.Second
+	}
+	if c.Edge.Unit == "" {
+		c.Edge = DefaultEdge
 	}
 	if c.Resolve == nil {
 		c.Resolve = net.DefaultResolver.LookupHost
@@ -238,6 +248,10 @@ func (a *Agent) Handler() http.Handler {
 	mux.HandleFunc("PUT /v1/firewall/setup-listener", a.setupListener)
 	mux.HandleFunc("PUT /v1/credentials/{name}", a.putCredential)
 	mux.HandleFunc("GET /v1/credentials/{name}", a.getCredential)
+	mux.HandleFunc("GET /v1/edge", a.getEdge)
+	mux.HandleFunc("PUT /v1/edge", a.putEdge)
+	mux.HandleFunc("POST /v1/edge/check", a.checkEdge)
+	mux.HandleFunc("PUT /v1/edge/certificates/{domain}", a.putEdgeCertificate)
 	mux.HandleFunc("DELETE /v1/credentials/{name}", a.deleteCredential)
 	mux.HandleFunc("GET /v1/mesh", a.getMesh)
 	mux.HandleFunc("/", func(w http.ResponseWriter, _ *http.Request) { fail(w, http.StatusNotFound, "not-found") })
@@ -273,6 +287,16 @@ func (a *Agent) check(ctx context.Context) {
 	defer a.mu.Unlock()
 	if err := a.reconcile(ctx, false); err != nil {
 		a.log.Error("checking the firewall table", "err", err)
+	}
+	// An edge that is down is said once, and again when it comes back: not at every check.
+	err := a.reconcileEdge(ctx)
+	switch {
+	case err != nil && a.edgeDown != err.Error():
+		a.log.Error("checking the edge; trying again at each check", "err", err)
+		a.edgeDown = err.Error()
+	case err == nil && a.edgeDown != "":
+		a.log.Info("the edge answers again")
+		a.edgeDown = ""
 	}
 }
 

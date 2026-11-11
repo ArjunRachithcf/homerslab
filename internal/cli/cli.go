@@ -37,9 +37,11 @@ const usage = `Usage:
   homerslab agent      run the agent (as root, from homerslab-agent.service)
   homerslab manager    run the manager (unprivileged, from homerslab-manager.service)
   homerslab setup link make a one-time link to first-time setup, and show it with its QR code
-  homerslab setup secret mesh
-                       give first-time setup the mesh's token, from this machine's terminal (read from stdin,
-                       never shown)
+  homerslab setup secret mesh|dns
+                       give first-time setup the mesh's or the DNS provider's token, from this machine's terminal
+                       (read from stdin, never shown)
+  homerslab dns token  replace the DNS provider's token, from this machine's console, and renew the certificate if it
+                       is due
   homerslab node       show this primary as its agent reports it
   homerslab mesh owner-password
                        show the owner's password of a NetBird HomersLab set up, for its dashboard (as root)
@@ -61,6 +63,8 @@ func Main(ctx context.Context, args []string, env Env) int {
 		err = setupLink(ctx, args[2:], env)
 	case "setup secret":
 		err = setupSecret(ctx, args[2:], env)
+	case "dns token":
+		err = dnsToken(ctx, args[2:], env)
 	case "firewall restore":
 		err = firewallRestore(ctx, args[2:], env)
 	case "mesh owner-password":

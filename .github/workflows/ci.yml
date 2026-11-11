@@ -110,6 +110,28 @@ jobs:
         # The containers' logs, which the suite prints when it fails, are third-party text too.
         run: sh .github/scripts/stop-commands.sh go test -count=1 -v -run TestTheMeshContract ./internal/mesh/netbird/
 
+  domain:
+    name: Certificates and the edge (Pebble, BIND and Caddy in containers)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      # The harness, and only the harness, reaches the runner's Docker (HOMERSLAB_TEST_DOCKER_HOST), for compose projects
+      # hltest-16 and hltest-16-edge; the code under test points at nowhere. Images are pinned by digest in each suite's
+      # testdata/compose.yaml. The suites copy their own test binary into the containers, so it is built static.
+      - name: The DNS provider contract suite and the edge's request matrix
+        env:
+          HOMERSLAB_TEST_DOCKER_HOST: unix:///var/run/docker.sock
+          DOCKER_HOST: unix:///nonexistent
+          CONTAINER_HOST: unix:///nonexistent
+          CGO_ENABLED: "0"
+        run: go test -count=1 -v -run 'TestTheDNSProviderContract$|TestTheEdgesRequestMatrix' ./internal/certs/ ./internal/edge/
+
   web:
     name: Web app (lint, types, build)
     runs-on: ubuntu-24.04
