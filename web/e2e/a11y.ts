@@ -1,10 +1,12 @@
-// Accessibility checks: axe-core's WCAG 2.2 AA rules on a surface's screens, as a person's device shows them. A test
-// takes one look (a theme, and whether motion and transparency are reduced), opens its surface in it, and calls
-// `accessible(page, 'name of the screen')` once per screen it reaches. Any violation fails the test (and, with every
-// material solid, anything axe couldn't decide), with a report that names the look, the screen, the rule and each
-// element; axe's findings are attached to the HTML report.
+// Accessibility checks: axe-core's WCAG 2.2 AA rules on a surface's screens, as a person's device shows them, and the
+// contrast of every word against the pixels behind it. A test takes one look (a theme, and whether motion and
+// transparency are reduced), opens its surface in it, and calls `accessible(page, 'name of the screen')` once per
+// screen it reaches (with the glass levels the surface offers, if it offers any). Any violation fails the test (and,
+// with every material solid, anything axe couldn't decide), with a report that names the look, the screen, the rule and
+// each element; axe's findings and the contrasts measured are attached to the HTML report.
 import AxeBuilder from '@axe-core/playwright';
 import { expect, type Page, test } from '@playwright/test';
+import { boxContrast, decodePng, hideWords, needed, PERCENTILE, type TextRun, textRuns } from './pixels';
 
 // axe-core's types, as the AxeBuilder in use has them (axe-core itself is its dependency, not ours)
 type AxeResults = Awaited<ReturnType<AxeBuilder['analyze']>>;
@@ -63,13 +65,19 @@ const seen = (page: Page): Promise<Look> => page.evaluate(() => ({
   transparency: matchMedia('(prefers-reduced-transparency: reduce)').matches ? 'reduce' : 'no-preference',
 }));
 
+/** The design system's glass levels (data-glass on <html>): Clear, Balanced (the default), Frosted, and Solid. */
+export const glassLevels = ['clear', 'balanced', 'frosted', 'solid'] as const;
+export type Glass = (typeof glassLevels)[number];
+
 /**
  * Runs axe's WCAG 2.2 AA rules on the page as it is now, once its screen has settled, and fails the test (softly, so
  * the test goes on to its next screens) on any violation. Under reduced transparency every material is solid, so
  * whatever axe couldn't decide fails too, once each undecided word the viewport's edge cuts has been measured again in
- * view. What axe found or couldn't decide is attached to the report.
+ * view. Then it measures every word against the pixels behind it (see legible()), at each of `glass`, the levels the
+ * surface offers, or at the page's own level when it offers none, and fails on any word below AA. What axe found or
+ * couldn't decide, and the contrasts measured, are attached to the report.
  */
-export async function accessible(page: Page, screen: string): Promise<void> {
+export async function accessible(page: Page, screen: string, { glass }: { glass?: readonly Glass[] } = {}): Promise<void> {
   const look = worn.get(page);
   if (look) expect(await seen(page), `the browser still shows the look on “${screen}”`).toEqual(look);
   expect.soft(await settle(page), `“${screen}” settles`).toEqual([]);
@@ -79,6 +87,101 @@ export async function accessible(page: Page, screen: string): Promise<void> {
   await test.info().attach(`axe: ${screen}`, { body: JSON.stringify({ violations, incomplete }, null, 2), contentType: 'application/json' });
   const undecided = solid ? report(incomplete, 'not decided by axe, with every material solid') : '';
   expect.soft([report(violations), undecided].filter(Boolean).join('\n\n'), `axe (WCAG 2.2 AA) on “${screen}”`).toBe('');
+  for (const level of glass ?? [undefined]) {
+    const { runs, problems } = await legible(page, level);
+    const at = `${look ? lookName(look) : 'the browser’s own look'}, ${problems.level}`;
+    await test.info().attach(`pixels: ${screen} (${at})`, { body: JSON.stringify(runs, null, 2), contentType: 'application/json' });
+    expect.soft(problems.text ? `${at}:\n${problems.text}` : '', `contrast against the pixels (WCAG 2.2 AA) on “${screen}”`).toBe('');
+  }
+}
+
+/** What legible() measured of one run of text: its worst box's contrast (NaN where it couldn't measure one). */
+export type Measured = { where: string; text: string; size: number; weight: number; contrast: number; needs: number; unmeasured: number; covered: number };
+
+/**
+ * Measures each run of text the page shows against the pixels behind it, at glass level `glass` (or the page's own):
+ * - it finds each word's boxes (Range.getClientRects, clipped as the page clips them);
+ * - it hides every word's glyphs and takes one screenshot of the area the words in view cover, so the shot holds what
+ *   is behind them: glass, its blur, the wallpaper;
+ * - each word's contrast is its ink (from its computed style, its opacities included) alpha-composited over each pixel
+ *   of its box, against that pixel, at the 5th percentile of the box (pixels.ts says why);
+ * - a run's contrast is its worst word's, and it fails below 4.5:1 (3:1 for large text).
+ * Words outside the viewport, or under a scroller's edge, are scrolled to the middle and shot again there (one shot per
+ * scroll, for every word it shows), then everything is scrolled back. A word that can't be brought wholly into view
+ * fails, as not measured; a word that something else covers wherever it is scrolled isn't shown, and is only listed.
+ */
+export async function legible(page: Page, glass?: Glass): Promise<{ runs: Measured[]; problems: { level: string; text: string } }> {
+  const before = await page.evaluate((g) => {
+    const html = document.documentElement;
+    const was = html.getAttribute('data-glass');
+    if (g) html.setAttribute('data-glass', g);
+    return was;
+  }, glass ?? null);
+  try {
+    if (glass) expect.soft(await settle(page), `the page settles at glass level ${glass}`).toEqual([]);
+    const level = await page.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue('--glass').trim());
+    const preset = glass ?? ({ 0: 'clear', 0.5: 'balanced', 1: 'frosted' } as Record<string, Glass | undefined>)[Number(level)];
+    const levelName = `glass ${preset ? preset[0]?.toUpperCase() + preset.slice(1) : 'of its own'} (--glass: ${level})`;
+    await page.evaluate(hideWords, true);
+    let runs = await page.evaluate(textRuns, null);
+    if (!runs.length) throw new Error('no words found on the page');
+    const first = runs;
+    const text = new Map(first.map((r) => [r.id, r.text]));
+    const contrast = new Map<string, number>();
+    const unmeasured = new Set<string>();
+    const covered = new Set<string>();
+    const pending = new Set(first.flatMap((r) => r.boxes.map((b) => b.key)));
+    let target: string | undefined;
+    for (;;) {
+      const changed = runs.find((r) => text.has(r.id) && text.get(r.id) !== r.text);
+      if (changed) throw new Error(`the page changed while its words were measured: ${changed.where} now says “${changed.text}”`);
+      const now = runs.flatMap((r) => r.boxes.filter((b) => b.inView && pending.has(b.key)).map((b) => [r, b] as const));
+      if (now.length) {
+        // one shot of the area these words cover, in CSS pixels: behind hidden words the background is smooth (glass
+        // blurs, the wallpaper is gradients), so the device's extra pixels add time and nothing else
+        const [left, top] = [Math.floor(Math.min(...now.map(([, b]) => b.x))), Math.floor(Math.min(...now.map(([, b]) => b.y)))];
+        const clip = { x: left, y: top, width: Math.ceil(Math.max(...now.map(([, b]) => b.x + b.w))) - left, height: Math.ceil(Math.max(...now.map(([, b]) => b.y + b.h))) - top };
+        const shot = decodePng(await page.screenshot({ scale: 'css', animations: 'allow', clip }));
+        for (const [r, b] of now) {
+          contrast.set(b.key, boxContrast(shot, { ...b, x: b.x - left, y: b.y - top }, r.ink, shot.width / clip.width));
+          pending.delete(b.key);
+        }
+      }
+      if (target && pending.delete(target)) {
+        // scrolled to the middle, and still not wholly in view: covered there too, or out of reach
+        const box = runs.flatMap((r) => r.boxes).find((b) => b.key === target);
+        (box?.covered ? covered : unmeasured).add(target);
+      }
+      target = first.flatMap((r) => r.boxes).find((b) => pending.has(b.key))?.key;
+      if (!target) break;
+      await page.evaluate(textRuns, target);
+      expect.soft(await settle(page), 'the page settles where a word was scrolled to').toEqual([]);
+      runs = await page.evaluate(textRuns, null);
+    }
+    const measured = first.map((r: TextRun): Measured => {
+      const shown = r.boxes.filter((b) => !covered.has(b.key));
+      const worst = Math.min(...shown.filter((b) => contrast.has(b.key)).map((b) => contrast.get(b.key) ?? NaN));
+      return { where: r.where, text: r.text, size: r.size, weight: r.weight, contrast: Number.isFinite(worst) ? worst : NaN,
+        needs: needed(r.size, r.weight), unmeasured: shown.filter((b) => unmeasured.has(b.key) || Number.isNaN(contrast.get(b.key) ?? 0)).length,
+        covered: r.boxes.length - shown.length };
+    });
+    const excerpt = (t: string) => (t.length > 60 ? `${t.slice(0, 59)}…` : t);
+    const font = (m: Measured) => `(${m.size}px, weight ${m.weight}; the ${PERCENTILE * 100}th percentile of its worst word’s pixels)`;
+    const lines = measured.flatMap((m) => [
+      ...(m.contrast < m.needs ? [`  - ${m.where} “${excerpt(m.text)}”: ${m.contrast.toFixed(2)}:1, needs ${m.needs}:1 ${font(m)}`] : []),
+      ...(m.unmeasured ? [`  - ${m.where} “${excerpt(m.text)}”: not measured, ${m.unmeasured} of its ${m.unmeasured === 1 ? 'word' : 'words'} never wholly in view`] : []),
+    ]);
+    return { runs: measured, problems: { level: levelName, text: lines.join('\n') } };
+  } finally {
+    await page.evaluate(hideWords, false);
+    await unscroll(page);
+    await page.evaluate((was) => {
+      const html = document.documentElement;
+      if (was === null) html.removeAttribute('data-glass');
+      else html.setAttribute('data-glass', was);
+    }, before);
+    if (glass) expect.soft(await settle(page), 'the page settles back at its own glass level').toEqual([]);
+  }
 }
 
 /**
@@ -125,13 +228,18 @@ async function inView(page: Page, violations: Result[], incomplete: Result[]): P
       out.incomplete.push(...i);
     }
   } finally {
-    await page.evaluate(() => {
-      const w = window as { a11yScrolled?: [Element, number, number][] };
-      for (const [e, left, top] of (w.a11yScrolled ?? []).reverse()) e.scrollTo(left, top); // the first record of each wins
-      delete w.a11yScrolled;
-    });
+    await unscroll(page);
   }
   return { violations: merged(out.violations), incomplete: merged(out.incomplete) };
+}
+
+/** Puts back every scroll position noted in `a11yScrolled` (inView and textRuns note them before they scroll). */
+async function unscroll(page: Page): Promise<void> {
+  await page.evaluate(() => {
+    const w = window as { a11yScrolled?: [Element, number, number][] };
+    for (const [e, left, top] of (w.a11yScrolled ?? []).reverse()) e.scrollTo({ left, top, behavior: 'instant' }); // the first record of each wins
+    delete w.a11yScrolled;
+  });
 }
 
 /** One result per rule, with every node it found. */

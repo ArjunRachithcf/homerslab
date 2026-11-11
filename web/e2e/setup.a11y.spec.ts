@@ -1,6 +1,6 @@
 // First-time setup's screens under axe (WCAG 2.2 AA), in every look a device can ask for, at the projects' phone and
 // desktop widths: one walk through the screens per look, one line per screen.
-import { accessible, audit, EXPERIMENTAL_WCAG, looks, lookName, report, WCAG22AA, wear } from './a11y';
+import { accessible, audit, EXPERIMENTAL_WCAG, type Glass, legible, looks, lookName, report, WCAG22AA, wear } from './a11y';
 import { expect, test } from './primary';
 
 for (const look of looks) {
@@ -78,4 +78,26 @@ test('the check catches too little contrast and a field without a label', async 
   expect(measured).toEqual(expect.arrayContaining(['#as-title', '.as-lead']));
   expect(violations.map((v) => v.id).sort()).toEqual(['color-contrast', 'label']);
   expect(report(violations)).toMatch(/color-contrast \(serious\)[^]*#planted-faint[^]*label \(critical\)[^]*#planted-unlabelled/);
+});
+
+// The pixel check at a glass level: setup offers none (it shows Balanced, the design system's default), Admin and Home
+// will offer all four, so the check takes a level, measures there and puts the page's own back.
+test('the pixel check measures at the glass level it is given', async ({ page, primary }) => {
+  await wear(page, { theme: 'light', motion: 'reduce', transparency: 'no-preference' });
+  await page.goto((await primary.newLink()).localUrl);
+  await expect(page.getByRole('heading', { level: 1 })).toContainText('Let’s set up HomersLab');
+  const html = page.locator('html');
+  const lead = async (glass?: Glass) => {
+    const { runs, problems } = await legible(page, glass);
+    await expect(html, 'the page’s own glass level is back').not.toHaveAttribute('data-glass');
+    return { level: problems.level, contrast: runs.find((r) => r.where === 'p.as-lead')?.contrast ?? NaN };
+  };
+  const own = await lead();
+  const at = { clear: await lead('clear'), balanced: await lead('balanced'), frosted: await lead('frosted'), solid: await lead('solid') };
+  expect([own, at.clear, at.balanced, at.frosted, at.solid].map((m) => m.level)).toEqual(['glass Balanced (--glass: 0.5)',
+    'glass Clear (--glass: 0)', 'glass Balanced (--glass: 0.5)', 'glass Frosted (--glass: 1)', 'glass Solid (--glass: 1)']);
+  expect(own.contrast).toBeCloseTo(at.balanced.contrast, 1);
+  // the level changes what is behind the words: Clear lets the wallpaper through, Solid is white
+  expect(Math.abs(at.clear.contrast - at.frosted.contrast)).toBeGreaterThan(0.1);
+  expect(Math.abs(at.frosted.contrast - at.solid.contrast)).toBeGreaterThan(0.1);
 });
