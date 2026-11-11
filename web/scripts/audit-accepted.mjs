@@ -4,12 +4,16 @@
 // step, `npm audit --omit=dev`, fails on any in a package that ships, accepted or not.
 //
 //   npm audit --json | node scripts/audit-accepted.mjs audit-accepted.json
+import { randomBytes } from 'node:crypto';
 import { readFileSync, realpathSync } from 'node:fs';
 import { argv, exit, stderr, stdin, stdout } from 'node:process';
 import { fileURLToPath } from 'node:url';
 
-// Text from the registry goes into the log. A line break in it could start a workflow command of its own, so
-// annotations get the runner's escapes and plain lines lose their breaks.
+// Text from the registry goes into the log, and the runner reads a command from a line that starts with "::" after
+// any spaces, or that holds "##[" anywhere (lines end at \n, \r\n or a lone \r). So the plain listing goes out with
+// commands stopped (a token of its own each run), and the annotations come after it with the runner's escapes for
+// line breaks and every "##[" broken up.
+const defang = (s) => s.replaceAll('##[', '## [');
 const escapeData = (s) => s.replaceAll('%', '%25').replaceAll('\r', '%0D').replaceAll('\n', '%0A');
 const oneLine = (s) => s.replace(/[\r\n]+/g, ' ');
 const warning = (s) => `::warning title=npm audit::${escapeData(s)}`;
@@ -62,17 +66,19 @@ export function check(reportText, acceptedText) {
     }
   }
 
-  const out = [];
+  const listing = [];
+  const annotations = [];
   for (const [id, a] of [...found].sort(([x], [y]) => x.localeCompare(y))) {
-    const what = `${id} (${a.severity}) in ${[...a.packages].sort().join(', ')}: ${a.title}`;
-    out.push(oneLine(`${known.has(id) ? 'known' : 'NEW'}  ${what}`));
-    if (!known.has(id)) out.push(warning(`New advisory, not in web/audit-accepted.json: ${what}`));
+    const what = defang(`${id} (${a.severity}) in ${[...a.packages].sort().join(', ')}: ${a.title}`);
+    listing.push(oneLine(`${known.has(id) ? 'known' : 'NEW'}  ${what}`));
+    if (!known.has(id)) annotations.push(warning(`New advisory, not in web/audit-accepted.json: ${what}`));
   }
   for (const id of [...known].sort()) {
-    if (!found.has(id)) out.push(notice(`${id} is no longer reported: drop it from web/audit-accepted.json`));
+    if (!found.has(id)) annotations.push(notice(`${id} is no longer reported: drop it from web/audit-accepted.json`));
   }
-  if (found.size === 0) out.push('No advisories.');
-  return out;
+  if (found.size === 0) listing.push('No advisories.');
+  const token = randomBytes(16).toString('hex');
+  return [`::stop-commands::${token}`, ...listing, `::${token}::`, ...annotations];
 }
 
 // Run as a script (argv[1] resolved, since import.meta.url is the real path even when the checkout's path has a symlink).

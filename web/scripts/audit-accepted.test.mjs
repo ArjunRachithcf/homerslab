@@ -5,6 +5,7 @@ import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
 
 import { check } from './audit-accepted.mjs';
+import { commands } from './runner-commands.mjs';
 
 const MINIMATCH = 'GHSA-g3hv-75wg-m249';
 
@@ -77,27 +78,46 @@ test('an audit that gave no report (the registry failed) warns', () => {
   }
 });
 
-test("the registry's text can't start a workflow command or break an annotation", () => {
-  const evil = advisory('GHSA-dddd-eeee-ffff', 'evil', 'title\n::stop-commands::x\r\n::add-mask::y 100%');
-  const out = check(report(['evil', [evil]]), accepted());
-  for (const line of out) {
-    assert.doesNotMatch(line, /[\r\n]/, line);
+// Titles as a hostile registry could send them, each aimed at the runner's command parsing.
+const HOSTILE = [
+  'first ##[stop-commands]zzzzzzzz',
+  `##[add-mask]${MINIMATCH}`,
+  'lone CR\r::add-mask::GHSA-x',
+  'tab\n\t::error::injected',
+  'line\n::stop-commands::x\r\n::add-mask::y 100%',
+];
+
+test("the registry's text runs no workflow command: only our stop, resume and annotations do", () => {
+  const evil = HOSTILE.map((title, i) => [`evil${i}`, [advisory(`GHSA-dddd-eeee-ff0${i}`, `evil${i}`, title)]]);
+  const out = check(report(minimatch, ...evil), accepted(MINIMATCH)).join('\n');
+  const ran = commands(out);
+  assert.deepEqual(ran.map((c) => c.name), ['stop-commands', 'resume', ...HOSTILE.map(() => 'warning')], out);
+  for (const c of ran.slice(2)) {
+    assert.match(c.line, /^::warning title=npm audit::New advisory, not in web\/audit-accepted\.json: GHSA-dddd-eeee-ff0/);
+    assert.doesNotMatch(c.line, /##\[/, c.line); // v2 wins over v1 today; an annotation never carries the v1 form anyway
   }
-  assert.match(warnings(out)[0], /title%0A::stop-commands::x%0D%0A::add-mask::y 100%25/);
+  assert.match(out, /line%0A::stop-commands::x%0D%0A::add-mask::y 100%25/); // escaped, so the annotation keeps it
+});
+
+test('the listing runs inside a stop of its own, with a fresh token each time', () => {
+  const first = (out) => out[0];
+  const a = check(report(minimatch), accepted(MINIMATCH));
+  assert.match(first(a), /^::stop-commands::[0-9a-f]{32}$/);
+  assert.notEqual(first(a), first(check(report(minimatch), accepted(MINIMATCH))));
 });
 
 test('a broken list of accepted advisories fails loudly', () => {
   const list = (advisories) => JSON.stringify({ advisories });
-  for (const [why, text] of [
-    ['not JSON', 'not json'],
-    ['an array', list([MINIMATCH])],
-    ['a package name for an ID', list({ minimatch: 'development only' })],
-    ['an ID with more after it', list({ [`${MINIMATCH} minimatch`]: 'development only' })],
-    ['no reason', list({ [MINIMATCH]: '' })],
-    ['a reason of spaces', list({ [MINIMATCH]: '  ' })],
-    ['a reason that is not text', list({ [MINIMATCH]: true })],
+  for (const [message, text] of [
+    [/JSON/, 'not json'],
+    [/must map each advisory ID/, list([MINIMATCH])],
+    [/"minimatch" is not a GHSA ID/, list({ minimatch: 'development only' })],
+    [/is not a GHSA ID/, list({ [`${MINIMATCH} minimatch`]: 'development only' })],
+    [/needs the reason/, list({ [MINIMATCH]: '' })],
+    [/needs the reason/, list({ [MINIMATCH]: '  ' })],
+    [/needs the reason/, list({ [MINIMATCH]: true })],
   ]) {
-    assert.throws(() => check(report(minimatch), text), Error, why);
+    assert.throws(() => check(report(minimatch), text), message, text);
   }
 });
 

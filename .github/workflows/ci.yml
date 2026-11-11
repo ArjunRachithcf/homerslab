@@ -30,10 +30,17 @@ jobs:
         CONTAINER_HOST: unix:///nonexistent
     env:
       GOFLAGS: -buildvcs=false
+      # Modules come only from the first step, under stop-commands.sh: a proxy's error body (Go keeps a CR in it) is
+      # third-party text. Every later step finds them in the cache.
+      GOPROXY: "off"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Fetch the modules (all of the graph, for go mod tidy)
+        env:
+          GOPROXY: https://proxy.golang.org,direct
+        run: sh .github/scripts/stop-commands.sh go mod download all
       - name: gofmt
         run: test -z "$(gofmt -l . | tee /dev/stderr)"
       - name: go vet
@@ -46,6 +53,9 @@ jobs:
   firewall:
     name: Firewall table (network namespaces)
     runs-on: ubuntu-24.04
+    # Modules come only from the step that fetches them, as in the Go job.
+    env:
+      GOPROXY: "off"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -53,8 +63,12 @@ jobs:
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
+      - name: Fetch the modules
+        env:
+          GOPROXY: https://proxy.golang.org,direct
+        run: sh .github/scripts/stop-commands.sh go mod download
       - name: The tools the test drives
-        run: sudo apt-get install -y --no-install-recommends nftables iproute2 iputils-ping
+        run: sh .github/scripts/stop-commands.sh sudo apt-get install -y --no-install-recommends nftables iproute2 iputils-ping
       - name: Build the test
         run: CGO_ENABLED=0 go test -c -o fw.test ./internal/firewall
       # As root, the test puts itself in a fresh network namespace (unshare -n) before it touches anything, and refuses
@@ -70,6 +84,9 @@ jobs:
     name: Mesh contract (self-hosted NetBird in containers)
     runs-on: ubuntu-24.04
     timeout-minutes: 20
+    # Modules come only from the step that fetches them, as in the Go job.
+    env:
+      GOPROXY: "off"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -77,6 +94,10 @@ jobs:
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
+      - name: Fetch the modules
+        env:
+          GOPROXY: https://proxy.golang.org,direct
+        run: sh .github/scripts/stop-commands.sh go mod download
       - name: Kernel WireGuard, for the clients in their containers
         run: sudo modprobe wireguard
       # The harness, and only the harness, reaches the runner's Docker (HOMERSLAB_TEST_DOCKER_HOST), for compose project
@@ -86,7 +107,8 @@ jobs:
           HOMERSLAB_TEST_DOCKER_HOST: unix:///var/run/docker.sock
           DOCKER_HOST: unix:///nonexistent
           CONTAINER_HOST: unix:///nonexistent
-        run: go test -count=1 -v -run TestTheMeshContract ./internal/mesh/netbird/
+        # The containers' logs, which the suite prints when it fails, are third-party text too.
+        run: sh .github/scripts/stop-commands.sh go test -count=1 -v -run TestTheMeshContract ./internal/mesh/netbird/
 
   web:
     name: Web app (lint, types, build)
@@ -111,6 +133,9 @@ jobs:
   flow:
     name: Flow tests (first-time setup in a browser)
     runs-on: ubuntu-24.04
+    # Modules come only from the step that fetches them, as in the Go job.
+    env:
+      GOPROXY: "off"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -123,6 +148,10 @@ jobs:
           node-version: 24
           cache: npm
           cache-dependency-path: web/package-lock.json
+      - name: Fetch the modules
+        env:
+          GOPROXY: https://proxy.golang.org,direct
+        run: sh .github/scripts/stop-commands.sh go mod download
       - name: Build the pages, then the binary that carries them
         run: |
           (cd web && sh ../.github/scripts/stop-commands.sh npm ci --ignore-scripts && npm run build)
