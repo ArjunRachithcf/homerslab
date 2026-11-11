@@ -79,12 +79,16 @@ func TestTheManagerRunsUnprivilegedAndTheAgentAsRoot(t *testing.T) {
 	for k, want := range map[string]string{"ProtectHome": "yes", "ProtectKernelModules": "yes", "ProtectClock": "yes",
 		"ProtectKernelLogs": "yes", "NoNewPrivileges": "yes", "ProtectSystem": "strict", "PrivateTmp": "yes",
 		"ProtectKernelTunables": "yes", "ProtectControlGroups": "yes", "RestrictSUIDSGID": "yes",
-		"CapabilityBoundingSet": "CAP_CHOWN CAP_NET_ADMIN", "RestrictAddressFamilies": "AF_UNIX AF_NETLINK AF_INET AF_INET6",
+		"CapabilityBoundingSet": "CAP_CHOWN CAP_NET_ADMIN CAP_SETUID CAP_SETGID", "RestrictAddressFamilies": "AF_UNIX AF_NETLINK AF_INET AF_INET6",
 		"PrivateNetwork": "no", "SystemCallFilter": "@system-service", "SystemCallErrorNumber": "EPERM",
 		"MemoryDenyWriteExecute": "yes", "LockPersonality": "yes", "StateDirectory": "homerslab-agent",
 		"StateDirectoryMode": "0700", "Type": "notify", "NotifyAccess": "main", "ExecStartPre": "+/usr/bin/systemd-creds setup", "TimeoutStartSec": "30s",
 		"DevicePolicy": "closed", "DeviceAllow": "/dev/tpmrm0 rw", "PrivateIPC": "yes", "ProtectProc": "invisible",
-		"RestrictNamespaces": "yes", "RestrictRealtime": "yes"} {
+		"RestrictNamespaces": "yes", "RestrictRealtime": "yes",
+		// It parses compose files as root: a file it is sent can't take the machine with it.
+		"MemoryMax": "512M", "CPUQuota": "100%",
+		// A read's child killed for memory is the child's end, not the agent's.
+		"OOMPolicy": "continue"} {
 		if got := agent[k]; len(got) != 1 || got[0] != want {
 			t.Errorf("the agent's %s = %v, want %s", k, got, want)
 		}

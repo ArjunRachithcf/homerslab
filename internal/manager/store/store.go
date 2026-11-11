@@ -189,6 +189,19 @@ var migrations = []string{
 	ALTER TABLE setup_session ADD COLUMN boot_id TEXT NOT NULL DEFAULT '';
 	ALTER TABLE setup_session ADD COLUMN opened_since_boot INTEGER NOT NULL DEFAULT 0;
 	ALTER TABLE setup_session ADD COLUMN seen_since_boot INTEGER NOT NULL DEFAULT 0;`,
+	// Install plans: kept as they were made, never changed. A change in the household is a new plan, with a new id.
+	`CREATE TABLE plan (
+		id      TEXT PRIMARY KEY,
+		app     TEXT NOT NULL,
+		body    TEXT NOT NULL,
+		made_at INTEGER NOT NULL
+	);
+	CREATE TRIGGER plan_immutable BEFORE UPDATE ON plan
+	BEGIN SELECT RAISE(ABORT, 'a plan never changes: a change makes a new plan'); END;
+	CREATE TRIGGER plan_kept BEFORE DELETE ON plan
+	BEGIN SELECT RAISE(ABORT, 'a plan is kept: pruning old plans comes through its own path'); END;
+	CREATE TRIGGER plan_once BEFORE INSERT ON plan WHEN EXISTS (SELECT 1 FROM plan WHERE id = NEW.id)
+	BEGIN SELECT RAISE(ABORT, 'a plan is made once: the same id is the same plan'); END;`,
 }
 
 // Moment is when something happened: by the wall clock, for display and audit, and by the time since the machine
@@ -463,4 +476,29 @@ func (s *Store) SeeSession(ctx context.Context, tokenHash []byte, at Moment) err
 	_, err := s.db.ExecContext(ctx, `UPDATE setup_session SET last_seen = ?, seen_since_boot = ? WHERE token_hash = ? AND boot_id = ?`,
 		at.Wall.UnixMilli(), int64(at.Since), tokenHash, at.Boot)
 	return written(err, s.dir)
+}
+
+// SavePlan keeps a plan by its id, unless one with that id is kept already, and returns the one kept and whether it
+// is new: the same id is the same plan, made earlier.
+func (s *Store) SavePlan(ctx context.Context, id, app string, body []byte, madeAt time.Time) (kept []byte, made bool, err error) {
+	err = s.tx(ctx, func(tx *sql.Tx) error {
+		err := tx.QueryRowContext(ctx, `SELECT body FROM plan WHERE id = ?`, id).Scan(&kept)
+		if !errors.Is(err, sql.ErrNoRows) {
+			return err // kept earlier, or a failure
+		}
+		made, kept = true, body
+		_, err = tx.ExecContext(ctx, `INSERT INTO plan (id, app, body, made_at) VALUES (?, ?, ?, ?)`, id, app, string(body), madeAt.UnixMilli())
+		return err
+	})
+	return kept, made, err
+}
+
+// Plan is the plan kept with that id, or ErrNotFound.
+func (s *Store) Plan(ctx context.Context, id string) ([]byte, error) {
+	var body []byte
+	err := s.db.QueryRowContext(ctx, `SELECT body FROM plan WHERE id = ?`, id).Scan(&body)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	return body, err
 }

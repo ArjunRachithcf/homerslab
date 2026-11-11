@@ -1,7 +1,7 @@
 {
   "name": "homerslab-web",
   "private": true,
-  "description": "HomersLab's surfaces: first-time setup now, Admin and Home next. Built into the binary (internal/surfaces).",
+  "description": "HomersLab's surfaces: first-time setup and Admin now, Home next. Built into the binary (internal/surfaces).",
   "license": "Apache-2.0",
   "type": "module",
   "engines": {

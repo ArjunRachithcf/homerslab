@@ -2,9 +2,10 @@
 // state in its database and serves the one API that Admin, the CLI and first-time setup use. It reaches the host only
 // through the agent.
 //
-// It answers on two listeners:
+// It answers on three listeners:
 //   - the control socket, a Unix socket only root and the manager's own user can open, for the CLI on this machine;
-//   - the setup listener, on this machine and its LAN, for first-time setup's page, opened by a one-time link.
+//   - the setup listener, on this machine and its LAN, for first-time setup's page, opened by a one-time link;
+//   - Admin's socket, which only the edge opens, for admin.<main domain> over the mesh.
 package manager
 
 import (
@@ -23,6 +24,9 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/ArjunRachithcf/homerslab/catalogs"
+	"github.com/ArjunRachithcf/homerslab/internal/agent"
+	"github.com/ArjunRachithcf/homerslab/internal/catalog"
 	"github.com/ArjunRachithcf/homerslab/internal/certs"
 	"github.com/ArjunRachithcf/homerslab/internal/lan"
 	"github.com/ArjunRachithcf/homerslab/internal/manager/setup"
@@ -63,7 +67,9 @@ type Config struct {
 	// ScheduleEvery is how often the scheduler looks for due jobs.
 	ScheduleEvery time.Duration
 	Web           fs.FS // the built pages; surfaces.Dist() when nil
-	Log           *slog.Logger
+	// Catalog is the catalog the Store shows; the official one when nil.
+	Catalog fs.FS
+	Log     *slog.Logger
 }
 
 // Manager is a running manager.
@@ -75,6 +81,8 @@ type Manager struct {
 	netbird   NetBird
 	domains   Domains
 	web       fs.FS
+	catalog   *catalog.Catalog
+	catalogFS fs.FS
 	log       *slog.Logger
 	lanClosed atomic.Bool
 	certMu    sync.Mutex // one issuance or renewal at a time
@@ -119,6 +127,13 @@ func New(c Config) (*Manager, error) {
 	if c.ScheduleEvery == 0 {
 		c.ScheduleEvery = time.Hour
 	}
+	if c.Catalog == nil {
+		c.Catalog = catalogs.Official()
+	}
+	cat, err := catalog.Load(c.Catalog)
+	if err != nil {
+		return nil, fmt.Errorf("the catalog: %w", err)
+	}
 	db, err := store.Open(c.DB, setup.StoreSteps())
 	if err != nil {
 		return nil, err
@@ -128,7 +143,8 @@ func New(c Config) (*Manager, error) {
 		a.Log = c.Log
 		c.Domains = realDomains{a: a, book: db.Book()}
 	}
-	m := &Manager{cfg: c, db: db, agent: newAgentClient(c.AgentSocket), netbird: c.NetBird, domains: c.Domains, web: c.Web, log: c.Log}
+	m := &Manager{cfg: c, db: db, agent: newAgentClient(c.AgentSocket), netbird: c.NetBird, domains: c.Domains, web: c.Web, log: c.Log,
+		catalog: cat, catalogFS: c.Catalog}
 	handlers := map[string]setup.Handler{"network": m.network, "domain": m.domain}
 	for id, h := range setup.Built {
 		handlers[id] = h
@@ -157,7 +173,8 @@ func (m *Manager) Serve(ctx context.Context, setupLn, controlLn, adminLn net.Lis
 			// The network step bootstraps a mesh and joins it, waiting for the client to connect: up to a few minutes.
 			WriteTimeout: 3 * time.Minute, IdleTimeout: 2 * time.Minute},
 		{Handler: m.Control(), ReadHeaderTimeout: 10 * time.Second},
-		{Handler: m.Admin(), ReadHeaderTimeout: 10 * time.Second, ReadTimeout: 30 * time.Second, IdleTimeout: 2 * time.Minute},
+		{Handler: m.Admin(), ReadHeaderTimeout: 10 * time.Second, ReadTimeout: 30 * time.Second,
+			WriteTimeout: agent.ReadDeadline + 30*time.Second, IdleTimeout: 2 * time.Minute},
 	}
 	listeners := []net.Listener{setupLn, controlLn, adminLn}
 	if adminLn == nil {
@@ -199,6 +216,7 @@ func (m *Manager) Control() http.Handler {
 	mux.HandleFunc("GET /api/v1/dns", m.getDNS)
 	mux.HandleFunc("PUT /api/v1/dns/token", m.putDNSToken)
 	mux.HandleFunc("GET /api/v1/warnings", m.getWarnings)
+	m.catalogRoutes(mux)
 	mux.HandleFunc("/", notFound)
 	return mux
 }

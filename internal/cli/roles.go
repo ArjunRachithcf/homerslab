@@ -22,6 +22,7 @@ import (
 	"github.com/ArjunRachithcf/homerslab/internal/certs"
 	"github.com/ArjunRachithcf/homerslab/internal/lan"
 	"github.com/ArjunRachithcf/homerslab/internal/manager"
+	"github.com/ArjunRachithcf/homerslab/internal/node"
 )
 
 func runAgent(ctx context.Context, args []string, env Env) error {
@@ -40,7 +41,7 @@ func runAgent(ctx context.Context, args []string, env Env) error {
 	}
 	log := slog.New(slog.NewTextHandler(env.Stderr, nil))
 	log.Info("agent starting", "socket", *socket, "euid", env.Euid())
-	return agent.Serve(ctx, agent.Config{Socket: *socket, SocketGID: gid, Sysroot: os.DirFS(*sysroot), Root: "/",
+	return agent.Serve(ctx, agent.Config{Socket: *socket, SocketGID: gid, Sysroot: node.Dir(*sysroot), Root: "/",
 		StateDir: *state, SetupPort: *setupPort, Log: log})
 }
 

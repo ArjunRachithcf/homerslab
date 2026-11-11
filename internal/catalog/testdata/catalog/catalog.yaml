@@ -1,0 +1,7 @@
+# A catalog for the loader's tests: one app with every field of the manifest, and one host app.
+id: test
+name: The test catalog
+publisher: HomersLab's tests
+categories:
+  - {id: photos, name: Photos and videos}
+  - {id: films, name: Films and series}

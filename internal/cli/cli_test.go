@@ -13,6 +13,7 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/makiuchi-d/gozxing"
 	"github.com/makiuchi-d/gozxing/qrcode"
@@ -21,18 +22,41 @@ import (
 	"github.com/ArjunRachithcf/homerslab/internal/cli"
 	"github.com/ArjunRachithcf/homerslab/internal/lan"
 	"github.com/ArjunRachithcf/homerslab/internal/manager"
+	"github.com/ArjunRachithcf/homerslab/internal/manager/setup"
+	"github.com/ArjunRachithcf/homerslab/internal/manager/store"
 	"github.com/ArjunRachithcf/homerslab/internal/testenv"
 )
 
 // running starts an agent and a manager in the test's own directories, and returns the manager's control socket. The
-// machine's address on the LAN is 192.168.1.20, or the one given (the zero Addr: none).
-func running(t *testing.T, lanAddress ...netip.Addr) string {
+// machine's address on the LAN is 192.168.1.20, or the netip.Addr given (the zero Addr: none). With true, first-time
+// setup's built steps are already answered: the Ferreira household, with Inês as its admin.
+func running(t *testing.T, options ...any) string {
 	t.Helper()
-	onLAN := netip.MustParseAddr("192.168.1.20")
-	if len(lanAddress) > 0 {
-		onLAN = lanAddress[0]
+	onLAN, setUp := netip.MustParseAddr("192.168.1.20"), false
+	for _, o := range options {
+		switch v := o.(type) {
+		case netip.Addr:
+			onLAN = v
+		case bool:
+			setUp = v
+		}
 	}
 	dir := t.TempDir()
+	if setUp {
+		db, err := store.Open(filepath.Join(dir, "manager.db"), setup.StoreSteps())
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, st := range []struct {
+			id      string
+			answers map[string]string
+		}{{"welcome", nil}, {"you", map[string]string{"name": "Inês Ferreira", "mail": "ines@ferreira.family"}}, {"household", map[string]string{"household": "The Ferreira household"}}} {
+			if err := db.CompleteStep(context.Background(), st.id, st.answers, time.Now()); err != nil {
+				t.Fatal(err)
+			}
+		}
+		db.Close()
+	}
 	m, err := manager.New(manager.Config{
 		DB:          filepath.Join(dir, "manager.db"),
 		AgentSocket: agenttest.Start(t, agenttest.Primary()),

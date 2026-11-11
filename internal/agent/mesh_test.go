@@ -600,7 +600,9 @@ func TestTheAgentNeverReadsAnotherProcesssEnvironment(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		// In code, not in comments: a path in a string ends with "environ", or a path starts at "/proc".
+		// In code, not in comments: a path in a string ends with "environ", or a path starts at "/proc" but for the
+		// process's own (/proc/self, which a read's child uses on itself).
+		b = bytes.ReplaceAll(b, []byte(`"/proc/self/`), nil)
 		if bytes.Contains(b, []byte(`environ"`)) || bytes.Contains(b, []byte(`"/proc`)) {
 			t.Errorf("%s reads a process's environment from /proc", f)
 		}
