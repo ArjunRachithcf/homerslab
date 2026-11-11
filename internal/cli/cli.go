@@ -10,6 +10,8 @@ import (
 	"io"
 	"os"
 	"strings"
+
+	"github.com/ArjunRachithcf/homerslab/internal/agent"
 )
 
 // Defaults: where the packaged units put things.
@@ -47,6 +49,10 @@ const usage = `Usage:
   homerslab dns token  replace the DNS provider's token, from this machine's console, and renew the certificate if it
                        is due
   homerslab node       show this primary as its agent reports it
+  homerslab catalog    list the apps in the catalog
+  homerslab plan APP   make an install plan for an app, and show it in plain words
+  homerslab plan show ID
+                       show an install plan by its id
   homerslab mesh owner-password
                        show the owner's password of a NetBird HomersLab set up, for its dashboard (as root)
   homerslab firewall restore
@@ -65,6 +71,10 @@ func Main(ctx context.Context, args []string, env Env) int {
 	switch strings.Join(first(args, 2), " ") {
 	case "setup link":
 		err = setupLink(ctx, args[2:], env)
+	case "agent read-project": // the agent's own child for one compose read; not for people
+		return agent.ReadProjectMain(args[2:], os.Stdin, env.Stdout)
+	case "plan show":
+		err = showPlanByID(ctx, args[2:], env)
 	case "setup secret":
 		err = setupSecret(ctx, args[2:], env)
 	case "setup join":
@@ -85,6 +95,10 @@ func Main(ctx context.Context, args []string, env Env) int {
 			err = runManager(ctx, args[1:], env)
 		case "node":
 			err = showNode(ctx, args[1:], env)
+		case "catalog":
+			err = showCatalog(ctx, args[1:], env)
+		case "plan":
+			err = makePlan(ctx, args[1:], env)
 		default:
 			fmt.Fprint(env.Stderr, usage)
 			return 2

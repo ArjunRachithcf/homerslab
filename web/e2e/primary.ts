@@ -2,10 +2,13 @@
 // directory with its own HOME, and no container engine anywhere (DOCKER_HOST points at nowhere).
 import { test as base } from '@playwright/test';
 import { type ChildProcess, execFile, spawn } from 'node:child_process';
+import { createHash, randomBytes } from 'node:crypto';
 import { mkdtemp, rm } from 'node:fs/promises';
+import http from 'node:http';
 import net from 'node:net';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import { promisify } from 'node:util';
 
 const run = promisify(execFile);
@@ -18,6 +21,7 @@ export type Link = { url: string; localUrl: string; expiresAt: string };
 export class Primary {
   private agent?: ChildProcess;
   private manager?: ChildProcess;
+  private edge?: http.Server;
   private readonly logs: string[] = [];
   private constructor(readonly dir: string, private readonly env: NodeJS.ProcessEnv) {}
 
@@ -47,8 +51,22 @@ export class Primary {
 
   async startManager(): Promise<void> {
     this.manager = this.spawn('manager', '--db', this.at('manager.db'), '--agent-socket', this.at('agent.sock'),
-      '--control-socket', this.at('manager.sock'), '--listen', '127.0.0.1:0');
+      '--control-socket', this.at('manager.sock'), '--listen', '127.0.0.1:0', '--admin-socket', this.at('admin.sock'));
     await waitForSocket(this.at('manager.sock'));
+    await this.waitForManager();
+  }
+
+  // The control socket listens before the manager has opened its database: wait until the manager answers on it.
+  private async waitForManager(): Promise<void> {
+    for (let i = 0; i < 200; i++) {
+      const status = await new Promise<number>((resolve) => {
+        http.get({ socketPath: this.at('manager.sock'), path: '/api/v1/setup' }, (r) => { r.resume(); resolve(r.statusCode ?? 0); })
+          .on('error', () => resolve(0));
+      });
+      if (status === 200) return;
+      await new Promise((r) => setTimeout(r, 25));
+    }
+    throw new Error('the manager never answered on its control socket');
   }
 
   // An interruption: the manager stops, as after a power cut, and starts again on the same database.
@@ -74,12 +92,95 @@ export class Primary {
     return JSON.parse(stdout) as Link;
   }
 
+  // The CLI on this machine, against this primary's manager.
+  async cli(...args: string[]): Promise<string> {
+    const { stdout } = await run(bin, [...args, '--control-socket', this.at('manager.sock')], { env: this.env });
+    return stdout;
+  }
+
+  // Admin's name: the household's domain, as the domain step leaves it (withDomain stands in for that step).
+  static readonly adminName = 'admin.ferreira.family';
+
+  /**
+   * Where the browser opens Admin, signed in as Inês. The edge isn't part of these tests, so a small server stands in
+   * for it: it passes the browser's requests on to Admin's socket as the edge does, at Admin's name over HTTPS (Host,
+   * and the page's own Origin), and Admin's answers back. The household account isn't either (passkey.idp.spec.ts
+   * signs in through Authentik), so the stand-in carries an Admin session, as Admin opens one after a sign-in.
+   */
+  async adminURL(): Promise<string> {
+    if (!this.edge) {
+      const session = this.adminSession();
+      const edge = http.createServer((req, res) => {
+        const own = `http://${req.headers.host ?? ''}`;
+        const headers = { ...req.headers, host: Primary.adminName, cookie: `__Host-homerslab-session=${session}` };
+        if (headers.origin === own) headers.origin = `https://${Primary.adminName}`;
+        const up = http.request({ socketPath: this.at('admin.sock'), path: req.url, method: req.method, headers }, (r) => {
+          res.writeHead(r.statusCode ?? 502, r.headers);
+          r.pipe(res);
+        });
+        up.on('error', () => res.writeHead(502).end());
+        req.pipe(up);
+      });
+      await new Promise<void>((resolve) => edge.listen(0, '127.0.0.1', resolve));
+      this.edge = edge;
+    }
+    const { port } = this.edge.address() as net.AddressInfo;
+    return `http://127.0.0.1:${port}/store`;
+  }
+
+  // An Admin session for Inês, as a sign-in with the household account opens it: only its token's hash is kept.
+  private adminSession(): string {
+    const token = randomBytes(32).toString('base64url');
+    const db = new DatabaseSync(this.at('manager.db'));
+    try {
+      db.exec('PRAGMA busy_timeout = 5000');
+      db.prepare(`INSERT INTO admin_session (token_hash, username, created_at, expires_at) VALUES (?, 'ines', ?, ?)`)
+        .run(createHash('sha256').update(token).digest(), Date.now() - 60_000, Date.now() + 3_600_000);
+    } finally {
+      db.close();
+    }
+    return token;
+  }
+
+  // Stands in for setup's domain step, which setup reaches only after the sign-in step (#17): its answer, as the
+  // step keeps it in the manager's database.
+  withDomain(): void {
+    const db = new DatabaseSync(this.at('manager.db'));
+    try {
+      db.exec('PRAGMA busy_timeout = 5000');
+      db.prepare(`INSERT INTO setup_answer (key, value) VALUES ('domain', 'ferreira.family')
+        ON CONFLICT (key) DO UPDATE SET value = excluded.value`).run();
+    } finally {
+      db.close();
+    }
+  }
+
+  // First-time setup's built steps, answered through the setup page's API: the Ferreira household, Inês its admin.
+  async setUp(): Promise<void> {
+    const link = new URL((await this.newLink()).localUrl);
+    const key = new URLSearchParams(link.hash.slice(1)).get('k');
+    const api = async (method: string, path: string, body: unknown, token?: string) => {
+      const resp = await fetch(new URL(path, link), {
+        method, body: JSON.stringify(body),
+        headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+      });
+      if (!resp.ok) throw new Error(`${method} ${path}: ${resp.status} ${await resp.text()}`);
+      return resp.json() as Promise<{ token?: string }>;
+    };
+    const { token } = await api('POST', '/api/v1/setup/claim', { key });
+    await api('PUT', '/api/v1/setup/steps/welcome', {}, token);
+    await api('PUT', '/api/v1/setup/steps/you', { name: 'Inês Ferreira', mail: 'ines@ferreira.family' }, token);
+    await api('PUT', '/api/v1/setup/steps/household', { name: 'The Ferreira household' }, token);
+    this.withDomain();
+  }
+
   // What the agent and the manager have logged so far.
   log(): string {
     return this.logs.join('');
   }
 
   async stop(): Promise<void> {
+    this.edge?.close();
     await Promise.all([stop(this.manager), stop(this.agent)]);
     await rm(this.dir, { recursive: true, force: true });
   }

@@ -76,18 +76,33 @@ func TestTheManagerRunsUnprivilegedAndTheAgentAsRoot(t *testing.T) {
 		t.Errorf("the agent runs as %v, want root", u)
 	}
 	// The agent reads facts, owns the firewall table (CAP_NET_ADMIN, netlink, the host's own network), runs the mesh
-	// client's service (a drop-in under /etc/systemd/system), and seals credentials in its state directory; later
-	// tickets loosen this as its contract grows.
-	for k, want := range map[string]string{"ProtectHome": "read-only", "ProtectKernelModules": "yes", "ProtectClock": "yes",
+	// client's service (a drop-in under /etc/systemd/system), and seals credentials in its state directory, with the
+	// TPM where there is one; it reads no one else's files and no home (#71). Later tickets loosen this as its
+	// contract grows.
+	for k, want := range map[string]string{"ProtectHome": "yes", "ProtectKernelModules": "yes", "ProtectClock": "yes",
 		"ProtectKernelLogs": "yes", "NoNewPrivileges": "yes", "ProtectSystem": "strict", "PrivateTmp": "yes",
 		"ProtectKernelTunables": "yes", "ProtectControlGroups": "yes", "RestrictSUIDSGID": "yes",
-		"CapabilityBoundingSet": "CAP_CHOWN CAP_DAC_READ_SEARCH CAP_NET_ADMIN", "RestrictAddressFamilies": "AF_UNIX AF_NETLINK AF_INET AF_INET6",
+		"CapabilityBoundingSet": "CAP_CHOWN CAP_NET_ADMIN CAP_SETUID CAP_SETGID", "RestrictAddressFamilies": "AF_UNIX AF_NETLINK AF_INET AF_INET6",
 		"PrivateNetwork": "no", "SystemCallFilter": "@system-service", "SystemCallErrorNumber": "EPERM",
 		"MemoryDenyWriteExecute": "yes", "LockPersonality": "yes", "StateDirectory": "homerslab-agent",
-		"StateDirectoryMode": "0700", "Type": "notify", "NotifyAccess": "main", "ExecStartPre": "+/usr/bin/systemd-creds setup", "TimeoutStartSec": "30s"} {
+		"StateDirectoryMode": "0700", "Type": "notify", "NotifyAccess": "main", "ExecStartPre": "+/usr/bin/systemd-creds setup", "TimeoutStartSec": "30s",
+		"DevicePolicy": "closed", "DeviceAllow": "/dev/tpmrm0 rw", "PrivateIPC": "yes", "ProtectProc": "invisible",
+		"RestrictNamespaces": "yes", "RestrictRealtime": "yes",
+		// It parses compose files as root: a file it is sent can't take the machine with it.
+		"MemoryMax": "512M", "CPUQuota": "100%",
+		// A read's child killed for memory is the child's end, not the agent's.
+		"OOMPolicy": "continue"} {
 		if got := agent[k]; len(got) != 1 || got[0] != want {
 			t.Errorf("the agent's %s = %v, want %s", k, got, want)
 		}
+	}
+	// Without CAP_SYS_ADMIN it adds nothing, and it would freeze the agent's hostname fact at its start: a
+	// `hostnamectl set-hostname` would go unseen until a restart.
+	if got := agent["ProtectHostname"]; len(got) != 0 {
+		t.Errorf("the agent's ProtectHostname = %v, want it unset", got)
+	}
+	if got := agent["AmbientCapabilities"]; len(got) != 0 {
+		t.Errorf("the agent's AmbientCapabilities = %v, want none", got)
 	}
 	if got := one(t, agent, "UMask"); got != "0077" {
 		t.Errorf("the agent's UMask = %q, want 0077", got)

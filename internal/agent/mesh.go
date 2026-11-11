@@ -11,7 +11,6 @@ import (
 	"path/filepath"
 	"regexp"
 	"slices"
-	"strconv"
 	"strings"
 	"time"
 
@@ -370,7 +369,7 @@ func (a *Agent) getMesh(w http.ResponseWriter, r *http.Request) {
 		s.Interface = netbird.Interface
 		ctx, cancel := context.WithTimeout(r.Context(), hostWait)
 		defer cancel()
-		dropIn, env := a.natMapper(ctx)
+		dropIn, env, _ := a.natMapper(ctx)
 		s.PortMappingOff = dropIn && env
 	}
 	writeJSON(w, http.StatusOK, s)
@@ -379,27 +378,39 @@ func (a *Agent) getMesh(w http.ResponseWriter, r *http.Request) {
 // natMapper says whether NetBird's drop-in is as the agent writes it, and whether the running service has its
 // environment.
 //
-// The environment is the running process's own (/proc/<MainPID>/environ), not what systemd would give it next time.
-func (a *Agent) natMapper(ctx context.Context) (dropIn, env bool) {
-	b, err := os.ReadFile(filepath.Join(a.cfg.Root, netbird.DropInPath))
+// The agent can't read the running process's environment: /proc/<pid>/environ of a root process with every capability
+// is refused to a reader without them all (the kernel's ptrace check), and the agent's unit hides other processes
+// (ProtectProc=invisible). So it asks systemd: the service has the drop-in's environment when systemd lists the
+// drop-in, has nothing to reload, and the main process started after the drop-in's last write.
+//
+// unknown: systemd couldn't say (before 248 it refuses --timestamp=us+utc, or its answer isn't understood). The agent
+// then neither claims the setting is applied nor restarts the client for it.
+func (a *Agent) natMapper(ctx context.Context) (dropIn, env, unknown bool) {
+	path := filepath.Join(a.cfg.Root, netbird.DropInPath)
+	b, err := os.ReadFile(path)
 	dropIn = err == nil && string(b) == string(netbird.DropIn())
-	out, err := a.cfg.Run(ctx, host.Cmd{Name: "systemctl", Args: []string{"show", "netbird.service", "--property=MainPID", "--value"}})
-	pid, perr := strconv.Atoi(strings.TrimSpace(string(out)))
-	if err != nil || perr != nil || pid <= 0 {
-		return dropIn, false
+	fi, err := os.Stat(path)
+	if !dropIn || err != nil {
+		return dropIn, false, false
 	}
-	raw, err := os.ReadFile(filepath.Join(a.cfg.Proc, strconv.Itoa(pid), "environ"))
+	out, err := a.cfg.Run(ctx, host.Cmd{Name: "systemctl", Args: []string{"show", "netbird.service", "--timestamp=us+utc",
+		"--property=DropInPaths,NeedDaemonReload,ExecMainStartTimestamp"}})
 	if err != nil {
-		return dropIn, false
+		return dropIn, false, true
 	}
-	vars := strings.Split(string(raw), "\x00")
-	env = true
-	for _, e := range netbird.ServiceEnv {
-		if !slices.Contains(vars, e) {
-			env = false
+	props := map[string]string{}
+	for _, l := range strings.Split(string(out), "\n") {
+		if k, v, ok := strings.Cut(l, "="); ok {
+			props[k] = strings.TrimSpace(v)
 		}
 	}
-	return dropIn, env
+	started, err := time.Parse("Mon 2006-01-02 15:04:05.000000 MST", props["ExecMainStartTimestamp"])
+	if err != nil {
+		return dropIn, false, true
+	}
+	return dropIn, props["NeedDaemonReload"] == "no" &&
+		slices.Contains(strings.Fields(props["DropInPaths"]), "/"+netbird.DropInPath) &&
+		!started.Before(fi.ModTime().Truncate(time.Microsecond)), false
 }
 
 // checkNATMapper puts NetBird's drop-in back, and queues the client's restart with it, when either drifted; the drift
@@ -417,7 +428,20 @@ func (a *Agent) checkNATMapper(ctx context.Context, force bool) error {
 	}
 	ctx, cancel := context.WithTimeout(ctx, hostWait)
 	defer cancel()
-	dropIn, env := a.natMapper(ctx)
+	dropIn, env, unknown := a.natMapper(ctx)
+	if unknown {
+		a.mu.Lock()
+		defer a.mu.Unlock()
+		if !a.natUnknown {
+			a.natUnknown = true
+			a.log.Warn("systemd can't say whether NetBird's client has the setting: leaving it alone")
+			a.meshDrift = append(a.meshDrift, firewall.Drift{At: a.cfg.Now(), What: "nat-mapper-unknown"})
+		}
+		return nil
+	}
+	a.mu.Lock()
+	a.natUnknown = false
+	a.mu.Unlock()
 	if dropIn && env {
 		return nil
 	}

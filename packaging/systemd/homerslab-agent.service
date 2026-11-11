@@ -28,25 +28,37 @@ UMask=0077
 Restart=on-failure
 RestartSec=2s
 
-# The agent reads the machine's facts (/etc, /proc, /sys, pci.ids) and answers on its socket, which it hands to the
-# manager's group (CAP_CHOWN). Since #15 it also:
+# The agent reads the machine's facts (/etc, /proc, /sys, pci.ids, the space under /var/lib/homerslab) and answers on
+# its socket, which it hands to the manager's group (CAP_CHOWN). Since #15 it also:
 #   - owns the firewall table, inet homerslab, in the host's own network (nft over netlink, CAP_NET_ADMIN);
 #   - joins the mesh: a drop-in for NetBird's service (NAT mapper off), systemctl, netbird up, and a check that the
 #     machine's resolver still answers (AF_INET, AF_INET6);
-#   - seals the manager's credentials with systemd-creds, in its state directory;
+#   - seals the manager's credentials with systemd-creds, in its state directory, with the TPM where there is one;
 #   - since #16, seals the edge's certificates, writes the edge's drop-in, restarts the edge (systemctl) and configures
 #     it through its admin socket (the edge's group);
 #   - since #17, makes and seals the sign-in's secrets, writes its drop-in and restarts it (systemctl), reads its
-#     journal, and asks its readiness check on the sign-in network.
+#     journal (its own files: root's), and asks its readiness check on the sign-in network.
+# Every file it reads is world-readable or its own, so it reads no one else's files and no home (#71): no
+# CAP_DAC_READ_SEARCH, ProtectHome=yes. Its devices are closed but for the TPM's resource manager, which sealing uses
+# (ADR 0011), so not PrivateDevices, which would hide it.
+# Since #18 it reads apps' compose files for planning, each in a child of its own (homerslab agent read-project), in
+# an empty folder of its private /tmp that the agent gives to nobody (CAP_CHOWN); the child starts as nobody, its IDs
+# set in the fork (CAP_SETUID, CAP_SETGID).
 # Later tickets loosen this as its contract grows: the engine, app units, disks. To check as root at the first package
 # install (#48).
 NoNewPrivileges=yes
-CapabilityBoundingSet=CAP_CHOWN CAP_DAC_READ_SEARCH CAP_NET_ADMIN
+CapabilityBoundingSet=CAP_CHOWN CAP_NET_ADMIN CAP_SETUID CAP_SETGID
 ProtectSystem=strict
 # NetBird's, the edge's and the sign-in's drop-ins only (agent.RootWrites; the folders come from tmpfiles.d/homerslab.conf).
 ReadWritePaths=/etc/systemd/system/netbird.service.d /etc/systemd/system/homerslab-edge.service.d /etc/systemd/system/homerslab-authentik.service.d
-ProtectHome=read-only
+ProtectHome=yes
 PrivateTmp=yes
+DevicePolicy=closed
+DeviceAllow=/dev/tpmrm0 rw
+PrivateIPC=yes
+ProtectProc=invisible
+RestrictNamespaces=yes
+RestrictRealtime=yes
 PrivateNetwork=no
 RestrictAddressFamilies=AF_UNIX AF_NETLINK AF_INET AF_INET6
 ProtectKernelTunables=yes
@@ -60,6 +72,12 @@ MemoryDenyWriteExecute=yes
 SystemCallArchitectures=native
 SystemCallFilter=@system-service
 SystemCallErrorNumber=EPERM
+# Its compose reads run as nobody, one at a time, each killed at its deadline and limited on its own; the unit, with
+# those children, gets at most one core and 512 MB, far above what it uses (tens of MB).
+MemoryMax=512M
+CPUQuota=100%
+# A child the kernel kills for memory (each asks to be first: oom_score_adj 1000) ends that read, not the agent.
+OOMPolicy=continue
 
 [Install]
 WantedBy=multi-user.target

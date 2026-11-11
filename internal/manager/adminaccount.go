@@ -283,35 +283,6 @@ func (m *Manager) signedIn(next http.Handler) http.Handler {
 	})
 }
 
-// noCrossSite refuses a cross-site change to Admin (#83): every app is same-site with it, so SameSite cookies protect
-// nothing. A state-changing request needs Sec-Fetch-Site: same-origin, or no such header (a token-authenticated CLI
-// call); one that carries Admin's session cookie also needs Admin's exact Origin.
-func (m *Manager) noCrossSite(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.Method {
-		case http.MethodGet, http.MethodHead, http.MethodOptions:
-			next.ServeHTTP(w, r)
-			return
-		}
-		if s := r.Header.Get("Sec-Fetch-Site"); s != "" && s != "same-origin" {
-			fail(w, http.StatusForbidden, "cross-site")
-			return
-		}
-		if _, err := r.Cookie(sessionCookie); err == nil {
-			ans, err := m.db.Answers(r.Context())
-			if err != nil {
-				m.internal(w, "reading the answers", err)
-				return
-			}
-			if r.Header.Get("Origin") != AdminURL(ans) {
-				fail(w, http.StatusForbidden, "cross-site")
-				return
-			}
-		}
-		next.ServeHTTP(w, r)
-	})
-}
-
 // accountSetup is setup's state for a signed-in admin, with what the last step needs: how many passkeys they have,
 // and whether another admin has one.
 func (m *Manager) accountSetup(w http.ResponseWriter, r *http.Request) {

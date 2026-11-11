@@ -1,0 +1,28 @@
+id: vendor
+name: Vendor
+purpose: Films
+description: A host app, from its maker's own package.
+category: films
+tier: verified
+icon: icon.svg
+screenshots: []
+versions: {app: "1.42", images: []}
+signIn:
+  - method: guard
+names: {name: films, service: host, port: 32400, exposure: mesh, public: false}
+audience: {default: everyone}
+data:
+  - {what: Its library database, service: host, path: /var/lib/vendor}
+secrets: []
+health:
+  - service: host
+    http: {port: 32400, path: /identity}
+resources: {memoryMiB: 1024, diskGiB: 5, gpu: {need: none}, canPause: false}
+extras: []
+host:
+  packages:
+    - distros: [fedora]
+      repository: https://downloads.example.com/repo/rpm/
+      key: https://downloads.example.com/key.asc
+      package: vendor-server
+updateNotes: []

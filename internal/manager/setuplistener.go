@@ -27,7 +27,7 @@ func (m *Manager) Setup() http.Handler {
 	api.Handle("GET /api/v1/nodes/primary", m.session(http.HandlerFunc(m.getPrimary)))
 	api.HandleFunc("/api/", notFound)
 	api.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) { http.Redirect(w, r, "/setup", http.StatusSeeOther) })
-	api.HandleFunc("GET /setup", m.page)
+	api.HandleFunc("GET /setup", func(w http.ResponseWriter, _ *http.Request) { m.servePage(w, "setup.html") })
 	api.HandleFunc("GET /assets/{file}", m.asset)
 	api.HandleFunc("/", notFound)
 	return securityHeaders(m.open(m.fromHere(m.ownHost(sameOrigin(api)))))
@@ -185,17 +185,4 @@ func (m *Manager) asset(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	http.ServeFileFS(w, r, m.web, path)
-}
-
-// page serves the setup page. It carries no data: the page asks the API, with the key from the link's fragment.
-func (m *Manager) page(w http.ResponseWriter, r *http.Request) {
-	b, err := fs.ReadFile(m.web, "setup.html")
-	if err != nil {
-		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-		w.WriteHeader(http.StatusServiceUnavailable)
-		_, _ = w.Write([]byte(strings.TrimSpace(`This HomersLab was built without its web pages.`) + "\n"))
-		return
-	}
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	_, _ = w.Write(b)
 }

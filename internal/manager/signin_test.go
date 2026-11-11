@@ -278,7 +278,7 @@ type admin struct {
 	cookies map[string]*http.Cookie
 }
 
-func (p *primary) admin(t *testing.T) *admin {
+func (p *primary) adminBrowser(t *testing.T) *admin {
 	return &admin{t: t, p: p, cookies: map[string]*http.Cookie{}}
 }
 
@@ -317,9 +317,11 @@ func (a *admin) signIn(fs *fakeSignIn, username string, groups ...string) *httpt
 	return a.do("GET", "/auth/callback?state="+url.QueryEscape(state)+"&code="+url.QueryEscape(code))
 }
 
+// sameOrigin is a change from Admin's own page: JSON, from Admin's origin.
 func sameOrigin(r *http.Request) {
 	r.Header.Set("Sec-Fetch-Site", "same-origin")
 	r.Header.Set("Origin", adminOrigin)
+	r.Header.Set("Content-Type", "application/json")
 }
 
 // First-time setup's second half, up to the admin's first sign-in over the mesh (#17):
@@ -387,16 +389,16 @@ func TestTheSecondHalfEndsAtTheAdminsFirstSignInOverTheMesh(t *testing.T) {
 		}
 	})
 
-	a := p.admin(t)
+	a := p.adminBrowser(t)
 	if rec := a.do("GET", "/"); rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != "/auth/sign-in" {
 		t.Errorf("Admin, signed out: %d %v", rec.Code, rec.Header())
 	}
 
 	t.Run("a sign-in that isn't this browser's, or someone who isn't an admin, gets no session", func(t *testing.T) {
-		other := p.admin(t)
+		other := p.adminBrowser(t)
 		rec := other.do("GET", "/auth/sign-in")
 		state, code := fs.code(t, rec.Header().Get("Location"), "ines", "homerslab-admins")
-		stranger := p.admin(t) // the attacker's browser, sent the admin's code (login CSRF)
+		stranger := p.adminBrowser(t) // the attacker's browser, sent the admin's code (login CSRF)
 		if rec := stranger.do("GET", "/auth/callback?state="+state+"&code="+code); rec.Code != http.StatusForbidden {
 			t.Errorf("a callback without this browser's attempt: %d", rec.Code)
 		}
@@ -406,14 +408,14 @@ func TestTheSecondHalfEndsAtTheAdminsFirstSignInOverTheMesh(t *testing.T) {
 		if rec := other.do("GET", "/auth/callback?state="+state+"&code="+code); rec.Code != http.StatusForbidden {
 			t.Errorf("an attempt used twice: %d", rec.Code)
 		}
-		late := p.admin(t)
+		late := p.adminBrowser(t)
 		rec = late.do("GET", "/auth/sign-in")
 		p.clock.Add(11 * time.Minute) // a sign-in left open in a tab, then finished
 		state, code = fs.code(t, rec.Header().Get("Location"), "ines", "homerslab-admins")
 		if rec := late.do("GET", "/auth/callback?state="+state+"&code="+code); rec.Code != http.StatusForbidden {
 			t.Errorf("an attempt older than ten minutes: %d", rec.Code)
 		}
-		adult := p.admin(t)
+		adult := p.adminBrowser(t)
 		if rec := adult.signIn(fs, "rui", "homerslab-adults"); rec.Code != http.StatusForbidden {
 			t.Errorf("an adult signing in to Admin: %d %s", rec.Code, rec.Body)
 		}
@@ -474,20 +476,28 @@ func TestTheSecondHalfEndsAtTheAdminsFirstSignInOverTheMesh(t *testing.T) {
 				r.Header.Set("Origin", "https://photos.example.test:9443")
 			},
 			"the session cookie with no Origin": func(r *http.Request) { r.Header.Set("Sec-Fetch-Site", "same-origin") },
-			"Admin's origin without its port":   func(r *http.Request) { sameOrigin(r); r.Header.Set("Origin", "https://admin.example.test") },
+			"Admin's name over plain HTTP":      func(r *http.Request) { sameOrigin(r); r.Header.Set("Origin", "http://admin.example.test:9443") },
 		} {
-			if rec := a.do("PUT", "/api/v1/account/setup/steps/done", edit); rec.Code != http.StatusForbidden {
+			asJSON := func(r *http.Request) { r.Header.Set("Content-Type", "application/json"); edit(r) }
+			if rec := a.do("PUT", "/api/v1/account/setup/steps/done", asJSON); rec.Code != http.StatusForbidden {
 				t.Errorf("%s: %d %s, want 403", name, rec.Code, rec.Body)
 			}
 		}
-		// Without a session cookie (a token-authenticated CLI call, later), fetch metadata still decides: another
-		// site's request is refused before anything else; one with no such header goes on to the session check.
-		cli := p.admin(t)
+		// A form post, which a page of another site can make without asking, is never a change.
+		form := func(r *http.Request) {
+			sameOrigin(r)
+			r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		}
+		if rec := a.do("PUT", "/api/v1/account/setup/steps/done", form); rec.Code != http.StatusUnsupportedMediaType {
+			t.Errorf("a form: %d %s, want 415", rec.Code, rec.Body)
+		}
+		// Without a session cookie, the same rules come first; then the session check.
+		cli := p.adminBrowser(t)
 		if rec := cli.do("PUT", "/api/v1/account/setup/steps/done", func(r *http.Request) { r.Header.Set("Sec-Fetch-Site", "same-site") }); rec.Code != http.StatusForbidden {
 			t.Errorf("a same-site request without a cookie: %d, want 403", rec.Code)
 		}
-		if rec := cli.do("PUT", "/api/v1/account/setup/steps/done"); rec.Code != http.StatusUnauthorized {
-			t.Errorf("no fetch metadata and no session: %d, want 401", rec.Code)
+		if rec := cli.do("PUT", "/api/v1/account/setup/steps/done", sameOrigin); rec.Code != http.StatusUnauthorized {
+			t.Errorf("Admin's page, signed out: %d, want 401", rec.Code)
 		}
 	})
 
@@ -524,7 +534,7 @@ func TestAdminAsksForAFreshSignInEveryTime(t *testing.T) {
 		t.Fatalf("setup join: %d %s", r.Code, r.Body)
 	}
 	fs.passkeys["ines"] = 1
-	a := p.admin(t)
+	a := p.adminBrowser(t)
 	rec := a.do("GET", "/auth/sign-in")
 	u, err := url.Parse(rec.Header().Get("Location"))
 	if err != nil || u.Query().Get("max_age") != "30" {
@@ -552,7 +562,7 @@ func TestTheFirstSignInEndsTheDeviceKey(t *testing.T) {
 		t.Fatalf("setup join: %d %s", r.Code, r.Body)
 	}
 	fs.passkeys["ines"] = 1
-	if rec := p.admin(t).signIn(fs, "ines", "homerslab-admins"); rec.Code != http.StatusSeeOther {
+	if rec := p.adminBrowser(t).signIn(fs, "ines", "homerslab-admins"); rec.Code != http.StatusSeeOther {
 		t.Fatalf("the first sign-in: %d %s", rec.Code, rec.Body)
 	}
 	if strings.Join(nb.revokedKeys, " ") != "dk-1" {
@@ -583,7 +593,7 @@ func TestASecondAdminWithAPasskeyIsTheOtherWayIn(t *testing.T) {
 		t.Fatalf("setup join: %d %s", r.Code, r.Body)
 	}
 	fs.passkeys["ines"] = 1
-	a := p.admin(t)
+	a := p.adminBrowser(t)
 	a.signIn(fs, "ines", "homerslab-admins")
 	fs.people["rui"] = idp.Person{Username: "rui", Role: idp.Admin}
 	if rec := a.do("PUT", "/api/v1/account/setup/steps/done", sameOrigin); rec.Code != http.StatusConflict {

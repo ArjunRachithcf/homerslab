@@ -431,3 +431,46 @@ func TestTheLinksOwnAddressesAlwaysAnswer(t *testing.T) {
 		t.Errorf("another port: %d, want 421", r.Code)
 	}
 }
+
+// On an IPv6-only home network the link carries the machine's IPv6 address on it, in brackets (#68, #73).
+func TestALinkCarriesTheLANsIPv6AddressWhenThereIsNoIPv4(t *testing.T) {
+	testenv.Isolate(t)
+	for _, a := range []string{"fd00:1::20", "2001:db8:1::20"} {
+		p := newPrimary(t, func(p *primary) { p.lanAddress = netip.MustParseAddr(a) })
+		l := p.newLink()
+		if want := "http://[" + a + "]:7020/setup#k="; !strings.HasPrefix(l.URL, want) {
+			t.Errorf("url = %s, want %s…", l.URL, want)
+		}
+		b := p.browser(lanV6)
+		host := func(r *http.Request) { r.Host = "[" + a + "]:7020" }
+		if r := b.do("POST", "/api/v1/setup/claim", map[string]string{"key": l.key(t)}, host); r.Code != http.StatusOK {
+			t.Errorf("claiming at the link's own address %s: %d %s", a, r.Code, r.Body)
+		}
+	}
+}
+
+// With no address on a home network, the link is this machine's own, and says so.
+func TestALinkIsOnlyLocalWhenTheMachineIsOnNoLAN(t *testing.T) {
+	testenv.Isolate(t)
+	p := newPrimary(t, func(p *primary) { p.lanAddress = netip.Addr{} })
+	if l := p.newLink(); !strings.HasPrefix(l.URL, "http://127.0.0.1:7020/setup#k=") || l.URL != l.LocalURL {
+		t.Errorf("url = %s, localUrl = %s: want this machine's own link", l.URL, l.LocalURL)
+	}
+}
+
+// The database says whether a session was ended, whoever ended it: here a second manager on the same database.
+func TestASessionEndedInTheDatabaseEnds(t *testing.T) {
+	testenv.Isolate(t)
+	p := newPrimary(t)
+	b := p.claimed()
+	first := p.m
+	p.open() // another manager on the same database makes a new link
+	p.newLink()
+	if r := serve(first.Setup(), func() *http.Request {
+		req := newRequest("GET", "/api/v1/setup", nil, b.from)
+		req.Header.Set("Authorization", "Bearer "+b.token)
+		return req
+	}()); r.Code != http.StatusUnauthorized {
+		t.Errorf("a session another manager ended, at the first manager: %d, want 401", r.Code)
+	}
+}

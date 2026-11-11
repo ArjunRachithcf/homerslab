@@ -48,6 +48,12 @@ jobs:
         run: go vet ./...
       - name: go test
         run: go test -race -count=1 ./...
+      # The race detector leaves out a compose read's memory limit (its shadow memory needs more), so the agent's
+      # tests run once more as the release is built, without cgo or the race detector, with the limit on.
+      - name: go test, the agent as released
+        env:
+          CGO_ENABLED: "0"
+        run: go test -count=1 ./internal/agent/...
 
   firewall:
     name: Firewall table (network namespaces)
