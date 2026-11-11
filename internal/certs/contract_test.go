@@ -219,9 +219,15 @@ func TestTheDNSProviderContractOnThePrimary(t *testing.T) {
 	}
 
 	due := cert.RenewAt().Add(time.Minute) // the fake clock: a third of the lifetime left
+	// A CA may reuse an account's valid authorization for a while (Pebble does, at random, whatever its settings): the
+	// renewals below use an account of their own, so each one proves the domain through the DNS again.
+	renewer, err := certs.NewKey()
+	if err != nil {
+		t.Fatal(err)
+	}
 	t.Run("a renewal with a broken token fails, and leaves the certificate as it was", func(t *testing.T) {
 		o, _ := open(t, mesh.Secret(base64.StdEncoding.EncodeToString(make([]byte, 32))), theBook)
-		got, issued, err := authority.Ensure(ctx, certs.Request{Domain: "example.test", Zone: o, AccountKey: account}, &cert, due)
+		got, issued, err := authority.Ensure(ctx, certs.Request{Domain: "example.test", Zone: o, AccountKey: renewer}, &cert, due)
 		if err == nil || issued {
 			t.Fatalf("a renewal with a broken token: issued %v, %v", issued, err)
 		}
@@ -232,7 +238,7 @@ func TestTheDNSProviderContractOnThePrimary(t *testing.T) {
 
 	t.Run("the replaced token renews", func(t *testing.T) {
 		o, _ := open(t, tsig, theBook)
-		got, issued, err := authority.Ensure(ctx, certs.Request{Domain: "example.test", Zone: o, AccountKey: account}, &cert, due)
+		got, issued, err := authority.Ensure(ctx, certs.Request{Domain: "example.test", Zone: o, AccountKey: renewer}, &cert, due)
 		if err != nil || !issued || got.Serial == cert.Serial {
 			t.Fatalf("renewed %v %s: %v", issued, got.Serial, err)
 		}
