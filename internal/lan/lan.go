@@ -113,6 +113,21 @@ func Read(proc fs.FS, v4 func(iface string) []netip.Prefix) LAN {
 	return l
 }
 
+// OnLink is what the firewall table keeps apps away from: the interfaces that carry the default route, and every
+// prefix on them, private or global (a LAN may use global IPv6 addresses), but link-local, which the table covers
+// whole.
+func OnLink() (interfaces []string, prefixes []netip.Prefix) {
+	interfaces = DefaultRouteInterfaces(os.DirFS("/proc"))
+	for _, name := range interfaces {
+		for _, p := range addrs(name) {
+			if !p.Addr().IsLinkLocalUnicast() && !p.Addr().IsLoopback() {
+				prefixes = append(prefixes, p.Masked())
+			}
+		}
+	}
+	return interfaces, prefixes
+}
+
 // Address is this machine's address on the LAN, for the links it prints: its IPv4 address if it has one, else its
 // best IPv6 address on the LAN (a ULA before a global one); or the zero Addr if it has none.
 func (l LAN) Address() netip.Addr {
@@ -158,6 +173,17 @@ func Names(hostname string, l LAN) []string {
 
 // ipv4Addrs lists an interface's IPv4 addresses with their prefixes.
 func ipv4Addrs(name string) []netip.Prefix {
+	var out []netip.Prefix
+	for _, p := range addrs(name) {
+		if p.Addr().Is4() {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// addrs lists an interface's addresses with their prefixes.
+func addrs(name string) []netip.Prefix {
 	ifc, err := net.InterfaceByName(name)
 	if err != nil {
 		return nil
@@ -169,7 +195,7 @@ func ipv4Addrs(name string) []netip.Prefix {
 	var out []netip.Prefix
 	for _, a := range list {
 		if n, ok := a.(*net.IPNet); ok {
-			if p, err := netip.ParsePrefix(n.String()); err == nil && p.Addr().Is4() {
+			if p, err := netip.ParsePrefix(n.String()); err == nil {
 				out = append(out, p)
 			}
 		}

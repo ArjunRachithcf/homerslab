@@ -338,3 +338,21 @@ func TestHiddenCharactersAreRefused(t *testing.T) {
 		}
 	}
 }
+
+func TestAnAnswerWithAFieldTheStepDoesntHaveIsRefused(t *testing.T) {
+	testenv.Isolate(t)
+	b := newPrimary(t).claimed()
+	if r := b.answer("welcome", map[string]string{"role": "admin"}); r.Code != http.StatusBadRequest {
+		t.Errorf("welcome with a field: %d %s, want 400", r.Code, r.Body)
+	}
+	b.mustAnswer("welcome", nil)
+	r := b.answer("you", map[string]string{"name": "Inês", "mail": "ines@ferreira.family", "role": "admin"})
+	var e struct {
+		Error  string
+		Fields []string
+	}
+	r.json(t, &e)
+	if r.Code != http.StatusBadRequest || e.Error != "invalid" || !reflect.DeepEqual(e.Fields, []string{"answer"}) {
+		t.Errorf("you with a field it doesn't have: %d %s, want 400 invalid answer", r.Code, r.Body)
+	}
+}

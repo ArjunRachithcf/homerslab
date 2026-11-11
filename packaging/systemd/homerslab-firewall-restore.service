@@ -1,0 +1,37 @@
+# Loads HomersLab's firewall table before the network comes up: the table the agent last applied (written by it after
+# every change, 0600, root), or a closed one on the first boot (loopback, the machine's basics and the setup listener
+# only, nothing forwarded). Docker, Podman and NetBird require it (their drop-ins), so they never start without a
+# table, and the agent, which waits for nothing of theirs, takes over once it runs.
+[Unit]
+Description=HomersLab firewall table, before the network
+Documentation=https://github.com/ArjunRachithcf/homerslab
+DefaultDependencies=no
+Wants=network-pre.target
+Before=network-pre.target shutdown.target
+After=local-fs.target nftables.service firewalld.service
+Conflicts=shutdown.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/bin/homerslab firewall restore
+UMask=0077
+NoNewPrivileges=yes
+CapabilityBoundingSet=CAP_NET_ADMIN
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateNetwork=no
+RestrictAddressFamilies=AF_NETLINK AF_UNIX
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+
+[Install]
+WantedBy=sysinit.target

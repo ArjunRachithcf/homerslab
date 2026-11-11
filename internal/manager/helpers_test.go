@@ -5,7 +5,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"io/fs"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
@@ -18,6 +20,7 @@ import (
 	"testing/fstest"
 	"time"
 
+	"github.com/ArjunRachithcf/homerslab/internal/agent"
 	"github.com/ArjunRachithcf/homerslab/internal/agent/agenttest"
 	"github.com/ArjunRachithcf/homerslab/internal/lan"
 	"github.com/ArjunRachithcf/homerslab/internal/manager"
@@ -95,6 +98,19 @@ type primary struct {
 	lanAddress netip.Addr
 	// claimedBrowser is a browser a test keeps across a restart.
 	claimedBrowser *browser
+	host           *agenttest.Host // the primary's machine, as its agent sees it
+	netbird        manager.NetBird
+	domains        manager.Domains
+	// agentConfig is the agent's, filled in by agenttest.
+	agentConfig agent.Config
+	log         *slog.Logger // the manager's and the agent's, when a test reads them
+}
+
+// withLogs gives the manager and its agent one logger, at debug level, writing to w.
+func withLogs(w io.Writer) option {
+	return func(p *primary) {
+		p.log = slog.New(slog.NewTextHandler(w, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	}
 }
 
 type option func(*primary)
@@ -103,7 +119,7 @@ type option func(*primary)
 func withBuiltSteps(ids ...string) option {
 	return func(p *primary) {
 		for _, id := range ids {
-			p.steps[id] = func(context.Context, json.RawMessage) (map[string]string, error) { return nil, nil }
+			p.steps[id] = func(context.Context, json.RawMessage, map[string]string) (map[string]string, error) { return nil, nil }
 		}
 	}
 }
@@ -127,7 +143,9 @@ func newPrimary(t *testing.T, opts ...option) *primary {
 		o(p)
 	}
 	if p.agent == "" {
-		p.agent = agenttest.Start(t, agenttest.Primary())
+		cfg := p.agentConfig
+		cfg.Log = p.log
+		p.agent, p.host = agenttest.StartWith(t, cfg)
 	}
 	p.open()
 	return p
@@ -153,6 +171,9 @@ func (p *primary) open() {
 		LANAddress: func() netip.Addr { p.lanReads.Add(1); return p.lanAddress },
 		Web:        p.web,
 		Steps:      p.steps,
+		NetBird:    p.netbird,
+		Domains:    p.domains,
+		Log:        p.log,
 	})
 	if err != nil {
 		p.t.Fatal(err)
@@ -320,9 +341,10 @@ type state struct {
 	Half    string `json:"half"`
 	Current string `json:"current"`
 	Steps   []struct {
-		ID    string `json:"id"`
-		Half  string `json:"half"`
-		State string `json:"state"`
+		ID      string `json:"id"`
+		Half    string `json:"half"`
+		State   string `json:"state"`
+		Confirm string `json:"confirm"`
 	} `json:"steps"`
 	Answers map[string]string `json:"answers"`
 }

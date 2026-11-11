@@ -48,7 +48,8 @@ func TestThePrimaryRunsTheManagerUnprivilegedAndTheAgentAsRoot(t *testing.T) {
 	must(t, err)
 
 	agentSock, controlSock := filepath.Join(agentDir, "agent.sock"), filepath.Join(managerDir, "manager.sock")
-	agent := start(t, bin, nil, "agent", "--socket", agentSock, "--socket-group", fmt.Sprint(nobody), "--sysroot", sysroot)
+	agent := start(t, bin, nil, "agent", "--socket", agentSock, "--socket-group", fmt.Sprint(nobody), "--sysroot", sysroot,
+		"--state-dir", filepath.Join(agentDir, "state"))
 	waitForSocket(t, agentSock)
 	manager := start(t, bin, &syscall.Credential{Uid: nobody, Gid: nobody, Groups: []uint32{}},
 		"manager", "--db", filepath.Join(managerDir, "manager.db"), "--agent-socket", agentSock,

@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -20,9 +21,12 @@ type control struct {
 	http   *http.Client
 }
 
-func newControl(socket string) *control {
+func newControl(socket string) *control { return newControlWaiting(socket, 10*time.Second) }
+
+// newControlWaiting is the control socket, waiting up to timeout for an answer: a certificate takes minutes.
+func newControlWaiting(socket string, timeout time.Duration) *control {
 	return &control{socket: socket, http: &http.Client{
-		Timeout: 10 * time.Second,
+		Timeout: timeout,
 		Transport: &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
 			return (&net.Dialer{}).DialContext(ctx, "unix", socket)
 		}},
@@ -49,11 +53,23 @@ func (e *apiError) Error() string {
 
 // do sends a request and decodes the JSON answer into v; with wait, it waits that long for the manager to start.
 func (c *control) do(ctx context.Context, method, path string, wait time.Duration, v any) ([]byte, error) {
+	return c.request(ctx, method, path, wait, nil, v)
+}
+
+func (c *control) request(ctx context.Context, method, path string, wait time.Duration, body *bytes.Reader, v any) ([]byte, error) {
 	deadline := time.Now().Add(wait)
 	for {
-		req, err := http.NewRequestWithContext(ctx, method, "http://manager"+path, nil)
+		var r io.Reader
+		if body != nil {
+			_, _ = body.Seek(0, io.SeekStart)
+			r = body
+		}
+		req, err := http.NewRequestWithContext(ctx, method, "http://manager"+path, r)
 		if err != nil {
 			return nil, err
+		}
+		if body != nil {
+			req.Header.Set("Content-Type", "application/json")
 		}
 		resp, err := c.http.Do(req)
 		if err != nil {

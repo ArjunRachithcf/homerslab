@@ -55,7 +55,7 @@ func running(t *testing.T, lanAddress ...netip.Addr) string {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
-	go func() { done <- m.Serve(ctx, setupLn, ctlLn) }()
+	go func() { done <- m.Serve(ctx, setupLn, ctlLn, nil) }()
 	t.Cleanup(func() {
 		cancel()
 		if err := <-done; err != nil {

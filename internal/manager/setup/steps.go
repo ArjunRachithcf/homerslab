@@ -1,6 +1,7 @@
 package setup
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 )
@@ -27,12 +28,30 @@ const (
 	NotAMail         = "not-a-mail"
 )
 
-func welcome(context.Context, json.RawMessage) (map[string]string, error) { return nil, nil }
+func welcome(_ context.Context, raw json.RawMessage, _ map[string]string) (map[string]string, error) {
+	var a struct{}
+	if !decode(raw, &a) {
+		return nil, &Invalid{Fields: []string{"answer"}}
+	}
+	return nil, nil
+}
+
+// decode reads an answer into a, refusing any field a doesn't have.
+func decode(raw json.RawMessage, a any) bool {
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.DisallowUnknownFields()
+	return dec.Decode(a) == nil
+}
 
 // you: the admin's name and mail address.
-func you(_ context.Context, raw json.RawMessage) (map[string]string, error) {
-	var a struct{ Name, Mail string }
-	_ = json.Unmarshal(raw, &a)
+func you(_ context.Context, raw json.RawMessage, _ map[string]string) (map[string]string, error) {
+	var a struct {
+		Name string `json:"name"`
+		Mail string `json:"mail"`
+	}
+	if !decode(raw, &a) {
+		return nil, &Invalid{Fields: []string{"answer"}}
+	}
 	bad := &Invalid{}
 	n, why := name(a.Name)
 	bad.add("name", why)
@@ -45,9 +64,13 @@ func you(_ context.Context, raw json.RawMessage) (map[string]string, error) {
 }
 
 // household: the household's name.
-func household(_ context.Context, raw json.RawMessage) (map[string]string, error) {
-	var a struct{ Name string }
-	_ = json.Unmarshal(raw, &a)
+func household(_ context.Context, raw json.RawMessage, _ map[string]string) (map[string]string, error) {
+	var a struct {
+		Name string `json:"name"`
+	}
+	if !decode(raw, &a) {
+		return nil, &Invalid{Fields: []string{"answer"}}
+	}
 	n, why := name(a.Name)
 	if why != "" {
 		bad := &Invalid{}

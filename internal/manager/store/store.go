@@ -77,6 +77,41 @@ type Step struct {
 	Position int
 	Done     bool
 	DoneAt   time.Time
+	// WaitKind is what a step waits for (secret or confirm), and WaitName which; "" when it doesn't.
+	WaitKind, WaitName string
+}
+
+// Drift is one thing HomersLab found changed behind its back.
+type Drift struct {
+	At     time.Time `json:"at"`
+	Source string    `json:"source"`
+	What   string    `json:"what"`
+}
+
+// AddDrift records drift.
+func (s *Store) AddDrift(ctx context.Context, d Drift) error {
+	_, err := s.db.ExecContext(ctx, `INSERT INTO drift (at, source, what) VALUES (?, ?, ?)`, d.At.UnixMilli(), d.Source, d.What)
+	return err
+}
+
+// Drifts are the drift reports, newest first, at most limit.
+func (s *Store) Drifts(ctx context.Context, limit int) ([]Drift, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT at, source, what FROM drift ORDER BY at DESC, rowid DESC LIMIT ?`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []Drift{}
+	for rows.Next() {
+		var d Drift
+		var at int64
+		if err := rows.Scan(&at, &d.Source, &d.What); err != nil {
+			return nil, err
+		}
+		d.At = time.UnixMilli(at).UTC()
+		out = append(out, d)
+	}
+	return out, rows.Err()
 }
 
 var migrations = []string{
@@ -104,6 +139,48 @@ var migrations = []string{
 		created_at INTEGER NOT NULL,
 		last_seen  INTEGER NOT NULL,
 		revoked_at INTEGER
+	);`,
+	// A step that waits: for a secret, which only the terminal on this machine gives (#64), by its name and never the
+	// secret itself; or for the admin's yes to something the step found. And what HomersLab found changed behind its
+	// back, and put back or reported.
+	`CREATE TABLE setup_wait (
+		step TEXT PRIMARY KEY REFERENCES setup_step (id) ON DELETE CASCADE,
+		kind TEXT NOT NULL CHECK (kind IN ('secret', 'confirm')),
+		name TEXT NOT NULL
+	);
+	CREATE TABLE drift (
+		at     INTEGER NOT NULL,
+		source TEXT NOT NULL,
+		what   TEXT NOT NULL
+	);`,
+	// The DNS records HomersLab created: the source of truth for what is its own in a zone (#79). A domain's wildcard
+	// certificate, which isn't secret (its key is sealed by the agent), and how its renewals go. And warnings for
+	// admins, such as a renewal that failed for the first time (#80).
+	`CREATE TABLE dns_record (
+		zone        TEXT NOT NULL,
+		name        TEXT NOT NULL,
+		type        TEXT NOT NULL,
+		value       TEXT NOT NULL,
+		ttl_seconds INTEGER NOT NULL,
+		created_at  INTEGER NOT NULL,
+		PRIMARY KEY (zone, name, type, value)
+	);
+	CREATE TABLE certificate (
+		domain        TEXT PRIMARY KEY,
+		chain         TEXT NOT NULL,
+		serial        TEXT NOT NULL,
+		not_before    INTEGER NOT NULL,
+		not_after     INTEGER NOT NULL,
+		authority     TEXT NOT NULL,
+		failing_since INTEGER,
+		failures      INTEGER NOT NULL DEFAULT 0,
+		last_error    TEXT NOT NULL DEFAULT ''
+	);
+	CREATE TABLE warning (
+		at          INTEGER NOT NULL,
+		source      TEXT NOT NULL,
+		what        TEXT NOT NULL,
+		resolved_at INTEGER
 	);`,
 	// When a link was made and a session opened and last used, by the time since boot (nanoseconds) and that boot's
 	// ID: how old they are, whatever the wall clock does (#65). Rows from before have no boot, and have ended.
@@ -210,7 +287,8 @@ func (s *Store) tx(ctx context.Context, fn func(*sql.Tx) error) error {
 
 // Steps lists setup's steps in order, with their state.
 func (s *Store) Steps(ctx context.Context) ([]Step, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id, position, half, state, done_at FROM setup_step ORDER BY position`)
+	rows, err := s.db.QueryContext(ctx, `SELECT id, position, half, state, done_at, coalesce(w.kind, ''), coalesce(w.name, '')
+		FROM setup_step LEFT JOIN setup_wait w ON w.step = setup_step.id ORDER BY position`)
 	if err != nil {
 		return nil, err
 	}
@@ -220,7 +298,7 @@ func (s *Store) Steps(ctx context.Context) ([]Step, error) {
 		var st Step
 		var state string
 		var doneAt sql.NullInt64
-		if err := rows.Scan(&st.ID, &st.Position, &st.Half, &state, &doneAt); err != nil {
+		if err := rows.Scan(&st.ID, &st.Position, &st.Half, &state, &doneAt, &st.WaitKind, &st.WaitName); err != nil {
 			return nil, err
 		}
 		st.Done = state == "done"
@@ -232,14 +310,44 @@ func (s *Store) Steps(ctx context.Context) ([]Step, error) {
 	return out, rows.Err()
 }
 
-// CompleteStep saves a step's answers and marks it done, in one transaction.
+func saveAnswers(ctx context.Context, tx *sql.Tx, answers map[string]string) error {
+	for k, v := range answers {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO setup_answer (key, value) VALUES (?, ?)
+			ON CONFLICT (key) DO UPDATE SET value = excluded.value`, k, v); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// SaveAnswers keeps answers, none of them secret.
+func (s *Store) SaveAnswers(ctx context.Context, answers map[string]string) error {
+	return s.tx(ctx, func(tx *sql.Tx) error { return saveAnswers(ctx, tx, answers) })
+}
+
+// Wait keeps a step's answers so far and marks it waiting, for a secret or a confirmation, by name.
+func (s *Store) Wait(ctx context.Context, id, kind, name string, answers map[string]string) error {
+	return s.tx(ctx, func(tx *sql.Tx) error {
+		if err := saveAnswers(ctx, tx, answers); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE setup_step SET state = 'todo', done_at = NULL WHERE id = ?`, id); err != nil {
+			return err
+		}
+		_, err := tx.ExecContext(ctx, `INSERT INTO setup_wait (step, kind, name) VALUES (?, ?, ?)
+			ON CONFLICT (step) DO UPDATE SET kind = excluded.kind, name = excluded.name`, id, kind, name)
+		return err
+	})
+}
+
+// CompleteStep saves a step's answers and marks it done, and no longer waiting, in one transaction.
 func (s *Store) CompleteStep(ctx context.Context, id string, answers map[string]string, at time.Time) error {
 	return s.tx(ctx, func(tx *sql.Tx) error {
-		for k, v := range answers {
-			if _, err := tx.ExecContext(ctx, `INSERT INTO setup_answer (key, value) VALUES (?, ?)
-				ON CONFLICT (key) DO UPDATE SET value = excluded.value`, k, v); err != nil {
-				return err
-			}
+		if err := saveAnswers(ctx, tx, answers); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `DELETE FROM setup_wait WHERE step = ?`, id); err != nil {
+			return err
 		}
 		res, err := tx.ExecContext(ctx, `UPDATE setup_step SET state = 'done', done_at = ? WHERE id = ?`, at.UnixMilli(), id)
 		if err != nil {

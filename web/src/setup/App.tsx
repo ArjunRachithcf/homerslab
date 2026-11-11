@@ -13,7 +13,7 @@ import { diskSize, memory } from './format';
 type Phase = { kind: 'loading' } | { kind: 'refused' } | { kind: 'error'; says?: Key } | { kind: 'full' }
   | { kind: 'ready'; setup: Setup; facts: Facts | null };
 
-const BUILT = new Set(['welcome', 'you', 'household']);
+const BUILT = new Set(['welcome', 'you', 'household', 'network', 'domain']);
 const validMail = (m: string) => /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(m.trim());
 
 export function App() {
@@ -202,24 +202,51 @@ function useStep(id: string, setup: Setup, facts: Facts | null, next: () => void
   const [busy, setBusy] = useState(false);
   const [failed, setFailed] = useState<{ step: string; why: Failure } | null>(null);
   const householdValue = touched || !surname ? household : defaultHousehold(surname);
+  const [plane, setPlane] = useState<'cloud' | 'self-hosted'>(a.meshControlPlane === 'self-hosted' ? 'self-hosted' : 'cloud');
+  const [url, setUrl] = useState(a.meshControlPlane === 'self-hosted' ? (a.meshUrl ?? '') : '');
+  const [domain, setDomain] = useState(a.domain ?? (a.mail ?? '').split('@')[1] ?? '');
+  const [provider, setProvider] = useState<'infomaniak' | 'rfc2136'>(a.dnsProvider === 'rfc2136' ? 'rfc2136' : 'infomaniak');
+  const [server, setServer] = useState(a.dnsServer ?? '');
+  const [keyName, setKeyName] = useState(a.dnsKeyName ?? '');
+  const network = setup.steps.find((s) => s.id === 'network');
+  const step = setup.steps.find((s) => s.id === id);
+  // A step that waits for a secret, which arrives in this machine's terminal (#64).
+  const waiting = (id === 'network' || id === 'domain') && step?.state === 'waiting' && !!step.secret;
+  const confirming = id === 'network' && network?.state === 'waiting' && network.confirm === 'mesh-policies';
+  const latest = useRef({ onAnswered, next });
+  useEffect(() => {
+    latest.current = { onAnswered, next };
+  });
+  useEffect(() => {
+    // The token arrives in this machine's terminal, never through this page: wait for the step to turn done.
+    if (!waiting) return;
+    const timer = window.setInterval(() => {
+      void getSetup().then((s) => {
+        latest.current.onAnswered(s);
+        if (s.steps.find((x) => x.id === id)?.state === 'done') latest.current.next();
+      }).catch(() => undefined);
+    }, 2000);
+    return () => window.clearInterval(timer);
+  }, [waiting, id]);
 
-  const send = async (body: Record<string, string>) => {
+  const send = async (body: Record<string, string | boolean>) => {
     setBusy(true);
     setFailed(null); // a failure that happens again is a new notice, read out again
     try {
-      const done = await answer(id, body);
-      onAnswered(done);
+      const s = await answer(id, body);
+      onAnswered(s);
       // The manager keeps what it was given in its normal form (spaces collapsed, full-width letters made plain, and
       // so on): show that.
       if (id === 'you') {
-        setName(done.answers.name ?? name);
-        setMail(done.answers.mail ?? mail);
-      } else if (id === 'household' && done.answers.household !== undefined) {
-        setHousehold(done.answers.household);
+        setName(s.answers.name ?? name);
+        setMail(s.answers.mail ?? mail);
+      } else if (id === 'household' && s.answers.household !== undefined) {
+        setHousehold(s.answers.household);
         setTouched(true);
       }
       setBad({});
-      next();
+      if (s.steps.find((x) => x.id === id)?.state === 'done') next(); // a step waiting for a secret stays
+
     } catch (e) {
       if (e instanceof Refused && e.code === 'invalid') setBad(e.reasons);
       else if (e instanceof Refused && e.status === 401) location.reload();
@@ -273,6 +300,122 @@ function useStep(id: string, setup: Setup, facts: Facts | null, next: () => void
         primary: { label: t('setup.continue'), ok: !!householdValue.trim(), why: t('step.household.why'), busy },
         onPrimary: () => send({ name: householdValue }),
       };
+    case 'network': {
+      const own = plane === 'self-hosted';
+      const choices: ['cloud' | 'self-hosted', Key, Key][] = [
+        ['cloud', 'step.network.cloud', 'step.network.cloudSub'], ['self-hosted', 'step.network.own', 'step.network.ownSub'],
+      ];
+      const answerNow: Record<string, string> = own ? { mesh: 'netbird', controlPlane: plane, url: url.trim() } : { mesh: 'netbird', controlPlane: plane };
+      if (confirming) {
+        const names = (a.meshConflicts ?? '').split('\n').filter(Boolean);
+        return {
+          illo: 'network', title: t('step.network.conflictsTitle'), lead: t('step.network.conflictsLead'),
+          body: <ul className="group" aria-label={t('step.network.conflictsList')}>
+            {names.map((n) => (
+              <li className="row" key={n}><span className="row-main"><span className="row-label wrap">{n}</span></span></li>
+            ))}
+          </ul>,
+          more: <p className="hint">{t('step.network.conflictsKept')}</p>,
+          primary: { label: t('step.network.switchOff'), busy },
+          onPrimary: () => send({ ...answerNow, switchOff: true }),
+        };
+      }
+      if (waiting) {
+        return {
+          illo: 'network', title: t('step.network.waitTitle'), lead: t('step.network.waitLead'),
+          body: <>
+            <div className="cmd"><code>{network?.command ?? 'sudo homerslab setup secret mesh'}</code></div>
+            <p className="hint as-waiting" role="status"><span className="spinner" aria-hidden="true" />{t('step.network.waiting')}</p>
+          </>,
+          moreLabel: t('step.network.help'),
+          more: <>
+            <ol className="group help-steps">
+              {(['step.network.help1', 'step.network.help2', 'step.network.help3'] as Key[]).map((k) => <li key={k}><span>{t(k)}</span></li>)}
+            </ol>
+            <p className="subhead">{t('step.network.helpWhy')}</p>
+          </>,
+          primary: { label: t('setup.continue'), ok: false, why: t('step.network.waitWhy') },
+        };
+      }
+      return {
+        illo: 'network', title: t('step.network.title'), lead: t('step.network.lead'),
+        body: <>
+          <div className="group" role="radiogroup" aria-label={t('step.network.where')}>
+            {choices.map(([v, label, sub]) => (
+              <label className="row row-choice" key={v}>
+                <input type="radio" name="plane" value={v} checked={plane === v} onChange={() => setPlane(v)} />
+                <span className="row-main"><span className="row-label">{t(label)}</span><span className="row-sub wrap">{t(sub)}</span></span>
+                <span className="row-trail"><Icon name="check2" cls="icon checkmark" /></span>
+              </label>
+            ))}
+          </div>
+          {own && <Field id="url" label={t('step.network.url')} value={url} onChange={setUrl} type="url" hint={t('step.network.urlHint')}
+            error={bad.url ? t('step.network.urlInvalid') : undefined} />}
+          {network?.state === 'done' && <div className="as-check"><Icon name="check" /><span>{t('step.network.done')}</span></div>}
+        </>,
+        more: <p className="hint">{t('step.network.later')}</p>,
+        primary: { label: t('setup.continue'), ok: !own || /^https:\/\/\S+$/.test(url.trim()), why: t('step.network.why'), busy },
+        onPrimary: () => send(answerNow),
+      };
+    }
+    case 'domain': {
+      const example = <span className="host">{`photos.${domain.trim() || 'ferreira.family'}`}</span>;
+      const lead = rich('step.domain.lead', { example });
+      if (waiting) {
+        const help: Key[] = provider === 'rfc2136'
+          ? ['step.domain.helpRfc21361', 'step.domain.helpRfc21362']
+          : ['step.domain.helpInfomaniak1', 'step.domain.helpInfomaniak2', 'step.domain.helpInfomaniak3'];
+        return {
+          illo: 'domain', title: t('step.domain.waitTitle'), lead: t('step.domain.waitLead'),
+          body: <>
+            <div className="cmd"><code>{step?.command ?? 'sudo homerslab setup secret dns'}</code></div>
+            <p className="hint as-waiting" role="status"><span className="spinner" aria-hidden="true" />{t('step.domain.waiting')}</p>
+          </>,
+          moreLabel: t('step.domain.help'),
+          more: <>
+            <ol className="group help-steps">{help.map((k) => <li key={k}><span>{t(k)}</span></li>)}</ol>
+            <p className="subhead">{t('step.domain.helpWhy')}</p>
+          </>,
+          primary: { label: t('setup.continue'), ok: false, why: t('step.domain.waitWhy') },
+        };
+      }
+      const own = provider === 'rfc2136';
+      const choices: ['infomaniak' | 'rfc2136', Key, Key][] = [
+        ['infomaniak', 'step.domain.infomaniak', 'step.domain.infomaniakSub'], ['rfc2136', 'step.domain.rfc2136', 'step.domain.rfc2136Sub'],
+      ];
+      const body: Record<string, string> = own
+        ? { domain: domain.trim(), provider, server: server.trim(), keyName: keyName.trim() }
+        : { domain: domain.trim(), provider };
+      const port = a.householdPort && a.householdPort !== '443' ? `:${a.householdPort}` : '';
+      return {
+        illo: 'domain', title: t('step.domain.title'), lead,
+        body: <>
+          <Field id="domain" label={t('step.domain.domain')} value={domain} onChange={setDomain} hint={t('step.domain.domainHint')}
+            error={bad.domain ? t('step.domain.domainInvalid') : undefined} />
+          <div className="group" role="radiogroup" aria-label={t('step.domain.provider')}>
+            {choices.map(([v, label, sub]) => (
+              <label className="row row-choice" key={v}>
+                <input type="radio" name="provider" value={v} checked={provider === v} onChange={() => setProvider(v)} />
+                <span className="row-main"><span className="row-label">{t(label)}</span><span className="row-sub wrap">{t(sub)}</span></span>
+                <span className="row-trail"><Icon name="check2" cls="icon checkmark" /></span>
+              </label>
+            ))}
+          </div>
+          {own && <>
+            <Field id="server" label={t('step.domain.server')} value={server} onChange={setServer} hint={t('step.domain.serverHint')}
+              error={bad.server ? t('step.domain.serverInvalid') : undefined} />
+            <Field id="keyName" label={t('step.domain.keyName')} value={keyName} onChange={setKeyName}
+              error={bad.keyName ? t('step.domain.keyNameInvalid') : undefined} />
+          </>}
+          {step?.state === 'done' && <div className="as-check"><Icon name="check" /><span>
+            {t('step.domain.done', { domain: a.domain ?? '', admin: `https://admin.${a.domain ?? ''}${port}` })}</span></div>}
+        </>,
+        more: <p className="subhead">{t('step.domain.only')}</p>,
+        primary: { label: t('setup.continue'), ok: /^[^\s.]+(\.[^\s.]+)+$/.test(domain.trim()) && (!own || (!!server.trim() && !!keyName.trim())),
+          why: t('step.domain.why'), busy },
+        onPrimary: () => send(body),
+      };
+    }
     case 'join':
     case 'passkey':
     case 'done':
