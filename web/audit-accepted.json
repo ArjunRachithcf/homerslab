@@ -1,0 +1,6 @@
+{
+  "about": "Advisories npm audit reports that are known and accepted: each in a development tool only, never in a package that ships. The vuln workflow warns only for an advisory not listed here, and gives a notice for one that is no longer reported. It never excuses a runtime advisory: npm audit --omit=dev fails on those regardless (#115).",
+  "advisories": {
+    "GHSA-g3hv-75wg-m249": "minimatch >=7.0.0 <11.0.1 (denial of service via globparts amplification), through eslint 10 and typescript-eslint: development only (#113)"
+  }
+}
