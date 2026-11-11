@@ -66,10 +66,12 @@ func TestOnlyHomersLabsProjectNamesAreRead(t *testing.T) {
 func TestAProjectReadsNothingButItsOwnFile(t *testing.T) {
 	testenv.Isolate(t)
 	for name, file := range map[string]string{
-		"include":    "include: [/etc/shadow]\nservices: {web: {image: x}}\n",
-		"extends":    "services: {web: {image: x, extends: {file: /etc/shadow, service: a}}}\n",
-		"env_file":   "services: {web: {image: x, env_file: [/etc/shadow]}}\n",
-		"label_file": "services: {web: {image: x, label_file: [/etc/shadow]}}\n",
+		"include":           "include: [/etc/shadow]\nservices: {web: {image: x}}\n",
+		"extends":           "services: {web: {image: x, extends: {file: /etc/shadow, service: a}}}\n",
+		"env_file":          "services: {web: {image: x, env_file: [/etc/shadow]}}\n",
+		"label_file":        "services: {web: {image: x, label_file: [/etc/shadow]}}\n",
+		"a second document": "services: {web: {image: x}}\n---\ninclude: [/etc/shadow]\n",
+		"a later service":   "services: {web: {image: x}}\n---\nservices: {db: {image: y, env_file: [/etc/shadow]}}\n",
 	} {
 		if _, err := reader(t).Read(context.Background(), "homerslab-example", []byte(file)); !errors.Is(err, compose.ErrNotPlain) {
 			t.Errorf("%s: %v, want ErrNotPlain", name, err)

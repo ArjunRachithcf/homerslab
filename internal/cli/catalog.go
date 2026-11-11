@@ -121,6 +121,7 @@ func showPlan(ctx context.Context, env Env, socket string, asJSON bool, method, 
 // planWords says a plan in plain words, as Admin's plan page does.
 func planWords(w io.Writer, p plan.Plan) {
 	fmt.Fprintf(w, "Install %s %s, from the %s catalog\n", p.App.Name, p.App.Version, p.App.Catalog)
+	fmt.Fprintf(w, "%s, published by %s\n", upperFirst(string(p.App.Tier)), p.App.Publisher)
 	fmt.Fprintf(w, "Plan %s, made %s\n\n", p.ID, p.MadeAt.Local().Format("2 Jan 2006 15:04"))
 	row := func(k, v string) { fmt.Fprintf(w, "  %-14s %s\n", k, v) }
 	more := func(v string) { fmt.Fprintf(w, "  %-14s %s\n", "", v) }
@@ -130,6 +131,13 @@ func planWords(w io.Writer, p plan.Plan) {
 		exposure = "Mesh only: it can be made public later, with your passkey."
 	}
 	row("Its name", fmt.Sprintf("%s, on %s. %s", p.Name.Host, strings.Join(p.Name.Meshes, " and "), exposure))
+	if p.Name.Why != "" {
+		more(fmt.Sprintf("It asked for %q, which %s.", p.Name.Asked, map[string]string{
+			"platform": "is HomersLab's own: the sign-in, Admin or Home", "mesh": "the mesh uses to check the domain",
+			"dns": "starts with _, as DNS's own names do", "web": "is the web's usual name for the domain", "mail": "mail uses",
+			"node": "is a node's name", "app": "another app has",
+		}[p.Name.Why]))
+	}
 
 	var people []string
 	for _, x := range p.Audience.People {
@@ -210,6 +218,9 @@ func planWords(w io.Writer, p plan.Plan) {
 
 	r := p.Resources
 	disk := fmt.Sprintf("Disk: needs %s, %s free", DiskSize(r.Disk.NeedsBytes), DiskSize(r.Disk.FreeBytes))
+	if r.Disk.Unknown {
+		disk = fmt.Sprintf("Disk: needs %s; %s can't say how much is free", DiskSize(r.Disk.NeedsBytes), p.Placement.Node)
+	}
 	if r.Disk.Grows != "" {
 		disk += ", then grows with " + r.Disk.Grows
 	}
@@ -228,6 +239,10 @@ func planWords(w io.Writer, p plan.Plan) {
 		case "memory":
 			row("Warning", fmt.Sprintf("Not enough memory: %s needs %s, %s has %s free.", p.App.Name, gb(x.NeedsBytes), p.Placement.Node, gb(x.FreeBytes)))
 		case "disk":
+			if x.Unknown {
+				row("Warning", fmt.Sprintf("%s can't say how much disk is free; %s needs %s.", p.Placement.Node, p.App.Name, DiskSize(x.NeedsBytes)))
+				continue
+			}
 			row("Warning", fmt.Sprintf("Not enough disk: %s needs %s, %s has %s free.", p.App.Name, DiskSize(x.NeedsBytes), p.Placement.Node, DiskSize(x.FreeBytes)))
 		case "gpu":
 			row("Warning", fmt.Sprintf("%s needs a GPU from %s, and %s has none.", p.App.Name, strings.Join(r.GPU.Vendors, " or "), p.Placement.Node))

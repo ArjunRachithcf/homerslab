@@ -1,5 +1,5 @@
 {
-  "id": "p-49f13882737b05145142bccebdd2a26d",
+  "id": "p-8430f91677a10c34007a959c1b36fcbc",
   "kind": "install",
   "madeAt": "2026-11-10T13:30:00Z",
   "app": {
@@ -8,7 +8,8 @@
     "purpose": "PDF tools",
     "version": "2.8.10",
     "tier": "community",
-    "catalog": "official"
+    "catalog": "official",
+    "publisher": "HomersLab"
   },
   "name": {
     "host": "pdf.ferreira.family",

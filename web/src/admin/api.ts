@@ -22,12 +22,12 @@ export type Definition = {
 };
 export type AppPage = { catalog: CatalogInfo; app: Definition; icon: string; screenshots: { url: string; caption: string }[] };
 
-export type Warning = { kind: 'memory' | 'disk' | 'gpu' | 'build'; needsBytes?: number; freeBytes?: number; services?: string[] };
-export type Amount = { needsBytes: number; freeBytes: number; grows?: string };
+export type Warning = { kind: 'memory' | 'disk' | 'gpu' | 'build'; needsBytes?: number; freeBytes?: number; services?: string[]; unknown?: boolean };
+export type Amount = { needsBytes: number; freeBytes: number; unknown?: boolean; grows?: string };
 export type Plan = {
   id: string; kind: 'install'; madeAt: string;
-  app: { id: string; name: string; purpose: string; version: string; tier: Tier; catalog: string };
-  name: { host: string; meshes: string[]; exposure: string; publicAllowed: boolean };
+  app: { id: string; name: string; purpose: string; version: string; tier: Tier; catalog: string; publisher: string };
+  name: { host: string; asked?: string; why?: string; meshes: string[]; exposure: string; publicAllowed: boolean };
   audience: { default: string; people: { name: string; role: string }[]; kidView?: string };
   signIn: { method: SignInMethod; provider: { id: string; name: string }; creates: string };
   backups: { every: string; restoreTest: string; data: { what: string; kind: 'folder' | 'dump' }[]; left: { what: string; why: string }[] };

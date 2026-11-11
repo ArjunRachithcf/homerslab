@@ -95,12 +95,11 @@ func Read(root fs.FS) (Facts, error) {
 	f.Architecture = architecture(text(root, "proc/sys/kernel/arch"))
 	f.TPM = tpm(root)
 	if s, ok := root.(StatFS); ok {
-		sp, err := s.Statfs(strings.TrimPrefix(DataPath, "/"))
-		if err != nil {
-			return f, fmt.Errorf("the space for apps' data: %w", err)
+		// A filesystem that can't say leaves Space unset: the rest of the facts still stand.
+		if sp, err := s.Statfs(strings.TrimPrefix(DataPath, "/")); err == nil {
+			sp.Path = DataPath
+			f.Space = &sp
 		}
-		sp.Path = DataPath
-		f.Space = &sp
 	}
 	return f, nil
 }

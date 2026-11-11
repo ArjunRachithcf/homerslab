@@ -1,9 +1,11 @@
 package compose
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -85,24 +87,31 @@ func (r *Reader) Read(ctx context.Context, name string, file []byte) (engine.Pro
 	return out, nil
 }
 
-// plain refuses a compose file that would make the loader read another file.
+// plain refuses a compose file that would make the loader read another file, in any of its YAML documents: the
+// loader merges them all.
 func plain(file []byte) error {
-	var doc struct {
-		Include  any                       `yaml:"include"`
-		Services map[string]map[string]any `yaml:"services"`
-	}
-	if err := yaml.Unmarshal(file, &doc); err != nil {
-		return fmt.Errorf("the compose file: %w", err)
-	}
-	if doc.Include != nil {
-		return ErrNotPlain
-	}
-	for _, s := range doc.Services {
-		for _, k := range []string{"extends", "env_file", "label_file"} {
-			if _, ok := s[k]; ok {
-				return ErrNotPlain
+	dec := yaml.NewDecoder(bytes.NewReader(file))
+	for {
+		var doc struct {
+			Include  any                       `yaml:"include"`
+			Services map[string]map[string]any `yaml:"services"`
+		}
+		err := dec.Decode(&doc)
+		if errors.Is(err, io.EOF) {
+			return nil
+		}
+		if err != nil {
+			return fmt.Errorf("the compose file: %w", err)
+		}
+		if doc.Include != nil {
+			return ErrNotPlain
+		}
+		for _, s := range doc.Services {
+			for _, k := range []string{"extends", "env_file", "label_file"} {
+				if _, ok := s[k]; ok {
+					return ErrNotPlain
+				}
 			}
 		}
 	}
-	return nil
 }

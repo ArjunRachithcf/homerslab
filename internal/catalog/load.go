@@ -155,7 +155,12 @@ func loadApp(fsys fs.FS, dir string, categories map[string]bool) (App, error) {
 
 func checkVersions(p *problems, v Versions) {
 	p.need(v.App, "versions.app")
+	seen := map[string]bool{}
 	for _, im := range v.Images {
+		if seen[im.Service] {
+			p.add("versions.images: %s pinned twice", im.Service)
+		}
+		seen[im.Service] = true
 		if im.Service == "" || len(im.Digests) == 0 {
 			p.add("versions.images: each names its service and its digests")
 		}
@@ -193,9 +198,30 @@ func checkSignIn(p *problems, methods []SignIn) {
 	}
 }
 
+// reserved are the names the platform, the mesh, the web and mail use on a household's domains (#18, adversarial
+// review round 2): no app may take one.
+var reserved = map[string]string{
+	"auth": "platform", "admin": "platform", "home": "platform", // the sign-in, Admin and Home
+	"validation": "mesh", // NetBird's check of a custom domain
+	"www":        "web",
+	"mail":       "mail", "autodiscover": "mail", "mta-sts": "mail",
+}
+
+// Reserved says what a name on the household's domains is reserved for: platform, mesh, dns (any name starting with
+// "_"), web or mail; "" when it isn't.
+func Reserved(name string) string {
+	if strings.HasPrefix(name, "_") {
+		return "dns"
+	}
+	return reserved[strings.ToLower(name)]
+}
+
 func checkNames(p *problems, n Names) {
 	if !idPattern.MatchString(n.Name) {
 		p.add("names.name %q: lowercase letters, digits and dashes", n.Name)
+	}
+	if why := Reserved(n.Name); why != "" {
+		p.add("names.name %q is reserved (%s): no app may take it", n.Name, why)
 	}
 	p.need(n.Service, "names.service")
 	if n.Port <= 0 || n.Port > 65535 {

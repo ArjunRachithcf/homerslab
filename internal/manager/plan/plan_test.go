@@ -17,9 +17,10 @@ import (
 const gib = 1 << 30
 
 var (
-	digestA = "sha256:" + strings.Repeat("a", 64)
-	digestB = "sha256:" + strings.Repeat("b", 64)
-	made    = time.Date(2026, 11, 11, 9, 30, 0, 0, time.UTC)
+	digestA  = "sha256:" + strings.Repeat("a", 64)
+	digestB  = "sha256:" + strings.Repeat("b", 64)
+	made     = time.Date(2026, 11, 11, 9, 30, 0, 0, time.UTC)
+	official = plan.From{ID: "official", Publisher: "HomersLab"}
 )
 
 // definition is a small app in two services, with what the planner reads of it.
@@ -78,7 +79,7 @@ func household() plan.Household {
 
 func make_(t *testing.T, d catalog.App, h plan.Household) plan.Plan {
 	t.Helper()
-	p, err := plan.Make(d, "official", project(), h, made)
+	p, err := plan.Make(d, official, project(), h, made)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -102,7 +103,7 @@ func TestAPlanSaysWhatInstallingDoes(t *testing.T) {
 			t.Errorf("%s:\n got %+v\nwant %+v", what, got, want)
 		}
 	}
-	check("app", p.App, plan.App{ID: "pictures", Name: "Pictures", Purpose: "Photos", Version: "v2.0.1", Tier: catalog.Verified, Catalog: "official"})
+	check("app", p.App, plan.App{ID: "pictures", Name: "Pictures", Purpose: "Photos", Version: "v2.0.1", Tier: catalog.Verified, Catalog: "official", Publisher: "HomersLab"})
 	check("name", p.Name, plan.Name{Host: "pictures.ferreira.family", Meshes: []string{"NetBird"}, Exposure: "mesh", PublicAllowed: true})
 	check("audience", p.Audience, plan.Audience{Default: "adults", People: []plan.Person{{Name: "Inês Ferreira", Role: "admin"}, {Name: "Rui Ferreira", Role: "adult"}}})
 	check("sign-in", p.SignIn, plan.SignIn{Method: catalog.OIDC, Provider: authentik(), Creates: "oidc-client"})
@@ -161,7 +162,7 @@ func TestThePlanUsesTheFirstSignInMethodTheProviderProvides(t *testing.T) {
 	d, h := definition(), household()
 	d.SignIn = []catalog.SignIn{{Method: catalog.OIDC}}
 	h.Provider.Provides = []catalog.SignInMethod{catalog.Guard}
-	if _, err := plan.Make(d, "official", project(), h, made); !errors.Is(err, plan.ErrNoSignInMethod) {
+	if _, err := plan.Make(d, official, project(), h, made); !errors.Is(err, plan.ErrNoSignInMethod) {
 		t.Errorf("no method in common: %v, want ErrNoSignInMethod", err)
 	}
 }
@@ -184,7 +185,7 @@ func TestTheResourcesCheckWarnsWhenThePrimaryLacks(t *testing.T) {
 		"not enough disk": {func(d *catalog.App, h *plan.Household) { h.Primary.Facts.Space.FreeBytes = 5 * gib },
 			[]plan.Warning{{Kind: "disk", NeedsBytes: 10 * gib, FreeBytes: 5 * gib}}, []string{}},
 		"a disk that can't say": {func(d *catalog.App, h *plan.Household) { h.Primary.Facts.Space = nil },
-			[]plan.Warning{{Kind: "disk", NeedsBytes: 10 * gib}}, []string{}},
+			[]plan.Warning{{Kind: "disk", NeedsBytes: 10 * gib, Unknown: true}}, []string{}},
 		"a GPU it requires, and none": {func(d *catalog.App, h *plan.Household) {
 			d.Resources.GPU = catalog.GPU{Need: "required", Vendors: []string{"nvidia"}, For: "transcoding"}
 			h.Primary.Facts.GPUs = []node.GPU{}
@@ -224,12 +225,19 @@ func TestTheResourcesCheckWarnsWhenThePrimaryLacks(t *testing.T) {
 func TestAPlanIsKnownByWhatItSays(t *testing.T) {
 	testenv.Isolate(t)
 	first := make_(t, definition(), household())
-	again, err := plan.Make(definition(), "official", project(), household(), made.Add(time.Hour))
+	again, err := plan.Make(definition(), official, project(), household(), made.Add(time.Hour))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if again.ID != first.ID {
 		t.Errorf("the same plan an hour later is %s, want %s", again.ID, first.ID)
+	}
+	// What the node has free is measured when the plan is made; it moves all the time, so it isn't what makes a plan
+	// new. Whether the app fits is: a warning changes the plan.
+	h := household()
+	h.Primary.Facts.Space.FreeBytes -= 3e6
+	if p := make_(t, definition(), h); p.ID != first.ID {
+		t.Errorf("a few megabytes less free disk made a new plan, %s", p.ID)
 	}
 	for name, edit := range map[string]func(*catalog.App, *plan.Household){
 		"a new person": func(_ *catalog.App, h *plan.Household) {
@@ -241,8 +249,8 @@ func TestAPlanIsKnownByWhatItSays(t *testing.T) {
 		},
 		"less memory":    func(_ *catalog.App, h *plan.Household) { h.Primary.Facts.MemoryBytes = gib },
 		"another engine": func(_ *catalog.App, h *plan.Household) { h.Primary.Engine = catalog.Podman },
-		"an app installed": func(_ *catalog.App, h *plan.Household) {
-			h.Installed = []plan.Installed{{App: "films", MemoryMiB: 1024}}
+		"an app that leaves too little memory": func(_ *catalog.App, h *plan.Household) {
+			h.Installed = []plan.Installed{{App: "films", MemoryMiB: 31 * 1024}}
 		},
 		"a newer version":      func(d *catalog.App, _ *plan.Household) { d.Versions.App = "v2.0.2" },
 		"another default view": func(d *catalog.App, _ *plan.Household) { d.Audience.Default = "everyone" },
@@ -263,9 +271,56 @@ func TestADefinitionWhoseComposeFileDisagreesMakesNoPlan(t *testing.T) {
 	extra.Services = append(extra.Services, engine.Service{Name: "worker", Image: "example/worker@" + digestA})
 	missing := project()
 	missing.Services = missing.Services[1:]
-	for name, p := range map[string]engine.Project{"a service the manifest doesn't pin": extra, "a pin with no service": missing} {
-		if _, err := plan.Make(definition(), "official", p, household(), made); !errors.Is(err, plan.ErrDefinition) {
+	unpinned := project()
+	unpinned.Services[0].Image = "postgres:16"
+	for name, p := range map[string]engine.Project{"a service the manifest doesn't pin": extra, "a pin with no service": missing, "an image by tag": unpinned} {
+		if _, err := plan.Make(definition(), official, p, household(), made); !errors.Is(err, plan.ErrDefinition) {
 			t.Errorf("%s: %v, want ErrDefinition", name, err)
 		}
+	}
+	for name, edit := range map[string]func(*catalog.App){
+		"its name on a service it doesn't run": func(d *catalog.App) { d.Names.Service = "serverr" },
+		"data in a service it doesn't run":     func(d *catalog.App) { d.Data[1].Service = "database" },
+		"a health check on no service":         func(d *catalog.App) { d.Health[0].Service = "worker" },
+		"an extra for no service": func(d *catalog.App) {
+			d.Extras = []catalog.Extra{{ID: "lan", Kind: "network", Service: "worker", Why: "x"}}
+		},
+	} {
+		d := definition()
+		edit(&d)
+		if _, err := plan.Make(d, official, project(), household(), made); !errors.Is(err, plan.ErrDefinition) {
+			t.Errorf("%s: %v, want ErrDefinition", name, err)
+		}
+	}
+}
+
+// An app's name never takes one that the platform, the mesh, the web or mail already uses, a node's name, or another
+// app's: the plan says why, and takes the next free one (#18, adversarial review round 2).
+func TestAPlanNeverTakesAReservedName(t *testing.T) {
+	testenv.Isolate(t)
+	for _, c := range []struct {
+		name, why, host string
+	}{
+		{"auth", "platform", "auth-2"}, {"admin", "platform", "admin-2"}, {"home", "platform", "home-2"},
+		{"validation", "mesh", "validation-2"}, {"_acme-challenge", "dns", "acme-challenge"}, {"_dmarc", "dns", "dmarc"},
+		{"www", "web", "www-2"}, {"mail", "mail", "mail-2"}, {"autodiscover", "mail", "autodiscover-2"},
+		{"mta-sts", "mail", "mta-sts-2"}, {"study-pc", "node", "study-pc-2"}, {"films", "app", "films-2"},
+	} {
+		d, h := definition(), household()
+		d.Names.Name = c.name
+		h.Installed = []plan.Installed{{App: "jellyfin", Name: "films"}}
+		got := make_(t, d, h).Name
+		if got.Host != c.host+".ferreira.family" || got.Asked != c.name || got.Why != c.why {
+			t.Errorf("%s: %s (asked %q, why %q), want %s because %s", c.name, got.Host, got.Asked, got.Why, c.host, c.why)
+		}
+	}
+	d, h := definition(), household()
+	d.Names.Name = "photos"
+	h.Installed = []plan.Installed{{App: "immich", Name: "photos"}, {App: "photoprism", Name: "photos-2"}}
+	if got := make_(t, d, h).Name; got.Host != "photos-3.ferreira.family" || got.Why != "app" {
+		t.Errorf("a third photo app: %+v, want photos-3", got)
+	}
+	if got := make_(t, definition(), household()).Name; got.Asked != "" || got.Why != "" {
+		t.Errorf("a free name: %+v, want no reason", got)
 	}
 }

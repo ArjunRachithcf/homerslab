@@ -1,5 +1,5 @@
 {
-  "id": "p-e76595914a7da77c9ae608c8313b6ba8",
+  "id": "p-e8928a3ecb6dd59c9cf277694b213bb7",
   "kind": "install",
   "madeAt": "2026-11-10T13:30:00Z",
   "app": {
@@ -8,7 +8,8 @@
     "purpose": "Photos",
     "version": "v3.3.5",
     "tier": "verified",
-    "catalog": "official"
+    "catalog": "official",
+    "publisher": "HomersLab"
   },
   "name": {
     "host": "photos.ferreira.family",

@@ -30,19 +30,23 @@ type Plan struct {
 	Risky bool `json:"risky"`
 }
 
-// App is the app the plan installs, from which catalog, at which version.
+// App is the app the plan installs, at which version, from which catalog and publisher: an app's id is its catalog's.
 type App struct {
-	ID      string       `json:"id"`
-	Name    string       `json:"name"`
-	Purpose string       `json:"purpose"`
-	Version string       `json:"version"`
-	Tier    catalog.Tier `json:"tier"`
-	Catalog string       `json:"catalog"`
+	ID        string       `json:"id"`
+	Name      string       `json:"name"`
+	Purpose   string       `json:"purpose"`
+	Version   string       `json:"version"`
+	Tier      catalog.Tier `json:"tier"`
+	Catalog   string       `json:"catalog"`
+	Publisher string       `json:"publisher"`
 }
 
-// Name is the app's name on the household's main domain, and who can reach it.
+// Name is the app's name on the household's main domain, and who can reach it. When the name the app asked for is
+// reserved or taken, Asked is that name and Why says by what: platform, mesh, dns, web, mail, node or app.
 type Name struct {
 	Host     string   `json:"host"`
+	Asked    string   `json:"asked,omitempty"`
+	Why      string   `json:"why,omitempty"`
 	Meshes   []string `json:"meshes"`
 	Exposure string   `json:"exposure"` // mesh
 	// PublicAllowed says the app may be made public later.
@@ -131,6 +135,7 @@ type Resources struct {
 type Amount struct {
 	NeedsBytes uint64 `json:"needsBytes"`
 	FreeBytes  uint64 `json:"freeBytes"`
+	Unknown    bool   `json:"unknown,omitempty"` // the node can't say what is free
 	Grows      string `json:"grows,omitempty"`
 }
 
@@ -148,6 +153,7 @@ type Warning struct {
 	NeedsBytes uint64   `json:"needsBytes,omitempty"`
 	FreeBytes  uint64   `json:"freeBytes,omitempty"`
 	Services   []string `json:"services,omitempty"` // build: the services with no image for this node
+	Unknown    bool     `json:"unknown,omitempty"`  // disk: the node can't say what is free
 }
 
 // Household is the household's state, as the planner needs it.
@@ -181,8 +187,9 @@ type Node struct {
 	Engine catalog.Engine
 }
 
-// Installed is an app already in the household, and what it takes.
+// Installed is an app already in the household: its name on the domains, and what it takes.
 type Installed struct {
 	App       string
+	Name      string
 	MemoryMiB int
 }

@@ -55,7 +55,7 @@ func TestTheCLIShowsTheSamePlanAsAdmin(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("homerslab plan show: %d %s", code, errOut)
 	}
-	for _, want := range []string{"Install Immich v3.3.5, from the official catalog", "Plan " + p.ID,
+	for _, want := range []string{"Install Immich v3.3.5, from the official catalog", "Verified, published by HomersLab", "Plan " + p.ID,
 		"photos.ferreira.family", "on NetBird", "Adults: Inês Ferreira", "an OIDC client in Authentik",
 		"Every hour: the photo library, its database (a dump)", "A restore test every week",
 		"Not the database's own files: the dump holds them", "Not machine-learning models: Immich downloads them again", "study-pc", "4 containers", "None",

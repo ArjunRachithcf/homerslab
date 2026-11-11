@@ -191,7 +191,7 @@ function AppScreen({ id, go }: { id: string; go: Go }) {
   const a = data.app;
   const kept = a.data.filter((d) => d.backup !== false).map((d) => lower(d.what));
   const r = a.resources;
-  let needs = t('store.needs.value', { memory: memory(r.memoryMiB * 2 ** 20), disk: memory(r.diskGiB * 2 ** 30) });
+  let needs = t('store.needs.value', { memory: memory(r.memoryMiB * 2 ** 20), disk: disk(r.diskGiB * 2 ** 30) });
   if (r.grows) needs += t('store.needs.grows', { what: r.grows });
   needs += r.gpu.need === 'none' ? t('store.needs.gpu.none') : t(r.gpu.need === 'required' ? 'store.needs.gpu.required' : 'store.needs.gpu.optional', { what: r.gpu.for ?? '' });
   const wired: [string, string][] = [
@@ -267,7 +267,7 @@ function PlanScreen({ id, go }: { id: string; go: Go }) {
         </div>
       </div>
       <p className="plan-meta">
-        {rich('plan.meta', { id: <span className="plan-id">{p.id}</span>, when, app: p.app.name, version: p.app.version, catalog: p.app.catalog })}
+        {rich('plan.meta', { id: <span className="plan-id">{p.id}</span>, when, app: p.app.name, version: p.app.version, tier: tierWords(p.app.tier), catalog: p.app.catalog, publisher: p.app.publisher })}
       </p>
       <div className="split">
         <div className="plan-sections"><PlanSections p={p} /></div>
@@ -304,7 +304,7 @@ function PlanSections({ p }: { p: Plan }) {
     const v = { node, app: p.app.name };
     switch (w.kind) {
       case 'memory': return t('plan.warn.memory', { ...v, needs: memory(w.needsBytes ?? 0), free: memory(w.freeBytes ?? 0) });
-      case 'disk': return w.freeBytes ? t('plan.warn.disk', { ...v, needs: disk(w.needsBytes ?? 0), free: disk(w.freeBytes) }) : t('plan.warn.diskUnknown', { ...v, needs: disk(w.needsBytes ?? 0) });
+      case 'disk': return w.unknown ? t('plan.warn.diskUnknown', { ...v, needs: disk(w.needsBytes ?? 0) }) : t('plan.warn.disk', { ...v, needs: disk(w.needsBytes ?? 0), free: disk(w.freeBytes ?? 0) });
       case 'gpu': return t('plan.warn.gpu', { ...v, vendors: (r.gpu.vendors ?? []).join(', ') });
       default: return t('plan.warn.build', { ...v, arch: p.placement.architecture, engine: engineName(p.placement.engine), services: (w.services ?? []).join(', ') });
     }
@@ -313,8 +313,8 @@ function PlanSections({ p }: { p: Plan }) {
   const enough = (kind: Warning['kind']) => (
     <span className={`pill ${short.has(kind) ? 'pill-orange' : 'pill-green'}`}>{t(short.has(kind) ? 'plan.short' : 'plan.enough')}</span>
   );
-  const amount = (a: Plan['resources']['memory'], fmt: (b: number) => string, kind: Warning['kind']) =>
-    kind === 'disk' && !a.freeBytes && short.has('disk') ? t('plan.amount.unknown', { needs: fmt(a.needsBytes), node })
+  const amount = (a: Plan['resources']['memory'], fmt: (b: number) => string) =>
+    a.unknown ? t('plan.amount.unknown', { needs: fmt(a.needsBytes), node })
       : a.grows ? t('plan.amount.grows', { needs: fmt(a.needsBytes), free: fmt(a.freeBytes), what: a.grows })
         : t('plan.amount', { needs: fmt(a.needsBytes), free: fmt(a.freeBytes) });
   let gpu = t('plan.gpu.none');
@@ -353,7 +353,8 @@ function PlanSections({ p }: { p: Plan }) {
         <Q id="pq-name" title={t('plan.name')} />
         <div className="group">
           <Row lead="mesh" title={<span className="host">{p.name.host}</span>}
-            sub={t(p.name.publicAllowed ? 'plan.name.public' : 'plan.name.mesh', { meshes: and(p.name.meshes), node })} />
+            sub={<>{p.name.why && <>{t(`plan.name.why.${p.name.why}` as Key, { asked: p.name.asked ?? '' })}<br /></>}
+              {t(p.name.publicAllowed ? 'plan.name.public' : 'plan.name.mesh', { meshes: and(p.name.meshes), node })}</>} />
         </div>
       </section>
       <section aria-labelledby="pq-backups">
@@ -374,8 +375,8 @@ function PlanSections({ p }: { p: Plan }) {
           </div>
         )}
         <div className="group lead-sm">
-          <Row lead="memory" title={t('plan.memory')} sub={amount(r.memory, memory, 'memory')} trail={enough('memory')} />
-          <Row lead="disk" title={t('plan.disk')} sub={amount(r.disk, disk, 'disk')} trail={enough('disk')} />
+          <Row lead="memory" title={t('plan.memory')} sub={amount(r.memory, memory)} trail={enough('memory')} />
+          <Row lead="disk" title={t('plan.disk')} sub={amount(r.disk, disk)} trail={enough('disk')} />
           <Row lead="gpu" title={t('plan.gpu')} sub={gpu} trail={r.gpu.need === 'none' ? undefined : enough('gpu')} />
         </div>
       </section>

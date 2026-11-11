@@ -193,6 +193,7 @@ func TestNoPlanUntilTheHouseholdIsSetUp(t *testing.T) {
 		"an app the catalog hasn't": {map[string]string{"app": "nope"}, http.StatusNotFound, "no-such-app"},
 		"no app":                    {map[string]string{}, http.StatusNotFound, "no-such-app"},
 		"not JSON":                  {"[", http.StatusBadRequest, "not-json"},
+		"another catalog's app":     {map[string]string{"catalog": "someone-else", "app": "immich"}, http.StatusNotFound, "no-such-catalog"},
 	} {
 		if r := p.admin("POST", "/api/v1/plans", c.body); r.Code != c.code || r.errorCode(t) != c.err {
 			t.Errorf("%s: %d %s, want %d %s", name, r.Code, r.Body, c.code, c.err)

@@ -48,7 +48,21 @@ func Handler(sysroot Sysroot, log *slog.Logger) http.Handler {
 		}
 		writeJSON(w, http.StatusOK, facts)
 	})
-	reader := sync.OnceValues(func() (*compose.Reader, error) { return compose.NewReader("") })
+	// The reader is made once it works: a failure to make it is tried again on the next request.
+	var mu sync.Mutex
+	var made *compose.Reader
+	reader := func() (*compose.Reader, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		if made != nil {
+			return made, nil
+		}
+		r, err := compose.NewReader("")
+		if err == nil {
+			made = r
+		}
+		return r, err
+	}
 	mux.HandleFunc("POST /v1/projects/read", func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
 			Project string `json:"project"`

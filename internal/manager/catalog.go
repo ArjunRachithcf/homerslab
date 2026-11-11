@@ -146,11 +146,17 @@ func (m *Manager) household(ctx context.Context) (plan.Household, error) {
 }
 
 func (m *Manager) newPlan(w http.ResponseWriter, r *http.Request) {
+	// An app's id is its catalog's (#89): the request names both, the official catalog when it leaves it out.
 	var body struct {
-		App string `json:"app"`
+		Catalog string `json:"catalog"`
+		App     string `json:"app"`
 	}
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4<<10)).Decode(&body); err != nil {
 		fail(w, http.StatusBadRequest, "not-json")
+		return
+	}
+	if body.Catalog != "" && body.Catalog != m.catalog.ID {
+		fail(w, http.StatusNotFound, "no-such-catalog")
 		return
 	}
 	a, ok := m.catalog.App(body.App)
@@ -182,7 +188,7 @@ func (m *Manager) newPlan(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusServiceUnavailable, errAgent.Error())
 		return
 	}
-	p, err := plan.Make(a, m.catalog.ID, project, h, m.cfg.Now())
+	p, err := plan.Make(a, plan.From{ID: m.catalog.ID, Publisher: m.catalog.Publisher}, project, h, m.cfg.Now())
 	if errors.Is(err, plan.ErrNoSignInMethod) || errors.Is(err, plan.ErrDefinition) {
 		m.log.Error("planning an app", "app", a.ID, "err", err)
 		fail(w, http.StatusUnprocessableEntity, strings.SplitN(err.Error(), ":", 2)[0])
