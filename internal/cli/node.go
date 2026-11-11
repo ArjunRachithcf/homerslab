@@ -17,7 +17,7 @@ func showNode(ctx context.Context, args []string, env Env) error {
 		return err
 	}
 	var f node.Facts
-	body, err := newControl(*socket).do(ctx, "GET", "/api/v1/nodes/primary", 0, &f)
+	body, err := newControl(*socket).do(ctx, "GET", "/api/v1/nodes/primary", nil, 0, &f)
 	if err != nil {
 		return err
 	}

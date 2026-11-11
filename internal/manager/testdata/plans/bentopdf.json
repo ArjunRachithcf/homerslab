@@ -1,0 +1,75 @@
+{
+  "id": "p-49f13882737b05145142bccebdd2a26d",
+  "kind": "install",
+  "madeAt": "2026-11-10T13:30:00Z",
+  "app": {
+    "id": "bentopdf",
+    "name": "BentoPDF",
+    "purpose": "PDF tools",
+    "version": "2.8.10",
+    "tier": "community",
+    "catalog": "official"
+  },
+  "name": {
+    "host": "pdf.ferreira.family",
+    "meshes": [
+      "NetBird"
+    ],
+    "exposure": "mesh",
+    "publicAllowed": false
+  },
+  "audience": {
+    "default": "adults",
+    "people": [
+      {
+        "name": "Inês Ferreira",
+        "role": "admin"
+      }
+    ]
+  },
+  "signIn": {
+    "method": "guard",
+    "provider": {
+      "id": "authentik",
+      "name": "Authentik"
+    },
+    "creates": "guard"
+  },
+  "backups": {
+    "every": "hour",
+    "restoreTest": "week",
+    "data": [],
+    "left": []
+  },
+  "placement": {
+    "node": "study-pc",
+    "architecture": "x86_64",
+    "engine": "docker",
+    "project": "homerslab-bentopdf",
+    "services": [
+      {
+        "name": "web",
+        "image": "ghcr.io/alam00000/bentopdf-simple:2.8.10@sha256:b5227a308e796d2bd00d2eb6da9d7296093107a8be7efef38a006d06506dc3c0",
+        "digest": "sha256:c1981c9462e8cb9d6ffe6a4e8dd89336c3bee5459f8a603cfafda55f2958789a"
+      }
+    ]
+  },
+  "extras": [],
+  "secrets": [],
+  "resources": {
+    "memory": {
+      "needsBytes": 134217728,
+      "freeBytes": 33554432000
+    },
+    "disk": {
+      "needsBytes": 1073741824,
+      "freeBytes": 412000000000
+    },
+    "gpu": {
+      "need": "none",
+      "usable": []
+    },
+    "warnings": []
+  },
+  "risky": false
+}

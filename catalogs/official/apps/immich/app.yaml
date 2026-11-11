@@ -1,0 +1,84 @@
+id: immich
+name: Immich
+purpose: Photos
+description: >-
+  Every phone's photos and videos, backed up at home as they're taken. People find them by face, by place or by
+  what's in them, and share albums with each other. The phone apps sign in with the household account too.
+category: photos
+tier: verified
+icon: icon.svg
+screenshots:
+  - {file: screenshots/photos.jpg, caption: "Everyone's photos, newest first"}
+  - {file: screenshots/sign-in.jpg, caption: Signing in with the household account}
+
+versions:
+  app: v3.3.5
+  images:
+    - service: server
+      digests:
+        docker: &server
+          x86_64: sha256:1ab81816384ce8e782fdbdb2b7703ab68fd12442bc311a53118dc0d74c2ced24
+          arm64: sha256:0cb5bfcdc301a00b1c0c221d5b665b54c1b69a3ccc96b13a82cdfec818dcfa27
+        podman: *server
+    - service: machine-learning
+      digests:
+        docker: &ml
+          x86_64: sha256:1270449e47e1fcd703661c4d728b7904d89aacfb715662c26116cc9dd73f266b
+          arm64: sha256:3719420e1f981955793389c0178bd600cf3bd7edc3a35dc0bb2996e8353280e7
+        podman: *ml
+    - service: redis
+      digests:
+        docker: &redis
+          x86_64: sha256:67878c70fc179bb928b1a9b510860aff1c475ff245e91d98d4b2133326bf8e3e
+          arm64: sha256:5c3b442de7298629138577ebdac0d039a2866df5a2fc61c605b00b91c6d03524
+        podman: *redis
+    - service: database
+      digests:
+        docker: &database
+          x86_64: sha256:b1d33572a9a0634aa6d344077467ad32847812a37fa3859f702952cba22a2f55
+          arm64: sha256:6244e923bfde05b58bc4fc26b21025415c166c6239b6b9886fb0e806dcc99001
+        podman: *database
+
+signIn:
+  - method: oidc
+    redirectUris: [/auth/login, /user-settings, app.immich:///oauth-callback]
+    scopes: [openid, email, profile]
+
+names:
+  name: photos
+  service: server
+  port: 2283
+  exposure: mesh
+  public: true
+
+audience:
+  default: adults
+
+data:
+  - {what: The photo library, service: server, path: /data}
+  - what: Its database
+    service: database
+    dump: {command: [pg_dump, --clean, --if-exists, --username=postgres, immich], file: immich.sql}
+  - {what: The database's own files, service: database, path: /var/lib/postgresql/data, backup: false, why: The dump holds them}
+  - {what: Machine-learning models, service: machine-learning, path: /cache, backup: false, why: Immich downloads them again}
+
+secrets:
+  - {name: db-password, what: the database password, uid: 999}
+
+health:
+  - service: server
+    http: {port: 2283, path: /api/server/ping}
+  - {service: server, compose: true}
+  - {service: database, compose: true}
+
+resources:
+  memoryMiB: 6144
+  diskGiB: 10
+  grows: the photo library
+  gpu: {need: none}
+  canPause: true
+
+extras: []
+
+updateNotes:
+  - {version: v3.3.5, notes: The version the catalog starts with.}

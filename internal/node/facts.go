@@ -23,6 +23,26 @@ type Facts struct {
 	Disks        []Disk `json:"disks"`
 	TPM          TPM    `json:"tpm"`
 	GPUs         []GPU  `json:"gpus"`
+	// Space is the filesystem that holds apps' data, when the system root can say.
+	Space *Space `json:"space,omitempty"`
+}
+
+// Space is the free and total size of the filesystem that holds HomersLab's folder, /var/lib/homerslab, where apps
+// keep their data until storage locations and disks are chosen.
+type Space struct {
+	Path      string `json:"path"`
+	FreeBytes uint64 `json:"freeBytes"`
+	SizeBytes uint64 `json:"sizeBytes"`
+}
+
+// DataPath is HomersLab's own folder.
+const DataPath = "/var/lib/homerslab"
+
+// StatFS is a system root that can say how much space a filesystem has.
+type StatFS interface {
+	fs.FS
+	// Statfs is the space of the filesystem that holds name, a path relative to the root.
+	Statfs(name string) (Space, error)
 }
 
 // Distro is the Linux distribution, from os-release.
@@ -74,6 +94,14 @@ func Read(root fs.FS) (Facts, error) {
 	f.Hostname = text(root, "proc/sys/kernel/hostname")
 	f.Architecture = architecture(text(root, "proc/sys/kernel/arch"))
 	f.TPM = tpm(root)
+	if s, ok := root.(StatFS); ok {
+		sp, err := s.Statfs(strings.TrimPrefix(DataPath, "/"))
+		if err != nil {
+			return f, fmt.Errorf("the space for apps' data: %w", err)
+		}
+		sp.Path = DataPath
+		f.Space = &sp
+	}
 	return f, nil
 }
 

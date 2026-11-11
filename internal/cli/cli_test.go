@@ -12,6 +12,7 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/makiuchi-d/gozxing"
 	"github.com/makiuchi-d/gozxing/qrcode"
@@ -20,15 +21,38 @@ import (
 	"github.com/ArjunRachithcf/homerslab/internal/cli"
 	"github.com/ArjunRachithcf/homerslab/internal/lan"
 	"github.com/ArjunRachithcf/homerslab/internal/manager"
+	"github.com/ArjunRachithcf/homerslab/internal/manager/setup"
+	"github.com/ArjunRachithcf/homerslab/internal/manager/store"
 	"github.com/ArjunRachithcf/homerslab/internal/testenv"
 )
 
 // running starts an agent and a manager in the test's own directories, and returns the manager's control socket.
-func running(t *testing.T) string {
+// With setUp, first-time setup's built steps are already answered: the Ferreira household, with Inês as its admin.
+func running(t *testing.T, setUp ...bool) string {
 	t.Helper()
 	dir := t.TempDir()
+	if len(setUp) > 0 && setUp[0] {
+		db, err := store.Open(filepath.Join(dir, "manager.db"), setup.StoreSteps())
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, st := range []struct {
+			id      string
+			answers map[string]string
+		}{{"welcome", nil}, {"you", map[string]string{"name": "Inês Ferreira", "mail": "ines@ferreira.family"}}, {"household", map[string]string{"household": "The Ferreira household"}}} {
+			if err := db.CompleteStep(context.Background(), st.id, st.answers, time.Now()); err != nil {
+				t.Fatal(err)
+			}
+		}
+		db.Close()
+	}
+	adminLn, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
 	m, err := manager.New(manager.Config{
 		DB:          filepath.Join(dir, "manager.db"),
+		AdminPort:   adminLn.Addr().(*net.TCPAddr).Port,
 		AgentSocket: agenttest.Start(t, agenttest.Primary()),
 		SetupPort:   7020,
 		Local:       netip.MustParseAddr("127.0.0.1"),
@@ -49,7 +73,7 @@ func running(t *testing.T) string {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
-	go func() { done <- m.Serve(ctx, setupLn, ctlLn) }()
+	go func() { done <- m.Serve(ctx, setupLn, ctlLn, adminLn) }()
 	t.Cleanup(func() {
 		cancel()
 		if err := <-done; err != nil {

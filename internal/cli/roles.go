@@ -15,6 +15,7 @@ import (
 	"github.com/ArjunRachithcf/homerslab/internal/agent"
 	"github.com/ArjunRachithcf/homerslab/internal/lan"
 	"github.com/ArjunRachithcf/homerslab/internal/manager"
+	"github.com/ArjunRachithcf/homerslab/internal/node"
 )
 
 func runAgent(ctx context.Context, args []string, env Env) error {
@@ -31,7 +32,7 @@ func runAgent(ctx context.Context, args []string, env Env) error {
 	}
 	log := slog.New(slog.NewTextHandler(env.Stderr, nil))
 	log.Info("agent starting", "socket", *socket, "euid", env.Euid())
-	return agent.Serve(ctx, agent.Config{Socket: *socket, SocketGID: gid, Sysroot: os.DirFS(*sysroot), Log: log})
+	return agent.Serve(ctx, agent.Config{Socket: *socket, SocketGID: gid, Sysroot: node.Dir(*sysroot), Log: log})
 }
 
 func groupID(name string) (int, error) {
@@ -51,8 +52,13 @@ func runManager(ctx context.Context, args []string, env Env) error {
 	agentSocket := fs.String("agent-socket", DefaultAgentSocket, "the primary's agent")
 	control := fs.String("control-socket", DefaultControlSocket, "the control socket, for the CLI on this machine")
 	listen := fs.String("listen", DefaultListen, "the setup listener, on this machine and its LAN")
+	adminListen := fs.String("admin-listen", DefaultAdminListen, "Admin's listener, on this machine's loopback")
 	if err := parse(fs, args); err != nil {
 		return err
+	}
+	adminAt, err := netip.ParseAddrPort(*adminListen)
+	if err != nil || !adminAt.Addr().IsLoopback() {
+		return fmt.Errorf("--admin-listen %s: Admin answers on loopback only (127.0.0.1:<port> or [::1]:<port>) until it signs people in", *adminListen)
 	}
 	if env.Euid() == 0 {
 		return errors.New("the manager runs unprivileged, as the homerslab user; it reaches the host only through the agent")
@@ -67,6 +73,11 @@ func runManager(ctx context.Context, args []string, env Env) error {
 		return err
 	}
 	defer controlLn.Close()
+	adminLn, err := net.Listen("tcp", adminAt.String())
+	if err != nil {
+		return err
+	}
+	defer adminLn.Close()
 	bound := netip.MustParseAddrPort(setupLn.Addr().String())
 	lanAddress := func() netip.Addr { return lan.Current().Address() } // the manager caches it
 	if h := bound.Addr(); !h.IsUnspecified() {
@@ -78,13 +89,14 @@ func runManager(ctx context.Context, args []string, env Env) error {
 		}
 	}
 	log := slog.New(slog.NewTextHandler(env.Stderr, nil))
-	m, err := manager.New(manager.Config{DB: *db, AgentSocket: *agentSocket, SetupPort: int(bound.Port()), Local: loopbackOf(bound.Addr()), LANAddress: lanAddress, Log: log})
+	m, err := manager.New(manager.Config{DB: *db, AgentSocket: *agentSocket, SetupPort: int(bound.Port()), Local: loopbackOf(bound.Addr()),
+		AdminPort: int(netip.MustParseAddrPort(adminLn.Addr().String()).Port()), LANAddress: lanAddress, Log: log})
 	if err != nil {
 		return err
 	}
 	defer m.Close()
-	log.Info("manager starting", "setup", setupLn.Addr(), "control", *control)
-	return m.Serve(ctx, setupLn, controlLn)
+	log.Info("manager starting", "setup", setupLn.Addr(), "control", *control, "admin", adminLn.Addr())
+	return m.Serve(ctx, setupLn, controlLn, adminLn)
 }
 
 // loopbackOf is the loopback address a listener bound to addr answers on, or the zero Addr.

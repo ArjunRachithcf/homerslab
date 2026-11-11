@@ -104,6 +104,7 @@ func (p *primary) open() {
 		DB:          p.db,
 		AgentSocket: p.agent,
 		SetupPort:   p.port,
+		AdminPort:   7021,
 		Local:       p.local,
 		Now:         p.clock.Now,
 		LAN: func() lan.LAN {
@@ -316,6 +317,7 @@ func (b *browser) firstThree() state {
 // builtPages stand in for the web app's build: a page, its assets, and a folder and a file that are no asset.
 var builtPages = fstest.MapFS{
 	"setup.html":      {Data: []byte("<!doctype html><title>setup</title>")},
+	"admin.html":      {Data: []byte("<!doctype html><title>admin</title>")},
 	"secret.txt":      {Data: []byte("not an asset")},
 	"assets/app.js":   {Data: []byte("console.log(1)")},
 	"assets/sub/b.js": {Data: []byte("console.log(2)")},

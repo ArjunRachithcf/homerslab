@@ -2,9 +2,10 @@
 // state in its database and serves the one API that Admin, the CLI and first-time setup use. It reaches the host only
 // through the agent.
 //
-// It answers on two listeners:
+// It answers on three listeners:
 //   - the control socket, a Unix socket only root and the manager's own user can open, for the CLI on this machine;
-//   - the setup listener, on this machine and its LAN, for first-time setup's page, opened by a one-time link.
+//   - the setup listener, on this machine and its LAN, for first-time setup's page, opened by a one-time link;
+//   - Admin's listener, on this machine's loopback until Admin signs people in over the mesh (#17).
 package manager
 
 import (
@@ -20,6 +21,8 @@ import (
 	"os"
 	"time"
 
+	"github.com/ArjunRachithcf/homerslab/catalogs"
+	"github.com/ArjunRachithcf/homerslab/internal/catalog"
 	"github.com/ArjunRachithcf/homerslab/internal/lan"
 	"github.com/ArjunRachithcf/homerslab/internal/manager/setup"
 	"github.com/ArjunRachithcf/homerslab/internal/manager/store"
@@ -31,6 +34,7 @@ type Config struct {
 	DB          string // the database file
 	AgentSocket string // the primary's agent
 	SetupPort   int    // the setup listener's port, for the links
+	AdminPort   int    // Admin's listener's port, on loopback
 	// Local is the loopback address the setup listener answers on, for the link on this machine itself; the zero
 	// Addr when it doesn't.
 	Local netip.Addr
@@ -45,17 +49,21 @@ type Config struct {
 	// Steps adds step handlers to the built ones (setup.Built).
 	Steps map[string]setup.Handler
 	Web   fs.FS // the built pages; surfaces.Dist() when nil
-	Log   *slog.Logger
+	// Catalog is the catalog the Store shows; the official one when nil.
+	Catalog fs.FS
+	Log     *slog.Logger
 }
 
 // Manager is a running manager.
 type Manager struct {
-	cfg   Config
-	db    *store.Store
-	setup *setup.Setup
-	agent *agentClient
-	web   fs.FS
-	log   *slog.Logger
+	cfg       Config
+	db        *store.Store
+	setup     *setup.Setup
+	agent     *agentClient
+	web       fs.FS
+	catalog   *catalog.Catalog
+	catalogFS fs.FS
+	log       *slog.Logger
 }
 
 // New opens the manager's database.
@@ -81,6 +89,13 @@ func New(c Config) (*Manager, error) {
 	if c.Web == nil {
 		c.Web = surfaces.Dist()
 	}
+	if c.Catalog == nil {
+		c.Catalog = catalogs.Official()
+	}
+	cat, err := catalog.Load(c.Catalog)
+	if err != nil {
+		return nil, fmt.Errorf("the catalog: %w", err)
+	}
 	db, err := store.Open(c.DB, setup.StoreSteps())
 	if err != nil {
 		return nil, err
@@ -93,27 +108,31 @@ func New(c Config) (*Manager, error) {
 		handlers[id] = h
 	}
 	return &Manager{
-		cfg:   c,
-		db:    db,
-		setup: setup.New(db, c.Now, handlers),
-		agent: newAgentClient(c.AgentSocket),
-		web:   c.Web,
-		log:   c.Log,
+		cfg:       c,
+		db:        db,
+		setup:     setup.New(db, c.Now, handlers),
+		agent:     newAgentClient(c.AgentSocket),
+		web:       c.Web,
+		catalog:   cat,
+		catalogFS: c.Catalog,
+		log:       c.Log,
 	}, nil
 }
 
 // Close closes the database.
 func (m *Manager) Close() error { return m.db.Close() }
 
-// Serve answers on the setup listener and the control socket until ctx ends.
-func (m *Manager) Serve(ctx context.Context, setupLn, controlLn net.Listener) error {
-	servers := []*http.Server{
-		{Handler: m.Setup(), ReadHeaderTimeout: 10 * time.Second, ReadTimeout: 30 * time.Second, WriteTimeout: 30 * time.Second, IdleTimeout: 2 * time.Minute},
-		{Handler: m.Control(), ReadHeaderTimeout: 10 * time.Second},
+// Serve answers on the setup listener, the control socket and Admin's listener until ctx ends.
+func (m *Manager) Serve(ctx context.Context, setupLn, controlLn, adminLn net.Listener) error {
+	web := func(h http.Handler) *http.Server {
+		return &http.Server{Handler: h, ReadHeaderTimeout: 10 * time.Second, ReadTimeout: 30 * time.Second, WriteTimeout: 30 * time.Second, IdleTimeout: 2 * time.Minute}
 	}
-	errc := make(chan error, 2)
-	go func() { errc <- servers[0].Serve(setupLn) }()
-	go func() { errc <- servers[1].Serve(controlLn) }()
+	servers := []*http.Server{web(m.Setup()), {Handler: m.Control(), ReadHeaderTimeout: 10 * time.Second}, web(m.Admin())}
+	listeners := []net.Listener{setupLn, controlLn, adminLn}
+	errc := make(chan error, len(servers))
+	for i, s := range servers {
+		go func() { errc <- s.Serve(listeners[i]) }()
+	}
 	var err error
 	select {
 	case err = <-errc:
@@ -136,6 +155,8 @@ func (m *Manager) Control() http.Handler {
 	mux.HandleFunc("POST /api/v1/setup/links", m.newLink)
 	mux.HandleFunc("GET /api/v1/setup", m.getSetup)
 	mux.HandleFunc("GET /api/v1/nodes/primary", m.getPrimary)
+	mux.HandleFunc("GET /api/v1/admin", m.getAdmin)
+	m.catalogRoutes(mux)
 	mux.HandleFunc("/", notFound)
 	return mux
 }

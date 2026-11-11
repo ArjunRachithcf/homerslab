@@ -18,6 +18,7 @@ const (
 	DefaultControlSocket = "/run/homerslab/manager.sock"
 	DefaultDB            = "/var/lib/homerslab/manager.db"
 	DefaultListen        = ":7020"
+	DefaultAdminListen   = "127.0.0.1:7021"
 	DefaultGroup         = "homerslab"
 )
 
@@ -35,6 +36,11 @@ const usage = `Usage:
   homerslab manager    run the manager (unprivileged, from homerslab-manager.service)
   homerslab setup link make a one-time link to first-time setup, and show it with its QR code
   homerslab node       show this primary as its agent reports it
+  homerslab catalog    list the apps in the catalog
+  homerslab plan APP   make an install plan for an app, and show it in plain words
+  homerslab plan show ID
+                       show an install plan by its id
+  homerslab admin      say where Admin opens, on this machine
 
 Each command takes --help.
 `
@@ -48,6 +54,8 @@ func Main(ctx context.Context, args []string, env Env) int {
 	switch strings.Join(first(args, 2), " ") {
 	case "setup link":
 		err = setupLink(ctx, args[2:], env)
+	case "plan show":
+		err = showPlanByID(ctx, args[2:], env)
 	default:
 		switch strings.Join(first(args, 1), " ") {
 		case "agent":
@@ -56,6 +64,12 @@ func Main(ctx context.Context, args []string, env Env) int {
 			err = runManager(ctx, args[1:], env)
 		case "node":
 			err = showNode(ctx, args[1:], env)
+		case "catalog":
+			err = showCatalog(ctx, args[1:], env)
+		case "plan":
+			err = makePlan(ctx, args[1:], env)
+		case "admin":
+			err = showAdmin(ctx, args[1:], env)
 		default:
 			fmt.Fprint(env.Stderr, usage)
 			return 2

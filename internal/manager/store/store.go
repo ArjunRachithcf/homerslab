@@ -55,6 +55,15 @@ var migrations = []string{
 		last_seen  INTEGER NOT NULL,
 		revoked_at INTEGER
 	);`,
+	// Install plans: kept as they were made, never changed. A change in the household is a new plan, with a new id.
+	`CREATE TABLE plan (
+		id      TEXT PRIMARY KEY,
+		app     TEXT NOT NULL,
+		body    TEXT NOT NULL,
+		made_at INTEGER NOT NULL
+	);
+	CREATE TRIGGER plan_immutable BEFORE UPDATE ON plan
+	BEGIN SELECT RAISE(ABORT, 'a plan never changes: a change makes a new plan'); END;`,
 }
 
 // Open opens or creates the database at path, readable by its owner only, and brings its schema up to date. Steps
@@ -237,4 +246,30 @@ func (s *Store) TouchSession(ctx context.Context, tokenHash []byte, client strin
 		return ErrNotFound
 	}
 	return nil
+}
+
+// SavePlan keeps a plan by its id, unless one with that id is kept already, and returns the one kept and whether it
+// is new: the same id is the same plan, made earlier.
+func (s *Store) SavePlan(ctx context.Context, id, app string, body []byte, madeAt time.Time) (kept []byte, made bool, err error) {
+	err = s.tx(ctx, func(tx *sql.Tx) error {
+		res, err := tx.ExecContext(ctx, `INSERT INTO plan (id, app, body, made_at) VALUES (?, ?, ?, ?) ON CONFLICT (id) DO NOTHING`,
+			id, app, string(body), madeAt.UnixMilli())
+		if err != nil {
+			return err
+		}
+		n, _ := res.RowsAffected()
+		made = n == 1
+		return tx.QueryRowContext(ctx, `SELECT body FROM plan WHERE id = ?`, id).Scan(&kept)
+	})
+	return kept, made, err
+}
+
+// Plan is the plan kept with that id, or ErrNotFound.
+func (s *Store) Plan(ctx context.Context, id string) ([]byte, error) {
+	var body []byte
+	err := s.db.QueryRowContext(ctx, `SELECT body FROM plan WHERE id = ?`, id).Scan(&body)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	return body, err
 }

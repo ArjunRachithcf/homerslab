@@ -1,5 +1,5 @@
 // Package agent is the agent's API: the process on every node that owns its host and runs as root. So far it reports
-// the node's facts.
+// the node's facts, and reads apps' compose projects for planning.
 package agent
 
 import (
@@ -12,9 +12,11 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"sync"
 	"syscall"
 	"time"
 
+	"github.com/ArjunRachithcf/homerslab/internal/engine/compose"
 	"github.com/ArjunRachithcf/homerslab/internal/node"
 )
 
@@ -45,6 +47,34 @@ func Handler(sysroot Sysroot, log *slog.Logger) http.Handler {
 			return
 		}
 		writeJSON(w, http.StatusOK, facts)
+	})
+	reader := sync.OnceValues(func() (*compose.Reader, error) { return compose.NewReader("") })
+	mux.HandleFunc("POST /v1/projects/read", func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Project string `json:"project"`
+			Compose string `json:"compose"`
+		}
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "not-json"})
+			return
+		}
+		rd, err := reader()
+		if err != nil {
+			log.Error("making the compose reader", "err", err)
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "no-reader"})
+			return
+		}
+		p, err := rd.Read(r.Context(), req.Project, []byte(req.Compose))
+		switch {
+		case err == nil:
+			writeJSON(w, http.StatusOK, p)
+		case errors.Is(err, compose.ErrNotOurs):
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "not-ours"})
+		case errors.Is(err, compose.ErrNotPlain):
+			writeJSON(w, http.StatusUnprocessableEntity, map[string]string{"error": "not-plain"})
+		default:
+			writeJSON(w, http.StatusUnprocessableEntity, map[string]string{"error": "invalid-compose", "detail": err.Error()})
+		}
 	})
 	mux.HandleFunc("/", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "not-found"})

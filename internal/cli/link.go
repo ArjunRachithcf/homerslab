@@ -23,7 +23,7 @@ func setupLink(ctx context.Context, args []string, env Env) error {
 		LocalURL  string    `json:"localUrl"`
 		ExpiresAt time.Time `json:"expiresAt"`
 	}
-	body, err := newControl(*socket).do(ctx, "POST", "/api/v1/setup/links", *wait, &l)
+	body, err := newControl(*socket).do(ctx, "POST", "/api/v1/setup/links", nil, *wait, &l)
 	var ae *apiError
 	if errors.As(err, &ae) && ae.Code == "lan-half-done" {
 		return errors.New("first-time setup's first half is done: it continues over the mesh, so there is no link to make")
