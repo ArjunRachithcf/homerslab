@@ -1,0 +1,47 @@
+/* Admin's shell and its screens' placement, on the design system, as in prototypes/assets/admin.css: a floating glass
+   sidebar on a desktop, the page in a column beside it; below 1000px the sidebar becomes a bar above the page. */
+.a-shell { display: grid; grid-template-columns: calc(var(--sidebar) + 12px) minmax(0, 1fr); min-height: 100vh; min-height: 100dvh; }
+.a-side { grid-column: 1; z-index: var(--z-sticky); }
+.a-side .brand { display: flex; align-items: center; }
+.a-side .brand svg { height: 26px; width: auto; }
+.a-where { margin-top: auto; padding: 12px 10px 4px; font-size: var(--fs-sub); color: var(--text-2); }
+.a-canvas { min-width: 0; }
+.a-main { padding: 24px 32px 64px; }
+.a-main:focus { outline: none; }
+.a-page { max-width: var(--column); margin: 0 auto; }
+.a-loading { padding: 48px 0; color: var(--text-2); }
+.a-back { margin-bottom: 12px; }
+.a-ident { display: flex; align-items: center; gap: var(--space-4); min-width: 0; }
+.a-get-why { margin-top: 8px; font-size: var(--fs-sub); }
+.store-item .a-get-why { display: none; }
+.store-item:has(.a-get-why) { flex-wrap: wrap; }
+.store-item:has(.a-get-why) .a-get-why { display: flex; flex-basis: 100%; }
+.store-shot-img { display: block; width: 100%; aspect-ratio: 16 / 10; object-fit: cover; object-position: top left; border-radius: 18px; box-shadow: var(--shadow-card); background: var(--surface); }
+
+/* the install plan: its sections on the left, what it creates and Install on the right */
+.plan-meta { margin: -8px 0 var(--space-5); color: var(--text-2); font-size: var(--fs-sub); line-height: 26px; }
+.plan-meta .plan-id { margin: 0 2px; }
+.plan-sections { display: grid; gap: var(--space-6); }
+.plan-q { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin: 0 var(--row-pad-x) 8px; }
+.plan-q h2 { font-size: var(--fs-headline); font-weight: var(--weight-semibold); }
+.plan-q span { font-size: var(--fs-sub); color: var(--text-2); }
+.plan-q .needs-key { color: var(--text); }
+.plan-card { display: grid; gap: 14px; }
+.plan-card .card-title { margin: 0; }
+.plan-card .lines { list-style: none; margin: 0; padding: 0; }
+.plan-card .plan-id, .stepup-bound .plan-id { white-space: normal; overflow-wrap: anywhere; }
+.a-warnings { margin-bottom: 12px; }
+.a-warnings .notice-body > b { display: block; }
+.icon-md { width: 20px; height: 20px; }
+
+@media (max-width: 1000px) {
+  .a-shell { grid-template-columns: minmax(0, 1fr); }
+  .a-side.sidebar.glass { position: static; height: auto; width: auto; margin: 12px 12px 0; flex-direction: row; align-items: center; flex-wrap: wrap; gap: 4px 12px; padding: 6px 12px; border-radius: 22px; }
+  .a-side .nav { display: flex; }
+  .a-where { margin: 0; padding: 0 0 6px; flex-basis: 100%; }
+  .a-main { padding: 16px 16px 48px; }
+}
+@media (max-width: 640px) {
+  .store-app-head, .store-app-head.a-ident { gap: 16px; }
+  .store-app-head .app-icon.app-icon-xl { --size: 88px; }
+}

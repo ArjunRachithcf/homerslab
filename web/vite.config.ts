@@ -8,7 +8,7 @@ export default defineConfig({
   build: {
     outDir: '../internal/surfaces/dist',
     emptyOutDir: true,
-    rollupOptions: { input: { setup: 'setup.html' } },
+    rollupOptions: { input: { setup: 'setup.html', admin: 'admin.html' } },
   },
   server: { fs: { allow: ['..'] } },
 });

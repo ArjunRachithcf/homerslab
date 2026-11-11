@@ -42,7 +42,7 @@ export class Primary {
 
   async startManager(): Promise<void> {
     this.manager = this.spawn('manager', '--db', this.at('manager.db'), '--agent-socket', this.at('agent.sock'),
-      '--control-socket', this.at('manager.sock'), '--listen', '127.0.0.1:0');
+      '--control-socket', this.at('manager.sock'), '--listen', '127.0.0.1:0', '--admin-listen', '127.0.0.1:0');
     await waitForSocket(this.at('manager.sock'));
   }
 
@@ -56,6 +56,35 @@ export class Primary {
   async newLink(): Promise<Link> {
     const { stdout } = await run(bin, ['setup', 'link', '--json', '--control-socket', this.at('manager.sock')], { env: this.env });
     return JSON.parse(stdout) as Link;
+  }
+
+  // The CLI on this machine, against this primary's manager.
+  async cli(...args: string[]): Promise<string> {
+    const { stdout } = await run(bin, [...args, '--control-socket', this.at('manager.sock')], { env: this.env });
+    return stdout;
+  }
+
+  // Where Admin opens, as `homerslab admin` says.
+  async adminURL(): Promise<string> {
+    return (await this.cli('admin')).trim();
+  }
+
+  // First-time setup's built steps, answered through the setup page's API: the Ferreira household, Inês its admin.
+  async setUp(): Promise<void> {
+    const link = new URL((await this.newLink()).localUrl);
+    const key = new URLSearchParams(link.hash.slice(1)).get('k');
+    const api = async (method: string, path: string, body: unknown, token?: string) => {
+      const resp = await fetch(new URL(path, link), {
+        method, body: JSON.stringify(body),
+        headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+      });
+      if (!resp.ok) throw new Error(`${method} ${path}: ${resp.status} ${await resp.text()}`);
+      return resp.json() as Promise<{ token?: string }>;
+    };
+    const { token } = await api('POST', '/api/v1/setup/claim', { key });
+    await api('PUT', '/api/v1/setup/steps/welcome', {}, token);
+    await api('PUT', '/api/v1/setup/steps/you', { name: 'Inês Ferreira', mail: 'ines@ferreira.family' }, token);
+    await api('PUT', '/api/v1/setup/steps/household', { name: 'The Ferreira household' }, token);
   }
 
   async stop(): Promise<void> {
