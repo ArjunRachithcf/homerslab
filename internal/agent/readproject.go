@@ -9,8 +9,8 @@ import (
 	"io"
 	"os"
 	"os/signal"
-	"sync"
 	"strings"
+	"sync"
 	"syscall"
 
 	"github.com/ArjunRachithcf/homerslab/internal/engine"
