@@ -52,6 +52,20 @@ export class Primary {
     this.manager = this.spawn('manager', '--db', this.at('manager.db'), '--agent-socket', this.at('agent.sock'),
       '--control-socket', this.at('manager.sock'), '--listen', '127.0.0.1:0', '--admin-socket', this.at('admin.sock'));
     await waitForSocket(this.at('manager.sock'));
+    await this.waitForManager();
+  }
+
+  // The control socket listens before the manager has opened its database: wait until the manager answers on it.
+  private async waitForManager(): Promise<void> {
+    for (let i = 0; i < 200; i++) {
+      const status = await new Promise<number>((resolve) => {
+        http.get({ socketPath: this.at('manager.sock'), path: '/api/v1/setup' }, (r) => { r.resume(); resolve(r.statusCode ?? 0); })
+          .on('error', () => resolve(0));
+      });
+      if (status === 200) return;
+      await new Promise((r) => setTimeout(r, 25));
+    }
+    throw new Error('the manager never answered on its control socket');
   }
 
   // An interruption: the manager stops, as after a power cut, and starts again on the same database.
