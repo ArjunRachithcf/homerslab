@@ -19,8 +19,9 @@ household's port is chosen once, in first-time setup's mesh step:
 The edge serves every site on the mesh at that port too, and every URL HomersLab writes uses it: base URLs, redirect
 addresses, the sign-in's origin, mails, invites and Home (#92).
 
-**Funnel serves only `*.ts.net` names.** Where it fits a household with a domain is open in #102: the sign-in's name
-sets the passkeys' RP ID, so it must be settled in first-time setup.
+**Funnel serves only `*.ts.net` names**, so it is the public path only for Tailscale households without a domain. A
+household with a domain goes public through NetBird's reverse proxy, which keeps the sign-in at `auth.<main domain>`
+and the passkeys' RP ID with it (#102, the maintainer, 2026-11-11).
 
 **Why now, and not when the first app goes public.** An app builds its OIDC redirect addresses from one base URL;
 WebAuthn checks the origin, port included; Home is installed as a PWA per origin; mails and invites carry links.
