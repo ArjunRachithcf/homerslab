@@ -1,9 +1,9 @@
 // Reduced motion: what the design system styles opens and closes at once, "More options" included.
 import type { Page } from '@playwright/test';
-import path from 'node:path';
+import { galleryUrl } from './paths';
 import { expect, test } from './primary';
 
-const gallery = `file://${path.join(path.dirname(new URL(import.meta.url).pathname), '..', '..', 'design', 'index.html')}`;
+const gallery = galleryUrl;
 
 /** Opens the page's "More options" and says how it moved: its transitions, and its height then and a moment later. */
 async function openMore(page: Page) {
