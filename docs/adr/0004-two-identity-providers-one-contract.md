@@ -42,3 +42,17 @@ Candidates for the second provider:
   - **Admins hold passkeys only.** HomersLab enforces this itself, because Kanidm 1.12 doesn't enforce a passkey-only
     policy at sign-in.
 - **Step-up** (`prompt=login`, `max_age=0`) is proven with Kanidm.
+
+## Amended (2026-11-11)
+
+"Admins hold passkeys only" is enforced by HomersLab with **both** providers, not only with Kanidm (#84). Authentik's
+own flows would otherwise undo it:
+- its out-of-the-box first-admin flow makes whoever reaches it first a superuser, so it is never reachable, and the
+  first admin's passkey comes only from the manager's one-time enrolment link;
+- from its user settings, a stolen session could give a passkey-only admin a password or a second factor, then pass
+  step-up with it, so its password, second-factor and recovery flows refuse admins;
+- neither provider reports which credential signed someone in, so before accepting a step-up HomersLab asks the
+  provider for the admin's credentials, and refuses the step-up when anything but passkeys is there;
+- every passkey requires user verification, at enrolment and at every assertion.
+
+The contract suite covers each point against both providers.

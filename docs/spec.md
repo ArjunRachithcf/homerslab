@@ -221,8 +221,7 @@ such as a NAS or a GPU box. It is private by default and never needs a router po
 ### Security
 
 67. As a household admin, I want risky changes to ask for my passkey every time, so that a stolen session can't do
-    damage. Risky changes are deleting data, nodes, roles, sign-in settings, anything public, extras, restoring an app,
-    eject, trusting a catalog, making a join code, replacing a mesh token and making a new recovery kit.
+    damage. The glossary's **Risky change** lists them.
 68. As a household admin, I want Admin reachable only over the mesh, so that it is never on the internet.
 69. As a household admin, I want Home unable to reach anything privileged, so that a flaw in the public-facing part
     can't become control of the household.
@@ -421,6 +420,9 @@ such as a NAS or a GPU box. It is private by default and never needs a router po
   - MCP tokens are scoped, and their use is audited.
   - No result ever carries a secret.
   - Risky changes need a person's step-up, so no token or assistant can make one.
+  - **No token applies an invite, an audience change or a removal** (recommended in #85; the maintainer may overrule).
+    They stay one click for an admin signed in to Admin. An MCP token's apply scope covers updates, and installs
+    without extras, and nothing else.
 
 ### Adapter contracts
 
@@ -441,7 +443,13 @@ such as a NAS or a GPU box. It is private by default and never needs a router po
 - step-up, as a fresh passkey assertion bound to a plan;
 - passkeys with the RP ID `auth.<main domain>`, never the bare domain, and an exact origin check (#83);
 - revocation that reaches the guard: removing a person, a role or an app also ends that app's guard sessions;
-- admins who hold passkeys only, enforced by HomersLab where the provider doesn't;
+- passkeys that require user verification, at enrolment and at every assertion (#84);
+- no first-comer admin: the provider's own first-admin flow is never reachable, and the first admin's passkey comes
+  only from the manager's one-time enrolment link (#84);
+- admins who hold passkeys only, enforced by HomersLab with either provider (#84):
+  - the provider's own password, second-factor and recovery flows refuse admins;
+  - before accepting a step-up, HomersLab asks the provider for the admin's credentials. Anything but passkeys
+    refuses the step-up and raises a security event;
 - optional SSH sign-in on nodes: SSSD with Authentik, kanidm-unixd with Kanidm;
 - a report of what it can do.
 
@@ -518,6 +526,8 @@ The manager refuses an app definition unless:
   - what is backed up, and when;
   - the resources check.
 - A plan is immutable.
+- A plan records who made it (a person, the CLI or a named token), and its page shows that before the passkey:
+  "Prepared by the assistant token *Claude*" (#85).
 - Applying takes the plan's id, plus a step-up when the plan holds a risky change.
 - Updates, removals, ejects, moves and deleting data are plans too.
 
@@ -671,6 +681,9 @@ When the usual way in is what broke, the household admin gets back in from the p
   mail, and the recovery kit.
 - **Then the admin joins this device to the mesh** (a QR code) and finishes at the sign-in's own address, where the
   admin's passkey is created. The passkey is bound to the name the household will use every day.
+  - It comes from a one-time enrolment link for the admin's account, which the manager mints (30 minutes, once) and
+    the claimed setup session hands over, as a QR code beside the mesh one. No other path creates the first admin
+    (#84).
 - **The LAN listener closes for good** at the admin's first sign-in over the mesh.
 - **Headscale households** also make one guided change in Headscale's configuration: its base domain.
 - **The first half travels over plain HTTP on the LAN**, including the mesh token, the DNS token and the mail
@@ -737,7 +750,8 @@ When the usual way in is what broke, the household admin gets back in from the p
   - the agent's API;
   - the adapter contracts.
 - **Contract suites**, one per adapter kind, run against the real software in containers:
-  - Authentik, and Kanidm with oauth2-proxy;
+  - Authentik, and Kanidm with oauth2-proxy, including the RP ID read from the provider (#83), and the first-admin
+    flow, the enrolment link, admins' credentials and user verification (#84);
   - Headscale and self-hosted NetBird;
   - Docker, rootful Podman and rootless Podman;
   - a test ACME CA with a test DNS server, including:
@@ -758,7 +772,8 @@ When the usual way in is what broke, the household admin gets back in from the p
   - a cross-app `POST` to Admin → refused; an app's response that sets a cookie on the household domain → stripped
     (#83);
   - a local unprivileged process that connects to an app's upstream with a forged identity header → refused before
-    the app sees anything (#82).
+    the app sees anything (#82);
+  - Authentik's first-admin flow (`/if/flow/initial-setup/`) → refused on every listener (#84).
 - **The firewall**: namespace tests in which a container tries the LAN, the mesh and its node's own addresses, and is
   refused unless its extras allow it (#82).
 - **Golden renders**: what HomersLab writes for an app (compose project, edge configuration, policies) is compared
@@ -770,7 +785,9 @@ When the usual way in is what broke, the household admin gets back in from the p
   - Caddy answers a request that no route matches with an empty response, not an error (#81);
   - the DNS challenge's zone lookup on the primary reaches the mesh's local zone, which has no SOA (#79);
   - Kanidm's sign-in takes a single origin, which holds with one URL per name, a port other than 443 included;
-    Authentik derives the origin from the request (#92).
+    Authentik derives the origin from the request (#92);
+  - Authentik's WebAuthn stages don't require user verification unless told to, so a touch alone could approve a
+    risky change (#84).
 - **Restore by hand**: CI follows the recovery kit's how-to, using only plain restic and age.
 - **Compose SDK upgrades** pass an API diff, the engine contract suite and a golden test of config hashes.
 - **Distros and architectures**: package install tests in containers and VMs.
@@ -782,6 +799,8 @@ When the usual way in is what broke, the household admin gets back in from the p
   - a test that stubs a container engine points it at nowhere;
   - tests get their own home directory;
   - nothing touches a live household.
+- **No secret in any result**: checked against every secret HomersLab generated or holds, in plain, base64 and
+  URL-encoded forms, across every tool's output, logs included (#85).
 - **The manual release checklist**, on the maintainer's household: GPUs, cloud control planes, Funnel, and a real phone
   joining the mesh.
 
@@ -1078,3 +1097,9 @@ Every answer of the grilling (2026-11-09) and where it lives:
 | 147 | One URL per name, its port chosen in first-time setup | ADR 0021; Names and certificates; Adapter contracts; Testing Decisions, claims to test first (#92) |
 | 148 | Only the edge reaches an app, by the edge's user in the firewall (recommended) | ADR 0020; ADR 0006 (amended); Modules (Agent); Security defaults; Testing Decisions (#82) |
 | 149 | Apps reach only the internet; the LAN and the mesh are extras (recommended) | ADR 0020; Modules (Agent); Security defaults; Testing Decisions (#82) |
+| 150 | No first-comer admin; the first passkey from a one-time enrolment link | Adapter contracts; First-time setup in two halves; Testing Decisions (#84) |
+| 151 | Admins hold passkeys only with either provider; step-up refused when an admin holds anything else | ADR 0004 (amended); Adapter contracts; Testing Decisions (#84) |
+| 152 | User verification required for every passkey | Adapter contracts; Testing Decisions, claims to test first (#84) |
+| 153 | Six more risky changes; sign-in settings defined (recommended) | Glossary; story 67 (#85) |
+| 154 | No token applies invites, audience changes or removals (recommended) | Modules (CLI and MCP server) (#85) |
+| 155 | A plan names who made it; secrets looked for in every encoding | The install plan; Testing Decisions (#85) |

@@ -193,7 +193,10 @@ _Avoid_: re-authentication, sudo mode, elevation
 
 **Risky change**:
 A change that needs step-up: deleting data, nodes, roles, sign-in settings, anything public, extras, restoring an app,
-eject, trusting a catalog, making a join code, replacing a mesh token, and making a new recovery kit.
+eject, trusting a catalog, making a join code, replacing a mesh token, and making a new recovery kit. Also, as
+recommended in #85 (the maintainer may overrule): the archive's key, adding, removing or changing a backup target,
+adding or removing a domain, replacing a DNS token, changing the mail account, and making an API or MCP token; and
+sign-in settings are the identity provider, self sign-up and its domains, invite lifetimes, and the passkey rules.
 _Avoid_: dangerous action, admin action
 
 ### Keeping watch
