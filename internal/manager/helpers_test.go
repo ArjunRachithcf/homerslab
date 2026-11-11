@@ -147,6 +147,9 @@ func (p *primary) open() {
 	p.t.Cleanup(func() { _ = m.Close() })
 }
 
+// dbFolder is the folder that holds the manager's database.
+func (p *primary) dbFolder() string { return filepath.Dir(p.db) }
+
 // restart stops the manager and starts it again on the same database, as after a power cut.
 func (p *primary) restart() {
 	p.t.Helper()

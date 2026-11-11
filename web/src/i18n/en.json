@@ -15,6 +15,9 @@
   "setup.error.title": "Setup can’t reach HomersLab",
   "setup.error.lead": "The manager on this machine didn’t answer. Check that it runs, then reload this page.",
   "setup.error.retry": "Reload",
+  "setup.full.title": "This machine’s disk is full",
+  "setup.full.lead": "HomersLab can’t keep anything you answer until there’s room on it. Free some space on this machine, then try again.",
+  "setup.full.answer": "This machine’s disk is full, so your answer wasn’t kept. Free some space on it, then continue again.",
   "setup.error.unbuilt": "This step comes with a later version of HomersLab. What you’ve chosen so far is kept.",
 
   "step.welcome.title": "Let’s set up HomersLab",

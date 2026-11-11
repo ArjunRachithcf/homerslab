@@ -8,7 +8,11 @@ import { answer, claim, getPrimary, getSetup, Refused, type Facts, type Setup } 
 import { Assistant, Field, Icon, stepTitle, type Screen } from './Assistant';
 import { diskSize, memory } from './format';
 
-type Phase = { kind: 'loading' } | { kind: 'refused' } | { kind: 'error' } | { kind: 'ready'; setup: Setup; facts: Facts | null };
+type Problem = 'refused' | 'error' | 'full';
+type Phase = { kind: 'loading' } | { kind: Problem } | { kind: 'ready'; setup: Setup; facts: Facts | null };
+
+/** The disk under the manager's database is full: nothing can be kept until there is room. */
+const diskFull = (e: unknown) => e instanceof Refused && e.code === 'disk-full';
 
 const BUILT = new Set(['welcome', 'you', 'household']);
 const validMail = (m: string) => /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(m.trim());
@@ -24,7 +28,7 @@ export function App() {
       const asked = location.hash.replace(/^#\//, '');
       setView(reachable(setup, asked) ? asked : 'welcome');
     } catch (e) {
-      setPhase(e instanceof Refused && e.status === 401 ? { kind: 'refused' } : { kind: 'error' });
+      setPhase(e instanceof Refused && e.status === 401 ? { kind: 'refused' } : diskFull(e) ? { kind: 'full' } : { kind: 'error' });
     }
   }, []);
 
@@ -41,8 +45,8 @@ export function App() {
         } catch (e) {
           // A used link may be this tab's own, opened again: its session carries on, and load() says if not. Another
           // tab has no session: it needs a new link.
-          if (!(e instanceof Refused)) {
-            setPhase({ kind: 'error' });
+          if (!(e instanceof Refused) || diskFull(e)) {
+            setPhase({ kind: diskFull(e) ? 'full' : 'error' });
             return;
           }
         }
@@ -69,9 +73,8 @@ export function App() {
   }, [phase, view]);
 
   let screen: React.ReactNode = null;
-  if (phase.kind === 'refused' || phase.kind === 'error') {
-    const refused = phase.kind === 'refused';
-    screen = <Problem refused={refused} />;
+  if (phase.kind === 'refused' || phase.kind === 'error' || phase.kind === 'full') {
+    screen = <ProblemScreen problem={phase.kind} />;
   } else if (phase.kind === 'ready') {
     screen = <StepScreen phase={phase} view={view} go={go} onAnswered={(setup) => setPhase({ ...phase, setup })} />;
   }
@@ -96,13 +99,13 @@ export function App() {
   );
 }
 
-/** The link was refused, or the manager can't be reached. */
-function Problem({ refused }: { refused: boolean }) {
-  const title = t(refused ? 'setup.refused.title' : 'setup.error.title');
+/** The link was refused, the manager can't be reached, or the machine's disk is full. */
+function ProblemScreen({ problem }: { problem: Problem }) {
+  const refused = problem === 'refused';
+  const title = t(`setup.${problem}.title`);
   useTitle(title);
   return (
-    <Assistant steps={[]} now="" illoFacts={{}} illo="welcome" title={title}
-      lead={t(refused ? 'setup.refused.lead' : 'setup.error.lead')}
+    <Assistant steps={[]} now="" illoFacts={{}} illo="welcome" title={title} lead={t(`setup.${problem}.lead`)}
       body={refused ? <div className="cmd"><code>{t('setup.refused.command')}</code></div> : undefined}
       primary={refused ? undefined : { label: t('setup.error.retry') }} onPrimary={() => location.reload()} />
   );
@@ -152,6 +155,7 @@ function useStep(id: string, setup: Setup, facts: Facts | null, next: () => void
   const [household, setHousehold] = useState(a.household ?? '');
   const [touched, setTouched] = useState(!!a.household);
   const [bad, setBad] = useState<string[]>([]);
+  const [fullAt, setFullAt] = useState<string | null>(null); // the step whose answer met a full disk
   const [busy, setBusy] = useState(false);
   const householdValue = touched || !surname ? household : t('step.household.default', { surname });
 
@@ -160,8 +164,10 @@ function useStep(id: string, setup: Setup, facts: Facts | null, next: () => void
     try {
       onAnswered(await answer(id, body));
       setBad([]);
+      setFullAt(null);
       next();
     } catch (e) {
+      setFullAt(diskFull(e) ? id : null);
       if (e instanceof Refused && e.code === 'invalid') setBad(e.fields);
       else if (e instanceof Refused && e.status === 401) location.reload();
     } finally {
@@ -169,62 +175,65 @@ function useStep(id: string, setup: Setup, facts: Facts | null, next: () => void
     }
   };
 
-  switch (id) {
-    case 'welcome': {
-      const resumed = setup.steps.some((s) => s.state === 'done');
-      const left = setup.steps.filter((s) => s.state === 'todo' && s.id !== 'done');
-      const host = facts?.hostname || location.hostname;
-      return {
-        illo: 'welcome',
-        title: t(resumed ? 'step.welcome.backTitle' : 'step.welcome.title'),
-        lead: resumed ? t('step.welcome.backLead', { step: stepTitle(setup.current) }) : rich('step.welcome.lead', { host: <b>{host}</b> }),
-        body: resumed ? <Left steps={left.map((s) => s.id)} /> : undefined,
-        moreLabel: t('step.welcome.about'),
-        more: <><About facts={facts} /><Needs /></>,
-        primary: { label: t(resumed ? 'step.welcome.resume' : 'step.welcome.start'), busy },
-        onPrimary: resumed ? resume : () => send({}),
-      };
+  const v = ((): StepView => {
+    switch (id) {
+      case 'welcome': {
+        const resumed = setup.steps.some((s) => s.state === 'done');
+        const left = setup.steps.filter((s) => s.state === 'todo' && s.id !== 'done');
+        const host = facts?.hostname || location.hostname;
+        return {
+          illo: 'welcome',
+          title: t(resumed ? 'step.welcome.backTitle' : 'step.welcome.title'),
+          lead: resumed ? t('step.welcome.backLead', { step: stepTitle(setup.current) }) : rich('step.welcome.lead', { host: <b>{host}</b> }),
+          body: resumed ? <Left steps={left.map((s) => s.id)} /> : undefined,
+          moreLabel: t('step.welcome.about'),
+          more: <><About facts={facts} /><Needs /></>,
+          primary: { label: t(resumed ? 'step.welcome.resume' : 'step.welcome.start'), busy },
+          onPrimary: resumed ? resume : () => send({}),
+        };
+      }
+      case 'you': {
+        const ok = !!name.trim() && validMail(mail);
+        return {
+          illo: 'you', title: t('step.you.title'), lead: t('step.you.lead'), illoFacts: { name, mail },
+          body: <>
+            <Field id="name" label={t('step.you.name')} value={name} onChange={setName} autoComplete="name"
+              error={bad.includes('name') ? t('step.you.nameInvalid') : undefined} />
+            <Field id="mail" label={t('step.you.mail')} value={mail} onChange={setMail} type="email" autoComplete="email"
+              hint={t('step.you.mailHint')} error={bad.includes('mail') ? t('step.you.mailInvalid') : undefined} />
+          </>,
+          primary: { label: t('setup.continue'), ok, why: t('step.you.why'), busy },
+          onPrimary: () => send({ name, mail }),
+        };
+      }
+      case 'household':
+        return {
+          illo: 'household', title: t('step.household.title'), lead: t('step.household.lead'), illoFacts: { name: householdValue },
+          body: <Field id="household" label={t('step.household.name')} value={householdValue}
+            onChange={(v) => { setTouched(true); setHousehold(v); }}
+            error={bad.includes('name') ? t('step.household.invalid') : undefined} />,
+          primary: { label: t('setup.continue'), ok: !!householdValue.trim(), why: t('step.household.why'), busy },
+          onPrimary: () => send({ name: householdValue }),
+        };
+      case 'join':
+      case 'passkey':
+      case 'done':
+        return {
+          illo: 'join', title: t('step.join.title'), lead: t('step.join.lead'),
+          body: <div className="as-check"><Icon name="check" /><span><b>{t('step.join.milestone')}</b> {t('step.join.milestoneSub')}</span></div>,
+          primary: { label: t('step.join.continue'), ok: false, why: t('step.join.why') },
+        };
+      default:
+        return {
+          illo: id, title: stepTitle(id), lead: t(`step.${id}.lead` as Parameters<typeof t>[0]),
+          body: BUILT.has(id) ? undefined : (
+            <div className="notice notice-info"><Icon name="info" /><span className="notice-body">{t('setup.error.unbuilt')}</span></div>
+          ),
+          primary: { label: t('setup.continue'), ok: false, why: t('step.unbuilt.why') },
+        };
     }
-    case 'you': {
-      const ok = !!name.trim() && validMail(mail);
-      return {
-        illo: 'you', title: t('step.you.title'), lead: t('step.you.lead'), illoFacts: { name, mail },
-        body: <>
-          <Field id="name" label={t('step.you.name')} value={name} onChange={setName} autoComplete="name"
-            error={bad.includes('name') ? t('step.you.nameInvalid') : undefined} />
-          <Field id="mail" label={t('step.you.mail')} value={mail} onChange={setMail} type="email" autoComplete="email"
-            hint={t('step.you.mailHint')} error={bad.includes('mail') ? t('step.you.mailInvalid') : undefined} />
-        </>,
-        primary: { label: t('setup.continue'), ok, why: t('step.you.why'), busy },
-        onPrimary: () => send({ name, mail }),
-      };
-    }
-    case 'household':
-      return {
-        illo: 'household', title: t('step.household.title'), lead: t('step.household.lead'), illoFacts: { name: householdValue },
-        body: <Field id="household" label={t('step.household.name')} value={householdValue}
-          onChange={(v) => { setTouched(true); setHousehold(v); }}
-          error={bad.includes('name') ? t('step.household.invalid') : undefined} />,
-        primary: { label: t('setup.continue'), ok: !!householdValue.trim(), why: t('step.household.why'), busy },
-        onPrimary: () => send({ name: householdValue }),
-      };
-    case 'join':
-    case 'passkey':
-    case 'done':
-      return {
-        illo: 'join', title: t('step.join.title'), lead: t('step.join.lead'),
-        body: <div className="as-check"><Icon name="check" /><span><b>{t('step.join.milestone')}</b> {t('step.join.milestoneSub')}</span></div>,
-        primary: { label: t('step.join.continue'), ok: false, why: t('step.join.why') },
-      };
-    default:
-      return {
-        illo: id, title: stepTitle(id), lead: t(`step.${id}.lead` as Parameters<typeof t>[0]),
-        body: BUILT.has(id) ? undefined : (
-          <div className="notice notice-info"><Icon name="info" /><span className="notice-body">{t('setup.error.unbuilt')}</span></div>
-        ),
-        primary: { label: t('setup.continue'), ok: false, why: t('step.unbuilt.why') },
-      };
-  }
+  })();
+  return fullAt === id ? { ...v, alert: t('setup.full.answer') } : v;
 }
 
 function Left({ steps }: { steps: string[] }) {

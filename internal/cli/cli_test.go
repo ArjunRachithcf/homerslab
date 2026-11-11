@@ -7,6 +7,7 @@ import (
 	"image"
 	"image/color"
 	"net"
+	"net/http"
 	"net/netip"
 	"path/filepath"
 	"regexp"
@@ -216,5 +217,31 @@ func TestSetupLinkGivesTheLinkAsJSONForScripts(t *testing.T) {
 	}
 	if !linkRe.MatchString(l.URL) || !strings.HasPrefix(l.LocalURL, "http://127.0.0.1:7020/setup#k=") {
 		t.Errorf("link %+v", l)
+	}
+}
+
+// stubManager answers on a control socket of its own with h, as a manager would.
+func stubManager(t *testing.T, h http.HandlerFunc) string {
+	t.Helper()
+	sock := filepath.Join(t.TempDir(), "manager.sock")
+	ln, err := net.Listen("unix", sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := &http.Server{Handler: h}
+	go func() { _ = srv.Serve(ln) }()
+	t.Cleanup(func() { _ = srv.Close() })
+	return sock
+}
+
+func TestSetupLinkSaysWhenTheManagersDiskIsFull(t *testing.T) {
+	testenv.Isolate(t)
+	ctl := stubManager(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInsufficientStorage)
+		_, _ = w.Write([]byte(`{"error":"disk-full","folder":"/var/lib/homerslab"}`))
+	})
+	code, _, errOut := run(t, "setup", "link", "--control-socket", ctl)
+	if want := "The disk that holds /var/lib/homerslab is full: free some space and try again"; code == 0 || !strings.Contains(errOut, want) {
+		t.Errorf("setup link on a full disk: %d %q, want %q", code, errOut, want)
 	}
 }

@@ -13,6 +13,8 @@ export type Screen = {
   moreLabel?: string;
   more?: ReactNode;
   primary?: { label: string; ok?: boolean; why?: string; busy?: boolean };
+  /** What went wrong with the last answer, said where the question is. */
+  alert?: string;
 };
 
 type Props = Screen & {
@@ -60,6 +62,9 @@ export function Assistant(p: Props) {
         </h1>
         {p.lead && <p className="as-lead">{p.lead}</p>}
       </div>
+      {p.alert && (
+        <div className="notice notice-warn" role="alert"><Html html={icon('alert')} /><span className="notice-body">{p.alert}</span></div>
+      )}
       {p.body && <div className="as-body">{p.body}</div>}
       {p.more && (
         <details className="more">

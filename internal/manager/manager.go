@@ -18,6 +18,7 @@ import (
 	"net/http"
 	"net/netip"
 	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/ArjunRachithcf/homerslab/internal/lan"
@@ -159,6 +160,12 @@ func (m *Manager) newLink(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusConflict, err.Error())
 		return
 	}
+	if errors.Is(err, store.ErrDiskFull) {
+		// Only root and the manager's user reach the control socket, so its answer may name the folder.
+		m.log.Error("making a link", "err", err)
+		writeJSON(w, http.StatusInsufficientStorage, map[string]string{"error": "disk-full", "folder": filepath.Dir(m.cfg.DB)})
+		return
+	}
 	if err != nil {
 		m.internal(w, "making a link", err)
 		return
@@ -224,8 +231,13 @@ func (m *Manager) putStep(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// internal answers an error the request can't help: 507 disk-full when the disk under the database is full, else 500.
 func (m *Manager) internal(w http.ResponseWriter, what string, err error) {
 	m.log.Error(what, "err", err)
+	if errors.Is(err, store.ErrDiskFull) {
+		fail(w, http.StatusInsufficientStorage, "disk-full")
+		return
+	}
 	fail(w, http.StatusInternalServerError, "internal")
 }
 

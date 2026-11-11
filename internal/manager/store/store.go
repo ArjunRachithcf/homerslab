@@ -9,16 +9,35 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"sync/atomic"
+	"syscall"
 	"time"
 
-	_ "modernc.org/sqlite" // pure Go, so the binary stays static
+	"modernc.org/sqlite" // pure Go, so the binary stays static
+	sqlite3 "modernc.org/sqlite/lib"
 )
 
 // ErrNotFound is returned when no row matches.
 var ErrNotFound = errors.New("not found")
 
+// ErrDiskFull is a write refused because the disk under the database is full. Nothing is lost: the write didn't
+// happen, and writes work again once there is room.
+var ErrDiskFull = errors.New("the disk that holds the database is full")
+
+// written says which write errors are a full disk.
+func written(err error) error {
+	var se *sqlite.Error
+	if errors.As(err, &se) && se.Code()&0xff == sqlite3.SQLITE_FULL || errors.Is(err, syscall.ENOSPC) {
+		return fmt.Errorf("%w: %w", ErrDiskFull, err)
+	}
+	return err
+}
+
 // Store is the open database.
-type Store struct{ db *sql.DB }
+type Store struct {
+	db   *sql.DB
+	full atomic.Bool
+}
 
 // Step is one of first-time setup's steps, as the database keeps it.
 type Step struct {
@@ -115,16 +134,32 @@ func (s *Store) migrate(steps []Step) error {
 	})
 }
 
+// FillDisk makes every later write fail as on a full disk, for tests of what a full disk looks like from outside
+// the manager. SQLite's own SQLITE_FULL is ErrDiskFull just the same (store_test.go).
+func (s *Store) FillDisk() { s.full.Store(true) }
+
+// noRoom is what a write meets once FillDisk was called: the error the system gives on a full disk.
+func (s *Store) noRoom() error {
+	if s.full.Load() {
+		return written(&os.PathError{Op: "write", Path: "manager.db-wal", Err: syscall.ENOSPC})
+	}
+	return nil
+}
+
+// tx runs fn in a write transaction.
 func (s *Store) tx(ctx context.Context, fn func(*sql.Tx) error) error {
+	if err := s.noRoom(); err != nil {
+		return err
+	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return err
+		return written(err)
 	}
 	if err := fn(tx); err != nil {
 		_ = tx.Rollback()
-		return err
+		return written(err)
 	}
-	return tx.Commit()
+	return written(tx.Commit())
 }
 
 // Steps lists setup's steps in order, with their state.
@@ -261,6 +296,9 @@ func (s *Store) Session(ctx context.Context, tokenHash []byte) (Session, error) 
 
 // SeeSession records when a session was last used.
 func (s *Store) SeeSession(ctx context.Context, tokenHash []byte, at time.Time) error {
+	if err := s.noRoom(); err != nil {
+		return err
+	}
 	_, err := s.db.ExecContext(ctx, `UPDATE setup_session SET last_seen = ? WHERE token_hash = ?`, at.UnixMilli(), tokenHash)
-	return err
+	return written(err)
 }

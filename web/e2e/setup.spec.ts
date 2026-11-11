@@ -99,3 +99,29 @@ test('a new link opened in the tab that shows setup is claimed there', async ({ 
   await page.getByRole('button', { name: 'Continue where I stopped' }).click();
   await expect(page.getByRole('heading', { level: 1 })).toContainText('What’s your name?');
 });
+
+// A full disk under the manager's database (#70): the page says so, instead of "can't reach HomersLab".
+test('a full disk is said as such, and the answer typed stays', async ({ page, primary }) => {
+  await page.goto((await primary.newLink()).localUrl);
+  await page.getByRole('button', { name: 'Get started' }).click();
+  await page.getByLabel('Your name', { exact: true }).fill('Inês Ferreira');
+  await page.getByLabel('Your mail address', { exact: true }).fill('ines@ferreira.family');
+  await page.route('**/api/v1/setup/steps/you', (route) =>
+    route.fulfill({ status: 507, contentType: 'application/json', body: '{"error":"disk-full"}' }));
+  await page.getByRole('button', { name: 'Continue' }).click();
+  await expect(page.getByRole('alert')).toContainText('This machine’s disk is full');
+  await expect(page.getByRole('heading', { level: 1 })).toContainText('What’s your name?');
+  await expect(page.getByLabel('Your name', { exact: true })).toHaveValue('Inês Ferreira');
+
+  await page.unroute('**/api/v1/setup/steps/you');
+  await page.getByRole('button', { name: 'Continue' }).click();
+  await expect(page.getByRole('heading', { level: 1 })).toContainText('Name your household');
+});
+
+test('a full disk when the page opens is said as such', async ({ page, primary }) => {
+  await page.route('**/api/v1/setup', (route) =>
+    route.fulfill({ status: 507, contentType: 'application/json', body: '{"error":"disk-full"}' }));
+  await page.goto((await primary.newLink()).localUrl);
+  await expect(page.getByRole('heading', { level: 1 })).toContainText('This machine’s disk is full');
+  await expect(page.getByText('Setup can’t reach HomersLab')).toHaveCount(0);
+});
