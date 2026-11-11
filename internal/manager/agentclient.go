@@ -106,3 +106,13 @@ func (a *agentClient) join(ctx context.Context, req agent.JoinRequest) (agent.Jo
 func (a *agentClient) closeSetupListener(ctx context.Context) error {
 	return a.call(ctx, http.MethodPut, "/v1/firewall/setup-listener", map[string]bool{"open": false}, nil)
 }
+
+func (a *agentClient) forget(ctx context.Context, name string) error {
+	return a.call(ctx, http.MethodDelete, "/v1/credentials/"+name, nil, nil)
+}
+
+// meshNode is the node's mesh client as its agent finds it.
+func (a *agentClient) meshNode(ctx context.Context) (agent.MeshStatus, error) {
+	var s agent.MeshStatus
+	return s, a.call(ctx, http.MethodGet, "/v1/mesh", nil, &s)
+}

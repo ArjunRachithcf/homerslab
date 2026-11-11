@@ -20,8 +20,9 @@ import (
 // NetBird is how the manager reaches NetBird's management API: the netbird package, or a test's stand-in.
 type NetBird interface {
 	Probe(ctx context.Context, url string) (setupRequired bool, err error)
-	Bootstrap(ctx context.Context, url string, o netbird.Owner, keep func(mesh.Token) error) (mesh.Token, error)
-	Adopt(ctx context.Context, url string, given mesh.Secret) (mesh.Token, error)
+	Setup(ctx context.Context, url string, o netbird.Owner) (netbird.SetupToken, error)
+	RevokeSetup(ctx context.Context, url string, st netbird.SetupToken) error
+	Adopt(ctx context.Context, url string, given mesh.Secret) (netbird.Adopted, error)
 	Open(url string, t mesh.Token) (mesh.Mesh, error)
 }
 
@@ -30,10 +31,13 @@ type realNetBird struct{}
 func (realNetBird) Probe(ctx context.Context, url string) (bool, error) {
 	return netbird.Probe(ctx, url)
 }
-func (realNetBird) Bootstrap(ctx context.Context, url string, o netbird.Owner, keep func(mesh.Token) error) (mesh.Token, error) {
-	return netbird.Bootstrap(ctx, url, o, keep)
+func (realNetBird) Setup(ctx context.Context, url string, o netbird.Owner) (netbird.SetupToken, error) {
+	return netbird.Setup(ctx, url, o)
 }
-func (realNetBird) Adopt(ctx context.Context, url string, given mesh.Secret) (mesh.Token, error) {
+func (realNetBird) RevokeSetup(ctx context.Context, url string, st netbird.SetupToken) error {
+	return netbird.RevokeSetup(ctx, url, st)
+}
+func (realNetBird) Adopt(ctx context.Context, url string, given mesh.Secret) (netbird.Adopted, error) {
 	return netbird.Adopt(ctx, url, given)
 }
 func (realNetBird) Open(url string, t mesh.Token) (mesh.Mesh, error) { return netbird.Open(url, t) }
@@ -42,6 +46,9 @@ func (realNetBird) Open(url string, t mesh.Token) (mesh.Mesh, error) { return ne
 const (
 	credMeshToken = "manager-mesh-token"
 	credMeshOwner = "manager-mesh-owner-password"
+	// credMeshSetup is a new NetBird's one-day setup token, kept only until HomersLab's own token works, so a setup
+	// that stopped half-way resumes.
+	credMeshSetup = "manager-mesh-setup-token"
 )
 
 // The network step's answers that the manager keeps. None is secret.
@@ -53,6 +60,10 @@ const (
 	ansTokenID      = "meshTokenId"
 	ansTokenExpires = "meshTokenExpires"
 	ansPrimaryIP    = "primaryMeshIp"
+	// ansSetupUser is the owner whose setup token is sealed, while a bootstrap is under way; ansBootstrapped says
+	// HomersLab set this NetBird up itself, so its Default policy is HomersLab's to delete.
+	ansSetupUser    = "meshSetupUser"
+	ansBootstrapped = "meshBootstrapped"
 )
 
 // network is the LAN page's network step: the mesh and where its control plane is. It carries no secret. A new
@@ -95,54 +106,109 @@ func (m *Manager) network(ctx context.Context, raw json.RawMessage, earlier map[
 		}
 		return keep, nil
 	}
-	if earlier[ansURL] == url && earlier[ansTokenID] != "" {
+	bootstrapped := earlier[ansURL] == url && earlier[ansBootstrapped] == "true"
+	if earlier[ansURL] == url && earlier[ansTokenID] != "" && earlier[ansSetupUser] == "" {
 		// HomersLab has its own token here already (the step waits for the admin's yes, or an earlier try stopped
 		// half-way): carry on with it.
 		if t, err := m.currentToken(ctx, earlier); err == nil {
-			return m.joinMesh(ctx, url, t, keep, earlier, a.SwitchOff)
+			return m.joinMesh(ctx, url, t, keep, earlier, a.SwitchOff, bootstrapped)
 		}
 	}
 	if a.ControlPlane == "cloud" {
 		return nil, &setup.NeedsSecret{Secret: "mesh", Keep: keep}
 	}
-	required, err := m.netbird.Probe(ctx, url)
+	var st netbird.SetupToken
+	if earlier[ansURL] == url && earlier[ansSetupUser] != "" {
+		// A bootstrap stopped half-way: it resumes from the setup token it sealed.
+		value, err := m.agent.unseal(ctx, credMeshSetup)
+		if err != nil {
+			return nil, fmt.Errorf("resuming the new NetBird's setup: %w", err)
+		}
+		st = netbird.SetupToken{Value: value, UserID: earlier[ansSetupUser]}
+	} else {
+		required, err := m.netbird.Probe(ctx, url)
+		if err != nil {
+			m.log.Warn("asking a NetBird server whether it is set up", "url", url, "err", err)
+			return nil, &setup.Invalid{Fields: []string{"url"}}
+		}
+		if !required {
+			return nil, &setup.NeedsSecret{Secret: "mesh", Keep: keep}
+		}
+		// The owner's password is sealed before NetBird hears of the owner, and the one-day setup token before
+		// anything else happens: no failure half-way leaves the household without a way into its own NetBird.
+		owner := netbird.Owner{Name: earlier["name"], Mail: earlier["mail"], Password: netbird.NewPassword()}
+		if err := m.agent.seal(ctx, credMeshOwner, owner.Password); err != nil {
+			return nil, err
+		}
+		st, err = m.netbird.Setup(ctx, url, owner)
+		if errors.Is(err, mesh.ErrAlreadySetUp) {
+			return nil, &setup.NeedsSecret{Secret: "mesh", Keep: keep}
+		}
+		if err != nil {
+			return nil, fmt.Errorf("setting up the new NetBird: %w", err)
+		}
+		if err := m.agent.seal(ctx, credMeshSetup, st.Value); err != nil {
+			return nil, err
+		}
+		if err := m.db.SaveAnswers(ctx, map[string]string{ansMesh: a.Mesh, ansControlPlane: a.ControlPlane, ansURL: url,
+			ansSetupUser: st.UserID, ansBootstrapped: "true"}); err != nil {
+			return nil, err
+		}
+	}
+	keep[ansBootstrapped] = "true"
+	t, err := m.adopt(ctx, url, st.Value, keep)
 	if err != nil {
-		m.log.Warn("asking a NetBird server whether it is set up", "url", url, "err", err)
-		return nil, &setup.Invalid{Fields: []string{"url"}}
-	}
-	if !required {
-		return nil, &setup.NeedsSecret{Secret: "mesh", Keep: keep}
-	}
-	// The owner's password is sealed before NetBird hears of it, and HomersLab's token before the bootstrap ends: no
-	// failure half-way leaves the household without a way into its own NetBird.
-	owner := netbird.Owner{Name: earlier["name"], Mail: earlier["mail"], Password: netbird.NewPassword()}
-	if err := m.agent.seal(ctx, credMeshOwner, owner.Password); err != nil {
 		return nil, err
 	}
-	t, err := m.netbird.Bootstrap(ctx, url, owner, func(t mesh.Token) error { return m.keepToken(ctx, t, keep) })
-	if errors.Is(err, mesh.ErrAlreadySetUp) {
-		return nil, &setup.NeedsSecret{Secret: "mesh", Keep: keep}
+	// HomersLab's own token works: the setup token's work is done.
+	if err := m.netbird.RevokeSetup(ctx, url, st); err != nil {
+		return nil, fmt.Errorf("revoking the new NetBird's setup token: %w", err)
 	}
-	if err != nil {
-		return nil, fmt.Errorf("setting up the new NetBird: %w", err)
+	if err := m.agent.forget(ctx, credMeshSetup); err != nil {
+		return nil, err
 	}
-	return m.joinMesh(ctx, url, t, keep, earlier, a.SwitchOff)
+	keep[ansSetupUser] = ""
+	if err := m.db.SaveAnswers(ctx, map[string]string{ansSetupUser: ""}); err != nil {
+		return nil, err
+	}
+	return m.joinMesh(ctx, url, t, keep, earlier, a.SwitchOff, true)
 }
 
 // meshSecret takes the mesh token from the terminal: HomersLab makes its own service user and token with it, and
 // then forgets it.
 func (m *Manager) meshSecret(ctx context.Context, value string, earlier map[string]string) (map[string]string, error) {
-	given := mesh.Secret(strings.TrimSpace(value))
 	url := earlier[ansURL]
-	t, err := m.netbird.Adopt(ctx, url, given)
+	keep := map[string]string{ansMesh: earlier[ansMesh], ansControlPlane: earlier[ansControlPlane], ansURL: url, ansBootstrapped: ""}
+	t, err := m.adopt(ctx, url, mesh.Secret(strings.TrimSpace(value)), keep)
 	if err != nil {
 		return nil, err
 	}
-	keep := map[string]string{ansMesh: earlier[ansMesh], ansControlPlane: earlier[ansControlPlane], ansURL: url}
-	if err := m.keepToken(ctx, t, keep); err != nil {
-		return nil, err
+	return m.joinMesh(ctx, url, t, keep, earlier, false, false)
+}
+
+// adopt makes HomersLab's own token from a given one, keeps it sealed, and only once it has worked revokes
+// HomersLab's older tokens: no failure leaves HomersLab without a token that works.
+func (m *Manager) adopt(ctx context.Context, url string, given mesh.Secret, keep map[string]string) (mesh.Token, error) {
+	a, err := m.netbird.Adopt(ctx, url, given)
+	if err != nil {
+		return mesh.Token{}, err
 	}
-	return m.joinMesh(ctx, url, t, keep, earlier, false)
+	if err := m.keepToken(ctx, a.Token, keep); err != nil {
+		return mesh.Token{}, err
+	}
+	nb, err := m.netbird.Open(url, a.Token)
+	if err != nil {
+		return mesh.Token{}, err
+	}
+	if _, err := nb.Report(ctx); err != nil {
+		return mesh.Token{}, fmt.Errorf("HomersLab's new mesh token doesn't work: %w", err)
+	}
+	for _, old := range a.Stale {
+		if err := nb.Revoke(ctx, old); err != nil {
+			m.log.Warn("revoking HomersLab's older mesh token", "err", err) // it expires by itself; never its body
+		}
+	}
+	return a.Token, nil
 }
 
 // keepToken seals HomersLab's own token and keeps what isn't secret of it: from here on it is HomersLab's, and the
@@ -150,6 +216,9 @@ func (m *Manager) meshSecret(ctx context.Context, value string, earlier map[stri
 func (m *Manager) keepToken(ctx context.Context, t mesh.Token, keep map[string]string) error {
 	if err := m.agent.seal(ctx, credMeshToken, t.Value); err != nil {
 		return err
+	}
+	if back, err := m.agent.unseal(ctx, credMeshToken); err != nil || back != t.Value {
+		return errors.New("the mesh token didn't read back from the agent")
 	}
 	keep[ansTokenUser], keep[ansTokenID], keep[ansTokenExpires] = t.UserID, t.ID, t.ExpiresAt.UTC().Format(time.RFC3339)
 	return m.db.SaveAnswers(ctx, keep)
@@ -160,16 +229,22 @@ const ansConflicts = "meshConflicts"
 
 var notLabel = regexp.MustCompile(`[^a-z0-9-]+`)
 
-// joinMesh makes the groups and policies per role (removing the mesh's default), switches off the household's own
-// policies that reach every peer once the admin said yes to exactly those, and has the primary's agent join with a
-// one-time key; the agent's firewall table then keeps the LAN out.
-func (m *Manager) joinMesh(ctx context.Context, url string, t mesh.Token, keep, earlier map[string]string, switchOff bool) (map[string]string, error) {
+// joinMesh makes the groups and policies per role, removes the mesh's Default on a NetBird HomersLab set up itself,
+// switches off the household's own policies that reach a node (NetBird's Default among them, elsewhere) once the
+// admin said yes to exactly those, and has the primary's agent join with a one-time key; the agent's firewall table
+// then keeps the LAN out.
+func (m *Manager) joinMesh(ctx context.Context, url string, t mesh.Token, keep, earlier map[string]string, switchOff, bootstrapped bool) (map[string]string, error) {
 	nb, err := m.netbird.Open(url, t)
 	if err != nil {
 		return nil, err
 	}
 	if err := nb.EnsurePolicies(ctx); err != nil {
 		return nil, fmt.Errorf("the mesh's groups and policies: %w", err)
+	}
+	if bootstrapped {
+		if err := nb.RemoveDefault(ctx); err != nil {
+			return nil, fmt.Errorf("removing the new NetBird's Default policy: %w", err)
+		}
 	}
 	conflicts, err := nb.Conflicts(ctx)
 	if err != nil {
@@ -206,7 +281,8 @@ func (m *Manager) joinMesh(ctx context.Context, url string, t mesh.Token, keep, 
 	if err != nil {
 		return nil, fmt.Errorf("the primary's join key: %w", err)
 	}
-	joined, err := m.agent.join(ctx, agent.JoinRequest{Mesh: "netbird", ManagementURL: url, SetupKey: key.Value.Reveal(), Hostname: hostname})
+	joined, err := m.agent.join(ctx, agent.JoinRequest{Mesh: "netbird", ManagementURL: url, SetupKey: key.Value.Reveal(),
+		Hostname: hostname, SetupPort: m.cfg.SetupPort})
 	if err != nil {
 		return nil, err
 	}
@@ -330,6 +406,39 @@ func (m *Manager) checkMesh(ctx context.Context) error {
 		}
 	}
 	return nil
+}
+
+// getMesh is the mesh's report of what it can do, with what only the nodes can say (router port mapping off, as
+// the primary's agent finds it now).
+func (m *Manager) getMesh(w http.ResponseWriter, r *http.Request) {
+	ans, err := m.db.Answers(r.Context())
+	if err != nil {
+		m.internal(w, "reading the mesh", err)
+		return
+	}
+	if ans[ansMesh] != "netbird" || ans[ansPrimaryIP] == "" {
+		fail(w, http.StatusNotFound, "no-mesh")
+		return
+	}
+	cur, err := m.currentToken(r.Context(), ans)
+	if err != nil {
+		m.internal(w, "reading the mesh token", err)
+		return
+	}
+	nb, err := m.netbird.Open(ans[ansURL], cur)
+	if err != nil {
+		m.internal(w, "opening the mesh", err)
+		return
+	}
+	rep, err := nb.Report(r.Context())
+	if err != nil {
+		m.log.Warn("asking the mesh what it can do", "err", err)
+		fail(w, http.StatusBadGateway, "mesh-unreachable")
+		return
+	}
+	node, err := m.agent.meshNode(r.Context())
+	rep.PortMappingOff = err == nil && node.PortMappingOff
+	writeJSON(w, http.StatusOK, rep)
 }
 
 func (m *Manager) getDrift(w http.ResponseWriter, r *http.Request) {

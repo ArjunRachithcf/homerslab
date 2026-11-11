@@ -10,7 +10,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"slices"
 	"strings"
 	"time"
 
@@ -85,10 +84,23 @@ var Secrets = map[string]string{"network": "mesh", "domain": "dns", "mail": "mai
 // Command is the terminal command that gives a secret.
 func Command(secret string) string { return "sudo homerslab setup secret " + secret }
 
-// secretFields are names a field holding a secret may have. An answer from the LAN page that has one is refused,
-// whatever its value.
-var secretFields = []string{"token", "apikey", "api_key", "key", "setupkey", "setup_key", "secret", "password", "pat",
-	"credential", "credentials", "accesstoken", "access_token", "authkey", "auth_key"}
+// secretParts are what the name of a field holding a secret contains, whatever its case. An answer from the LAN page
+// with such a field is refused, whatever its value.
+var secretParts = []string{"token", "secret", "password", "passwd", "key", "credential", "pat"}
+
+// secretName says whether a field's name says it holds a secret.
+func secretName(k string) bool {
+	k = strings.ToLower(k)
+	if k == "pat" {
+		return true
+	}
+	for _, p := range secretParts {
+		if p != "pat" && strings.Contains(k, p) {
+			return true
+		}
+	}
+	return false
+}
 
 // The ways a request can be refused.
 var (
@@ -262,7 +274,7 @@ func carriesSecret(raw json.RawMessage) bool {
 		switch x := v.(type) {
 		case map[string]any:
 			for k, inner := range x {
-				if slices.Contains(secretFields, strings.ToLower(k)) || walk(inner) {
+				if secretName(k) || walk(inner) {
 					return true
 				}
 			}

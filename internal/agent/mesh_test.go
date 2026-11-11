@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/netip"
@@ -12,6 +13,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"testing/fstest"
 	"time"
 
 	"github.com/ArjunRachithcf/homerslab/internal/agent"
@@ -228,7 +230,7 @@ func TestTheSetupListenerClosesForGoodAndStaysClosed(t *testing.T) {
 	// A restart, as after a power cut: the table comes back, still closed.
 	h2 := agenttest.NewHost(t.TempDir())
 	sock2, _ := agenttest.StartWith(t, agent.Config{StateDir: state, Run: h2.Run, Root: h2.Root})
-	if table, ok := h2.Table(); !ok || strings.Contains(table, "7020") || !strings.Contains(table, `iifname "wt0" accept`) {
+	if table, ok := h2.Table(); !ok || strings.Contains(table, "7020") || !strings.Contains(table, `iifname { "wt0" } accept`) {
 		t.Errorf("after a restart the table is (%v):\n%s", ok, table)
 	}
 	if s := status(t, sock2); s.SetupListener.Open || !s.Enforcing {
@@ -268,6 +270,32 @@ func TestTheManagersCredentialsAreSealedAndOnlyItsOwnComeBack(t *testing.T) {
 	}
 }
 
+func TestAMachineWithATPM12SealsWithTheHostKey(t *testing.T) {
+	testenv.Isolate(t)
+	sysroot := fstest.MapFS{"sys/class/tpm/tpm0/tpm_version_major": {Data: []byte("1\n")}}
+	sock, h := agenttest.StartWith(t, agent.Config{Sysroot: sysroot})
+	call(t, sock, "PUT", "/v1/credentials/manager-mesh-token", map[string]string{"value": "x"})
+	if args := strings.Join(h.Cmds()[h.Ran("systemd-creds encrypt")].Args, " "); !strings.Contains(args, "--with-key=host ") {
+		t.Errorf("systemd-creds %s, want --with-key=host: systemd can't seal to a TPM 1.2", args)
+	}
+}
+
+func TestACredentialCanBeForgotten(t *testing.T) {
+	testenv.Isolate(t)
+	state := t.TempDir()
+	sock, _ := agenttest.StartWith(t, agent.Config{StateDir: state})
+	call(t, sock, "PUT", "/v1/credentials/manager-mesh-setup-token", map[string]string{"value": "x"})
+	if code, _ := call(t, sock, "DELETE", "/v1/credentials/manager-mesh-setup-token", nil); code != http.StatusNoContent {
+		t.Errorf("forgetting: %d", code)
+	}
+	if code, _ := call(t, sock, "GET", "/v1/credentials/manager-mesh-setup-token", nil); code != http.StatusNotFound {
+		t.Errorf("after forgetting: %d, want 404", code)
+	}
+	if code, _ := call(t, sock, "DELETE", "/v1/credentials/photos-db-password", nil); code != http.StatusNotFound {
+		t.Errorf("an app's credential: %d, want 404", code)
+	}
+}
+
 func TestAMachineWithoutTPMSealsWithTheHostKey(t *testing.T) {
 	testenv.Isolate(t)
 	sock, h := agenttest.StartWith(t, agent.Config{Sysroot: os.DirFS(t.TempDir())})
@@ -296,7 +324,7 @@ func TestAnAgentThatCantApplyItsTableKeepsTryingAndServes(t *testing.T) {
 	if code, body := call(t, sock2, "POST", "/v1/firewall/check", nil); code != http.StatusOK {
 		t.Fatalf("check: %d %s", code, body)
 	}
-	if table, on := h2.Table(); !on || !strings.Contains(table, `iifname "wt0" accept`) {
+	if table, on := h2.Table(); !on || !strings.Contains(table, `iifname { "wt0" } accept`) {
 		t.Errorf("the check didn't apply the table:\n%s", table)
 	}
 }
@@ -318,26 +346,84 @@ func TestClosingTheSetupListenerHoldsEvenWhenTheFirstTryFails(t *testing.T) {
 	}
 }
 
-func TestTheTableFollowsTheLAN(t *testing.T) {
+func TestTheTableFollowsTheLANAndTheEnginesBridges(t *testing.T) {
 	testenv.Isolate(t)
 	var mu sync.Mutex
 	prefix := "192.168.1.0/24"
 	lan := func() ([]string, []netip.Prefix) {
 		mu.Lock()
 		defer mu.Unlock()
-		return []string{"enp5s0"}, []netip.Prefix{netip.MustParsePrefix(prefix)}
+		return []string{"br-iot"}, []netip.Prefix{netip.MustParsePrefix(prefix)}
 	}
 	sock, h := agenttest.StartWith(t, agent.Config{LAN: lan})
 	call(t, sock, "POST", "/v1/mesh/join", joinBody())
-	if table, _ := h.Table(); !strings.Contains(table, `iifname "br-*" iifname != { "enp5s0" }`) {
-		t.Errorf("the LAN interface isn't kept from the bridges' rules:\n%s", table)
+	if table, _ := h.Table(); strings.Contains(table, "apps_in") && strings.Contains(table, "jump apps_in") {
+		t.Errorf("with no engine answering, a bridge is trusted:\n%s", table)
 	}
+	// Docker's default bridge, a compose network it named br-<id>, one it was told to call br-iot (the LAN's own
+	// name), and Podman's.
+	h.Engines(map[string]string{"0123456789abcdef": "docker0", "abcdef0123456789": "", "fedcba9876543210": "br-iot"}, []string{"podman1"})
 	mu.Lock()
 	prefix = "2001:db8:5::/64"
 	mu.Unlock()
 	call(t, sock, "POST", "/v1/firewall/check", nil)
-	if table, _ := h.Table(); !strings.Contains(table, "2001:db8:5::/64") {
+	table, _ := h.Table()
+	if !strings.Contains(table, `iifname { "br-abcdef012345", "docker0", "podman1" } jump apps_in`) {
+		t.Errorf("the engines' bridges, by their exact names, and never the LAN's:\n%s", table)
+	}
+	if !strings.Contains(table, "2001:db8:5::/64") {
 		t.Errorf("the table didn't follow the LAN's new prefix:\n%s", table)
+	}
+	h.Engines(nil, nil) // the engines stop answering
+	call(t, sock, "POST", "/v1/firewall/check", nil)
+	if table, _ := h.Table(); strings.Contains(table, "jump apps_in") {
+		t.Errorf("bridges are trusted with no engine answering:\n%s", table)
+	}
+}
+
+func TestTheJoinTakesTheManagersSetupPort(t *testing.T) {
+	testenv.Isolate(t)
+	sock, h := agenttest.StartWith(t, agent.Config{})
+	r := joinBody()
+	r.SetupPort = 7444
+	call(t, sock, "POST", "/v1/mesh/join", r)
+	if table, _ := h.Table(); !strings.Contains(table, "tcp dport 7444 accept") || strings.Contains(table, "7020") {
+		t.Errorf("the setup listener's port isn't the manager's:\n%s", table)
+	}
+}
+
+func TestTheNATMapperSettingIsWatchedAndPutBack(t *testing.T) {
+	testenv.Isolate(t)
+	sock, h := agenttest.StartWith(t, agent.Config{})
+	call(t, sock, "POST", "/v1/mesh/join", joinBody())
+	mesh := func() agent.MeshStatus {
+		t.Helper()
+		_, body := call(t, sock, "GET", "/v1/mesh", nil)
+		var s agent.MeshStatus
+		if err := json.Unmarshal(body, &s); err != nil {
+			t.Fatal(err)
+		}
+		return s
+	}
+	if s := mesh(); !s.Joined || !s.PortMappingOff {
+		t.Fatalf("after the join: %+v", s)
+	}
+	h.RestartNetBirdWithoutItsDropIn()
+	if s := mesh(); s.PortMappingOff {
+		t.Error("the report says the NAT mapper is off while the client runs without the drop-in")
+	}
+	call(t, sock, "POST", "/v1/firewall/check", nil)
+	s := mesh()
+	if !s.PortMappingOff || len(s.Drift) != 1 || s.Drift[0].What != "nat-mapper-drop-in" {
+		t.Errorf("after the check: %+v", s)
+	}
+	h.RestartNetBirdBeforeItsDropIn()
+	if s := mesh(); s.PortMappingOff {
+		t.Error("the report says the NAT mapper is off while the running client lacks the setting")
+	}
+	call(t, sock, "POST", "/v1/firewall/check", nil)
+	if s := mesh(); !s.PortMappingOff || len(s.Drift) != 2 || s.Drift[1].What != "nat-mapper-environment" {
+		t.Errorf("after the second check: %+v", s)
 	}
 }
 
@@ -355,14 +441,39 @@ func TestTheAgentTellsSystemdItIsReadyOnceItsTableIsBack(t *testing.T) {
 	defer ln.Close()
 	t.Setenv("NOTIFY_SOCKET", notify)
 	h := agenttest.NewHost(t.TempDir())
+	h.Fail("nft -f") // at boot nft fails at first: no READY until the table is in place
 	agenttest.StartWith(t, agent.Config{StateDir: state, Run: h.Run, Root: h.Root})
-	_ = ln.SetReadDeadline(time.Now().Add(5 * time.Second))
 	buf := make([]byte, 64)
+	_ = ln.SetReadDeadline(time.Now().Add(700 * time.Millisecond))
+	if n, err := ln.Read(buf); err == nil {
+		t.Fatalf("systemd heard %q before the table was in place", buf[:n])
+	}
+	h.Mend()
+	_ = ln.SetReadDeadline(time.Now().Add(10 * time.Second))
 	n, err := ln.Read(buf)
 	if err != nil || string(buf[:n]) != "READY=1" {
 		t.Fatalf("systemd heard %q, %v", buf[:n], err)
 	}
 	if _, on := h.Table(); !on {
 		t.Error("ready before the firewall table was back")
+	}
+}
+
+func TestTheSetupKeyNeverReachesTheLogs(t *testing.T) {
+	testenv.Isolate(t)
+	for _, failing := range []string{"", "netbird up", "netbird status", "nft -f"} {
+		var logs bytes.Buffer
+		h := agenttest.NewHost(t.TempDir())
+		if failing != "" {
+			h.Fail(failing)
+		}
+		log := slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
+		sock, _ := agenttest.StartWith(t, agent.Config{Run: h.Run, Root: h.Root, Log: log})
+		call(t, sock, "POST", "/v1/mesh/join", joinBody())
+		call(t, sock, "PUT", "/v1/credentials/manager-mesh-token", map[string]string{"value": "nbp_SEALME"})
+		call(t, sock, "GET", "/v1/credentials/manager-mesh-token", nil)
+		if strings.Contains(logs.String(), setupKey) || strings.Contains(logs.String(), "nbp_SEALME") {
+			t.Errorf("with %q failing, a secret is in the agent's log:\n%s", failing, logs.String())
+		}
 	}
 }

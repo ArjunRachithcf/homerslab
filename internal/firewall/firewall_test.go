@@ -30,12 +30,17 @@ func TestTheTableIsReplacedInOneTransactionAndChangesNoOtherTable(t *testing.T) 
 
 func TestOnlyAnOpenSetupListenerIsLetIn(t *testing.T) {
 	testenv.Isolate(t)
-	open := firewall.Render(firewall.State{Mesh: []string{"wt0"}, SetupPort: 7020})
-	closed := firewall.Render(firewall.State{Mesh: []string{"wt0"}})
-	if !strings.Contains(open, "tcp dport 7020 accept") {
+	lan := []string{"enp5s0"}
+	open := firewall.Render(firewall.State{Mesh: []string{"wt0"}, SetupPort: 7020, LAN: lan})
+	closed := firewall.Render(firewall.State{Mesh: []string{"wt0"}, LAN: lan})
+	noLAN := firewall.Render(firewall.State{Mesh: []string{"wt0"}, SetupPort: 7020})
+	if !strings.Contains(open, `iifname { "enp5s0" } tcp dport 7020 accept`) {
 		t.Errorf("the open setup listener isn't let in:\n%s", open)
 	}
 	if strings.Contains(closed, "tcp dport") {
 		t.Errorf("with the setup listener closed, a TCP port is still open to the LAN:\n%s", closed)
+	}
+	if strings.Contains(noLAN, "tcp dport") {
+		t.Errorf("with no LAN known, the setup listener is open to every interface:\n%s", noLAN)
 	}
 }

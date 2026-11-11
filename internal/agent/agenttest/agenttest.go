@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
@@ -104,6 +105,18 @@ type Host struct {
 	dropInAt  map[string][]byte // the NetBird drop-in as it was when each command ran
 	fail      map[string]error
 	NetbirdIP string
+	// restartedWith is NetBird's drop-in as it was when the service last restarted: the running service's environment.
+	restartedWith []byte
+	docker        map[string]string // the engine's bridge networks: ID → the bridge's name option ("" for none)
+	podman        []string          // Podman's bridges
+}
+
+// Engines makes Docker list bridge networks (ID → the name it was given, or "") and Podman list bridges. Without
+// it, no engine answers.
+func (h *Host) Engines(docker map[string]string, podman []string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.docker, h.podman = docker, podman
 }
 
 // NewHost is a machine whose root directory is root.
@@ -148,8 +161,42 @@ func (h *Host) Run(_ context.Context, c host.Cmd) ([]byte, error) {
 			return nil, &host.Error{Cmd: line, Err: errors.New("exit status 1"), Stderr: "Error: No such file or directory"}
 		}
 		return []byte(h.table), nil
+	case line == "systemctl restart netbird.service":
+		h.restartedWith = h.dropInAt[line]
+		return nil, nil
+	case line == "systemctl show netbird.service --property=Environment --value":
+		var env []string
+		for _, l := range strings.Split(string(h.restartedWith), "\n") {
+			if v, ok := strings.CutPrefix(l, "Environment="); ok {
+				env = append(env, v)
+			}
+		}
+		return []byte(strings.Join(env, " ") + "\n"), nil
 	case c.Name == "systemctl":
 		return nil, nil
+	case c.Name == "docker" && h.docker != nil && len(c.Args) > 1 && c.Args[1] == "ls":
+		var ids []string
+		for id := range h.docker {
+			ids = append(ids, id)
+		}
+		slices.Sort(ids)
+		return []byte(strings.Join(ids, "\n") + "\n"), nil
+	case c.Name == "docker" && h.docker != nil && len(c.Args) > 1 && c.Args[1] == "inspect":
+		var out []string
+		for _, id := range c.Args[4:] {
+			name := h.docker[id]
+			if name == "" {
+				name = "<no value>"
+			}
+			out = append(out, id+" "+name)
+		}
+		return []byte(strings.Join(out, "\n") + "\n"), nil
+	case c.Name == "podman" && h.podman != nil:
+		var nets []map[string]string
+		for _, n := range h.podman {
+			nets = append(nets, map[string]string{"driver": "bridge", "network_interface": n})
+		}
+		return json.Marshal(nets)
 	case strings.HasPrefix(line, "netbird up"):
 		return nil, nil
 	case line == "netbird status --json":
@@ -200,6 +247,22 @@ func (h *Host) Table() (string, bool) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	return h.table, h.hasTable
+}
+
+// RestartNetBirdWithoutItsDropIn stands for someone removing the drop-in and restarting NetBird's service.
+func (h *Host) RestartNetBirdWithoutItsDropIn() {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	_ = os.Remove(filepath.Join(h.Root, "etc/systemd/system/netbird.service.d/10-homerslab.conf"))
+	h.restartedWith = nil
+}
+
+// RestartNetBirdBeforeItsDropIn stands for NetBird's service restarted with an environment of its own: the drop-in is
+// there, but the running service doesn't have it.
+func (h *Host) RestartNetBirdBeforeItsDropIn() {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.restartedWith = nil
 }
 
 // Tamper changes the firewall table behind the agent's back: "missing" deletes it, anything else edits it.

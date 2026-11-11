@@ -45,9 +45,12 @@ type Config struct {
 	Resolve func(ctx context.Context, name string) ([]string, error)
 	// LAN is the machine's LAN: the interfaces with the default route and their prefixes; lan.OnLink when nil.
 	LAN func() ([]string, []netip.Prefix)
+	// Bridges are the container engines' bridges, by name; asked of Docker and Podman when nil.
+	Bridges func(ctx context.Context) []string
 	// SetupPort is the setup link's LAN listener, the firewall table's one exception until it closes.
 	SetupPort int
-	// CheckEvery is how often the firewall table is checked for drift.
+	// CheckEvery is how often the firewall table is checked for drift: often, so an `nft flush ruleset` is undone
+	// within seconds.
 	CheckEvery time.Duration
 	// JoinWait is how long a join waits for the mesh's client to connect.
 	JoinWait time.Duration
@@ -61,8 +64,12 @@ type Agent struct {
 	log *slog.Logger
 	fw  *firewall.Firewall
 
-	mu    sync.Mutex // the state below, and joins
-	state state
+	mu        sync.Mutex // the state below, and joins
+	state     state
+	natAt     time.Time // when the mesh client's NAT mapper was last checked
+	bridges   []string  // the engines' bridges as last asked, and when
+	bridgesAt time.Time
+	meshDrift []firewall.Drift // what the agent found changed in the mesh client, and put back
 }
 
 // state is what the agent keeps across restarts, in StateDir/agent.json. None of it is secret.
@@ -71,8 +78,10 @@ type state struct {
 	Enforcing bool     `json:"enforcing"`
 	Mesh      []string `json:"mesh"`
 	WireGuard []int    `json:"wireGuard"`
-	// SetupClosed: the setup link's LAN listener was closed, for good.
+	// SetupClosed: the setup link's LAN listener was closed, for good. SetupPort is that listener's port, as the
+	// manager gave it.
 	SetupClosed bool `json:"setupClosed"`
+	SetupPort   int  `json:"setupPort,omitempty"`
 }
 
 // New makes an agent and restores its firewall table, if it had one.
@@ -90,7 +99,7 @@ func New(ctx context.Context, c Config) (*Agent, error) {
 		c.Root = "/"
 	}
 	if c.CheckEvery == 0 {
-		c.CheckEvery = 30 * time.Second
+		c.CheckEvery = 2 * time.Second
 	}
 	if c.JoinWait == 0 {
 		c.JoinWait = 30 * time.Second
@@ -100,6 +109,10 @@ func New(ctx context.Context, c Config) (*Agent, error) {
 	}
 	if c.LAN == nil {
 		c.LAN = lan.OnLink
+	}
+	if c.Bridges == nil {
+		run := c.Run
+		c.Bridges = func(ctx context.Context) []string { return engineBridges(ctx, run) }
 	}
 	a := &Agent{cfg: c, log: c.Log, fw: &firewall.Firewall{Run: c.Run, Now: c.Now}}
 	if c.StateDir != "" {
@@ -118,10 +131,10 @@ func New(ctx context.Context, c Config) (*Agent, error) {
 		}
 	}
 	if a.state.Enforcing {
-		// Fail toward keeping the table: an agent that can't apply it now keeps serving and tries again at each check.
-		if err := a.fw.Apply(ctx, a.firewallState()); err != nil {
-			a.log.Error("restoring the firewall table; trying again at the next check", "err", err)
-			a.fw.Want(a.firewallState())
+		// An agent that can't apply its table now keeps serving and tries again (Serve: before it says it's ready).
+		if err := a.fw.Apply(ctx, a.firewallState(ctx)); err != nil {
+			a.log.Error("restoring the firewall table; trying again", "err", err)
+			a.fw.Want(a.firewallState(ctx))
 		} else {
 			a.log.Info("firewall table restored", "setupListener", !a.state.SetupClosed)
 		}
@@ -129,11 +142,41 @@ func New(ctx context.Context, c Config) (*Agent, error) {
 	return a, nil
 }
 
-func (a *Agent) firewallState() firewall.State {
+// waitForTable returns once the firewall table is in place (at once when the node hasn't joined a mesh), trying
+// again with a growing pause until ctx ends.
+func (a *Agent) waitForTable(ctx context.Context) error {
+	pause := 250 * time.Millisecond
+	for {
+		a.mu.Lock()
+		if !a.state.Enforcing || a.fw.Applied() {
+			a.mu.Unlock()
+			return nil
+		}
+		err := a.reconcile(ctx, false)
+		a.mu.Unlock()
+		if err != nil {
+			a.log.Error("applying the firewall table; trying again", "err", err, "in", pause)
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(pause):
+		}
+		pause = min(pause*2, 30*time.Second)
+	}
+}
+
+func (a *Agent) firewallState(ctx context.Context) firewall.State {
 	ifaces, prefixes := a.cfg.LAN()
-	s := firewall.State{Mesh: a.state.Mesh, WireGuard: a.state.WireGuard, LAN: ifaces, LANPrefixes: prefixes}
+	if a.bridgesAt.IsZero() || a.cfg.Now().Sub(a.bridgesAt) >= bridgesEvery {
+		a.bridges, a.bridgesAt = a.cfg.Bridges(ctx), a.cfg.Now()
+	}
+	s := firewall.State{Mesh: a.state.Mesh, WireGuard: a.state.WireGuard, LAN: ifaces, LANPrefixes: prefixes, Bridges: a.bridges}
 	if !a.state.SetupClosed {
-		s.SetupPort = a.cfg.SetupPort
+		s.SetupPort = a.state.SetupPort
+		if s.SetupPort == 0 {
+			s.SetupPort = a.cfg.SetupPort
+		}
 	}
 	return s
 }
@@ -171,6 +214,8 @@ func (a *Agent) Handler() http.Handler {
 	mux.HandleFunc("PUT /v1/firewall/setup-listener", a.setupListener)
 	mux.HandleFunc("PUT /v1/credentials/{name}", a.putCredential)
 	mux.HandleFunc("GET /v1/credentials/{name}", a.getCredential)
+	mux.HandleFunc("DELETE /v1/credentials/{name}", a.deleteCredential)
+	mux.HandleFunc("GET /v1/mesh", a.getMesh)
 	mux.HandleFunc("/", func(w http.ResponseWriter, _ *http.Request) { fail(w, http.StatusNotFound, "not-found") })
 	return mux
 }
@@ -192,30 +237,45 @@ func (a *Agent) Watch(ctx context.Context) {
 func (a *Agent) check(ctx context.Context) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	if err := a.reconcile(ctx); err != nil {
+	if err := a.reconcile(ctx, false); err != nil {
 		a.log.Error("checking the firewall table", "err", err)
 	}
 }
 
-// reconcile keeps the table as it should be: it follows the LAN when the LAN moved (a new address, another
-// interface), and puts the table back when it drifted. The caller holds a.mu.
-func (a *Agent) reconcile(ctx context.Context) error {
+// bridgesEvery is how long the engines' list of bridges is taken as it was, between checks; a forced check asks again.
+const bridgesEvery = 10 * time.Second
+
+// natEvery is how often the mesh client's NAT mapper setting is checked; force checks it now.
+const natEvery = 30 * time.Second
+
+// reconcile keeps the host as it should be: the table follows the LAN and the engines' bridges as they change, and
+// is put back when it drifted; the mesh client keeps its NAT mapper off. The caller holds a.mu.
+func (a *Agent) reconcile(ctx context.Context, force bool) error {
+	var errs []error
+	if force {
+		a.bridgesAt = time.Time{}
+	}
 	if a.state.Enforcing {
-		if want := a.firewallState(); !want.Equal(a.fw.Status().State) {
+		if force || a.cfg.Now().Sub(a.natAt) >= natEvery {
+			if err := a.checkNATMapper(ctx); err != nil {
+				errs = append(errs, err)
+			}
+		}
+		if want := a.firewallState(ctx); !want.Equal(a.fw.Status().State) || !a.fw.Applied() {
 			if err := a.fw.Apply(ctx, want); err != nil {
 				a.fw.Want(want)
-				return err
+				return errors.Join(append(errs, err)...)
 			}
 		}
 	}
 	d, err := a.fw.Check(ctx)
 	if err != nil {
-		return err
+		return errors.Join(append(errs, err)...)
 	}
 	if d != nil {
 		a.log.Warn("the firewall table had drifted, and was put back", "what", d.What)
 	}
-	return nil
+	return errors.Join(errs...)
 }
 
 // Serve runs the agent's API on its socket, and watches its firewall table, until ctx ends.
@@ -230,10 +290,15 @@ func Serve(ctx context.Context, c Config) error {
 	}
 	watch, stop := context.WithCancel(ctx)
 	defer stop()
-	go a.Watch(watch)
-	notifyReady(a.log) // systemd orders the network after this: the table, if any, is in place
 	srv := &http.Server{Handler: a.Handler(), ReadHeaderTimeout: 10 * time.Second}
-	return serveUntil(ctx, srv, ln)
+	served := make(chan error, 1)
+	go func() { served <- serveUntil(ctx, srv, ln) }()
+	// Ready only once the table is in place: systemd starts the network, the engines and the mesh client after this.
+	if err := a.waitForTable(ctx); err == nil {
+		notifyReady(a.log)
+		go a.Watch(watch)
+	}
+	return <-served
 }
 
 // notifyReady tells systemd the agent is up (Type=notify), when systemd asks.

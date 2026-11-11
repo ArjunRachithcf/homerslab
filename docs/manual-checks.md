@@ -17,16 +17,21 @@ parts that only the cloud has are checked here.
 3. **HomersLab's own service user.** In the dashboard, the user `homerslab` exists, with one token named
    `homerslab-<date>` that expires in 365 days or less. Revoke the token from step 1: setup keeps working.
 4. **Groups and policies.** The groups `homerslab-nodes`, `homerslab-admins`, `homerslab-adults` and `homerslab-kids`
-   exist; the policies are the four `homerslab-*` ones (TCP 80 and 443 to the nodes, 443 between nodes); the Default
-   policy is gone. With a policy of your own that reaches `All` made beforehand, setup lists it and asks before it
-   switches it off; one made afterwards shows up in the manager's drift report within the hour, and stays on:
-   `sudo curl -s --unix-socket /run/homerslab/manager.sock http://manager/api/v1/drift`.
+   exist, and so do the four `homerslab-*` policies (TCP 80 and 443 to the nodes, 443 between nodes). On the cloud the
+   Default policy is never deleted: setup lists it, with any policy of your own that reaches every peer or a node, and
+   switches them off only after your yes. Each stays in the dashboard, disabled and otherwise unchanged: its ports,
+   port ranges and posture checks. A policy made afterwards shows up in the manager's drift report within the hour,
+   and stays on: `sudo curl -s --unix-socket /run/homerslab/manager.sock http://manager/api/v1/drift`.
 5. **The primary joined, NAT mapper off.** The primary is a peer in `homerslab-nodes`, joined with a one-off setup key
    named `homerslab-node-<hostname>`. On the primary:
-   `journalctl -u netbird | grep -E 'NAT port mapper disabled|port forwarding setup'` shows only the first.
+   `journalctl -u netbird | grep -E 'NAT port mapper disabled|port forwarding setup'` shows only the first, and
+   `sudo curl -s --unix-socket /run/homerslab/manager.sock http://manager/api/v1/mesh` says `"portMappingOff":true`.
+   Remove `/etc/systemd/system/netbird.service.d/10-homerslab.conf` and restart NetBird: within 30 seconds the agent
+   puts it back, restarts the client, and reports it.
 6. **The resolver.** On the primary, `resolvectl query api.netbird.io` (or `getent hosts api.netbird.io` without
    systemd-resolved) answers, and so does a mesh peer's name.
 7. **The LAN is kept out.** From another device on the LAN: the machine answers ping; no app port and no SSH
    answers; the setup link's port answers until the admin's first sign-in over the mesh, and then never again.
    `sudo nft list table inet homerslab` on the primary shows the table, and it is there right after a reboot, before
-   Docker starts (`systemd-analyze critical-chain docker.service` has `homerslab-agent.service` in it).
+   Docker starts (`systemd-analyze critical-chain docker.service` has `homerslab-agent.service` in it). After
+   `sudo nft flush ruleset` the table is back within seconds.

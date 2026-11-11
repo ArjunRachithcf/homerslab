@@ -57,7 +57,11 @@ func newAPI(rawURL string, token mesh.Secret) (*api, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &api{base: u, token: token, http: &http.Client{Timeout: 20 * time.Second}, now: time.Now}, nil
+	return &api{base: u, token: token, now: time.Now, http: &http.Client{
+		Timeout: 20 * time.Second,
+		// A token goes to the address the admin gave, and nowhere a redirect points: a redirect is an answer.
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+	}}, nil
 }
 
 // call sends body as JSON and decodes the answer into out. A refused token is mesh.ErrTokenRefused; anything that
@@ -96,6 +100,9 @@ func (a *api) call(ctx context.Context, method, path string, body, out any) erro
 	data, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
 	if err != nil {
 		return fmt.Errorf("%w: %s", mesh.ErrUnreachable, a.base.Host)
+	}
+	if resp.StatusCode/100 == 3 {
+		return fmt.Errorf("%w: %s %s answered with a redirect, which HomersLab doesn't follow", mesh.ErrNotAMesh, method, path)
 	}
 	if resp.StatusCode/100 != 2 {
 		// A revoked or unknown token gets 404 "invalid token", not 401 (the spike).
@@ -160,27 +167,30 @@ type Owner struct {
 	Password   mesh.Secret
 }
 
-// Bootstrap sets up a new self-hosted NetBird in one step: its owner (with a setup token that lasts a day),
-// HomersLab's service user and its 365-day token, which keep must store before anything else happens, and then it
-// revokes the setup token. It is refused with mesh.ErrAlreadySetUp when the server was set up before.
-func Bootstrap(ctx context.Context, rawURL string, o Owner, keep func(mesh.Token) error) (mesh.Token, error) {
-	return bootstrap(ctx, rawURL, o, keep, func(mesh.Secret) {})
+// SetupToken is the owner's token from a new self-hosted NetBird's first setup: it lasts a day. The caller seals it
+// before anything else happens, so a setup that stops half-way resumes from it, and revokes it (RevokeSetup) once
+// HomersLab's own token works.
+type SetupToken struct {
+	Value  mesh.Secret
+	UserID string
 }
 
-func bootstrap(ctx context.Context, rawURL string, o Owner, keep func(mesh.Token) error, seen func(mesh.Secret)) (mesh.Token, error) {
+// Setup runs a new self-hosted NetBird's first setup: its owner, with a setup token that lasts a day. It is refused
+// with mesh.ErrAlreadySetUp when the server was set up before.
+func Setup(ctx context.Context, rawURL string, o Owner) (SetupToken, error) {
 	if len(o.Password.Reveal()) < 16 {
-		return mesh.Token{}, errors.New("the owner's password is too short")
+		return SetupToken{}, errors.New("the owner's password is too short")
 	}
 	required, err := Probe(ctx, rawURL)
 	if err != nil {
-		return mesh.Token{}, err
+		return SetupToken{}, err
 	}
 	if !required {
-		return mesh.Token{}, mesh.ErrAlreadySetUp
+		return SetupToken{}, mesh.ErrAlreadySetUp
 	}
 	a, err := newAPI(rawURL, "")
 	if err != nil {
-		return mesh.Token{}, err
+		return SetupToken{}, err
 	}
 	var setup struct {
 		UserID string `json:"user_id"`
@@ -191,51 +201,52 @@ func bootstrap(ctx context.Context, rawURL string, o Owner, keep func(mesh.Token
 	}, &setup)
 	var ae *APIError
 	if errors.As(err, &ae) && ae.Status == http.StatusPreconditionFailed {
-		return mesh.Token{}, mesh.ErrAlreadySetUp // someone else was quicker
+		return SetupToken{}, mesh.ErrAlreadySetUp // someone else was quicker
 	}
 	if err != nil {
-		return mesh.Token{}, err
+		return SetupToken{}, err
 	}
-	if setup.PAT == "" {
-		return mesh.Token{}, errors.New("NetBird's setup made no token: is NB_SETUP_PAT_ENABLED=true set on the server?")
+	if setup.PAT == "" || setup.UserID == "" {
+		return SetupToken{}, errors.New("NetBird's setup made no token: is NB_SETUP_PAT_ENABLED=true set on the server?")
 	}
-	setupToken := mesh.Secret(setup.PAT)
-	seen(setupToken)
-	t, err := Adopt(ctx, rawURL, setupToken)
-	if err != nil {
-		return mesh.Token{}, err
-	}
-	if err := keep(t); err != nil {
-		// The setup token stays until it expires in a day, and the owner's password is the way in.
-		return mesh.Token{}, err
-	}
-	// The setup token has done its work; HomersLab's own one takes over.
-	owner := &api{base: a.base, token: setupToken, http: a.http, now: a.now}
-	var pats []struct {
-		ID   string `json:"id"`
-		Name string `json:"name"`
-	}
-	if err := owner.call(ctx, http.MethodGet, "/api/users/"+url.PathEscape(setup.UserID)+"/tokens", nil, &pats); err != nil {
-		return mesh.Token{}, err
-	}
-	for _, p := range pats {
-		if err := owner.call(ctx, http.MethodDelete, "/api/users/"+url.PathEscape(setup.UserID)+"/tokens/"+url.PathEscape(p.ID), nil, nil); err != nil {
-			return mesh.Token{}, err
-		}
-	}
-	return t, nil
+	return SetupToken{Value: mesh.Secret(setup.PAT), UserID: setup.UserID}, nil
 }
 
-// Adopt takes the token the admin gave once and makes HomersLab's own: its service user (made if missing) and that
-// user's new 365-day token. HomersLab's older tokens are revoked. The given token is never kept.
-func Adopt(ctx context.Context, rawURL string, given mesh.Secret) (mesh.Token, error) {
+// RevokeSetup revokes the owner's tokens with the setup token itself: HomersLab's own token has taken over.
+func RevokeSetup(ctx context.Context, rawURL string, st SetupToken) error {
+	owner, err := newAPI(rawURL, st.Value)
+	if err != nil {
+		return err
+	}
+	pats, err := owner.tokens(ctx, st.UserID)
+	if err != nil {
+		return err
+	}
+	for _, p := range pats {
+		if err := owner.call(ctx, http.MethodDelete, "/api/users/"+url.PathEscape(st.UserID)+"/tokens/"+url.PathEscape(p.ID), nil, nil); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// Adopted is HomersLab's new token, and its older ones: the caller revokes those (Mesh.Revoke) only once the new
+// token is sealed and has worked.
+type Adopted struct {
+	Token mesh.Token
+	Stale []mesh.Token
+}
+
+// Adopt takes the token the admin gave once (or a new NetBird's setup token) and makes HomersLab's own: its service
+// user (made if missing) and that user's new 365-day token. The given token is never kept.
+func Adopt(ctx context.Context, rawURL string, given mesh.Secret) (Adopted, error) {
 	a, err := newAPI(rawURL, given)
 	if err != nil {
-		return mesh.Token{}, err
+		return Adopted{}, err
 	}
 	var users []user
 	if err := a.call(ctx, http.MethodGet, "/api/users?service_user=true", nil, &users); err != nil {
-		return mesh.Token{}, err
+		return Adopted{}, err
 	}
 	var svc *user
 	for i := range users {
@@ -248,28 +259,26 @@ func Adopt(ctx context.Context, rawURL string, given mesh.Secret) (mesh.Token, e
 		if err := a.call(ctx, http.MethodPost, "/api/users", map[string]any{
 			"name": ServiceUser, "role": "admin", "auto_groups": []string{}, "is_service_user": true,
 		}, &made); err != nil {
-			return mesh.Token{}, err
+			return Adopted{}, err
 		}
 		svc = &made
 	}
 	t, err := a.newToken(ctx, svc.ID)
 	if err != nil {
-		return mesh.Token{}, err
+		return Adopted{}, err
 	}
-	// From here on HomersLab speaks for itself.
 	own := &api{base: a.base, token: t.Value, http: a.http, now: a.now}
 	tokens, err := own.tokens(ctx, svc.ID)
 	if err != nil {
-		return mesh.Token{}, err
+		return Adopted{}, err
 	}
+	out := Adopted{Token: t}
 	for _, old := range tokens {
 		if old.ID != t.ID {
-			if err := own.call(ctx, http.MethodDelete, "/api/users/"+url.PathEscape(svc.ID)+"/tokens/"+url.PathEscape(old.ID), nil, nil); err != nil {
-				return mesh.Token{}, err
-			}
+			out.Stale = append(out.Stale, mesh.Token{UserID: svc.ID, ID: old.ID, ExpiresAt: old.Expiration})
 		}
 	}
-	return t, nil
+	return out, nil
 }
 
 type user struct {
@@ -333,7 +342,7 @@ func (m *Mesh) Revoke(ctx context.Context, t mesh.Token) error {
 // Report says what this NetBird can do.
 func (m *Mesh) Report(ctx context.Context) (mesh.Report, error) {
 	r := mesh.Report{Mesh: "netbird", ControlPlane: "self-hosted", PerAppNames: "wildcard-records",
-		PublicPath: "netbird-reverse-proxy", DomainRequired: true, PortMappingOff: true}
+		PublicPath: "netbird-reverse-proxy", DomainRequired: true} // PortMappingOff is the nodes' to say: their agents report it
 	if m.api.base.Host == "api.netbird.io" {
 		r.ControlPlane = "cloud"
 	}
@@ -405,17 +414,17 @@ type policy struct {
 }
 
 type policyRule struct {
-	Name          string           `json:"name"`
-	Description   string           `json:"description"`
-	Enabled       bool             `json:"enabled"`
-	Action        string           `json:"action"`
-	Bidirectional bool             `json:"bidirectional"`
-	Protocol      string           `json:"protocol"`
-	Ports         []string         `json:"ports"`
-	Sources       groupRefs        `json:"sources"`
-	Destinations  groupRefs        `json:"destinations"`
-	SourceRes     *json.RawMessage `json:"sourceResource,omitempty"`
-	DestRes       *json.RawMessage `json:"destinationResource,omitempty"`
+	Name          string    `json:"name"`
+	Description   string    `json:"description"`
+	Enabled       bool      `json:"enabled"`
+	Action        string    `json:"action"`
+	Bidirectional bool      `json:"bidirectional"`
+	Protocol      string    `json:"protocol"`
+	Ports         []string  `json:"ports"`
+	Sources       groupRefs `json:"sources"`
+	Destinations  groupRefs `json:"destinations"`
+	SourceRes     *resource `json:"sourceResource,omitempty"`
+	DestRes       *resource `json:"destinationResource,omitempty"`
 }
 
 // groupRefs are a rule's groups: NetBird takes their IDs and answers with objects.
@@ -468,8 +477,9 @@ func sortedEqual(a, b []string) bool {
 	return slices.Equal(a, b)
 }
 
-// EnsurePolicies makes HomersLab's groups and policies, puts back any that drifted, and removes NetBird's Default
-// policy ("everyone reaches everything"). The household's own policies and groups stay as they are.
+// EnsurePolicies makes HomersLab's groups and policies, and puts back any that drifted. The household's own policies
+// and groups stay as they are: NetBird's Default among them, which Conflicts lists for the admin's yes, and
+// RemoveDefault deletes only on a NetBird that HomersLab set up itself.
 func (m *Mesh) EnsurePolicies(ctx context.Context) error {
 	ids, err := m.groups(ctx)
 	if err != nil {
@@ -496,8 +506,33 @@ func (m *Mesh) EnsurePolicies(ctx context.Context) error {
 			return err
 		}
 	}
+	return nil
+}
+
+// isDefault says whether a policy has the shape of NetBird's Default, whatever its name: an accept of every protocol
+// from every peer to every peer.
+func isDefault(p policy, all string) bool {
+	for _, r := range p.Rules {
+		if r.Action == "accept" && r.Protocol == "all" && slices.Contains(r.Sources, all) && slices.Contains(r.Destinations, all) {
+			return true
+		}
+	}
+	return false
+}
+
+// RemoveDefault deletes the policies shaped like NetBird's Default ("everyone reaches everything"). Only for a
+// NetBird that HomersLab set up itself, which holds nothing of the household's yet.
+func (m *Mesh) RemoveDefault(ctx context.Context) error {
+	ids, err := m.groups(ctx)
+	if err != nil {
+		return err
+	}
+	var have []policy
+	if err := m.api.call(ctx, http.MethodGet, "/api/policies", nil, &have); err != nil {
+		return err
+	}
 	for _, p := range have {
-		if p.Name == "Default" {
+		if isDefault(p, ids["All"]) {
 			if err := m.api.call(ctx, http.MethodDelete, "/api/policies/"+url.PathEscape(p.ID), nil, nil); err != nil {
 				return err
 			}
@@ -506,19 +541,37 @@ func (m *Mesh) EnsurePolicies(ctx context.Context) error {
 	return nil
 }
 
-// Conflicts are policies that aren't HomersLab's, are enabled, and reach every peer (the group All, which every peer
-// is in) or the nodes' group: they would let devices past the policies per role.
+type resource struct {
+	ID   string `json:"id"`
+	Type string `json:"type"`
+}
+
+// Conflicts are the accept rules of policies that aren't HomersLab's, are enabled, and reach a node: through the
+// group All, through any group a node is in (homerslab-nodes, and any the household put a node in), or through a
+// node as a peer resource. A drop rule is never listed: switching it off would widen access.
 func (m *Mesh) Conflicts(ctx context.Context) ([]mesh.Policy, error) {
-	var list []group
-	if err := m.api.call(ctx, http.MethodGet, "/api/groups", nil, &list); err != nil {
+	ids, err := m.groups(ctx)
+	if err != nil {
 		return nil, err
 	}
-	reach := map[string]bool{}
-	for _, g := range list {
-		if g.Name == "All" || g.Name == mesh.NodesGroup {
-			reach[g.ID] = true
+	reach := map[string]bool{ids["All"]: true, ids[mesh.NodesGroup]: true}
+	var peers []struct {
+		ID     string  `json:"id"`
+		Groups []group `json:"groups"`
+	}
+	if err := m.api.call(ctx, http.MethodGet, "/api/peers", nil, &peers); err != nil {
+		return nil, err
+	}
+	nodes := map[string]bool{}
+	for _, p := range peers {
+		if slices.ContainsFunc(p.Groups, func(g group) bool { return g.ID == ids[mesh.NodesGroup] }) {
+			nodes[p.ID] = true
+			for _, g := range p.Groups {
+				reach[g.ID] = true
+			}
 		}
 	}
+	delete(reach, "")
 	ours := map[string]bool{}
 	for _, r := range mesh.Policies() {
 		ours[r.Name] = true
@@ -527,15 +580,16 @@ func (m *Mesh) Conflicts(ctx context.Context) ([]mesh.Policy, error) {
 	if err := m.api.call(ctx, http.MethodGet, "/api/policies", nil, &have); err != nil {
 		return nil, err
 	}
+	hits := func(groups groupRefs, res *resource) bool {
+		return slices.ContainsFunc(groups, func(id string) bool { return reach[id] }) || (res != nil && res.Type == "peer" && nodes[res.ID])
+	}
 	var out []mesh.Policy
 	for _, p := range have {
 		if !p.Enabled || ours[p.Name] {
 			continue
 		}
 		for _, r := range p.Rules {
-			hits := slices.ContainsFunc(r.Destinations, func(id string) bool { return reach[id] }) ||
-				(r.Bidirectional && slices.ContainsFunc(r.Sources, func(id string) bool { return reach[id] }))
-			if r.Enabled && hits {
+			if r.Enabled && r.Action == "accept" && (hits(r.Destinations, r.DestRes) || (r.Bidirectional && hits(r.Sources, r.SourceRes))) {
 				out = append(out, mesh.Policy{ID: p.ID, Name: p.Name})
 				break
 			}
@@ -544,20 +598,34 @@ func (m *Mesh) Conflicts(ctx context.Context) ([]mesh.Policy, error) {
 	return out, nil
 }
 
-// Disable switches policies off. They stay on the account, disabled.
+// Disable switches policies off. Each is written back as NetBird gave it, with only "enabled" changed (and its
+// groups as IDs, as the API takes them): its ports, port ranges, posture checks and rule IDs stay, so switching it
+// on again in the dashboard brings back exactly what it was.
 func (m *Mesh) Disable(ctx context.Context, ids []string) error {
 	for _, id := range ids {
-		var raw map[string]json.RawMessage
-		if err := m.api.call(ctx, http.MethodGet, "/api/policies/"+url.PathEscape(id), nil, &raw); err != nil {
+		var p map[string]any
+		if err := m.api.call(ctx, http.MethodGet, "/api/policies/"+url.PathEscape(id), nil, &p); err != nil {
 			return err
 		}
-		var p policy
-		b, _ := json.Marshal(raw)
-		if err := json.Unmarshal(b, &p); err != nil {
-			return err
+		p["enabled"] = false
+		rules, _ := p["rules"].([]any)
+		for _, r := range rules {
+			rule, ok := r.(map[string]any)
+			if !ok {
+				return fmt.Errorf("policy %s: a rule NetBird's API didn't describe", id)
+			}
+			for _, k := range []string{"sources", "destinations"} {
+				groups, ok := rule[k].([]any)
+				if !ok {
+					continue // none, or a resource instead
+				}
+				for i, g := range groups {
+					if obj, ok := g.(map[string]any); ok {
+						groups[i] = obj["id"]
+					}
+				}
+			}
 		}
-		p.Enabled = false
-		p.ID = ""
 		if err := m.api.call(ctx, http.MethodPut, "/api/policies/"+url.PathEscape(id), p, nil); err != nil {
 			return err
 		}

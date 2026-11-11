@@ -171,6 +171,9 @@ func disks(root fs.FS) ([]Disk, error) {
 	return out, nil
 }
 
+// ReadTPM is the machine's TPM, from a system root.
+func ReadTPM(root fs.FS) TPM { return tpm(root) }
+
 func tpm(root fs.FS) TPM {
 	if !exists(root, "sys/class/tpm/tpm0") {
 		return TPM{}

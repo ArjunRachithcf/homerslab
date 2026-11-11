@@ -75,7 +75,7 @@ func TestTheManagerRunsUnprivilegedAndTheAgentAsRoot(t *testing.T) {
 		"CapabilityBoundingSet": "CAP_CHOWN CAP_DAC_READ_SEARCH CAP_NET_ADMIN", "RestrictAddressFamilies": "AF_UNIX AF_NETLINK AF_INET AF_INET6",
 		"PrivateNetwork": "no", "SystemCallFilter": "@system-service", "SystemCallErrorNumber": "EPERM",
 		"MemoryDenyWriteExecute": "yes", "LockPersonality": "yes", "StateDirectory": "homerslab-agent",
-		"StateDirectoryMode": "0700", "Type": "notify", "NotifyAccess": "main", "ReadWritePaths": "/etc/systemd/system /var/lib/systemd"} {
+		"StateDirectoryMode": "0700", "Type": "notify", "NotifyAccess": "main", "ReadWritePaths": "/etc/systemd/system/netbird.service.d", "ExecStartPre": "+/usr/bin/systemd-creds setup", "TimeoutStartSec": "5min"} {
 		if got := agent[k]; len(got) != 1 || got[0] != want {
 			t.Errorf("the agent's %s = %v, want %s", k, got, want)
 		}
@@ -86,8 +86,17 @@ func TestTheManagerRunsUnprivilegedAndTheAgentAsRoot(t *testing.T) {
 
 	// The firewall table is up before the network and the engines come up at boot.
 	if b, err := os.ReadFile("systemd/homerslab-agent.service"); err != nil || !strings.Contains(string(b), "\nBefore=homerslab-manager.service network-pre.target docker.service podman.service netbird.service\n") ||
-		!strings.Contains(string(b), "\nWants=network-pre.target\n") {
-		t.Errorf("the agent isn't ordered before the network and the engines: %v", err)
+		!strings.Contains(string(b), "\nWants=network-pre.target\n") || !strings.Contains(string(b), "\nAfter=nftables.service firewalld.service\n") {
+		t.Errorf("the agent isn't ordered before the network and the engines, and after the distro's firewalls: %v", err)
+	}
+	for _, u := range []string{"docker", "podman", "netbird"} {
+		b, err := os.ReadFile("systemd/" + u + ".service.d/05-homerslab-after-agent.conf")
+		if err != nil || !strings.Contains(string(b), "\n[Unit]\nWants=homerslab-agent.service\nAfter=homerslab-agent.service\n") {
+			t.Errorf("%s isn't ordered after the agent: %v", u, err)
+		}
+	}
+	if b, err := os.ReadFile("tmpfiles.d/homerslab.conf"); err != nil || !strings.Contains(string(b), "d /etc/systemd/system/netbird.service.d 0755 root root -") {
+		t.Errorf("tmpfiles.d doesn't make the folder for NetBird's drop-in: %v", err)
 	}
 
 	sysusers, err := os.ReadFile("sysusers.d/homerslab.conf")

@@ -4,12 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/netip"
 	"os"
 	"path/filepath"
 	"regexp"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/ArjunRachithcf/homerslab/internal/firewall"
@@ -25,6 +27,8 @@ type JoinRequest struct {
 	ManagementURL string `json:"managementUrl"`
 	SetupKey      string `json:"setupKey"`
 	Hostname      string `json:"hostname"`
+	// SetupPort is the setup listener's port, the manager's own: the table's one LAN exception until it closes.
+	SetupPort int `json:"setupPort,omitempty"`
 }
 
 // Joined is the node on its mesh.
@@ -53,6 +57,9 @@ func (a *Agent) join(w http.ResponseWriter, r *http.Request) {
 		return
 	case !label.MatchString(req.Hostname):
 		fail(w, http.StatusBadRequest, "bad-hostname")
+		return
+	case req.SetupPort < 0 || req.SetupPort > 65535:
+		fail(w, http.StatusBadRequest, "bad-setup-port")
 		return
 	}
 	u, err := mesh.CheckURL(req.ManagementURL)
@@ -102,6 +109,9 @@ func (a *Agent) join(w http.ResponseWriter, r *http.Request) {
 	}
 	next := a.state
 	next.Enforcing = true
+	if req.SetupPort != 0 {
+		next.SetupPort = req.SetupPort
+	}
 	if !slices.Contains(next.Mesh, netbird.Interface) {
 		next.Mesh = append(slices.Clone(next.Mesh), netbird.Interface)
 	}
@@ -117,7 +127,7 @@ func (a *Agent) join(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusInternalServerError, "state-unsaved")
 		return
 	}
-	if err := a.fw.Apply(ctx, a.firewallState()); err != nil {
+	if err := a.fw.Apply(ctx, a.firewallState(ctx)); err != nil {
 		a.state = prev
 		_ = a.save()
 		a.log.Error("turning the firewall table on", "err", err)
@@ -173,7 +183,7 @@ func (a *Agent) getFirewall(w http.ResponseWriter, _ *http.Request) {
 func (a *Agent) checkFirewall(w http.ResponseWriter, r *http.Request) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	if err := a.reconcile(r.Context()); err != nil {
+	if err := a.reconcile(r.Context(), true); err != nil {
 		a.log.Error("checking the firewall table", "err", err)
 		fail(w, http.StatusInternalServerError, "check-failed")
 		return
@@ -212,8 +222,8 @@ func (a *Agent) setupListener(w http.ResponseWriter, r *http.Request) {
 		a.log.Info("the setup link's LAN listener is closed, for good")
 	}
 	if a.state.Enforcing {
-		if err := a.fw.Apply(r.Context(), a.firewallState()); err != nil {
-			a.fw.Want(a.firewallState())
+		if err := a.fw.Apply(r.Context(), a.firewallState(r.Context())); err != nil {
+			a.fw.Want(a.firewallState(r.Context()))
 			a.log.Error("closing the setup listener in the firewall table", "err", err)
 			fail(w, http.StatusInternalServerError, "firewall-failed")
 			return
@@ -252,6 +262,21 @@ func (a *Agent) putCredential(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// deleteCredential removes one of the manager's credentials (a new NetBird's setup token, once its work is done).
+func (a *Agent) deleteCredential(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	if !managerCredential.MatchString(name) {
+		fail(w, http.StatusNotFound, "not-found")
+		return
+	}
+	if err := os.Remove(a.credentialPath(name)); err != nil && !errors.Is(err, os.ErrNotExist) {
+		a.log.Error("removing a credential", "name", name, "err", err)
+		fail(w, http.StatusInternalServerError, "remove-failed")
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
 func (a *Agent) getCredential(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 	if !managerCredential.MatchString(name) {
@@ -277,7 +302,8 @@ func (a *Agent) getCredential(w http.ResponseWriter, r *http.Request) {
 func (a *Agent) seal(ctx context.Context, name string, value []byte) error {
 	key := "host"
 	if a.cfg.Sysroot != nil {
-		if f, err := node.Read(a.cfg.Sysroot); err == nil && f.TPM.Present {
+		// TPM 2.0 only: systemd-creds can't seal to a TPM 1.2.
+		if t := node.ReadTPM(a.cfg.Sysroot); t.Present && t.Version == "2.0" {
 			key = "host+tpm2"
 		}
 	}
@@ -290,4 +316,77 @@ func (a *Agent) seal(ctx context.Context, name string, value []byte) error {
 		return err
 	}
 	return os.Rename(path+".new", path)
+}
+
+// MeshStatus is the node's mesh client, as the agent finds it right now.
+type MeshStatus struct {
+	Joined    bool   `json:"joined"`
+	Interface string `json:"interface,omitempty"`
+	// PortMappingOff: the client's drop-in is as the agent wrote it, and the running service has its environment.
+	PortMappingOff bool             `json:"portMappingOff"`
+	Drift          []firewall.Drift `json:"drift"`
+}
+
+func (a *Agent) getMesh(w http.ResponseWriter, r *http.Request) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	s := MeshStatus{Joined: slices.Contains(a.state.Mesh, netbird.Interface), Drift: slices.Clone(a.meshDrift)}
+	if s.Drift == nil {
+		s.Drift = []firewall.Drift{}
+	}
+	if s.Joined {
+		s.Interface = netbird.Interface
+		dropIn, env := a.natMapper(r.Context())
+		s.PortMappingOff = dropIn && env
+	}
+	writeJSON(w, http.StatusOK, s)
+}
+
+// natMapper says whether NetBird's drop-in is as the agent writes it, and whether the running service has its
+// environment.
+func (a *Agent) natMapper(ctx context.Context) (dropIn, env bool) {
+	b, err := os.ReadFile(filepath.Join(a.cfg.Root, netbird.DropInPath))
+	dropIn = err == nil && string(b) == string(netbird.DropIn())
+	out, err := a.cfg.Run(ctx, host.Cmd{Name: "systemctl", Args: []string{"show", "netbird.service", "--property=Environment", "--value"}})
+	if err == nil {
+		env = true
+		for _, e := range netbird.ServiceEnv {
+			if !slices.Contains(strings.Fields(string(out)), e) {
+				env = false
+			}
+		}
+	}
+	return dropIn, env
+}
+
+// checkNATMapper puts NetBird's drop-in back, and restarts the client with it, when either drifted; the drift is
+// reported. The caller holds a.mu.
+func (a *Agent) checkNATMapper(ctx context.Context) error {
+	if !slices.Contains(a.state.Mesh, netbird.Interface) {
+		return nil
+	}
+	a.natAt = a.cfg.Now()
+	dropIn, env := a.natMapper(ctx)
+	if dropIn && env {
+		return nil
+	}
+	what := "nat-mapper-drop-in"
+	if dropIn {
+		what = "nat-mapper-environment"
+	}
+	a.log.Warn("NetBird's client could ask the router for a port: putting its setting back", "what", what)
+	for _, step := range []func() error{
+		func() error { return writeFile(filepath.Join(a.cfg.Root, netbird.DropInPath), netbird.DropIn()) },
+		func() error { return a.run(ctx, "systemctl", "daemon-reload") },
+		func() error { return a.run(ctx, "systemctl", "restart", "netbird.service") },
+	} {
+		if err := step(); err != nil {
+			return fmt.Errorf("putting NetBird's NAT mapper setting back: %w", err)
+		}
+	}
+	a.meshDrift = append(a.meshDrift, firewall.Drift{At: a.cfg.Now(), What: what})
+	if len(a.meshDrift) > 100 {
+		a.meshDrift = a.meshDrift[len(a.meshDrift)-100:]
+	}
+	return nil
 }
