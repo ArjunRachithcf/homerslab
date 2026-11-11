@@ -217,6 +217,9 @@ func TestTheSignInIsOneUnitRunningTheStandardComposeCommand(t *testing.T) {
 			t.Errorf("the compose file has %q", bad)
 		}
 	}
+	if !strings.Contains(compose, "      server:\n        condition: service_started") {
+		t.Error("the worker doesn't wait for the server: the two would race to fill the new data volume")
+	}
 	if strings.Count(compose, `restart: "no"`) != 2 { // the anchor, and PostgreSQL
 		t.Errorf("not every service has its engine restart policy off")
 	}

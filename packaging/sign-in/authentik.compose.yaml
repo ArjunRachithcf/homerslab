@@ -115,6 +115,13 @@ services:
   worker:
     <<: *authentik
     command: worker
+    # After the server is created: both share the data volume, and two containers that start together race to fill
+    # a new volume from the image (the second fails with "file exists").
+    depends_on:
+      postgresql:
+        condition: service_healthy
+      server:
+        condition: service_started
     secrets:
       - secret-key
       - postgres-password
