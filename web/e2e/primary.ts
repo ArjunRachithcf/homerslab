@@ -54,6 +54,7 @@ export class Primary {
 
   async stopManager(): Promise<void> {
     await stop(this.manager);
+    this.manager = undefined;
   }
 
   // What the installer does: ask the manager, through the CLI, for a one-time link.

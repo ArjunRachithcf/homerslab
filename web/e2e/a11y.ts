@@ -4,7 +4,11 @@
 // names the look, the screen, the rule and each element; the full axe results are attached to the HTML report.
 import AxeBuilder from '@axe-core/playwright';
 import { expect, type Page, test } from '@playwright/test';
-import type { AxeResults, Result, RunOptions } from 'axe-core';
+
+// axe-core's types, as the AxeBuilder in use has them (axe-core itself is its dependency, not ours)
+type AxeResults = Awaited<ReturnType<AxeBuilder['analyze']>>;
+type Result = AxeResults['violations'][number];
+type RunOptions = Parameters<AxeBuilder['options']>[0];
 
 /** WCAG 2.0, 2.1 and 2.2, levels A and AA: axe-core's tags for them (2.2 adds only AA rules). */
 export const WCAG22AA = ['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa', 'wcag22aa'];
@@ -24,12 +28,16 @@ export const lookName = (l: Look): string =>
   [l.theme, l.motion === 'reduce' && 'reduced motion', l.transparency === 'reduce' && 'reduced transparency']
     .filter(Boolean).join(', ');
 
+const worn = new WeakMap<Page, Look>();
+
 /**
  * Makes the page's device ask for this look, through the media features themselves (prefers-color-scheme,
  * prefers-reduced-motion, prefers-reduced-transparency), before anything is opened. Chromium's DevTools protocol is
- * the one way to set the third; the page's own matchMedia confirms all three took.
+ * the one way to set the third, so other browsers skip the test; the session stays open, as the look lasts only as
+ * long as it does. The page's own matchMedia confirms the look here and again at every check.
  */
 export async function wear(page: Page, look: Look): Promise<void> {
+  test.skip(page.context().browser()?.browserType().name() !== 'chromium', 'the looks are set through Chromium’s DevTools protocol');
   const cdp = await page.context().newCDPSession(page);
   await cdp.send('Emulation.setEmulatedMedia', {
     features: [
@@ -38,32 +46,37 @@ export async function wear(page: Page, look: Look): Promise<void> {
       { name: 'prefers-reduced-transparency', value: look.transparency },
     ],
   });
-  const seen = await page.evaluate(() => ({
-    theme: matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light',
-    motion: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'reduce' : 'no-preference',
-    transparency: matchMedia('(prefers-reduced-transparency: reduce)').matches ? 'reduce' : 'no-preference',
-  }));
-  expect(seen, 'the browser emulates the look').toEqual(look);
+  worn.set(page, look);
+  expect(await seen(page), 'the browser shows the look').toEqual(look);
 }
+
+const seen = (page: Page): Promise<Look> => page.evaluate(() => ({
+  theme: matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light',
+  motion: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'reduce' : 'no-preference',
+  transparency: matchMedia('(prefers-reduced-transparency: reduce)').matches ? 'reduce' : 'no-preference',
+}));
 
 /**
  * Runs axe's WCAG 2.2 AA rules on the page as it is now, once its screen has settled, and fails the test (softly, so
- * the test goes on to its next screens) on any violation.
+ * the test goes on to its next screens) on any violation. What axe found or couldn't decide is attached to the report.
  */
 export async function accessible(page: Page, screen: string): Promise<void> {
-  const results = await audit(page);
-  await test.info().attach(`axe: ${screen}`, { body: JSON.stringify(results, null, 2), contentType: 'application/json' });
-  expect.soft(report(results.violations), `axe (WCAG 2.2 AA) on “${screen}”`).toBe('');
+  const look = worn.get(page);
+  if (look) expect(await seen(page), `the browser still shows the look on “${screen}”`).toEqual(look);
+  const { violations, incomplete } = await audit(page);
+  await test.info().attach(`axe: ${screen}`, { body: JSON.stringify({ violations, incomplete }, null, 2), contentType: 'application/json' });
+  expect.soft(report(violations), `axe (WCAG 2.2 AA) on “${screen}”`).toBe('');
 }
 
 /** axe's WCAG 2.2 AA results for the page as it is now, once its screen has settled. */
 export async function audit(page: Page): Promise<AxeResults> {
   await settle(page);
   // The design system's glass draws its specular rim as an ::after over the whole card, masked to a 1px edge, and axe
-  // gives up on every word above a large pseudo-element. The rim paints nothing under the words, so contrast is
-  // measured as if pseudo-elements weren't there. Glass itself (a blur over the wallpaper) stays beyond axe: it measures
-  // the card under reduced transparency, where every material is solid. (axe merges these check options into its
-  // defaults; its types omit `checks`.) AxeBuilder's options() replaces what withTags() set, so the tags go in here.
+  // gives up ("incomplete", which passes) on every word above a large pseudo-element. The rim paints nothing under the
+  // words, so contrast is measured as if pseudo-elements weren't there: a word over a pseudo-element's fill was never
+  // measured before either. Glass itself (a blur over the wallpaper) stays beyond axe: it measures the card under
+  // reduced transparency, where every material is solid. (axe merges these check options into its defaults; its types
+  // omit `checks`.) AxeBuilder's options() replaces what withTags() set, so the tags go in here.
   const options = {
     runOnly: { type: 'tag', values: WCAG22AA },
     checks: { 'color-contrast': { options: { ignorePseudo: true } } },
@@ -90,7 +103,8 @@ async function settle(page: Page): Promise<void> {
       return boxes.map((e) => `${e.offsetLeft},${e.offsetTop},${e.offsetWidth},${e.offsetHeight}`).join(' ');
     };
     let last = layout();
-    for (let still = 0, i = 0; still < 3 && i < 300; i++) {
+    for (let still = 0, i = 0; still < 3; i++) {
+      if (i === 300) throw new Error('the layout still moves after 300 frames');
       await frame();
       const now = layout();
       still = now === last ? still + 1 : 0;
