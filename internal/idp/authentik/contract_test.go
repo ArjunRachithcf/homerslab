@@ -20,6 +20,7 @@ import (
 	"encoding/base32"
 	"encoding/base64"
 	"encoding/binary"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -148,6 +149,28 @@ func TestTheIdentityProviderContractOnAuthentik(t *testing.T) {
 	w.provider = a
 	idptest.Run(t, w, authentik.Version)
 
+	t.Run("drift: the report reads the household policy's expression too, and Prepare puts it back", func(t *testing.T) {
+		var ps struct {
+			Results []struct {
+				PK string `json:"pk"`
+			}
+		}
+		w.raw(t, own, "GET", "/api/v3/policies/expression/?name=homerslab-household-person", nil, &ps)
+		if len(ps.Results) != 1 {
+			t.Fatalf("the household policy: %+v", ps.Results)
+		}
+		w.raw(t, own, "PATCH", "/api/v3/policies/expression/"+ps.Results[0].PK+"/", map[string]string{"expression": "return False"}, nil)
+		if r, err := a.Report(ctx); err != nil || r.PasskeyOnlySignIn {
+			t.Errorf("a household policy that knows nobody: %+v %v, want PasskeyOnlySignIn false", r, err)
+		}
+		if err := a.Prepare(ctx, household); err != nil {
+			t.Fatal(err)
+		}
+		if r, _ := a.Report(ctx); !r.PasskeyOnlySignIn {
+			t.Errorf("after Prepare: %+v", r)
+		}
+	})
+
 	t.Run("in a real browser: Chromium's virtual authenticator enrols at the sign-in's own name and signs in to Admin (#83, #84)", func(t *testing.T) {
 		if os.Getenv("HOMERSLAB_TEST_BROWSER") == "" {
 			t.Skip("set HOMERSLAB_TEST_BROWSER to run web/e2e/passkey.idp.spec.ts in Chromium (CI's identity job does)")
@@ -201,6 +224,51 @@ func TestTheIdentityProviderContractOnAuthentik(t *testing.T) {
 		want := []string{"ak-stage-invitation-form", "ak-stage-deny-form", "ak-stage-authenticator-webauthn-form", "ak-stage-redirect-form"}
 		if strings.Join(got, " ") != strings.Join(want, " ") {
 			t.Errorf("the enrolment flow's stages: %v, want %v (the deny stage refuses any link that isn't valid)", got, want)
+		}
+	})
+
+	t.Run("the unit's compose command ends when one container stops, so systemd starts it again", func(t *testing.T) {
+		// The packaged unit's own command, on the test's project and file, attached to the running containers. Last: it
+		// stops them all.
+		_, self, _, _ := runtime.Caller(0)
+		u, err := os.ReadFile(filepath.Join(filepath.Dir(self), "..", "..", "..", "packaging", "systemd", "homerslab-authentik.service"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var args []string
+		for _, l := range strings.Split(string(u), "\n") {
+			if rest, ok := strings.CutPrefix(l, "ExecStart=/usr/bin/docker compose "); ok {
+				args = strings.Fields(rest)
+			}
+		}
+		for i := range args {
+			switch args[i] {
+			case "homerslab-authentik":
+				args[i] = project
+			case "/usr/share/homerslab/sign-in/authentik.compose.yaml":
+				args[i] = filepath.Join(w.dir, "compose.yaml")
+			}
+		}
+		if len(args) == 0 {
+			t.Fatal("no ExecStart in the unit")
+		}
+		up := exec.Command("docker", append([]string{"compose"}, args...)...)
+		up.Env = append(os.Environ(), "DOCKER_HOST="+w.engine)
+		var out strings.Builder
+		up.Stdout, up.Stderr = &out, &out
+		if err := up.Start(); err != nil {
+			t.Fatal(err)
+		}
+		ended := make(chan error, 1)
+		go func() { ended <- up.Wait() }()
+		time.Sleep(10 * time.Second) // attached
+		w.compose(t, "kill", "worker")
+		select {
+		case <-ended:
+		case <-time.After(90 * time.Second):
+			_ = up.Process.Kill()
+			<-ended
+			t.Errorf("the worker stopped, and the unit's command still runs: systemd would never start it again")
 		}
 	})
 }
@@ -495,19 +563,21 @@ func (w *world) Drift(t *testing.T) {
 			PK string `json:"pk"`
 		}
 	}
-	w.raw(t, w.own, "GET", "/api/v3/flows/instances/?slug=default-authentication-flow", nil, &f)
-	var bs struct {
-		Results []struct {
-			PK    string `json:"pk"`
-			Stage struct {
-				Name string `json:"name"`
-			} `json:"stage_obj"`
+	for _, slug := range []string{"default-authentication-flow", "default-authenticator-webauthn-setup"} {
+		w.raw(t, w.own, "GET", "/api/v3/flows/instances/?slug="+slug, nil, &f)
+		var bs struct {
+			Results []struct {
+				PK    string `json:"pk"`
+				Stage struct {
+					Name string `json:"name"`
+				} `json:"stage_obj"`
+			}
 		}
-	}
-	w.raw(t, w.own, "GET", "/api/v3/flows/bindings/?target="+f.Results[0].PK, nil, &bs)
-	for _, b := range bs.Results {
-		if strings.HasPrefix(b.Stage.Name, "homerslab-") {
-			w.raw(t, w.own, "DELETE", "/api/v3/flows/bindings/"+b.PK+"/", nil, nil)
+		w.raw(t, w.own, "GET", "/api/v3/flows/bindings/?target="+f.Results[0].PK, nil, &bs)
+		for _, b := range bs.Results {
+			if strings.HasPrefix(b.Stage.Name, "homerslab-") {
+				w.raw(t, w.own, "DELETE", "/api/v3/flows/bindings/"+b.PK+"/", nil, nil)
+			}
 		}
 	}
 	for _, s := range []struct{ path, field string }{{"/api/v3/stages/authenticator/webauthn/", "user_verification"},
@@ -527,38 +597,93 @@ func (w *world) Drift(t *testing.T) {
 	}
 }
 
-// GiveFactors is a stolen session's doing: signed in with the person's passkey through HomersLab's sign-in, it runs
-// Authentik's own TOTP-setup flow and password-change flow (which ask for nothing more), and checks both took.
-func (w *world) GiveFactors(t *testing.T, ib idptest.Browser, username string) idptest.Factors {
+// GiveFactors sets a password through the API and makes a TOTP device in Authentik's own shell, as an admin in its
+// console could.
+func (w *world) GiveFactors(t *testing.T, username string) idptest.Factors {
+	t.Helper()
+	pw := secret() + "-Aa1!"
+	w.raw(t, w.own, "POST", fmt.Sprintf("/api/v3/core/users/%d/set_password/", w.userPK(t, username)), map[string]string{"password": pw}, nil)
+	key := make([]byte, 20)
+	_, _ = rand.Read(key)
+	code := "from authentik.core.models import User\nfrom authentik.stages.authenticator_totp.models import TOTPDevice\n" +
+		fmt.Sprintf("TOTPDevice.objects.create(user=User.objects.get(username=%q), name=\"hltest\", key=%q, confirmed=True)\n", username, hex.EncodeToString(key))
+	if out, err := w.composeOut("exec", "-T", "server", "ak", "shell", "-c", code); err != nil {
+		t.Fatalf("making a TOTP device: %v %s", err, out)
+	}
+	return idptest.Factors{Password: pw, TOTP: totp(t, base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString(key))}
+}
+
+// SetUpAuthenticators signs in with the passkey through HomersLab's sign-in, then runs Authentik's default setup flows
+// for a passkey (with a), TOTP, recovery codes and a password, and reads through the API which of them set anything up.
+func (w *world) SetUpAuthenticators(t *testing.T, ib idptest.Browser, username string, a *webauthntest.Authenticator) []string {
 	t.Helper()
 	b := ib.(*browser)
 	if _, err := b.flow(t, authentik.SignInFlow, "", username, idptest.Factors{}); err != nil {
 		t.Fatalf("the passkey sign-in: %v", err)
 	}
-	ch := w.executor(t, b.c, "default-authenticator-totp-setup", "", nil)
-	cfg, _ := url.Parse(fmt.Sprint(ch["config_url"]))
-	if ch["component"] != "ak-stage-authenticator-totp" || cfg == nil || cfg.Query().Get("secret") == "" {
-		t.Fatalf("the TOTP setup: %v", ch)
+	pk := w.userPK(t, username)
+	count := func(kind string) int {
+		var l struct{ Results []any }
+		w.raw(t, w.own, "GET", fmt.Sprintf("/api/v3/authenticators/admin/%s/?user=%d", kind, pk), nil, &l)
+		return len(l.Results)
 	}
-	code := totp(t, cfg.Query().Get("secret"))
-	ch = w.executor(t, b.c, "default-authenticator-totp-setup", "", map[string]any{"component": "ak-stage-authenticator-totp", "code": code()})
-	if ch["component"] != "xak-flow-redirect" {
-		t.Fatalf("the TOTP setup took no code: %v", ch)
+	changed := func() string {
+		var u struct {
+			Changed string `json:"password_change_date"`
+		}
+		w.raw(t, w.own, "GET", fmt.Sprintf("/api/v3/core/users/%d/", pk), nil, &u)
+		return u.Changed
 	}
-	pw := secret() + "-Aa1!"
-	ch = w.executor(t, b.c, "default-password-change", "", nil)
-	if ch["component"] == "ak-stage-prompt" {
-		ch = w.executor(t, b.c, "default-password-change", "", map[string]any{"component": "ak-stage-prompt", "password": pw, "password_repeat": pw})
+	var took []string
+	for _, f := range []struct {
+		slug, kind string
+		answer     func(ch map[string]any) map[string]any
+	}{
+		{"default-authenticator-webauthn-setup", "webauthn", func(ch map[string]any) map[string]any {
+			raw, _ := json.Marshal(ch["registration"])
+			var o webauthntest.CreationOptions
+			_ = json.Unmarshal(raw, &o)
+			cred, err := a.Create(o)
+			if err != nil {
+				t.Fatalf("the other authenticator: %v", err)
+			}
+			return map[string]any{"component": "ak-stage-authenticator-webauthn", "response": cred}
+		}},
+		{"default-authenticator-totp-setup", "totp", func(ch map[string]any) map[string]any {
+			cfg, _ := url.Parse(fmt.Sprint(ch["config_url"]))
+			return map[string]any{"component": "ak-stage-authenticator-totp", "code": totp(t, cfg.Query().Get("secret"))()}
+		}},
+		{"default-authenticator-static-setup", "static", func(map[string]any) map[string]any {
+			return map[string]any{"component": "ak-stage-authenticator-static"}
+		}},
+		{"default-password-change", "password", func(map[string]any) map[string]any {
+			pw := secret() + "-Aa1!"
+			return map[string]any{"component": "ak-stage-prompt", "password": pw, "password_repeat": pw}
+		}},
+	} {
+		before, was := 0, changed()
+		if f.kind != "password" {
+			before = count(f.kind)
+		}
+		ch := w.executor(t, b.c, f.slug, "", nil)
+		switch ch["component"] {
+		case "ak-stage-access-denied":
+			continue // refused
+		case "ak-stage-authenticator-webauthn", "ak-stage-authenticator-totp", "ak-stage-authenticator-static", "ak-stage-prompt":
+			ch = w.executor(t, b.c, f.slug, "", f.answer(ch))
+		default:
+			t.Fatalf("%s answered %v: %v", f.slug, ch["component"], ch)
+		}
+		if ch["component"] == "ak-stage-access-denied" {
+			continue
+		}
+		if (f.kind == "password" && changed() != was) || (f.kind != "password" && count(f.kind) > before) {
+			took = append(took, f.slug)
+			continue
+		}
+		t.Fatalf("%s neither set anything up nor refused: %v", f.slug, ch)
 	}
-	if ch["component"] != "xak-flow-redirect" {
-		t.Fatalf("the password change: %v", ch)
-	}
-	var devs struct{ Results []any }
-	w.raw(t, w.own, "GET", fmt.Sprintf("/api/v3/authenticators/admin/totp/?user=%d", w.userPK(t, username)), nil, &devs)
-	if len(devs.Results) != 1 {
-		t.Fatalf("TOTP devices: %d, want 1", len(devs.Results))
-	}
-	return idptest.Factors{Password: pw, TOTP: code}
+	return took
 }
 
 // ProviderSignIn runs Authentik's default authentication flow, which takes a password and TOTP. A wrong password or

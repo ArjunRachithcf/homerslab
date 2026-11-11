@@ -219,6 +219,12 @@ func TestTheSignInsStatusComesFromItsUnitAndItsHealthCheck(t *testing.T) {
 	if strings.Contains(string(body), agenttest.JournalToken) || !strings.Contains(string(body), "homerslab-passkey-enrolment") {
 		t.Errorf("the logs hand on an enrolment link's token, or lost its line: %s", body)
 	}
+	// A long journal is cut to its last 256 KiB: a cut inside a token's "itoken=" never leaves the token behind.
+	kept := "en=" + agenttest.JournalToken + "\n" + strings.Repeat("x", 256<<10-len("en=")-len(agenttest.JournalToken)-2) + "\n"
+	h.Journal = []byte(strings.Repeat("y", 4096) + "\n/if/flow/homerslab-passkey-enrolment/?itok" + kept)
+	if _, body := call(t, sock, "GET", "/v1/sign-in/logs", nil); strings.Contains(string(body), agenttest.JournalToken) {
+		t.Error("the logs cut a long journal inside a token's name, and handed the token on")
+	}
 }
 
 // The edge serves the sign-in only once the manager says so, after the provider's first-admin flow is closed: its

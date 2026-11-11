@@ -34,10 +34,13 @@ type World interface {
 	// verification relaxed to "preferred" on its passkey stages, the sign-in served under another name, and the
 	// provider's own sign-in open to the household's people again.
 	Drift(t *testing.T)
-	// GiveFactors gives a person a password and a second factor that isn't a passkey (TOTP), as a stolen session of
-	// theirs could from the provider's own user settings: b holds their passkey, and signs in with it first. It
-	// returns the factors, which it has checked the provider took.
-	GiveFactors(t *testing.T, b Browser, username string) Factors
+	// GiveFactors gives a person a password and a second factor that isn't a passkey (TOTP), as an admin in the
+	// provider's own console could, and returns them.
+	GiveFactors(t *testing.T, username string) Factors
+	// SetUpAuthenticators runs, in b, each of the provider's own flows that set up a way to sign in (a passkey on a,
+	// TOTP, recovery codes, a password), signed in as the person with b's passkey first. It returns those that set
+	// anything up; one that neither does nor refuses fails the test.
+	SetUpAuthenticators(t *testing.T, b Browser, username string, a *webauthntest.Authenticator) []string
 	// ProviderSignIn signs in in b through the provider's own default sign-in, outside any client, with the factors
 	// alone, as a thief who has them would. It returns nil only when b came out of it with a session; the factors
 	// themselves must have been taken (a wrong one fails the test, so a refusal is the provider's, not a typo's).
@@ -265,8 +268,21 @@ func Run(t *testing.T, w World, version string) {
 		}
 	})
 
-	t.Run("a password and TOTP added from a stolen session open nothing: not the provider's own sign-in, not Admin (#84)", func(t *testing.T) {
-		f := w.GiveFactors(t, w.Browser(t, phone), "ines")
+	t.Run("authenticator setup flows refuse the household's people, like the sign-in flows (#84)", func(t *testing.T) {
+		other := webauthntest.New(h.Origin())
+		if took := w.SetUpAuthenticators(t, w.Browser(t, phone), "ines", other); len(took) > 0 {
+			t.Errorf("the provider's own flows set up a way in for the admin: %v", took)
+		}
+		if ks, _ := p.Passkeys(ctx, "ines"); len(ks) != 1 {
+			t.Errorf("passkeys: %d, want still 1", len(ks))
+		}
+		if _, err := signIn(t, other, "ines"); err == nil {
+			t.Error("a passkey from the provider's own setup flow signed the admin in to Admin")
+		}
+	})
+
+	t.Run("a password and TOTP open nothing: not the provider's own sign-in, not Admin (#84)", func(t *testing.T) {
+		f := w.GiveFactors(t, "ines")
 		thief := w.Browser(t, webauthntest.New(h.Origin()))
 		if err := w.ProviderSignIn(t, thief, "ines", f); err == nil {
 			t.Error("the provider's own sign-in let the admin in with a password and TOTP")

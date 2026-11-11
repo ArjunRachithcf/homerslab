@@ -177,14 +177,16 @@ func TestTheSignInIsOneUnitRunningTheStandardComposeCommand(t *testing.T) {
 	testenv.Isolate(t)
 	u := unit(t, "homerslab-authentik.service")
 	const file = "--file /usr/share/homerslab/sign-in/authentik.compose.yaml"
-	if s := one(t, u, "ExecStart"); s != "/usr/bin/docker compose --project-name homerslab-authentik "+file+" up --no-log-prefix --quiet-pull" {
+	// One container that stops ends the command, and systemd starts it again (the contract test checks the command
+	// against the real containers).
+	if s := one(t, u, "ExecStart"); s != "/usr/bin/docker compose --project-name homerslab-authentik "+file+" up --no-log-prefix --quiet-pull --abort-on-container-exit" {
 		t.Errorf("ExecStart=%s", s)
 	}
 	if s := one(t, u, "RuntimeDirectory"); s != "homerslab-authentik" || one(t, u, "RuntimeDirectoryMode") != "0700" {
 		t.Errorf("the secrets' folder: %s %s", s, u["RuntimeDirectoryMode"])
 	}
-	if one(t, u, "Restart") != "on-failure" {
-		t.Errorf("Restart=%v", u["Restart"])
+	if one(t, u, "Restart") != "always" {
+		t.Errorf("Restart=%v, want always: compose ends with the stopped container's own exit status, 0 included", u["Restart"])
 	}
 	for _, k := range []string{"LoadCredentialEncrypted", "Environment", "PrivateMounts", "ProtectSystem"} {
 		if len(u[k]) != 0 {

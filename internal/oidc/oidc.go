@@ -270,6 +270,8 @@ func (c Client) Verify(ctx context.Context, e Endpoints, token, nonce string, no
 		return Claims{}, fmt.Errorf("%w: expired", ErrRefused)
 	case raw.Iat != 0 && time.Unix(int64(raw.Iat), 0).After(now.Add(skew)):
 		return Claims{}, fmt.Errorf("%w: issued in the future", ErrRefused)
+	case raw.Auth != 0 && time.Unix(int64(raw.Auth), 0).After(now.Add(skew)):
+		return Claims{}, fmt.Errorf("%w: signed in in the future", ErrRefused)
 	case nonce == "" || subtle.ConstantTimeCompare([]byte(raw.Nonce), []byte(nonce)) != 1:
 		return Claims{}, fmt.Errorf("%w: the nonce isn't this sign-in's", ErrRefused)
 	case raw.Subject == "":

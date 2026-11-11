@@ -283,10 +283,10 @@ func (a *Agent) getSignInLogs(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusBadGateway, "journal-unreadable")
 		return
 	}
+	out = enrolmentToken.ReplaceAll(out, []byte("${1}…")) // before the cut, which could split a token's name off it
 	if len(out) > 256<<10 {
 		out = out[len(out)-256<<10:]
 	}
-	out = enrolmentToken.ReplaceAll(out, []byte("${1}…"))
 	writeJSON(w, http.StatusOK, map[string]any{"unit": SignInUnit, "lines": strings.Split(strings.TrimRight(string(out), "\n"), "\n"),
 		"at": time.Now().UTC()})
 }

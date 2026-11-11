@@ -1,6 +1,7 @@
 # The household account's sign-in: Authentik, as the standard compose command runs it on the package's own compose
 # file (/usr/share/homerslab/sign-in/authentik.compose.yaml, images pinned by digest). systemd owns the containers:
-# their engine restart policies are off, and this unit restarts them (ADR 0014).
+# their engine restart policies are off, and this unit restarts them (ADR 0014): one container that stops ends the
+# compose command (--abort-on-container-exit, which stops the others), and systemd starts it all again.
 #
 # Its secrets are systemd credentials the agent sealed (ADR 0011), loaded by the agent's drop-in
 # (homerslab-authentik.service.d/50-homerslab-credentials.conf). The drop-in's ExecStartPre lines copy each into this
@@ -21,9 +22,10 @@ Type=exec
 RuntimeDirectory=homerslab-authentik
 RuntimeDirectoryMode=0700
 UMask=0077
-ExecStart=/usr/bin/docker compose --project-name homerslab-authentik --file /usr/share/homerslab/sign-in/authentik.compose.yaml up --no-log-prefix --quiet-pull
+ExecStart=/usr/bin/docker compose --project-name homerslab-authentik --file /usr/share/homerslab/sign-in/authentik.compose.yaml up --no-log-prefix --quiet-pull --abort-on-container-exit
 ExecStopPost=/usr/bin/docker compose --project-name homerslab-authentik --file /usr/share/homerslab/sign-in/authentik.compose.yaml stop
-Restart=on-failure
+# Always: compose ends with the stopped container's own exit status, 0 included.
+Restart=always
 RestartSec=10s
 TimeoutStopSec=90s
 

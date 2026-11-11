@@ -79,6 +79,7 @@ func TestAnIDTokenIsCheckedBeforeAnythingInItIsBelieved(t *testing.T) {
 		"another sign-in's nonce": is.token(rs, with(good(), "nonce", "n2"), is.key),
 		"no nonce":                is.token(rs, with(good(), "nonce", ""), is.key),
 		"no subject":              is.token(rs, with(good(), "sub", ""), is.key),
+		"signed in in the future": is.token(rs, with(good(), "auth_time", now.Add(time.Hour).Unix()), is.key),
 		"not a token":             "abc",
 	} {
 		if _, err := c.Verify(context.Background(), e, tok, "n1", now); !errors.Is(err, oidc.ErrRefused) {

@@ -155,6 +155,8 @@ type Host struct {
 	hang          []string          // commands, by prefix, that never answer
 	dockerActive  string            // docker.service's ActiveState and LoadState, when set; else from Engines
 	dockerLoad    string
+	// Journal, when set, is what journalctl prints instead of the stub's few lines.
+	Journal []byte
 }
 
 // IsBridge says whether the kernel would show a name as a bridge: every name an engine gives, but those NotABridge
@@ -327,6 +329,8 @@ func (h *Host) Run(ctx context.Context, c host.Cmd) ([]byte, error) {
 		return []byte(strings.Join(out, "\n") + "\n"), nil
 	case strings.HasPrefix(line, "netbird up"):
 		return nil, nil
+	case c.Name == "journalctl" && h.Journal != nil:
+		return h.Journal, nil
 	case c.Name == "journalctl":
 		// The unit's journal, with request lines as an Authentik logging at info writes them: an enrolment link's
 		// token in the URL, plain and URL-encoded.

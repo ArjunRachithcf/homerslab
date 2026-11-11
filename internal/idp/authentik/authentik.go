@@ -9,9 +9,10 @@
 //   - the passkey-enrolment flow, run only from a one-time link: an invitation for one person, then a passkey with
 //     user verification required. It is never the brand's recovery flow, and it has no other stage;
 //   - the brand of the sign-in's own name;
-//   - in every other flow that signs a person in (Authentik's default authentication flow among them), a refusal
-//     for the household's people just before its login: they sign in with their passkey, through HomersLab's flow,
-//     and nowhere else, whatever password or TOTP a stolen session gave them.
+//   - in every other flow that signs a person in or sets up a way to (Authentik's default authentication flow and
+//     its authenticator setup flows among them), a refusal for the household's people before the first stage that
+//     does: they sign in with their passkey, through HomersLab's flow, and get a passkey only from an enrolment
+//     link.
 //
 // Authentik's own first-admin flow (initial-setup) applies to nobody: akadmin has a random password and is inactive,
 // the flow wants a superuser, and a policy that refuses everyone is bound to it.
@@ -54,17 +55,20 @@ const (
 	stageNotHere    = "homerslab-passkey-only"
 	policyHousehold = "homerslab-household-person"
 	loginStageModel = "authentik_stages_user_login.userloginstage"
-	policyNever     = "homerslab-never"
-	firstAdminFlow  = "initial-setup"
-	firstAdmin      = "akadmin"
-	bootstrapToken  = "authentik-bootstrap-token"
-	superuserGroup  = "authentik Admins"
-	personField     = "homerslab_person"
-	consentFlow     = "default-provider-authorization-implicit-consent"
-	invalidateFlow  = "default-provider-invalidation-flow"
-	selfSignedCert  = "authentik Self-signed Certificate"
-	userPath        = "homerslab"
-	enrolmentPrefix = "homerslab-enrol-"
+	writeStageModel = "authentik_stages_user_write.userwritestage"
+	// Every authenticator stage, validation included: a validation stage can set one up on the way.
+	authenticatorModels = "authentik_stages_authenticator_"
+	policyNever         = "homerslab-never"
+	firstAdminFlow      = "initial-setup"
+	firstAdmin          = "akadmin"
+	bootstrapToken      = "authentik-bootstrap-token"
+	superuserGroup      = "authentik Admins"
+	personField         = "homerslab_person"
+	consentFlow         = "default-provider-authorization-implicit-consent"
+	invalidateFlow      = "default-provider-invalidation-flow"
+	selfSignedCert      = "authentik Self-signed Certificate"
+	userPath            = "homerslab"
+	enrolmentPrefix     = "homerslab-enrol-"
 )
 
 // Authentik is the household account, as HomersLab's service account.
@@ -572,9 +576,14 @@ type flowBinding struct {
 	} `json:"stage_obj"`
 }
 
-// loginsElsewhere is every flow but HomersLab's sign-in that signs a person in, with its stage bindings and the order
-// a refusal must have there: just before its first login, after whatever it asks (so it tells no one who isn't past
-// its password and code that the person is the household's).
+// guarded says whether a stage signs a person in, or sets something up for them: a way to sign in, or their details.
+func guarded(model string) bool {
+	return model == loginStageModel || model == writeStageModel || strings.HasPrefix(model, authenticatorModels)
+}
+
+// loginsElsewhere is every flow but HomersLab's own two that signs a person in or sets something up for them, with
+// its stage bindings and the order a refusal must have there: just before the first stage that does, after whatever
+// it asks first (so it tells no one who isn't past a password that the person is the household's).
 func (a *Authentik) loginsElsewhere(ctx context.Context, signIn string) (map[string][]flowBinding, map[string]int, error) {
 	flows, err := list[flow](ctx, a.api, "/flows/instances/")
 	if err != nil {
@@ -582,7 +591,7 @@ func (a *Authentik) loginsElsewhere(ctx context.Context, signIn string) (map[str
 	}
 	bindings, at := map[string][]flowBinding{}, map[string]int{}
 	for _, f := range flows {
-		if f.PK == signIn || f.Slug == SignInFlow {
+		if f.PK == signIn || f.Slug == SignInFlow || f.Slug == EnrolmentFlow {
 			continue
 		}
 		bs, err := list[flowBinding](ctx, a.api, "/flows/bindings/?target="+q(f.PK))
@@ -591,7 +600,7 @@ func (a *Authentik) loginsElsewhere(ctx context.Context, signIn string) (map[str
 		}
 		first, login := 0, false
 		for _, b := range bs {
-			if b.Obj.Model == loginStageModel && (!login || b.Order < first) {
+			if guarded(b.Obj.Model) && (!login || b.Order < first) {
 				first, login = b.Order, true
 			}
 		}
@@ -602,7 +611,8 @@ func (a *Authentik) loginsElsewhere(ctx context.Context, signIn string) (map[str
 	return bindings, at, nil
 }
 
-// refuseElsewhere puts the refusal for the household's people into every other flow that signs a person in.
+// refuseElsewhere puts the refusal for the household's people into every other flow that signs a person in or sets
+// something up for them.
 func (a *Authentik) refuseElsewhere(ctx context.Context, signIn, refusal, household string) error {
 	flows, at, err := a.loginsElsewhere(ctx, signIn)
 	if err != nil {
@@ -640,18 +650,22 @@ func (a *Authentik) refuseElsewhere(ctx context.Context, signIn, refusal, househ
 	return nil
 }
 
-// refusedElsewhere says whether every other flow that signs a person in refuses the household's people before its
-// login.
+// refusedElsewhere says whether every other flow that signs a person in or sets something up for them refuses the
+// household's people first, with HomersLab's own policy, unchanged.
 func (a *Authentik) refusedElsewhere(ctx context.Context) (bool, error) {
 	refusal, err1 := one[struct {
 		PK string `json:"pk"`
 	}](ctx, a.api, "/stages/deny/?name="+q(stageNotHere))
 	household, err2 := one[struct {
-		PK string `json:"pk"`
+		PK         string `json:"pk"`
+		Expression string `json:"expression"`
 	}](ctx, a.api, "/policies/expression/?name="+q(policyHousehold))
 	signIn, err3 := a.flow(ctx, SignInFlow)
 	if err := errors.Join(err1, err2, err3); err != nil || refusal == nil || household == nil || signIn == nil {
 		return false, err
+	}
+	if strings.TrimSpace(household.Expression) != strings.TrimSpace(householdPerson) { // the API trims it
+		return false, nil
 	}
 	flows, at, err := a.loginsElsewhere(ctx, signIn.PK)
 	if err != nil {
