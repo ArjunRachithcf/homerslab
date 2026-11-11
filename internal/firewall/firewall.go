@@ -14,11 +14,12 @@
 //     is forwarding, and dropped), and nothing routed.
 //   - From the mesh: any listener of this machine (the mesh's own policies filter it), but nothing routed: only the
 //     edge, on this machine, reaches an app (#19).
-//   - From the apps (the engines' bridges): this machine's DNS and the resolvers it uses, IPv6 neighbour discovery,
+//   - From the apps (the engines' bridges): this machine's DNS at their bridge's own gateway, the resolvers it uses
+//     out through the LAN (never one at a mesh peer), IPv6 neighbour discovery,
 //     their own bridge, and the internet; never another app's bridge, the LAN, the mesh, a private range or a local
 //     virtual network (ADR 0020). Extras that let an app reach the LAN or the mesh come with the install plan (#19).
-//   - From a local virtual network: this machine's DHCP and DNS (libvirt's and LXD's dnsmasq), no other listener, and
-//     the internet only.
+//   - From a local virtual network: this machine's DHCP, and its DNS at the network's own gateway (libvirt's and LXD's
+//     dnsmasq), no other listener, and the internet only.
 //
 // An interface name is rendered only when it is a plain name an interface can have: a wildcard or a quote from an
 // engine never reaches nft.
@@ -33,12 +34,12 @@ import (
 	"fmt"
 	"net/netip"
 	"os"
-	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/ArjunRachithcf/homerslab/internal/atomicfile"
 	"github.com/ArjunRachithcf/homerslab/internal/host"
 )
 
@@ -68,7 +69,7 @@ type State struct {
 	// is never one, whatever the engines say.
 	Bridges []string `json:"bridges"`
 	// Resolvers are the DNS servers this machine uses, which an engine hands its containers (Docker's default bridge
-	// copies them): apps may ask them, on port 53 only.
+	// copies them): apps may ask those the LAN leads to, on port 53 only.
 	Resolvers []netip.Addr `json:"resolvers"`
 }
 
@@ -93,6 +94,12 @@ func valid(names []string) []string {
 // Equal says whether two states make the same table.
 func (s State) Equal(o State) bool { return Render(s) == Render(o) }
 
+// header opens every table Render writes: the table made (if missing), deleted and made again, in one transaction.
+const header = "# HomersLab's agent owns this table, and puts it back when it drifts.\n" +
+	"table " + Table + "\n" +
+	"delete table " + Table + "\n" +
+	"table " + Table + " {\n"
+
 // Render is the nftables script that replaces the table with s, atomically: one transaction, so no packet ever meets
 // a half-made table.
 func Render(s State) string {
@@ -101,10 +108,7 @@ func Render(s State) string {
 	lan := valid(s.LAN)
 	mesh := valid(s.Mesh)
 	bridges := slices.DeleteFunc(valid(s.Bridges), func(n string) bool { return slices.Contains(lan, n) || slices.Contains(mesh, n) })
-	w("# HomersLab's agent owns this table, and puts it back when it drifts.")
-	w("table %s", Table)
-	w("delete table %s", Table)
-	w("table %s {", Table)
+	b.WriteString(header)
 
 	w("\tchain input {")
 	w("\t\ttype filter hook input priority filter - 5; policy drop;")
@@ -146,18 +150,23 @@ func Render(s State) string {
 	w("\t\tjump outbound")
 	w("\t}")
 
-	// Apps to this machine: only the DNS an engine serves on a bridge's gateway, and IPv6's neighbour discovery.
+	// Apps to this machine: only the DNS an engine serves on a bridge's gateway (an address of that bridge itself, never
+	// the mesh's, the LAN's or another bridge's), and IPv6's neighbour discovery.
 	w("\tchain apps_in {")
-	w("\t\tmeta l4proto { tcp, udp } th dport 53 accept")
+	w("\t\tmeta l4proto { tcp, udp } th dport 53 fib daddr . iif type local accept")
 	w("\t\ticmpv6 type { nd-neighbor-solicit, nd-neighbor-advert, nd-router-solicit } accept")
 	w("\t\tdrop")
 	w("\t}")
-	// Local virtual networks to this machine: their DHCP and DNS (dnsmasq), then the machine's basics.
+	// Local virtual networks to this machine: their DHCP and their DNS (dnsmasq, on the network's own gateway; never
+	// the mesh's resolver or another address of the machine), then the machine's basics.
 	w("\tchain virtual_in {")
 	w("\t\tudp dport { 67, 547 } accept")
-	w("\t\tmeta l4proto { tcp, udp } th dport 53 accept")
+	w("\t\tmeta l4proto { tcp, udp } th dport 53 fib daddr . iif type local accept")
+	// Belt and braces: the input chain's policy drops these too, but port 53 is decided here, whatever is added below.
+	w("\t\tmeta l4proto { tcp, udp } th dport 53 drop")
 	w("\t}")
-	// Apps out: their own bridge, the machine's resolvers, the internet.
+	// Apps out: their own bridge, the machine's resolvers through the LAN (the one DHCP gave it, which Docker's default
+	// bridge copies: on purpose; never one at a mesh peer), the internet.
 	w("\tchain apps_out {")
 	for _, br := range bridges {
 		w("\t\tiifname %q oifname %q accept", br, br)
@@ -172,11 +181,11 @@ func Render(s State) string {
 			r6 = append(r6, r.String())
 		}
 	}
-	if len(r4) > 0 {
-		w("\t\tip daddr %s meta l4proto { tcp, udp } th dport 53 accept", set(uniqStrings(r4)))
+	if len(r4) > 0 && len(lan) > 0 {
+		w("\t\toifname %s ip daddr %s meta l4proto { tcp, udp } th dport 53 accept", set(quoted(lan)), set(uniqStrings(r4)))
 	}
-	if len(r6) > 0 {
-		w("\t\tip6 daddr %s meta l4proto { tcp, udp } th dport 53 accept", set(uniqStrings(r6)))
+	if len(r6) > 0 && len(lan) > 0 {
+		w("\t\toifname %s ip6 daddr %s meta l4proto { tcp, udp } th dport 53 accept", set(quoted(lan)), set(uniqStrings(r6)))
 	}
 	w("\t\tjump outbound")
 	w("\t}")
@@ -321,20 +330,8 @@ func (f *Firewall) apply(ctx context.Context, s State) error {
 	return nil
 }
 
-// Save writes a table's script to path, atomically, for root only.
-func Save(path, script string) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return err
-	}
-	tmp := path + ".new"
-	if err := os.WriteFile(tmp, []byte(script), 0o600); err != nil {
-		return err
-	}
-	if err := os.Chmod(tmp, 0o600); err != nil {
-		return err
-	}
-	return os.Rename(tmp, path)
-}
+// Save writes a table's script to path, atomically, for root only, and synced to the disk before it returns.
+func Save(path, script string) error { return atomicfile.Write(path, []byte(script)) }
 
 // Closed is the table for a machine whose agent has applied none yet (its first boot): loopback, the machine's
 // basics (ICMP, DHCP and mDNS replies) and the setup listener only, from anywhere, and nothing forwarded.
@@ -365,19 +362,27 @@ func Closed(setupPort int) string {
 }
 
 // RestoreScript is what homerslab-firewall-restore loads at boot: the table the agent last applied, or Closed when
-// it never applied one.
-func RestoreScript(savePath string, setupPort int) (string, error) {
+// it never applied one. A saved file that can't be used (unreadable, cut short by a power cut, or not a table Render
+// wrote) is never loaded: Closed is, and unusable says why.
+func RestoreScript(savePath string, setupPort int) (script string, unusable error) {
 	b, err := os.ReadFile(savePath)
-	if errors.Is(err, os.ErrNotExist) {
+	switch {
+	case errors.Is(err, os.ErrNotExist):
 		return Closed(setupPort), nil
-	}
-	if err != nil {
-		return "", err
-	}
-	if !strings.Contains(string(b), "table "+Table+" {") {
-		return "", fmt.Errorf("%s isn't a HomersLab firewall table", savePath)
+	case err != nil:
+		return Closed(setupPort), err
+	case !whole(string(b)):
+		return Closed(setupPort), fmt.Errorf("%s isn't a whole HomersLab firewall table", savePath)
 	}
 	return string(b), nil
+}
+
+// whole says whether a script is one Render wrote, all of it: its opening lines first, and the table's closing brace as
+// its last line. Render writes exactly one brace alone on a line at column 0, that last one (every other line inside
+// the table is indented), so a script cut short anywhere lacks it.
+func whole(script string) bool {
+	body, ok := strings.CutSuffix(script, "\n}\n")
+	return ok && strings.HasPrefix(script, header) && !slices.Contains(strings.Split(body, "\n"), "}")
 }
 
 // Note records something wrong the agent found and couldn't render (an engine's bridge with a refused name).

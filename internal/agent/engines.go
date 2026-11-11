@@ -13,19 +13,40 @@ import (
 	"github.com/ArjunRachithcf/homerslab/internal/host"
 )
 
-// engineBridges are the names the container engines give their bridges. They are candidates: the agent keeps only
-// those the kernel shows are bridges, with names nft can take.
-//   - Docker: asked only while docker.service runs, so the question never starts it (it is socket-activated).
+// Engines that list bridges.
+const (
+	docker = "docker"
+	podman = "podman"
+)
+
+// engineBridges are the names the container engines give their bridges, by engine. They are candidates: the agent
+// keeps only those the kernel shows are bridges, with names nft can take. An engine missing from the map gave no list
+// (it didn't answer, or isn't running), so the agent keeps the list it last confirmed, and the table takes those the
+// kernel shows; an engine that isn't installed, or is masked, answers with none.
+//   - Docker: asked only while docker.service is active, so the question never starts it (it is socket-activated).
+//     While it is activating, deactivating or reloading (at every boot and restart), or stopped with its containers
+//     running on (live-restore), its last list stands. A Docker stopped for good leaves its bridges in the kernel
+//     until the next boot, and they stay app bridges till then, which keep their containers as closed as a local
+//     virtual network would. Between systemd's answer and the question, a stop of
+//     docker.service alone can be undone: the question then reaches docker.socket, which starts Docker again. That
+//     is socket activation as the admin left it: any client of the socket would do the same, and stopping Docker for
+//     good means stopping docker.socket too, after which the question fails (Docker not answering) instead.
 //   - Podman: read from its network files (netavark), and its default bridge podman0; no podman command, which
-//     would want to write its storage under the agent's read-only sandbox.
-func engineBridges(ctx context.Context, run host.Runner, root fs.FS) []string {
-	var out []string
-	if _, err := run(ctx, host.Cmd{Name: "systemctl", Args: []string{"is-active", "--quiet", "docker.service"}}); err == nil {
-		out = append(out, dockerBridges(ctx, run)...)
+//     would want to write its storage under the agent's read-only sandbox. It always answers.
+func engineBridges(ctx context.Context, run host.Runner, root fs.FS) map[string][]string {
+	out := map[string][]string{}
+	switch unitState(ctx, run, "docker.service") {
+	case "active":
+		if b, ok := dockerBridges(ctx, run); ok {
+			out[docker] = b
+		}
+	case "gone": // not installed, or masked so it can never run: none, whatever bridges it left behind
+		out[docker] = nil
 	}
+	var p []string
 	if root != nil {
 		if _, err := fs.Stat(root, "usr/bin/podman"); err == nil {
-			out = append(out, "podman0")
+			p = append(p, "podman0")
 		}
 		files, _ := fs.Glob(root, "etc/containers/networks/*.json")
 		for _, f := range files {
@@ -38,27 +59,48 @@ func engineBridges(ctx context.Context, run host.Runner, root fs.FS) []string {
 				Interface string `json:"network_interface"`
 			}
 			if json.Unmarshal(b, &n) == nil && n.Driver == "bridge" && n.Interface != "" {
-				out = append(out, n.Interface)
+				p = append(p, n.Interface)
 			}
 		}
 	}
-	slices.Sort(out)
-	return slices.Compact(out)
+	out[podman] = p
+	return out
 }
 
-func dockerBridges(ctx context.Context, run host.Runner) []string {
+// unitState is a unit's ActiveState as systemd describes it (active, inactive, failed, activating, deactivating,
+// reloading), "gone" for a unit systemd doesn't have or that is masked, or "" when systemd didn't say (an error, a
+// timeout).
+func unitState(ctx context.Context, run host.Runner, unit string) string {
+	out, err := run(ctx, host.Cmd{Name: "systemctl", Args: []string{"show", "-p", "ActiveState", "-p", "LoadState", unit}})
+	if err != nil {
+		return ""
+	}
+	props := map[string]string{}
+	for _, l := range strings.Split(string(out), "\n") {
+		if k, v, ok := strings.Cut(strings.TrimSpace(l), "="); ok {
+			props[k] = v
+		}
+	}
+	if l := props["LoadState"]; l == "not-found" || l == "masked" {
+		return "gone"
+	}
+	return props["ActiveState"]
+}
+
+// dockerBridges are Docker's bridges, and whether it answered.
+func dockerBridges(ctx context.Context, run host.Runner) ([]string, bool) {
 	ids, err := run(ctx, host.Cmd{Name: "docker", Args: []string{"network", "ls", "--no-trunc", "--filter", "driver=bridge", "--format", "{{.ID}}"}})
 	if err != nil {
-		return nil
+		return nil, false
 	}
 	list := strings.Fields(string(ids))
 	if len(list) == 0 {
-		return nil
+		return nil, true
 	}
 	args := append([]string{"network", "inspect", "--format", `{{.Id}} {{index .Options "com.docker.network.bridge.name"}}`}, list...)
 	b, err := run(ctx, host.Cmd{Name: "docker", Args: args})
 	if err != nil {
-		return nil
+		return nil, false
 	}
 	var out []string
 	for _, line := range strings.Split(strings.TrimSpace(string(b)), "\n") {
@@ -70,7 +112,7 @@ func dockerBridges(ctx context.Context, run host.Runner) []string {
 			out = append(out, "br-"+id[:12]) // Docker's name for a bridge it wasn't told to name
 		}
 	}
-	return out
+	return out, true
 }
 
 // resolvers are the DNS servers this machine uses, as its resolv.conf files say (systemd-resolved's upstream list

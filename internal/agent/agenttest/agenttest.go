@@ -78,6 +78,9 @@ func StartWith(t testing.TB, c agent.Config) (string, *Host) {
 	if c.IsBridge == nil {
 		c.IsBridge = h.IsBridge
 	}
+	if c.HasInterface == nil {
+		c.HasInterface = h.HasInterface
+	}
 	if c.Resolve == nil {
 		c.Resolve = func(context.Context, string) ([]string, error) { return []string{"192.0.2.1"}, nil }
 	}
@@ -147,7 +150,11 @@ type Host struct {
 	showFails     bool              // systemd is older than 248: `systemctl show --timestamp=us+utc` fails
 	docker        map[string]string // the engine's bridge networks: ID → the bridge's name option ("" for none)
 	notBridges    map[string]bool   // names the engines give that the kernel doesn't show as bridges
+	absent        map[string]bool   // names the kernel has no interface for
 	block         bool              // the engines and systemd never answer
+	hang          []string          // commands, by prefix, that never answer
+	dockerActive  string            // docker.service's ActiveState and LoadState, when set; else from Engines
+	dockerLoad    string
 }
 
 // IsBridge says whether the kernel would show a name as a bridge: every name an engine gives, but those NotABridge
@@ -155,7 +162,7 @@ type Host struct {
 func (h *Host) IsBridge(name string) bool {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	return !h.notBridges[name]
+	return !h.notBridges[name] && !h.absent[name]
 }
 
 // NotABridge makes an engine's name one the kernel doesn't show as a bridge (a NIC, say).
@@ -168,12 +175,52 @@ func (h *Host) NotABridge(name string) {
 	h.notBridges[name] = true
 }
 
+// ABridgeAgain makes a name NotABridge or Absent took a bridge again (an engine made it).
+func (h *Host) ABridgeAgain(name string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	delete(h.notBridges, name)
+	delete(h.absent, name)
+}
+
+// Absent makes a name one the kernel has no interface for (yet).
+func (h *Host) Absent(name string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.absent == nil {
+		h.absent = map[string]bool{}
+	}
+	h.absent[name] = true
+}
+
+// HasInterface says whether the kernel has an interface by that name: every name but those Absent.
+func (h *Host) HasInterface(name string) bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return !h.absent[name]
+}
+
 // Block makes Docker and systemd hang until the caller gives up, as a socket-activated engine waiting on the agent
 // would.
 func (h *Host) Block() {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.block = true
+}
+
+// Hang makes every command starting with prefix (e.g. "docker network") hang until the caller gives up, until Mend.
+func (h *Host) Hang(prefix string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.hang = append(h.hang, prefix)
+}
+
+// DockerState makes systemd describe docker.service so (ActiveState, LoadState: "activating", "loaded"), whatever
+// Engines says; "" goes back to Engines' word (active while it lists networks, inactive otherwise).
+func (h *Host) DockerState(active, load string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.dockerActive, h.dockerLoad = active, load
 }
 
 // Engines makes Docker run and list bridge networks (ID → the name it was given, or ""). Without it, Docker isn't
@@ -201,6 +248,7 @@ func (h *Host) Mend() {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	clear(h.fail)
+	h.hang = nil
 }
 
 // Run is the agent's host.Runner.
@@ -209,7 +257,7 @@ const JournalToken = "9d3afc7b-58ba-4c1e-9f0e-2b6a1c0d7e11"
 
 func (h *Host) Run(ctx context.Context, c host.Cmd) ([]byte, error) {
 	h.mu.Lock()
-	if h.block && (c.Name == "docker" || c.Name == "systemctl") {
+	if h.block && (c.Name == "docker" || c.Name == "systemctl") || slices.ContainsFunc(h.hang, func(p string) bool { return strings.HasPrefix(c.String(), p) }) {
 		h.mu.Unlock()
 		<-ctx.Done()
 		return nil, ctx.Err()
@@ -249,11 +297,15 @@ func (h *Host) Run(ctx context.Context, c host.Cmd) ([]byte, error) {
 			return nil, &host.Error{Cmd: line, Err: errors.New("unrecognized option '--timestamp=us+utc'")}
 		}
 		return h.showNetBird(), nil
-	case line == "systemctl is-active --quiet docker.service":
-		if h.docker == nil {
-			return nil, &host.Error{Cmd: line, Err: errors.New("exit status 3")}
+	case line == "systemctl show -p ActiveState -p LoadState docker.service":
+		active, load := h.dockerActive, h.dockerLoad
+		if active == "" {
+			active, load = "active", "loaded"
+			if h.docker == nil {
+				active = "inactive"
+			}
 		}
-		return nil, nil
+		return fmt.Appendf(nil, "LoadState=%s\nActiveState=%s\n", load, active), nil
 	case c.Name == "systemctl":
 		return nil, nil
 	case c.Name == "docker" && h.docker != nil && len(c.Args) > 1 && c.Args[1] == "ls":
