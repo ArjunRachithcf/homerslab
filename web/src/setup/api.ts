@@ -1,25 +1,37 @@
 // First-time setup's side of the manager's API, on the setup listener. Claiming the link gives a session token, which
 // this tab keeps (sessionStorage) and sends as a bearer token: not a cookie, which every port of this host would get.
+// Until the manager has answered the claim, the tab also holds the link's key, so a claim the network lost can be sent
+// again; the key never goes anywhere but the claim's body.
 
 const TOKEN = 'homerslab.setup.session';
-let memory: string | null = null; // when the browser refuses storage
+const KEY = 'homerslab.setup.link';
+const memory = new Map<string, string>(); // when the browser refuses storage, and the newest value
 
-function token(): string | null {
+function read(name: string): string | null {
   try {
-    return memory ?? sessionStorage.getItem(TOKEN); // the token just claimed wins over an older stored one
+    return memory.get(name) ?? sessionStorage.getItem(name); // what this page just kept wins over an older stored value
   } catch {
-    return memory;
+    return memory.get(name) ?? null;
   }
 }
 
-function keep(t: string) {
-  memory = t;
+function write(name: string, value: string | null) {
+  if (value === null) memory.delete(name);
+  else memory.set(name, value);
   try {
-    sessionStorage.setItem(TOKEN, t);
+    if (value === null) sessionStorage.removeItem(name);
+    else sessionStorage.setItem(name, value);
   } catch {
     // memory holds it for this page's life
   }
 }
+
+const token = () => read(TOKEN);
+
+/** The link's key, held by this tab until the manager has answered its claim. */
+export const heldKey = () => read(KEY);
+export const holdKey = (key: string) => write(KEY, key);
+export const dropKey = () => write(KEY, null);
 
 export type Half = 'lan' | 'mesh';
 export type StepState = { id: string; half: Half; state: 'todo' | 'waiting' | 'done'; secret?: string; command?: string; confirm?: string };
@@ -35,6 +47,13 @@ export type Facts = {
   gpus: { vendor: string; model: string; pciId: string }[];
 };
 
+/** The request got no answer: the network dropped it, or the manager isn't listening. */
+export class Unreachable extends Error {
+  constructor() {
+    super('unreachable');
+  }
+}
+
 /** The manager said no, with its reason. */
 export class Refused extends Error {
   constructor(readonly status: number, readonly code: string, readonly fields: string[] = []) {
@@ -47,12 +66,17 @@ async function call<T>(method: string, path: string, body?: unknown): Promise<T>
   if (body !== undefined) headers['Content-Type'] = 'application/json';
   const t = token();
   if (t) headers.Authorization = `Bearer ${t}`;
-  const resp = await fetch(path, {
-    method,
-    credentials: 'omit',
-    headers,
-    body: body === undefined ? undefined : JSON.stringify(body),
-  });
+  let resp: Response;
+  try {
+    resp = await fetch(path, {
+      method,
+      credentials: 'omit',
+      headers,
+      body: body === undefined ? undefined : JSON.stringify(body),
+    });
+  } catch {
+    throw new Unreachable();
+  }
   if (resp.status === 204) return undefined as T;
   const data: unknown = await resp.json().catch(() => ({}));
   if (!resp.ok) {
@@ -62,9 +86,21 @@ async function call<T>(method: string, path: string, body?: unknown): Promise<T>
   return data as T;
 }
 
-export async function claim(key: string): Promise<void> {
-  keep((await call<{ token: string }>('POST', '/api/v1/setup/claim', { key })).token);
+const claiming = new Map<string, Promise<string>>();
+
+/** Claims the link's key, and gives its session token. The same key, claimed again while its claim is out, shares it. */
+export function claim(key: string): Promise<string> {
+  let claimed = claiming.get(key);
+  if (!claimed) {
+    claimed = call<{ token: string }>('POST', '/api/v1/setup/claim', { key }).then((r) => r.token)
+      .finally(() => claiming.delete(key));
+    claiming.set(key, claimed);
+  }
+  return claimed;
 }
+
+/** Keeps the session a claim opened: this tab's, for every later request. */
+export const keepSession = (token: string) => write(TOKEN, token);
 export const getSetup = () => call<Setup>('GET', '/api/v1/setup');
 export const getPrimary = () => call<Facts>('GET', '/api/v1/nodes/primary');
 export const answer = (step: string, body: Record<string, string | boolean>) => call<Setup>('PUT', `/api/v1/setup/steps/${encodeURIComponent(step)}`, body);

@@ -49,3 +49,11 @@ with the few patches it needs to fit the household's sign-in. The name comes fro
 
 - A container registry (GitHub's) and its signing identity become part of HomersLab's supply chain.
 - The first feedstock is Memos, carrying classic's `sso-admin` patch.
+
+## Amended (2026-11-11)
+
+Accepted (#89, the maintainer, 2026-11-11).
+
+A third-party catalog's declared signers apply to **its own apps only**: it can't declare a signer for another
+catalog's app, and an installed app updates only from the catalog it came from
+([ADR 0009](0009-catalog-floor-and-tiers.md), amended).

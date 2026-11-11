@@ -19,7 +19,9 @@ jobs:
     name: Go (as root, so the primary's two processes are tested)
     runs-on: ubuntu-24.04
     container:
-      image: golang:1.27.3@sha256:e519d3b0a5b285e5aa53ab9eef02bc6bbb9cb04608389b743a136a9ce75f0d1e
+      # The index digest; per architecture, linux/amd64 is sha256:2cd7e1ebf475c6208122d2b9cefc638d98fcc8dfd8554c8872c9dd0c21f4ac61
+      # and linux/arm64/v8 sha256:96335ac31f35abde9f40cbb1032e06d8571fc43c51230e9a90e14145debc6199.
+      image: golang:1.27.4@sha256:08bcb99a38f85a265f9a93d1d3323e2440eec333380f3ea26ee0dec9264bb41c
       # Test isolation: any container engine a test reaches points at nowhere. Set inside the container only:
       # the runner itself reaches the job's container through DOCKER_HOST, so a job-wide value breaks checkout.
       env:

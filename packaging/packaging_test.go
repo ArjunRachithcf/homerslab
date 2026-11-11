@@ -81,7 +81,7 @@ func TestTheManagerRunsUnprivilegedAndTheAgentAsRoot(t *testing.T) {
 		"CapabilityBoundingSet": "CAP_CHOWN CAP_DAC_READ_SEARCH CAP_NET_ADMIN", "RestrictAddressFamilies": "AF_UNIX AF_NETLINK AF_INET AF_INET6",
 		"PrivateNetwork": "no", "SystemCallFilter": "@system-service", "SystemCallErrorNumber": "EPERM",
 		"MemoryDenyWriteExecute": "yes", "LockPersonality": "yes", "StateDirectory": "homerslab-agent",
-		"StateDirectoryMode": "0700", "Type": "notify", "NotifyAccess": "main", "ExecStartPre": "+/usr/bin/systemd-creds setup", "TimeoutStartSec": "5min"} {
+		"StateDirectoryMode": "0700", "Type": "notify", "NotifyAccess": "main", "ExecStartPre": "+/usr/bin/systemd-creds setup", "TimeoutStartSec": "30s"} {
 		if got := agent[k]; len(got) != 1 || got[0] != want {
 			t.Errorf("the agent's %s = %v, want %s", k, got, want)
 		}
@@ -90,15 +90,23 @@ func TestTheManagerRunsUnprivilegedAndTheAgentAsRoot(t *testing.T) {
 		t.Errorf("the agent's UMask = %q, want 0077", got)
 	}
 
-	// The firewall table is up before the network and the engines come up at boot.
-	if b, err := os.ReadFile("systemd/homerslab-agent.service"); err != nil || !strings.Contains(string(b), "\nBefore=homerslab-manager.service network-pre.target docker.service podman.service netbird.service\n") ||
-		!strings.Contains(string(b), "\nWants=network-pre.target\n") || !strings.Contains(string(b), "\nAfter=nftables.service firewalld.service\n") {
-		t.Errorf("the agent isn't ordered before the network and the engines, and after the distro's firewalls: %v", err)
+	// The agent orders itself against nothing of the engines' or the network's (a socket-activated engine would wait
+	// for it, and it for the engine): homerslab-firewall-restore loads the table before them instead.
+	agentUnit, _ := os.ReadFile("systemd/homerslab-agent.service")
+	for _, want := range []string{"\nWants=homerslab-firewall-restore.service\n", "\nAfter=homerslab-firewall-restore.service\n", "\nBefore=homerslab-manager.service\n"} {
+		if !strings.Contains(string(agentUnit), want) {
+			t.Errorf("the agent's unit lacks %q", strings.TrimSpace(want))
+		}
+	}
+	for _, never := range []string{"network-pre", "docker", "podman", "netbird"} {
+		if strings.Contains(unitSection(string(agentUnit), "[Unit]"), never) {
+			t.Errorf("the agent's unit is ordered against %s", never)
+		}
 	}
 	for _, u := range []string{"docker", "podman", "netbird"} {
-		b, err := os.ReadFile("systemd/" + u + ".service.d/05-homerslab-after-agent.conf")
-		if err != nil || !strings.Contains(string(b), "\n[Unit]\nWants=homerslab-agent.service\nAfter=homerslab-agent.service\n") {
-			t.Errorf("%s isn't ordered after the agent: %v", u, err)
+		b, err := os.ReadFile("systemd/" + u + ".service.d/05-homerslab-firewall.conf")
+		if err != nil || !strings.Contains(string(b), "\n[Unit]\nRequires=homerslab-firewall-restore.service\nAfter=homerslab-firewall-restore.service\n") {
+			t.Errorf("%s doesn't require the restored table: %v", u, err)
 		}
 	}
 	if b, err := os.ReadFile("tmpfiles.d/homerslab.conf"); err != nil || !strings.Contains(string(b), "d /etc/systemd/system/netbird.service.d 0755 root root -") {
@@ -108,5 +116,37 @@ func TestTheManagerRunsUnprivilegedAndTheAgentAsRoot(t *testing.T) {
 	sysusers, err := os.ReadFile("sysusers.d/homerslab.conf")
 	if err != nil || !strings.Contains(string(sysusers), "u homerslab ") {
 		t.Errorf("sysusers.d/homerslab.conf should create the homerslab user: %v %q", err, sysusers)
+	}
+}
+
+func unitSection(unit, name string) string {
+	_, after, _ := strings.Cut(unit, "\n"+name+"\n")
+	section, _, _ := strings.Cut(after, "\n[")
+	return section
+}
+
+// The firewall table is loaded at boot before the network, by a oneshot the engines require.
+func TestTheFirewallTableIsRestoredBeforeTheNetwork(t *testing.T) {
+	testenv.Isolate(t)
+	b, err := os.ReadFile("systemd/homerslab-firewall-restore.service")
+	if err != nil {
+		t.Fatal(err)
+	}
+	u := string(b)
+	for _, want := range []string{"DefaultDependencies=no", "Wants=network-pre.target", "Before=network-pre.target shutdown.target",
+		"After=local-fs.target nftables.service firewalld.service", "Conflicts=shutdown.target"} {
+		if !strings.Contains(unitSection(u, "[Unit]"), "\n"+want+"\n") {
+			t.Errorf("[Unit] lacks %q", want)
+		}
+	}
+	svc := unit(t, "homerslab-firewall-restore.service")
+	for k, want := range map[string]string{"Type": "oneshot", "RemainAfterExit": "yes", "ExecStart": "/usr/bin/homerslab firewall restore",
+		"CapabilityBoundingSet": "CAP_NET_ADMIN", "PrivateNetwork": "no"} {
+		if got := one(t, svc, k); got != want {
+			t.Errorf("%s = %q, want %q", k, got, want)
+		}
+	}
+	if !strings.Contains(unitSection(u, "[Install]"), "WantedBy=sysinit.target") {
+		t.Error("the restore isn't part of the boot")
 	}
 }

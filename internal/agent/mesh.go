@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -196,9 +197,15 @@ func (a *Agent) getFirewall(w http.ResponseWriter, _ *http.Request) {
 
 // checkFirewall checks the table for drift now, and puts it back if it drifted.
 func (a *Agent) checkFirewall(w http.ResponseWriter, r *http.Request) {
+	a.refreshBridges(r.Context(), true)
+	if err := a.checkNATMapper(r.Context(), true); err != nil {
+		a.log.Error("checking NetBird's NAT mapper", "err", err)
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), hostWait)
+	defer cancel()
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	if err := a.reconcile(r.Context(), true); err != nil {
+	if err := a.reconcile(ctx, true); err != nil {
 		a.log.Error("checking the firewall table", "err", err)
 		fail(w, http.StatusInternalServerError, "check-failed")
 		return
@@ -354,14 +361,16 @@ type MeshStatus struct {
 
 func (a *Agent) getMesh(w http.ResponseWriter, r *http.Request) {
 	a.mu.Lock()
-	defer a.mu.Unlock()
 	s := MeshStatus{Joined: slices.Contains(a.state.Mesh, netbird.Interface), Drift: slices.Clone(a.meshDrift)}
+	a.mu.Unlock()
 	if s.Drift == nil {
 		s.Drift = []firewall.Drift{}
 	}
 	if s.Joined {
 		s.Interface = netbird.Interface
-		dropIn, env := a.natMapper(r.Context())
+		ctx, cancel := context.WithTimeout(r.Context(), hostWait)
+		defer cancel()
+		dropIn, env := a.natMapper(ctx)
 		s.PortMappingOff = dropIn && env
 	}
 	writeJSON(w, http.StatusOK, s)
@@ -369,28 +378,45 @@ func (a *Agent) getMesh(w http.ResponseWriter, r *http.Request) {
 
 // natMapper says whether NetBird's drop-in is as the agent writes it, and whether the running service has its
 // environment.
+//
+// The environment is the running process's own (/proc/<MainPID>/environ), not what systemd would give it next time.
 func (a *Agent) natMapper(ctx context.Context) (dropIn, env bool) {
 	b, err := os.ReadFile(filepath.Join(a.cfg.Root, netbird.DropInPath))
 	dropIn = err == nil && string(b) == string(netbird.DropIn())
-	out, err := a.cfg.Run(ctx, host.Cmd{Name: "systemctl", Args: []string{"show", "netbird.service", "--property=Environment", "--value"}})
-	if err == nil {
-		env = true
-		for _, e := range netbird.ServiceEnv {
-			if !slices.Contains(strings.Fields(string(out)), e) {
-				env = false
-			}
+	out, err := a.cfg.Run(ctx, host.Cmd{Name: "systemctl", Args: []string{"show", "netbird.service", "--property=MainPID", "--value"}})
+	pid, perr := strconv.Atoi(strings.TrimSpace(string(out)))
+	if err != nil || perr != nil || pid <= 0 {
+		return dropIn, false
+	}
+	raw, err := os.ReadFile(filepath.Join(a.cfg.Proc, strconv.Itoa(pid), "environ"))
+	if err != nil {
+		return dropIn, false
+	}
+	vars := strings.Split(string(raw), "\x00")
+	env = true
+	for _, e := range netbird.ServiceEnv {
+		if !slices.Contains(vars, e) {
+			env = false
 		}
 	}
 	return dropIn, env
 }
 
-// checkNATMapper puts NetBird's drop-in back, and restarts the client with it, when either drifted; the drift is
-// reported. The caller holds a.mu.
-func (a *Agent) checkNATMapper(ctx context.Context) error {
-	if !slices.Contains(a.state.Mesh, netbird.Interface) {
+// checkNATMapper puts NetBird's drop-in back, and queues the client's restart with it, when either drifted; the drift
+// is reported. It runs outside the agent's lock, each host command for hostWait at most, so a hanging systemd never
+// holds the agent; force checks now, otherwise every natEvery.
+func (a *Agent) checkNATMapper(ctx context.Context, force bool) error {
+	a.mu.Lock()
+	due := slices.Contains(a.state.Mesh, netbird.Interface) && (force || a.cfg.Now().Sub(a.natAt) >= natEvery)
+	if due {
+		a.natAt = a.cfg.Now()
+	}
+	a.mu.Unlock()
+	if !due {
 		return nil
 	}
-	a.natAt = a.cfg.Now()
+	ctx, cancel := context.WithTimeout(ctx, hostWait)
+	defer cancel()
 	dropIn, env := a.natMapper(ctx)
 	if dropIn && env {
 		return nil
@@ -403,12 +429,15 @@ func (a *Agent) checkNATMapper(ctx context.Context) error {
 	for _, step := range []func() error{
 		func() error { return a.writeAt(netbird.DropInPath, netbird.DropIn()) },
 		func() error { return a.run(ctx, "systemctl", "daemon-reload") },
-		func() error { return a.run(ctx, "systemctl", "restart", "netbird.service") },
+		// Queued, not waited for: the watch loop never blocks on a systemd job.
+		func() error { return a.run(ctx, "systemctl", "--no-block", "restart", "netbird.service") },
 	} {
 		if err := step(); err != nil {
 			return fmt.Errorf("putting NetBird's NAT mapper setting back: %w", err)
 		}
 	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
 	a.meshDrift = append(a.meshDrift, firewall.Drift{At: a.cfg.Now(), What: what})
 	if len(a.meshDrift) > 100 {
 		a.meshDrift = a.meshDrift[len(a.meshDrift)-100:]

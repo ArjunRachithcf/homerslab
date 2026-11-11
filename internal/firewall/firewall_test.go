@@ -1,10 +1,14 @@
 package firewall_test
 
 import (
+	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/ArjunRachithcf/homerslab/internal/firewall"
+	"github.com/ArjunRachithcf/homerslab/internal/host"
 	"github.com/ArjunRachithcf/homerslab/internal/testenv"
 )
 
@@ -42,5 +46,61 @@ func TestOnlyAnOpenSetupListenerIsLetIn(t *testing.T) {
 	}
 	if strings.Contains(noLAN, "tcp dport") {
 		t.Errorf("with no LAN known, the setup listener is open to every interface:\n%s", noLAN)
+	}
+}
+
+func TestTheTableAppliedIsSavedForTheNextBoot(t *testing.T) {
+	testenv.Isolate(t)
+	path := filepath.Join(t.TempDir(), "state", "firewall.nft")
+	var applied string
+	fw := &firewall.Firewall{SavePath: path, Run: func(_ context.Context, c host.Cmd) ([]byte, error) {
+		if c.String() == "nft -f -" {
+			applied = string(c.Stdin)
+		}
+		return []byte(applied), nil
+	}}
+	s := firewall.State{Mesh: []string{"wt0"}, LAN: []string{"enp5s0"}}
+	if err := fw.Apply(context.Background(), s); err != nil {
+		t.Fatal(err)
+	}
+	b, err := os.ReadFile(path)
+	if err != nil || string(b) != applied || applied != firewall.Render(s) {
+		t.Fatalf("saved %q, %v; applied %q", b, err, applied)
+	}
+	if fi, _ := os.Stat(path); fi.Mode().Perm() != 0o600 {
+		t.Errorf("saved with mode %o, want 600", fi.Mode().Perm())
+	}
+	if got, err := firewall.RestoreScript(path, 7020); err != nil || got != applied {
+		t.Errorf("the restore loads %q, %v; want what was applied", got, err)
+	}
+}
+
+func TestAMachineWithNoSavedTableBootsClosed(t *testing.T) {
+	testenv.Isolate(t)
+	got, err := firewall.RestoreScript(filepath.Join(t.TempDir(), "none.nft"), 7020)
+	if err != nil || got != firewall.Closed(7020) {
+		t.Fatalf("%q, %v", got, err)
+	}
+	if strings.Count(got, "policy drop;") != 2 || !strings.Contains(got, "tcp dport 7020 accept") || strings.Count(got, "accept") != 6 {
+		t.Errorf("the closed table:\n%s", got)
+	}
+	bad := filepath.Join(t.TempDir(), "bad.nft")
+	_ = os.WriteFile(bad, []byte("flush ruleset\n"), 0o600)
+	if _, err := firewall.RestoreScript(bad, 7020); err == nil {
+		t.Error("a file that isn't HomersLab's table was loaded")
+	}
+}
+
+func TestNoNameNftWouldMisreadIsRendered(t *testing.T) {
+	testenv.Isolate(t)
+	r := firewall.Render(firewall.State{Mesh: []string{"wt0", "w*"}, LAN: []string{"enp5s0", `e"`},
+		Bridges: []string{"br-ok", "br-*", "l*", "*", `x"y`, "a b", "sixteen-chars-xx", "docker0"}})
+	for _, bad := range []string{"*", `x\"y`, `e\"`, "a b", "sixteen-chars-xx"} {
+		if strings.Contains(r, bad) {
+			t.Errorf("rendered %q:\n%s", bad, r)
+		}
+	}
+	if !strings.Contains(r, `"br-ok"`) || !strings.Contains(r, `"docker0"`) {
+		t.Errorf("a valid name went missing:\n%s", r)
 	}
 }

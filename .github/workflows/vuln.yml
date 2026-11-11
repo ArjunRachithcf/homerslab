@@ -1,0 +1,88 @@
+# Known vulnerabilities in what HomersLab ships (#98): govulncheck for the Go module, npm audit for the web app.
+# The rule for both: a finding in code we call, or in a package that ships in the binary, fails the job. A finding
+# only in the module graph, or only in a development tool, is listed in the log and doesn't fail.
+# Runs on every PR, and nightly on main and integration (a schedule runs from main's copy of this file).
+# Actions and images are pinned by digest; the comments name the versions. Nothing here holds a secret.
+name: vuln
+
+on:
+  pull_request:
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: vuln-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  go:
+    name: govulncheck (${{ matrix.ref || github.head_ref || github.ref_name }})
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        # Nightly: both long-lived branches. Otherwise: the ref the event names (an empty ref is checkout's default).
+        ref: ${{ fromJSON(github.event_name == 'schedule' && '["main","integration"]' || '[""]') }}
+    container:
+      # The index digest; per architecture, linux/amd64 is sha256:2cd7e1ebf475c6208122d2b9cefc638d98fcc8dfd8554c8872c9dd0c21f4ac61
+      # and linux/arm64/v8 sha256:96335ac31f35abde9f40cbb1032e06d8571fc43c51230e9a90e14145debc6199.
+      image: golang:1.27.4@sha256:08bcb99a38f85a265f9a93d1d3323e2440eec333380f3ea26ee0dec9264bb41c
+    env:
+      GOFLAGS: -buildvcs=false
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ matrix.ref }}
+          persist-credentials: false
+      # govulncheck's version and sums are pinned in tools/go.mod and tools/go.sum. Built for this runner first, so the
+      # scans below can name another target without govulncheck itself being built for it.
+      - name: Build govulncheck
+        run: |
+          go -C tools mod tidy -diff
+          go -C tools build -o /usr/local/bin/govulncheck golang.org/x/vuln/cmd/govulncheck
+      # Each target the packages ship for, as the binary is built (CGO_ENABLED=0). Exit 3 means the code calls a
+      # vulnerable symbol, the standard library's included. Findings only in imported packages or required modules
+      # are listed under "Package Results" and "Module Results" and exit 0: GO-2026-5932, for example (x/crypto's
+      # openpgp, with no tagged fix), whenever x/crypto is required and openpgp never imported.
+      - name: govulncheck ./... (linux/amd64)
+        env:
+          GOOS: linux
+          GOARCH: amd64
+          CGO_ENABLED: "0"
+        run: govulncheck -show verbose ./...
+      - name: govulncheck ./... (linux/arm64)
+        if: ${{ !cancelled() }}
+        env:
+          GOOS: linux
+          GOARCH: arm64
+          CGO_ENABLED: "0"
+        run: govulncheck -show verbose ./...
+
+  npm:
+    name: npm audit (${{ matrix.ref || github.head_ref || github.ref_name }})
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        ref: ${{ fromJSON(github.event_name == 'schedule' && '["main","integration"]' || '[""]') }}
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ matrix.ref }}
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+      # npm audit reads package-lock.json; nothing is installed and no package script runs.
+      - name: Every advisory, development tools included (listed, never fails)
+        run: |
+          npm audit || echo "::warning title=npm audit::npm audit exited non-zero (advisories, or the registry failed: see the log); the next step fails only on an advisory in a package that ships"
+      - name: Advisories in the packages that ship (fail the job)
+        run: npm audit --omit=dev

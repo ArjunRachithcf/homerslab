@@ -15,6 +15,7 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"slices"
 	"sync"
 	"syscall"
 	"time"
@@ -45,8 +46,12 @@ type Config struct {
 	Resolve func(ctx context.Context, name string) ([]string, error)
 	// LAN is the machine's LAN: the interfaces with the default route and their prefixes; lan.OnLink when nil.
 	LAN func() ([]string, []netip.Prefix)
-	// Bridges are the container engines' bridges, by name; asked of Docker and Podman when nil.
-	Bridges func(ctx context.Context) []string
+	// Bridges are the container engines' bridges, by name; asked of Docker and Podman when nil. Only names that
+	// IsBridge confirms (the kernel's /sys/class/net/<name>/bridge, from Sysroot, when nil) are used.
+	Bridges  func(ctx context.Context) []string
+	IsBridge func(name string) bool
+	// Proc is the machine's /proc, for the mesh client's running environment.
+	Proc string
 	// SetupPort is the setup link's LAN listener, the firewall table's one exception until it closes.
 	SetupPort int
 	// CheckEvery is how often the firewall table is checked for drift: often, so an `nft flush ruleset` is undone
@@ -68,9 +73,9 @@ type Agent struct {
 
 	mu        sync.Mutex // the state below, and joins
 	state     state
-	natAt     time.Time // when the mesh client's NAT mapper was last checked
-	bridges   []string  // the engines' bridges as last asked, and when
-	bridgesAt time.Time
+	natAt     time.Time        // when the mesh client's NAT mapper was last checked
+	bridgesAt time.Time        // when the engines were last asked for their bridges
+	refused   map[string]bool  // engine bridge names refused, reported once each
 	meshDrift []firewall.Drift // what the agent found changed in the mesh client, and put back
 	edgeDown  string           // the edge's last check's error, so a down edge is logged once
 }
@@ -89,6 +94,9 @@ type state struct {
 	// Edge is the edge's sites and certificates, once the manager has given them.
 	Edge      *edgeState `json:"edge,omitempty"`
 	SetupPort int        `json:"setupPort,omitempty"`
+	// Bridges are the engines' bridges as last confirmed: what the table uses until the engines answer again, at
+	// boot before any of them runs.
+	Bridges []string `json:"bridges,omitempty"`
 }
 
 // New makes an agent and restores its firewall table, if it had one.
@@ -121,10 +129,26 @@ func New(ctx context.Context, c Config) (*Agent, error) {
 		c.LAN = lan.OnLink
 	}
 	if c.Bridges == nil {
-		run := c.Run
-		c.Bridges = func(ctx context.Context) []string { return engineBridges(ctx, run) }
+		run, root := c.Run, c.Sysroot
+		c.Bridges = func(ctx context.Context) []string { return engineBridges(ctx, run, root) }
 	}
-	a := &Agent{cfg: c, log: c.Log, fw: &firewall.Firewall{Run: c.Run, Now: c.Now}}
+	if c.IsBridge == nil {
+		root := c.Sysroot
+		c.IsBridge = func(name string) bool {
+			if root == nil {
+				return false
+			}
+			fi, err := fs.Stat(root, "sys/class/net/"+name+"/bridge")
+			return err == nil && fi.IsDir()
+		}
+	}
+	if c.Proc == "" {
+		c.Proc = "/proc"
+	}
+	a := &Agent{cfg: c, log: c.Log, fw: &firewall.Firewall{Run: c.Run, Now: c.Now}, refused: map[string]bool{}}
+	if c.StateDir != "" {
+		a.fw.SavePath = filepath.Join(c.StateDir, "firewall.nft")
+	}
 	if c.StateDir != "" {
 		if err := os.MkdirAll(c.StateDir, 0o700); err != nil {
 			return nil, err
@@ -176,12 +200,12 @@ func (a *Agent) waitForTable(ctx context.Context) error {
 	}
 }
 
-func (a *Agent) firewallState(ctx context.Context) firewall.State {
+// firewallState is the table as it should be now. It asks nothing of the engines: their bridges are the last ones
+// confirmed (refreshBridges).
+func (a *Agent) firewallState(context.Context) firewall.State {
 	ifaces, prefixes := a.cfg.LAN()
-	if a.bridgesAt.IsZero() || a.cfg.Now().Sub(a.bridgesAt) >= bridgesEvery {
-		a.bridges, a.bridgesAt = a.cfg.Bridges(ctx), a.cfg.Now()
-	}
-	s := firewall.State{Mesh: a.state.Mesh, WireGuard: a.state.WireGuard, LAN: ifaces, LANPrefixes: prefixes, Bridges: a.bridges}
+	s := firewall.State{Mesh: a.state.Mesh, WireGuard: a.state.WireGuard, LAN: ifaces, LANPrefixes: prefixes,
+		Bridges: a.state.Bridges, Resolvers: resolvers(a.cfg.Sysroot)}
 	if !a.state.SetupClosed {
 		s.SetupPort = a.state.SetupPort
 		if s.SetupPort == 0 {
@@ -234,7 +258,11 @@ func (a *Agent) Handler() http.Handler {
 	return mux
 }
 
-// Watch checks the firewall table for drift until ctx ends, and puts it back when it drifted.
+// hostWait is how long the watch loop waits for any one of the host's tools, so a stuck engine or systemd job never
+// holds the agent.
+const hostWait = 3 * time.Second
+
+// Watch keeps the firewall table and the mesh client as they should be until ctx ends.
 func (a *Agent) Watch(ctx context.Context) {
 	t := time.NewTicker(a.cfg.CheckEvery)
 	defer t.Stop()
@@ -243,12 +271,18 @@ func (a *Agent) Watch(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-t.C:
+			a.refreshBridges(ctx, false)
+			if err := a.checkNATMapper(ctx, false); err != nil {
+				a.log.Error("checking NetBird's NAT mapper", "err", err)
+			}
 			a.check(ctx)
 		}
 	}
 }
 
 func (a *Agent) check(ctx context.Context) {
+	ctx, cancel := context.WithTimeout(ctx, hostWait)
+	defer cancel()
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if err := a.reconcile(ctx, false); err != nil {
@@ -266,25 +300,56 @@ func (a *Agent) check(ctx context.Context) {
 	}
 }
 
+// refreshBridges asks the engines for their bridges, outside the agent's lock and for hostWait at most, and keeps
+// those the kernel confirms are bridges with names nft can take. A refused name is reported once, never rendered.
+func (a *Agent) refreshBridges(ctx context.Context, force bool) {
+	a.mu.Lock()
+	due := a.state.Enforcing && (force || a.bridgesAt.IsZero() || a.cfg.Now().Sub(a.bridgesAt) >= bridgesEvery)
+	a.mu.Unlock()
+	if !due {
+		return
+	}
+	ctx, cancel := context.WithTimeout(ctx, hostWait)
+	defer cancel()
+	var ok, refused []string
+	for _, n := range a.cfg.Bridges(ctx) {
+		if firewall.ValidName(n) && a.cfg.IsBridge(n) {
+			ok = append(ok, n)
+		} else {
+			refused = append(refused, n)
+		}
+	}
+	slices.Sort(ok)
+	ok = slices.Compact(ok)
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.bridgesAt = a.cfg.Now()
+	for _, n := range refused {
+		if !a.refused[n] {
+			a.refused[n] = true
+			a.log.Warn("an engine's bridge was refused: not a bridge, or a name nft can't take", "name", fmt.Sprintf("%q", n))
+			a.fw.Note(fmt.Sprintf("refused-bridge %q", n))
+		}
+	}
+	if !slices.Equal(ok, a.state.Bridges) {
+		a.state.Bridges = ok
+		if err := a.save(); err != nil {
+			a.log.Error("saving the engines' bridges", "err", err)
+		}
+	}
+}
+
 // bridgesEvery is how long the engines' list of bridges is taken as it was, between checks; a forced check asks again.
 const bridgesEvery = 10 * time.Second
 
 // natEvery is how often the mesh client's NAT mapper setting is checked; force checks it now.
 const natEvery = 30 * time.Second
 
-// reconcile keeps the host as it should be: the table follows the LAN and the engines' bridges as they change, and
-// is put back when it drifted; the mesh client keeps its NAT mapper off. The caller holds a.mu.
+// reconcile keeps the firewall table as it should be: it follows the LAN and the engines' bridges as they change, and
+// is put back when it drifted. It runs nft only, never an engine or a systemd job. The caller holds a.mu.
 func (a *Agent) reconcile(ctx context.Context, force bool) error {
 	var errs []error
-	if force {
-		a.bridgesAt = time.Time{}
-	}
 	if a.state.Enforcing {
-		if force || a.cfg.Now().Sub(a.natAt) >= natEvery {
-			if err := a.checkNATMapper(ctx); err != nil {
-				errs = append(errs, err)
-			}
-		}
 		if want := a.firewallState(ctx); !want.Equal(a.fw.Status().State) || !a.fw.Applied() {
 			if err := a.fw.Apply(ctx, want); err != nil {
 				a.fw.Want(want)
@@ -317,12 +382,20 @@ func Serve(ctx context.Context, c Config) error {
 	srv := &http.Server{Handler: a.Handler(), ReadHeaderTimeout: 10 * time.Second}
 	served := make(chan error, 1)
 	go func() { served <- serveUntil(ctx, srv, ln) }()
+	// Nothing before READY asks an engine or waits on a systemd job: the engines start after the table is restored
+	// (homerslab-firewall-restore), and a socket-activated engine would otherwise wait for the agent.
 	// Ready only once the table is in place: systemd starts the network, the engines and the mesh client after this.
+	watched := make(chan struct{})
 	if err := a.waitForTable(ctx); err == nil {
 		notifyReady(a.log)
-		go a.Watch(watch)
+		go func() { a.Watch(watch); close(watched) }()
+	} else {
+		close(watched)
 	}
-	return <-served
+	err = <-served
+	stop()
+	<-watched // nothing of the agent's runs on after Serve
+	return err
 }
 
 // notifyReady tells systemd the agent is up (Type=notify), when systemd asks.

@@ -417,6 +417,8 @@ type policy struct {
 	Description string       `json:"description"`
 	Enabled     bool         `json:"enabled"`
 	Rules       []policyRule `json:"rules"`
+	// SourcePostureChecks are the checks a device must pass first; HomersLab's policies have none.
+	SourcePostureChecks []string `json:"source_posture_checks"`
 }
 
 type policyRule struct {
@@ -431,6 +433,9 @@ type policyRule struct {
 	Destinations  groupRefs `json:"destinations"`
 	SourceRes     *resource `json:"sourceResource,omitempty"`
 	DestRes       *resource `json:"destinationResource,omitempty"`
+	// PortRanges and AuthorizedGroups widen or change what a rule lets through; HomersLab's rules have none.
+	PortRanges       []json.RawMessage `json:"port_ranges"`
+	AuthorizedGroups json.RawMessage   `json:"authorized_groups,omitempty"`
 }
 
 // groupRefs are a rule's groups: NetBird takes their IDs and answers with objects.
@@ -459,15 +464,20 @@ func desired(r mesh.Rule, ids map[string]string) policy {
 	for i, p := range r.Ports {
 		ports[i] = strconv.Itoa(p)
 	}
-	return policy{Name: r.Name, Description: "Made by HomersLab; it puts it back if changed.", Enabled: true, Rules: []policyRule{{
-		Name: r.Name, Description: "Made by HomersLab.", Enabled: true, Action: "accept", Protocol: "tcp", Ports: ports,
-		Sources: groupRefs{ids[r.From]}, Destinations: groupRefs{ids[r.To]},
-	}}}
+	return policy{Name: r.Name, Description: "Made by HomersLab; it puts it back if changed.", Enabled: true,
+		SourcePostureChecks: []string{}, Rules: []policyRule{{
+			Name: r.Name, Description: "Made by HomersLab.", Enabled: true, Action: "accept", Protocol: "tcp", Ports: ports,
+			Sources: groupRefs{ids[r.From]}, Destinations: groupRefs{ids[r.To]}, PortRanges: []json.RawMessage{},
+		}}}
 }
 
-// same says whether a policy on the account does what want does, and nothing more.
+// same says whether a policy on the account does what want does, and nothing more: its whole rule as NetBird
+// describes it, port ranges and posture checks included.
 func same(have, want policy) bool {
-	if !have.Enabled || len(have.Rules) != 1 {
+	if !have.Enabled || len(have.Rules) != 1 || len(have.SourcePostureChecks) != 0 {
+		return false
+	}
+	if r := have.Rules[0]; len(r.PortRanges) != 0 || (len(r.AuthorizedGroups) > 0 && string(r.AuthorizedGroups) != "null" && string(r.AuthorizedGroups) != "{}") {
 		return false
 	}
 	h, w := have.Rules[0], want.Rules[0]

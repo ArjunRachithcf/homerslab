@@ -4,11 +4,12 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { flushSync } from 'react-dom';
 import { rich, t, type Key } from '../i18n/t';
-import { answer, claim, getPrimary, getSetup, Refused, type Facts, type Setup } from './api';
+import { answer, claim, dropKey, getPrimary, getSetup, heldKey, holdKey, keepSession, Refused, Unreachable, type Facts, type Setup } from './api';
 import { Assistant, Field, Icon, stepTitle, type Screen } from './Assistant';
 import { diskSize, memory } from './format';
 
-type Phase = { kind: 'loading' } | { kind: 'refused' } | { kind: 'error' } | { kind: 'ready'; setup: Setup; facts: Facts | null };
+// An error says the manager didn't answer, unless it said why: then `says` holds that.
+type Phase = { kind: 'loading' } | { kind: 'refused' } | { kind: 'error'; says?: Key } | { kind: 'ready'; setup: Setup; facts: Facts | null };
 
 const BUILT = new Set(['welcome', 'you', 'household', 'network', 'domain']);
 const validMail = (m: string) => /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(m.trim());
@@ -17,45 +18,57 @@ export function App() {
   const [phase, setPhase] = useState<Phase>({ kind: 'loading' });
   const [view, setView] = useState('welcome');
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (stale: () => boolean) => {
     try {
       const [setup, facts] = await Promise.all([getSetup(), getPrimary().catch(() => null)]);
+      if (stale()) return;
       setPhase({ kind: 'ready', setup, facts });
       const asked = location.hash.replace(/^#\//, '');
       setView(reachable(setup, asked) ? asked : 'welcome');
     } catch (e) {
-      setPhase(e instanceof Refused && e.status === 401 ? { kind: 'refused' } : { kind: 'error' });
+      if (stale()) return;
+      setPhase(e instanceof Refused && e.status === 401 ? { kind: 'refused' } : problem(e));
     }
   }, []);
 
-  useEffect(() => {
-    // The key rides in the fragment, which never reaches a server or a log. It is claimed once, then dropped. A link
-    // can also arrive in a tab that already shows setup: then only the fragment changes.
-    const open = async () => {
-      const key = new URLSearchParams(location.hash.slice(1)).get('k');
-      if (key) {
-        history.replaceState(null, '', `${location.pathname}#/welcome`);
-        setView('welcome');
-        try {
-          await claim(key);
-        } catch (e) {
-          // A used link may be this tab's own, opened again: its session carries on, and load() says if not. Another
-          // tab has no session: it needs a new link.
-          if (!(e instanceof Refused)) {
-            setPhase({ kind: 'error' });
-            return;
-          }
-        }
+  // The key rides in the fragment, which never reaches a server or a log. It stays there, and in this tab, until the
+  // manager has answered its claim: a claim the network lost is sent again, by itself and then from "Try again", and a
+  // reload finds the key where it was. A link can also arrive in a tab that already shows setup: then only the fragment
+  // changes. Each opening supersedes the one before: a late answer to an earlier one changes nothing.
+  const opening = useRef(0);
+  const open = useCallback(async () => {
+    const run = ++opening.current;
+    const stale = () => run !== opening.current;
+    const key = new URLSearchParams(location.hash.slice(1)).get('k') ?? heldKey();
+    if (key) {
+      holdKey(key);
+      const answer = await claimed(key, stale);
+      if (stale()) return;
+      if (answer.kind === 'unanswered') {
+        setPhase(problem(answer.error));
+        return;
       }
-      await load();
-    };
+      if (answer.kind === 'claimed') keepSession(answer.token);
+      dropKey();
+      history.replaceState(null, '', `${location.pathname}#/welcome`);
+      setView('welcome');
+    }
+    await load(stale);
+  }, [load]);
+
+  useEffect(() => {
     const onHash = () => {
       if (new URLSearchParams(location.hash.slice(1)).has('k')) void open();
     };
     void open();
     window.addEventListener('hashchange', onHash);
     return () => window.removeEventListener('hashchange', onHash);
-  }, [load]);
+  }, [open]);
+
+  const retry = useCallback(() => {
+    setPhase({ kind: 'loading' });
+    void open();
+  }, [open]);
 
   const go = useCallback((id: string, type: 'push' | 'pop' | 'fade' = 'push') => {
     window.HL.run(() => flushSync(() => setView(id)), { type }).then(() => {
@@ -71,7 +84,7 @@ export function App() {
   let screen: React.ReactNode = null;
   if (phase.kind === 'refused' || phase.kind === 'error') {
     const refused = phase.kind === 'refused';
-    screen = <Problem refused={refused} />;
+    screen = <Problem refused={refused} says={phase.kind === 'error' ? phase.says : undefined} onRetry={retry} />;
   } else if (phase.kind === 'ready') {
     screen = <StepScreen phase={phase} view={view} go={go} onAnswered={(setup) => setPhase({ ...phase, setup })} />;
   }
@@ -97,14 +110,14 @@ export function App() {
 }
 
 /** The link was refused, or the manager can't be reached. */
-function Problem({ refused }: { refused: boolean }) {
+function Problem({ refused, says, onRetry }: { refused: boolean; says?: Key; onRetry: () => void }) {
   const title = t(refused ? 'setup.refused.title' : 'setup.error.title');
   useTitle(title);
   return (
     <Assistant steps={[]} now="" illoFacts={{}} illo="welcome" title={title}
-      lead={t(refused ? 'setup.refused.lead' : 'setup.error.lead')}
+      lead={t(refused ? 'setup.refused.lead' : says ?? 'setup.error.lead')}
       body={refused ? <div className="cmd"><code>{t('setup.refused.command')}</code></div> : undefined}
-      primary={refused ? undefined : { label: t('setup.error.retry') }} onPrimary={() => location.reload()} />
+      primary={refused ? undefined : { label: t('setup.error.retry') }} onPrimary={onRetry} />
   );
 }
 
@@ -113,6 +126,34 @@ function useTitle(title: string) {
     document.title = t('setup.title', { title });
   }, [title]);
 }
+
+// A claim that got no answer is sent again after each of these pauses, then left to "Try again".
+const CLAIM_RETRIES = [1000, 2000, 4000];
+
+type Claim = { kind: 'claimed'; token: string } | { kind: 'refused' } | { kind: 'unanswered'; error: unknown };
+
+/**
+ * Claims the link: the manager takes the key, or refuses it for good (used, ended or expired). A refused key may be
+ * this tab's own, opened again: its session carries on, and load() says if not. Any other answer, or none, leaves the
+ * key to be tried again.
+ */
+async function claimed(key: string, superseded: () => boolean): Promise<Claim> {
+  for (let i = 0; ; i++) {
+    try {
+      return { kind: 'claimed', token: await claim(key) };
+    } catch (e) {
+      if (e instanceof Refused && e.code === 'link-refused') return { kind: 'refused' };
+      if (!(e instanceof Unreachable) || i >= CLAIM_RETRIES.length || superseded()) return { kind: 'unanswered', error: e };
+    }
+    await new Promise((r) => setTimeout(r, CLAIM_RETRIES[i]));
+    if (superseded()) return { kind: 'unanswered', error: new Unreachable() };
+  }
+}
+
+/** The manager refused this browser, not its link or answer: it isn't on this machine or its LAN, or not on its page. */
+const fromElsewhere = (e: unknown) => e instanceof Refused && (e.status === 403 || e.status === 421);
+
+const problem = (e: unknown): Phase => ({ kind: 'error', says: fromElsewhere(e) ? 'setup.fail.here' : undefined });
 
 /** A step can be shown when every step before it is done. */
 function reachable(setup: Setup, id: string): boolean {
@@ -153,6 +194,7 @@ function useStep(id: string, setup: Setup, facts: Facts | null, next: () => void
   const [touched, setTouched] = useState(!!a.household);
   const [bad, setBad] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
+  const [failed, setFailed] = useState<{ step: string; why: Failure } | null>(null);
   const householdValue = touched || !surname ? household : t('step.household.default', { surname });
   const [plane, setPlane] = useState<'cloud' | 'self-hosted'>(a.meshControlPlane === 'self-hosted' ? 'self-hosted' : 'cloud');
   const [url, setUrl] = useState(a.meshControlPlane === 'self-hosted' ? (a.meshUrl ?? '') : '');
@@ -183,6 +225,7 @@ function useStep(id: string, setup: Setup, facts: Facts | null, next: () => void
 
   const send = async (body: Record<string, string | boolean>) => {
     setBusy(true);
+    setFailed(null); // a failure that happens again is a new notice, read out again
     try {
       const s = await answer(id, body);
       onAnswered(s);
@@ -192,10 +235,12 @@ function useStep(id: string, setup: Setup, facts: Facts | null, next: () => void
     } catch (e) {
       if (e instanceof Refused && e.code === 'invalid') setBad(e.fields);
       else if (e instanceof Refused && e.status === 401) location.reload();
+      else setFailed({ step: id, why: failure(e) });
     } finally {
       setBusy(false);
     }
   };
+  const notice = failed?.step === id ? <FailNotice why={failed.why} /> : undefined;
 
   switch (id) {
     case 'welcome': {
@@ -209,6 +254,7 @@ function useStep(id: string, setup: Setup, facts: Facts | null, next: () => void
         body: resumed ? <Left steps={left.map((s) => s.id)} /> : undefined,
         moreLabel: t('step.welcome.about'),
         more: <><About facts={facts} /><Needs /></>,
+        notice,
         primary: { label: t(resumed ? 'step.welcome.resume' : 'step.welcome.start'), busy },
         onPrimary: resumed ? resume : () => send({}),
       };
@@ -223,6 +269,7 @@ function useStep(id: string, setup: Setup, facts: Facts | null, next: () => void
           <Field id="mail" label={t('step.you.mail')} value={mail} onChange={setMail} type="email" autoComplete="email"
             hint={t('step.you.mailHint')} error={bad.includes('mail') ? t('step.you.mailInvalid') : undefined} />
         </>,
+        notice,
         primary: { label: t('setup.continue'), ok, why: t('step.you.why'), busy },
         onPrimary: () => send({ name, mail }),
       };
@@ -233,6 +280,7 @@ function useStep(id: string, setup: Setup, facts: Facts | null, next: () => void
         body: <Field id="household" label={t('step.household.name')} value={householdValue}
           onChange={(v) => { setTouched(true); setHousehold(v); }}
           error={bad.includes('name') ? t('step.household.invalid') : undefined} />,
+        notice,
         primary: { label: t('setup.continue'), ok: !!householdValue.trim(), why: t('step.household.why'), busy },
         onPrimary: () => send({ name: householdValue }),
       };
@@ -369,6 +417,36 @@ function useStep(id: string, setup: Setup, facts: Facts | null, next: () => void
         primary: { label: t('setup.continue'), ok: false, why: t('step.unbuilt.why') },
       };
   }
+}
+
+/** What the page says when the manager didn't take an answer; "reload" when setup is elsewhere by now. */
+type Failure = { says: Key; reload?: boolean };
+
+function failure(e: unknown): Failure {
+  if (e instanceof Unreachable) return { says: 'setup.fail.offline' };
+  if (!(e instanceof Refused)) return { says: 'setup.fail.server' };
+  if (e.code === 'lan-half-done') return { says: 'setup.fail.lanDone', reload: true };
+  if (e.code === 'over-the-mesh') return { says: 'setup.fail.mesh' };
+  if (e.status === 409) return { says: 'setup.fail.moved', reload: true }; // earlier-step-open
+  if (e.status === 501) return { says: 'setup.error.unbuilt' }; // not-built
+  if (fromElsewhere(e)) return { says: 'setup.fail.here' }; // not-from-lan, cross-origin, wrong-host
+  if (e.status >= 400 && e.status < 500) return { says: 'setup.fail.refused', reload: true }; // unknown-step, not-json
+  return { says: 'setup.fail.server' };
+}
+
+/** A notice that is read out as it appears. */
+function FailNotice({ why }: { why: Failure }) {
+  return (
+    <div className="notice notice-warn" role="alert">
+      <Icon name="alert" />
+      <span className="notice-body">{t(why.says)}</span>
+      {why.reload && (
+        <span className="notice-actions">
+          <button type="button" className="btn btn-sm" onClick={() => location.reload()}>{t('setup.fail.reload')}</button>
+        </span>
+      )}
+    </div>
+  );
 }
 
 function Left({ steps }: { steps: string[] }) {

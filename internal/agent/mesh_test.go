@@ -10,6 +10,7 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -355,29 +356,110 @@ func TestTheTableFollowsTheLANAndTheEnginesBridges(t *testing.T) {
 		defer mu.Unlock()
 		return []string{"br-iot"}, []netip.Prefix{netip.MustParsePrefix(prefix)}
 	}
-	sock, h := agenttest.StartWith(t, agent.Config{LAN: lan})
-	call(t, sock, "POST", "/v1/mesh/join", joinBody())
-	if table, _ := h.Table(); strings.Contains(table, "apps_in") && strings.Contains(table, "jump apps_in") {
-		t.Errorf("with no engine answering, a bridge is trusted:\n%s", table)
+	// Podman, from its network files: its default bridge and one network.
+	sysroot := fstest.MapFS{
+		"usr/bin/podman":                      {Data: []byte{}},
+		"etc/containers/networks/photos.json": {Data: []byte(`{"name":"photos","driver":"bridge","network_interface":"podman1"}`)},
+		"etc/containers/networks/mac.json":    {Data: []byte(`{"name":"mac","driver":"macvlan","network_interface":"enp5s0"}`)},
+		"etc/resolv.conf":                     {Data: []byte("nameserver 127.0.0.53\n")},
+		"run/systemd/resolve/resolv.conf":     {Data: []byte("nameserver 192.168.1.1\nnameserver 2001:db8:1::1\n")},
 	}
+	sock, h := agenttest.StartWith(t, agent.Config{LAN: lan, Sysroot: sysroot})
+	call(t, sock, "POST", "/v1/mesh/join", joinBody())
 	// Docker's default bridge, a compose network it named br-<id>, one it was told to call br-iot (the LAN's own
-	// name), and Podman's.
-	h.Engines(map[string]string{"0123456789abcdef": "docker0", "abcdef0123456789": "", "fedcba9876543210": "br-iot"}, []string{"podman1"})
+	// name), names nft would misread, and a name that is the LAN's NIC, not a bridge.
+	h.Engines(map[string]string{"0123456789abcdef": "docker0", "abcdef0123456789": "", "fedcba9876543210": "br-iot",
+		"1111111111111111": "en*", "2222222222222222": `x"y`, "3333333333333333": "enp5s0"})
+	h.NotABridge("enp5s0")
 	mu.Lock()
 	prefix = "2001:db8:5::/64"
 	mu.Unlock()
-	call(t, sock, "POST", "/v1/firewall/check", nil)
+	_, body := call(t, sock, "POST", "/v1/firewall/check", nil)
 	table, _ := h.Table()
-	if !strings.Contains(table, `iifname { "br-abcdef012345", "docker0", "podman1" } jump apps_in`) {
+	if !strings.Contains(table, `iifname { "br-abcdef012345", "docker0", "podman0", "podman1" } jump apps_in`) {
 		t.Errorf("the engines' bridges, by their exact names, and never the LAN's:\n%s", table)
+	}
+	for _, bad := range []string{"en*", `x\"y`, `"enp5s0"`} {
+		if strings.Contains(table, bad) {
+			t.Errorf("rendered %s:\n%s", bad, table)
+		}
 	}
 	if !strings.Contains(table, "2001:db8:5::/64") {
 		t.Errorf("the table didn't follow the LAN's new prefix:\n%s", table)
 	}
-	h.Engines(nil, nil) // the engines stop answering
+	if !strings.Contains(table, "ip daddr { 192.168.1.1 } meta l4proto { tcp, udp } th dport 53 accept") ||
+		!strings.Contains(table, "ip6 daddr { 2001:db8:1::1 } meta l4proto { tcp, udp } th dport 53 accept") {
+		t.Errorf("the apps can't ask the machine's resolvers:\n%s", table)
+	}
+	var s agent.FirewallStatus
+	_ = json.Unmarshal(body, &s)
+	var refused []string
+	for _, d := range s.Drift {
+		refused = append(refused, d.What)
+	}
+	if !slices.Contains(refused, `refused-bridge "en*"`) || !slices.Contains(refused, `refused-bridge "enp5s0"`) ||
+		!slices.Contains(refused, `refused-bridge "x\"y"`) {
+		t.Errorf("refused names reported: %v", refused)
+	}
 	call(t, sock, "POST", "/v1/firewall/check", nil)
-	if table, _ := h.Table(); strings.Contains(table, "jump apps_in") {
-		t.Errorf("bridges are trusted with no engine answering:\n%s", table)
+	if _, body := call(t, sock, "GET", "/v1/firewall", nil); strings.Count(string(body), "refused-bridge") != 3 {
+		t.Errorf("a refused name is reported more than once: %s", body)
+	}
+	h.Engines(nil) // Docker stops
+	call(t, sock, "POST", "/v1/firewall/check", nil)
+	if table, _ := h.Table(); strings.Contains(table, "docker0") || !strings.Contains(table, "podman1") {
+		t.Errorf("Docker's bridges are still trusted once it stopped:\n%s", table)
+	}
+}
+
+func TestTheAgentWritesTheTableItAppliesForTheNextBoot(t *testing.T) {
+	testenv.Isolate(t)
+	state := t.TempDir()
+	sock, h := agenttest.StartWith(t, agent.Config{StateDir: state})
+	call(t, sock, "POST", "/v1/mesh/join", joinBody())
+	call(t, sock, "PUT", "/v1/firewall/setup-listener", map[string]bool{"open": false})
+	saved, err := os.ReadFile(filepath.Join(state, "firewall.nft"))
+	table, _ := h.Table()
+	if err != nil || string(saved) != table {
+		t.Fatalf("saved %v:\n%s\napplied:\n%s", err, saved, table)
+	}
+	if fi, _ := os.Stat(filepath.Join(state, "firewall.nft")); fi.Mode().Perm() != 0o600 {
+		t.Errorf("mode %o, want 600", fi.Mode().Perm())
+	}
+}
+
+func TestReadyNeverWaitsOnAnEngine(t *testing.T) {
+	testenv.Isolate(t)
+	state := t.TempDir()
+	sock, h := agenttest.StartWith(t, agent.Config{StateDir: state})
+	h.Engines(map[string]string{"abcdef0123456789": ""})
+	call(t, sock, "POST", "/v1/mesh/join", joinBody())
+	call(t, sock, "POST", "/v1/firewall/check", nil)
+
+	// After a reboot Docker is socket-activated and waits for the agent: asking it would never return.
+	notify := filepath.Join(t.TempDir(), "notify.sock")
+	ln, err := net.ListenUnixgram("unixgram", &net.UnixAddr{Name: notify, Net: "unixgram"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	t.Setenv("NOTIFY_SOCKET", notify)
+	h2 := agenttest.NewHost(t.TempDir())
+	h2.Block()
+	sock2, _ := agenttest.StartWith(t, agent.Config{StateDir: state, Run: h2.Run, Root: h2.Root, CheckEvery: 50 * time.Millisecond})
+	_ = ln.SetReadDeadline(time.Now().Add(2 * time.Second))
+	buf := make([]byte, 64)
+	if n, err := ln.Read(buf); err != nil || string(buf[:n]) != "READY=1" {
+		t.Fatalf("no READY with the engines hanging: %q %v", buf[:n], err)
+	}
+	if table, _ := h2.Table(); !strings.Contains(table, `"br-abcdef012345"`) {
+		t.Errorf("the restored table lost the bridges it knew:\n%s", table)
+	}
+	// With the watch loop stuck asking a hanging engine, the agent still answers at once.
+	time.Sleep(200 * time.Millisecond)
+	start := time.Now()
+	if code, _ := call(t, sock2, "GET", "/v1/firewall", nil); code != http.StatusOK || time.Since(start) > time.Second {
+		t.Errorf("GET /v1/firewall took %v with an engine hanging", time.Since(start))
 	}
 }
 
