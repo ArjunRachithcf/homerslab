@@ -12,7 +12,7 @@ when its ticket is merged, waiting for the maintainer, or parked, and the tracke
 | `in-progress` | Claimed by an iteration |
 | `security-core` | Waiting for the maintainer to merge (see `CLAUDE.md`) |
 | `needs-decision` | The loop asked the maintainer something |
-| `parked` | Failed twice, written up |
+| `parked` | Failed three times (or twice without a clear fix), written up |
 | `bug` | Found while working; worked before slices |
 | `digest` | The daily summary issue |
 | `idea` | From standing work: a proposal with a recommendation |
@@ -65,10 +65,13 @@ when its ticket is merged, waiting for the maintainer, or parked, and the tracke
     2. Remove `in-progress`.
     3. For `integration`: close the ticket by hand, with a comment naming the PR, since `Closes` fires only on `main`.
        Then add the ticket to the standing PR's list (open that PR if there is none) and to today's digest.
-11. **Failures.** A PR that fails CI or review twice for the same ticket gets parked:
-    - close the PR as a draft and keep its branch;
-    - comment what was tried, what failed and what's needed;
-    - label the ticket `parked` and remove `in-progress`.
+11. **Failures.**
+    - **The second failure** (CI or review) for the same ticket: when the review wrote down a clear fix, the loop
+      resumes the ticket once with that fix, and says so in the digest. Otherwise, it parks the ticket as below.
+    - **The third failure** parks the ticket:
+      - close the PR as a draft and keep its branch;
+      - comment what was tried, what failed and what's needed;
+      - label the ticket `parked`, remove `in-progress`, and ask the maintainer.
 12. **Bugs found along the way** become new issues labelled `bug`, each with a repro, the expected result and blocking
     links. They aren't fixed inside an unrelated PR.
 
