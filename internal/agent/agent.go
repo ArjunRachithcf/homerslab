@@ -59,6 +59,9 @@ type Config struct {
 	// IsBridge confirms (the kernel's /sys/class/net/<name>/bridge, from Sysroot, when nil) are used, kept ones too.
 	Bridges  func(ctx context.Context) map[string][]string
 	IsBridge func(name string) bool
+	// HasInterface says whether the kernel has an interface by that name (/sys/class/net/<name>, from Sysroot, when
+	// nil). A saved bridge the kernel doesn't have yet (at boot) stays in the table, for the moment its engine makes it.
+	HasInterface func(name string) bool
 	// SetupPort is the setup link's LAN listener, the firewall table's one exception until it closes.
 	SetupPort int
 	// CheckEvery is how often the firewall table is checked for drift: often, so an `nft flush ruleset` is undone
@@ -206,6 +209,16 @@ func New(ctx context.Context, c Config) (*Agent, error) {
 			}
 			fi, err := fs.Stat(root, "sys/class/net/"+name+"/bridge")
 			return err == nil && fi.IsDir()
+		}
+	}
+	if c.HasInterface == nil {
+		root := c.Sysroot
+		c.HasInterface = func(name string) bool {
+			if root == nil {
+				return true // nothing to look at: no name is taken as one still to come
+			}
+			_, err := fs.Stat(root, "sys/class/net/"+name)
+			return !errors.Is(err, fs.ErrNotExist)
 		}
 	}
 	a := &Agent{cfg: c, log: c.Log, fw: &firewall.Firewall{Run: c.Run, Now: c.Now}, refused: map[string]bool{}, reads: newReads(c.Executable)}
@@ -481,12 +494,13 @@ func (a *Agent) refreshBridges(ctx context.Context, force bool) {
 	}
 }
 
-// bridges are every engine's bridges, as last confirmed, that the kernel shows are bridges now. The caller holds a.mu.
+// bridges are every engine's bridges, as last confirmed, that the kernel shows are bridges now or has no interface for
+// yet (at boot, before the engine makes it): never one the kernel shows as something else. The caller holds a.mu.
 func (a *Agent) bridges() []string {
 	var out []string
 	for _, names := range a.state.Bridges {
 		for _, n := range names {
-			if firewall.ValidName(n) && a.cfg.IsBridge(n) {
+			if firewall.ValidName(n) && (a.cfg.IsBridge(n) || !a.cfg.HasInterface(n)) {
 				out = append(out, n)
 			}
 		}

@@ -819,8 +819,9 @@ func TestClosingAClosedListenerAgainLeavesTheTableAlone(t *testing.T) {
 	}
 }
 
-// At boot the engines' bridges aren't in the kernel yet: the saved list waits for them, and the table takes each as it
-// appears, while Docker is still on its way up.
+// At boot the engines' bridges aren't in the kernel yet: the restored table already holds the saved ones, so each is an
+// app bridge from the moment dockerd makes it, never a local virtual network until the next check. A saved name the
+// kernel shows as something other than a bridge is left out (TestAHungDockerKeepsItsBridges).
 func TestTheSavedBridgesWaitForTheKernelAtBoot(t *testing.T) {
 	testenv.Isolate(t)
 	state := t.TempDir()
@@ -832,12 +833,12 @@ func TestTheSavedBridgesWaitForTheKernelAtBoot(t *testing.T) {
 	h2 := agenttest.NewHost(t.TempDir())
 	h2.Engines(map[string]string{"0123456789abcdef": "docker0"})
 	h2.DockerState("activating", "loaded")
-	h2.NotABridge("docker0") // dockerd hasn't made it yet
-	sock2, _ := agenttest.StartWith(t, agent.Config{StateDir: state, Run: h2.Run, Root: h2.Root, IsBridge: h2.IsBridge})
-	call(t, sock2, "POST", "/v1/firewall/check", nil)
-	if table, _ := h2.Table(); strings.Contains(table, "docker0") {
-		t.Errorf("a bridge the kernel doesn't have yet is in the table:\n%s", table)
+	h2.Absent("docker0") // dockerd hasn't made it yet
+	sock2, _ := agenttest.StartWith(t, agent.Config{StateDir: state, Run: h2.Run, Root: h2.Root, IsBridge: h2.IsBridge, HasInterface: h2.HasInterface})
+	if table, _ := h2.Table(); !strings.Contains(table, `iifname { "docker0" } jump apps_in`) {
+		t.Errorf("the restored table doesn't hold the saved bridge the kernel will have:\n%s", table)
 	}
+	call(t, sock2, "POST", "/v1/firewall/check", nil)
 	h2.ABridgeAgain("docker0") // dockerd made it, still activating
 	call(t, sock2, "POST", "/v1/firewall/check", nil)
 	if table, _ := h2.Table(); !strings.Contains(table, `iifname { "docker0" } jump apps_in`) {
