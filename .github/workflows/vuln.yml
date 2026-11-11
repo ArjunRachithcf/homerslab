@@ -38,11 +38,29 @@ jobs:
         with:
           ref: ${{ matrix.ref }}
           persist-credentials: false
-      # govulncheck's version and sums are pinned in tools/go.mod and tools/go.sum. Exit 3 means the code calls a
-      # vulnerable symbol (the standard library's included); findings only in imported packages or required modules,
-      # such as GO-2026-5932 (x/crypto/openpgp, never called), are listed under "Module Results" and exit 0.
-      - name: govulncheck ./...
-        run: go -C tools tool govulncheck -C .. -show verbose ./...
+      # govulncheck's version and sums are pinned in tools/go.mod and tools/go.sum. Built for this runner first, so the
+      # scans below can name another target without govulncheck itself being built for it.
+      - name: Build govulncheck
+        run: |
+          go -C tools mod tidy -diff
+          go -C tools build -o /usr/local/bin/govulncheck golang.org/x/vuln/cmd/govulncheck
+      # Each target the packages ship for, as the binary is built (CGO_ENABLED=0). Exit 3 means the code calls a
+      # vulnerable symbol, the standard library's included. Findings only in imported packages or required modules
+      # are listed under "Package Results" and "Module Results" and exit 0: GO-2026-5932, for example (x/crypto's
+      # openpgp, with no tagged fix), whenever x/crypto is required and openpgp never imported.
+      - name: govulncheck ./... (linux/amd64)
+        env:
+          GOOS: linux
+          GOARCH: amd64
+          CGO_ENABLED: "0"
+        run: govulncheck -show verbose ./...
+      - name: govulncheck ./... (linux/arm64)
+        if: ${{ !cancelled() }}
+        env:
+          GOOS: linux
+          GOARCH: arm64
+          CGO_ENABLED: "0"
+        run: govulncheck -show verbose ./...
 
   npm:
     name: npm audit (${{ matrix.ref || github.head_ref || github.ref_name }})
@@ -65,6 +83,6 @@ jobs:
       # npm audit reads package-lock.json; nothing is installed and no package script runs.
       - name: Every advisory, development tools included (listed, never fails)
         run: |
-          npm audit || echo "::warning title=npm audit::advisories found; the next step fails only if one is in a package that ships"
+          npm audit || echo "::warning title=npm audit::npm audit exited non-zero (advisories, or the registry failed: see the log); the next step fails only on an advisory in a package that ships"
       - name: Advisories in the packages that ship (fail the job)
         run: npm audit --omit=dev
