@@ -27,9 +27,14 @@ when its ticket is merged, waiting for the maintainer, or parked, and the tracke
   - PRs whose blocking tickets were merged only into `integration`.
 
   The loop merges into it after the same CI and review. One standing PR, `integration` → `main`, labelled
-  `security-core` and `integration`, lists every ticket inside it. The maintainer squash-merges it into `main` as one
-  commit.
-- **Up to three iterations run at once** on independent tickets, each in its own worktree.
+  `security-core` and `integration`, lists every ticket inside it.
+- **When `integration` is ready** (every PR stacked for it is merged into it), the loop reviews the standing PR along
+  several axes at once: security, correctness, the spec and ADRs, tests and isolation, the design system and
+  accessibility, and supply chain and CI. It runs up to three rounds, incrementally (see step 9). When a round passes,
+  the loop squash-merges it into `main` (the maintainer, 2026-11-11). Three failed rounds park it for the maintainer.
+- **At most two agents run at once**, counting implementers and reviewers together, so the work stays inside the
+  usage limit (the maintainer, 2026-11-11). Reviews that unblock `integration` come first, then the critical path.
+  Agents keep their reports short (about 300 words), and the orchestrator keeps its own turns brief.
 
 ## Steps
 
@@ -60,6 +65,11 @@ when its ticket is merged, waiting for the maintainer, or parked, and the tracke
 8. **Wait for CI.** It must be green.
 9. **Get an independent review.** Start a fresh subagent that gets only the PR's diff, the ticket, the linked spec and
    ADRs, and the glossary. It approves, or lists problems. Fix them and go back to step 8.
+   - **Later rounds are incremental** (the maintainer, 2026-11-11), so a PR can actually pass:
+     - they check that each earlier finding is fixed;
+     - they review only what changed since the last round;
+     - a new problem in code the round didn't change is filed as a follow-up issue, not a blocker, unless it is a
+       high-severity security problem.
 10. **Merge.**
     1. Squash-merge into the PR's base and delete the branch.
     2. Remove `in-progress`.
@@ -79,7 +89,7 @@ when its ticket is merged, waiting for the maintainer, or parked, and the tracke
 
 Once a day, update one issue labelled `digest`, titled `Digest <date>`. It lists:
 - **merged**: PRs and closed tickets;
-- **waiting for you**: the integration PR and the tickets in it;
+- **waiting for you**: decisions, and anything parked;
 - **questions**: `needs-decision` tickets, each linked;
 - **parked**: tickets with their one-line reason;
 - **next**: the frontier.
@@ -88,7 +98,7 @@ The digest is the maintainer's one place to look.
 
 ## Standing work
 
-The loop never idles. Whenever a slot is free (fewer than three tickets running, or nothing on the frontier), it runs
+The loop never idles. Whenever a slot is free (under the two-agent limit, or nothing on the frontier), it runs
 the next item of this rotation in a fresh subagent:
 
 1. **Bug hunt.** Read and run what's merged on `main` and `integration`. Try the edge cases the tests skip. Write a
