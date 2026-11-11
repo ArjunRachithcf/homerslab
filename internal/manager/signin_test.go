@@ -106,8 +106,20 @@ func (f *fakeSignIn) sign(claims map[string]any) string {
 	return in + "." + base64.RawURLEncoding.EncodeToString(sig)
 }
 
-// code is what the sign-in hands the browser after a person signed in for an authorize URL.
+// code is what the sign-in hands the browser after a person signed in for an authorize URL: just now when the URL
+// asks for a recent sign-in (max_age), as Authentik does, and otherwise on the session they signed in to an hour
+// before.
 func (f *fakeSignIn) code(t *testing.T, authorize, username string, groups ...string) (state, code string) {
+	t.Helper()
+	at := f.now().Add(-time.Hour)
+	if u, err := url.Parse(authorize); err == nil && u.Query().Get("max_age") != "" {
+		at = f.now()
+	}
+	return f.codeAt(t, authorize, at, username, groups...)
+}
+
+// codeAt is code, for a person who signed in at the sign-in at a given time.
+func (f *fakeSignIn) codeAt(t *testing.T, authorize string, at time.Time, username string, groups ...string) (state, code string) {
 	t.Helper()
 	u, err := url.Parse(authorize)
 	if err != nil || !strings.HasPrefix(authorize, signInOrigin+"/application/o/authorize/") {
@@ -120,7 +132,7 @@ func (f *fakeSignIn) code(t *testing.T, authorize, username string, groups ...st
 	code = fmt.Sprintf("code-%d", time.Now().UnixNano())
 	f.mu.Lock()
 	f.codes[code] = map[string]any{"iss": issuer, "aud": "admin-client", "sub": "hashed-" + username, "preferred_username": username,
-		"groups": groups, "nonce": q.Get("nonce"), "exp": f.now().Add(5 * time.Minute).Unix(), "iat": f.now().Unix(),
+		"groups": groups, "nonce": q.Get("nonce"), "exp": f.now().Add(5 * time.Minute).Unix(), "iat": f.now().Unix(), "auth_time": at.Unix(),
 		"_challenge": q.Get("code_challenge")}
 	f.mu.Unlock()
 	return q.Get("state"), code
@@ -500,6 +512,51 @@ func TestTheSecondHalfEndsAtTheAdminsFirstSignInOverTheMesh(t *testing.T) {
 
 	if len(fs.bootstrap) != 1 {
 		t.Errorf("Authentik was bootstrapped %d times", len(fs.bootstrap))
+	}
+}
+
+// Admin's sign-in is a fresh one every time: the passkey, not a session the person (or a thief) holds at the sign-in
+// already, which the provider's other ways in could have made (review of #17).
+func TestAdminAsksForAFreshSignInEveryTime(t *testing.T) {
+	testenv.Isolate(t)
+	p, _, fs := atJoin(t)
+	if r := p.control("POST", "/api/v1/setup/join", nil); r.Code != http.StatusOK {
+		t.Fatalf("setup join: %d %s", r.Code, r.Body)
+	}
+	fs.passkeys["ines"] = 1
+	a := p.admin(t)
+	rec := a.do("GET", "/auth/sign-in")
+	u, err := url.Parse(rec.Header().Get("Location"))
+	if err != nil || u.Query().Get("max_age") != "30" {
+		t.Errorf("the authorize URL %s: want max_age=30", rec.Header().Get("Location"))
+	}
+	state, code := fs.codeAt(t, rec.Header().Get("Location"), p.clock.Now().Add(-10*time.Minute), "ines", "homerslab-admins")
+	if rec := a.do("GET", "/auth/callback?state="+url.QueryEscape(state)+"&code="+url.QueryEscape(code)); rec.Code != http.StatusForbidden {
+		t.Errorf("a sign-in on a session from before the attempt: %d, want 403", rec.Code)
+	}
+	if _, ok := a.cookies["__Host-homerslab-session"]; ok {
+		t.Error("an older session at the sign-in opened Admin")
+	}
+	if rec := a.signIn(fs, "ines", "homerslab-admins"); rec.Code != http.StatusSeeOther {
+		t.Errorf("a fresh sign-in: %d %s", rec.Code, rec.Body)
+	}
+}
+
+// The device key has done its work once the admin signs in over the mesh: the first sign-in ends it, so a copy of
+// it (a photo of the terminal) joins nothing for the rest of its day (review of #17).
+func TestTheFirstSignInEndsTheDeviceKey(t *testing.T) {
+	testenv.Isolate(t)
+	p, _, fs := atJoin(t)
+	nb := p.netbird.(*fakeNetBird)
+	if r := p.control("POST", "/api/v1/setup/join", nil); r.Code != http.StatusOK {
+		t.Fatalf("setup join: %d %s", r.Code, r.Body)
+	}
+	fs.passkeys["ines"] = 1
+	if rec := p.admin(t).signIn(fs, "ines", "homerslab-admins"); rec.Code != http.StatusSeeOther {
+		t.Fatalf("the first sign-in: %d %s", rec.Code, rec.Body)
+	}
+	if strings.Join(nb.revokedKeys, " ") != "dk-1" {
+		t.Errorf("revoked %v, want the device key handed over", nb.revokedKeys)
 	}
 }
 

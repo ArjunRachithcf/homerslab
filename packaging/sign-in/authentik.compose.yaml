@@ -14,7 +14,9 @@
 #     file holds one, and is never in the container's configuration;
 #   - no Docker socket, no custom templates and no certificates folder: the edge holds the certificate;
 #   - X-Forwarded-* trusted only from the sign-in network's gateway, where the edge and the manager connect from;
-#   - no telemetry: no error reporting, no startup analytics, no update check.
+#   - no telemetry: no error reporting, no startup analytics, no update check;
+#   - warnings and errors logged only: Authentik logs each request's URL at info, an enrolment link's token with it,
+#     and the unit's log is the journal.
 name: homerslab-authentik
 
 networks:
@@ -58,6 +60,7 @@ x-authentik: &authentik
     AUTHENTIK_ERROR_REPORTING__ENABLED: "false"
     AUTHENTIK_DISABLE_STARTUP_ANALYTICS: "true"
     AUTHENTIK_DISABLE_UPDATE_CHECK: "true"
+    AUTHENTIK_LOG_LEVEL: warning
   volumes:
     - data:/data
   depends_on:

@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -267,8 +268,12 @@ func (a *Agent) getSignIn(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, s)
 }
 
-// getSignInLogs is the unit's last lines in the journal. Authentik logs no secret; the unit's own lines name only
-// files.
+// enrolmentToken is an enrolment link's token in a logged URL, plain or URL-encoded (once or twice).
+var enrolmentToken = regexp.MustCompile(`(?i)(itoken(?:=|%3D|%253D))[^&\s"\\]+`)
+
+// getSignInLogs is the unit's last lines in the journal. The packaged Authentik logs warnings and errors only, and the
+// unit's own lines name only files; an enrolment link's token, which a request line would carry, is cut out anyway
+// (a journal from before, or a level raised by hand).
 func (a *Agent) getSignInLogs(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), hostWait)
 	defer cancel()
@@ -281,6 +286,7 @@ func (a *Agent) getSignInLogs(w http.ResponseWriter, r *http.Request) {
 	if len(out) > 256<<10 {
 		out = out[len(out)-256<<10:]
 	}
+	out = enrolmentToken.ReplaceAll(out, []byte("${1}…"))
 	writeJSON(w, http.StatusOK, map[string]any{"unit": SignInUnit, "lines": strings.Split(strings.TrimRight(string(out), "\n"), "\n"),
 		"at": time.Now().UTC()})
 }

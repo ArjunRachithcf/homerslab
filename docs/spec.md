@@ -878,8 +878,8 @@ point. Nothing needs replacing for:
 - **Then the admin joins this device to the mesh** (a QR code) and finishes at the sign-in's own address, where the
   admin's passkey is created. The passkey is bound to the name the household will use every day.
   - It comes from a one-time enrolment link for the admin's account, which the manager mints (30 minutes, once) and
-    the claimed setup session hands over, as a QR code beside the mesh one. No other path creates the first admin
-    (#84).
+    shows only in the machine's terminal (`sudo homerslab setup join`), as a QR code beside the device's mesh key: no
+    secret travels over the LAN page's plain HTTP (#64). No other path creates the first admin (#84).
 - **The LAN listener closes for good** at the admin's first sign-in over the mesh.
 - **Headscale households** also make one guided change in Headscale's configuration: its base domain.
 - **The first half travels over plain HTTP on the LAN**, including the mesh token, the DNS token and the mail

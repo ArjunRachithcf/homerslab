@@ -157,6 +157,15 @@ func (a *Authenticator) Get(o RequestOptions) (map[string]any, error) {
 // Passkeys is how many passkeys it holds.
 func (a *Authenticator) Passkeys() int { return len(a.creds) }
 
+// Assertions is how many assertions its passkeys have signed: how often the person was asked for one.
+func (a *Authenticator) Assertions() int {
+	n := 0
+	for _, c := range a.creds {
+		n += int(c.signed)
+	}
+	return n
+}
+
 // authData is the authenticator data: the RP ID's hash, the flags, the counter and, at registration, the credential.
 func (a *Authenticator) authData(c *cred, flags byte, attested []byte) []byte {
 	rp := sha256.Sum256([]byte(c.rpID))

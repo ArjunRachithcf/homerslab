@@ -30,12 +30,18 @@ type World interface {
 	FirstAdmin(t *testing.T) []string
 	// Expire makes every outstanding enrolment link of the person expire now, as the clock passing would.
 	Expire(t *testing.T, username string)
-	// Drift changes HomersLab's sign-in behind its back: user verification relaxed to "preferred" on its passkey
-	// stages, as an admin in the provider's own console could.
+	// Drift changes HomersLab's sign-in behind its back, as an admin in the provider's own console could: user
+	// verification relaxed to "preferred" on its passkey stages, the sign-in served under another name, and the
+	// provider's own sign-in open to the household's people again.
 	Drift(t *testing.T)
-	// GivePassword gives a person a password and a second factor that isn't a passkey (TOTP), as a stolen session
-	// could from the provider's own user settings, and returns the password.
-	GivePassword(t *testing.T, username string) string
+	// GiveFactors gives a person a password and a second factor that isn't a passkey (TOTP), as a stolen session of
+	// theirs could from the provider's own user settings: b holds their passkey, and signs in with it first. It
+	// returns the factors, which it has checked the provider took.
+	GiveFactors(t *testing.T, b Browser, username string) Factors
+	// ProviderSignIn signs in in b through the provider's own default sign-in, outside any client, with the factors
+	// alone, as a thief who has them would. It returns nil only when b came out of it with a session; the factors
+	// themselves must have been taken (a wrong one fails the test, so a refusal is the provider's, not a typo's).
+	ProviderSignIn(t *testing.T, b Browser, username string, f Factors) error
 	// OIDC is the relying party's HTTP client for server-to-server calls (token, keys), the way the manager reaches
 	// the sign-in.
 	OIDC() oidc.Client
@@ -47,13 +53,21 @@ type Enrolment struct {
 	UserVerification string
 }
 
-// Browser runs the provider's flows as a person would.
+// Factors are what a person may know besides their passkeys: a password, and a TOTP code maker.
+type Factors struct {
+	Password string
+	// TOTP is the current code, a new one at each call (it waits for the next period when it must).
+	TOTP func() string
+}
+
+// Browser runs the provider's flows as a person would, keeping its session between them.
 type Browser interface {
 	// Enrol opens an enrolment link and makes a passkey with the browser's authenticator.
 	Enrol(t *testing.T, link idp.Link) (Enrolment, error)
 	// SignIn opens a client's authorize URL, signs in as username through whatever flow the provider shows, and
-	// returns the redirect's state and code. password, when not empty, is offered wherever a password is asked.
-	SignIn(t *testing.T, authorize, username, password string) (state, code string, err error)
+	// returns the redirect's state and code. Its authenticator's passkeys are offered wherever a passkey is asked,
+	// and f's factors wherever a password or a code is.
+	SignIn(t *testing.T, authorize, username string, f Factors) (state, code string, err error)
 }
 
 // Run runs the contract against a World.
@@ -186,18 +200,23 @@ func Run(t *testing.T, w World, version string) {
 	if err != nil {
 		t.Fatalf("discovery: %v", err)
 	}
-	signIn := func(t *testing.T, a *webauthntest.Authenticator, username, password string) (oidc.Claims, error) {
+	// signInWith signs in to Admin's client in b, as Admin asks: a fresh sign-in, whatever session b holds.
+	signInWith := func(t *testing.T, b Browser, username string, f Factors) (oidc.Claims, error) {
 		t.Helper()
-		at := oidc.NewAttempt()
-		state, code, err := w.Browser(t, a).SignIn(t, c.AuthorizeURL(e, at, false), username, password)
+		at := oidc.FreshAttempt(time.Now())
+		state, code, err := b.SignIn(t, c.AuthorizeURL(e, at), username, f)
 		if err != nil {
 			return oidc.Claims{}, err
 		}
 		return c.Finish(ctx, e, at, state, code, time.Now())
 	}
+	signIn := func(t *testing.T, a *webauthntest.Authenticator, username string) (oidc.Claims, error) {
+		t.Helper()
+		return signInWith(t, w.Browser(t, a), username, Factors{})
+	}
 
 	t.Run("Admin's client: the admin signs in with the passkey, and the ID token names them and their role", func(t *testing.T) {
-		cl, err := signIn(t, phone, "ines", "")
+		cl, err := signIn(t, phone, "ines")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -209,7 +228,7 @@ func Run(t *testing.T, w World, version string) {
 	t.Run("every assertion requires user verification (#84)", func(t *testing.T) {
 		touch := *phone
 		touch.Verified = false // a security key without a PIN, or a phone left unlocked: a touch alone
-		if _, err := signIn(t, &touch, "ines", ""); err == nil {
+		if _, err := signIn(t, &touch, "ines"); err == nil {
 			t.Error("a passkey assertion without user verification signed the admin in")
 		}
 	})
@@ -217,20 +236,46 @@ func Run(t *testing.T, w World, version string) {
 	t.Run("the origin is checked exactly: an assertion from another origin is refused (#83)", func(t *testing.T) {
 		elsewhere := *phone
 		elsewhere.Origin = "https://photos." + h.Domain
-		if _, err := signIn(t, &elsewhere, "ines", ""); err == nil {
+		if _, err := signIn(t, &elsewhere, "ines"); err == nil {
 			t.Error("an assertion made for another origin signed the admin in")
 		}
 		bare := *phone
 		bare.Origin = "https://" + h.Domain
-		if _, err := signIn(t, &bare, "ines", ""); err == nil {
+		if _, err := signIn(t, &bare, "ines"); err == nil {
 			t.Error("an assertion made on the bare domain signed the admin in")
 		}
 	})
 
-	t.Run("the passkey-only flow takes nothing but a passkey: a password or TOTP added later signs nobody in (#84)", func(t *testing.T) {
-		pw := w.GivePassword(t, "ines")
-		if _, err := signIn(t, webauthntest.New(h.Origin()), "ines", pw); err == nil {
-			t.Error("the admin's password signed them in to Admin")
+	t.Run("Admin's sign-in is a fresh one: a session at the provider doesn't stand in for the passkey, once it's older than max_age (#84)", func(t *testing.T) {
+		b := w.Browser(t, phone)
+		before := phone.Assertions()
+		if _, err := signInWith(t, b, "ines", Factors{}); err != nil {
+			t.Fatal(err)
+		}
+		if n := phone.Assertions() - before; n != 1 {
+			t.Errorf("signing in asked for the passkey %d times, want once", n)
+		}
+		time.Sleep(oidc.FreshFor + 2*time.Second)
+		before = phone.Assertions()
+		if _, err := signInWith(t, b, "ines", Factors{}); err != nil {
+			t.Fatal(err)
+		}
+		if phone.Assertions() == before {
+			t.Error("Admin's client signed the admin in on the provider's older session, without asking for the passkey")
+		}
+	})
+
+	t.Run("a password and TOTP added from a stolen session open nothing: not the provider's own sign-in, not Admin (#84)", func(t *testing.T) {
+		f := w.GiveFactors(t, w.Browser(t, phone), "ines")
+		thief := w.Browser(t, webauthntest.New(h.Origin()))
+		if err := w.ProviderSignIn(t, thief, "ines", f); err == nil {
+			t.Error("the provider's own sign-in let the admin in with a password and TOTP")
+		}
+		if _, err := signInWith(t, thief, "ines", f); err == nil {
+			t.Error("a password and TOTP signed the admin in to Admin")
+		}
+		if _, err := signInWith(t, w.Browser(t, webauthntest.New(h.Origin())), "ines", f); err == nil {
+			t.Error("a password and TOTP signed the admin in to Admin, in a browser with no session")
 		}
 	})
 
@@ -243,7 +288,7 @@ func Run(t *testing.T, w World, version string) {
 		if _, err := w.Browser(t, laptop).Enrol(t, link); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := signIn(t, laptop, "rui", ""); err == nil {
+		if _, err := signIn(t, laptop, "rui"); err == nil {
 			t.Error("an adult signed in to Admin's client")
 		}
 	})
@@ -260,15 +305,19 @@ func Run(t *testing.T, w World, version string) {
 		if ks, _ := p.Passkeys(ctx, "ines"); len(ks) != 2 {
 			t.Errorf("passkeys: %d, want 2", len(ks))
 		}
-		if _, err := signIn(t, key, "ines", ""); err != nil {
+		if _, err := signIn(t, key, "ines"); err != nil {
 			t.Errorf("the second passkey: %v", err)
 		}
 	})
 
-	t.Run("drift: relaxed user verification is put back by Prepare", func(t *testing.T) {
+	t.Run("drift: the report reads what the provider does, and Prepare puts it back", func(t *testing.T) {
 		w.Drift(t)
-		if r, _ := p.Report(ctx); r.UserVerification == "required" {
-			t.Fatal("the drift didn't show in the report")
+		r, err := p.Report(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if r.UserVerification == "required" || r.RPID == h.SignIn() || r.Origin == h.Origin() || r.PasskeyOnlySignIn {
+			t.Errorf("the drift didn't show in the report: %+v", r)
 		}
 		if err := p.Prepare(ctx, h); err != nil {
 			t.Fatal(err)

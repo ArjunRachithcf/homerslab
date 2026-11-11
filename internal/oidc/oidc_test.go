@@ -97,11 +97,11 @@ func with(m map[string]any, k string, v any) map[string]any { m[k] = v; return m
 func TestASignInIsBoundToItsAttempt(t *testing.T) {
 	testenv.Isolate(t)
 	c := oidc.Client{Issuer: "https://auth.example.test/application/o/x/", ID: "admin", Redirect: "https://admin.example.test/auth/callback"}
-	a := oidc.NewAttempt()
-	u := c.AuthorizeURL(oidc.Endpoints{Authorize: "https://auth.example.test/application/o/authorize/"}, a, true)
+	a := oidc.FreshAttempt(now)
+	u := c.AuthorizeURL(oidc.Endpoints{Authorize: "https://auth.example.test/application/o/authorize/"}, a)
 	sum := sha256.Sum256([]byte(a.Verifier))
 	for _, want := range []string{"response_type=code", "code_challenge_method=S256", "code_challenge=" + base64.RawURLEncoding.EncodeToString(sum[:]),
-		"prompt=login", "max_age=0", "state=" + a.State, "nonce=" + a.Nonce} {
+		"max_age=30", "state=" + a.State, "nonce=" + a.Nonce} {
 		if !strings.Contains(u, want) {
 			t.Errorf("the authorize URL lacks %s: %s", want, u)
 		}
@@ -109,8 +109,55 @@ func TestASignInIsBoundToItsAttempt(t *testing.T) {
 	if strings.Contains(u, a.Verifier) {
 		t.Error("the verifier left in the URL")
 	}
+	if u := c.AuthorizeURL(oidc.Endpoints{Authorize: "https://auth.example.test/application/o/authorize/"}, oidc.NewAttempt()); strings.Contains(u, "max_age") {
+		t.Errorf("an attempt that isn't fresh asks for max_age: %s", u)
+	}
 	if _, err := c.Finish(context.Background(), oidc.Endpoints{}, a, "another", "code", now); !errors.Is(err, oidc.ErrRefused) {
 		t.Errorf("another state: %v", err)
+	}
+}
+
+// A fresh sign-in is one the person made after the attempt began: an ID token from an older session at the issuer, or
+// one that doesn't say when the person signed in, is refused (review of #17).
+func TestAFreshSignInIsRefusedAnOlderSession(t *testing.T) {
+	testenv.Isolate(t)
+	is := newIssuer(t)
+	c := oidc.Client{Issuer: "https://auth.example.test/application/o/homerslab-admin/", ID: "admin", Secret: "s",
+		Redirect: "https://admin.example.test/auth/callback"}
+	var claims map[string]any
+	tokens := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]string{"id_token": is.token(map[string]string{"alg": "RS256", "kid": "k1"}, claims, is.key)})
+	}))
+	defer tokens.Close()
+	e := oidc.Endpoints{Keys: is.srv.URL, Token: tokens.URL}
+	for name, tc := range map[string]struct {
+		auth  any
+		fresh bool
+		ok    bool
+	}{
+		"signed in just now":                   {now.Add(5 * time.Second).Unix(), true, true},
+		"signed in an hour before the attempt": {now.Add(-time.Hour).Unix(), true, false},
+		"signed in a minute before":            {now.Add(-time.Minute).Unix(), true, false},
+		"signed in within max_age":             {now.Add(-20 * time.Second).Unix(), true, true},
+		"no auth_time":                         {nil, true, false},
+		"an older session, not asked fresh":    {now.Add(-time.Hour).Unix(), false, true},
+	} {
+		a := oidc.NewAttempt()
+		if tc.fresh {
+			a = oidc.FreshAttempt(now)
+		}
+		claims = map[string]any{"iss": c.Issuer, "aud": "admin", "sub": "s1", "nonce": a.Nonce, "exp": now.Add(5 * time.Minute).Unix(),
+			"iat": now.Unix()}
+		if tc.auth != nil {
+			claims["auth_time"] = tc.auth
+		}
+		_, err := c.Finish(context.Background(), e, a, a.State, "code", now)
+		if tc.ok != (err == nil) {
+			t.Errorf("%s: %v", name, err)
+		}
+		if !tc.ok && !errors.Is(err, oidc.ErrRefused) {
+			t.Errorf("%s: %v, want ErrRefused", name, err)
+		}
 	}
 }
 

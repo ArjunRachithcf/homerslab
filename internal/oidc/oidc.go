@@ -25,6 +25,7 @@ import (
 	"net/http"
 	"net/url"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -94,7 +95,16 @@ func (c Client) get(ctx context.Context, u string, out any) error {
 // the browser comes back. State, Nonce and Verifier are secrets of the attempt.
 type Attempt struct {
 	State, Nonce, Verifier string
+	// Since, when set, makes the attempt a fresh sign-in: the person signs in at the issuer again unless they did
+	// within FreshFor, whatever session they hold there, and an ID token whose auth_time is older than that is
+	// refused.
+	Since time.Time
 }
+
+// FreshFor is how recent a fresh sign-in is: the max_age a fresh attempt asks for. A session at the issuer older than
+// that doesn't stand in for signing in. It is short, but long enough for the issuer's redirect back to authorize
+// after the person signed in, which the issuer checks against it too.
+const FreshFor = 30 * time.Second
 
 // NewAttempt makes a sign-in's state, nonce and PKCE verifier: 256 random bits each.
 func NewAttempt() Attempt {
@@ -106,9 +116,18 @@ func NewAttempt() Attempt {
 	return Attempt{State: r(), Nonce: r(), Verifier: r()}
 }
 
-// AuthorizeURL is where the browser goes to sign in: the code flow, PKCE with S256. A fresh sign-in (step-up later)
-// adds prompt=login and max_age=0.
-func (c Client) AuthorizeURL(e Endpoints, a Attempt, fresh bool) string {
+// FreshAttempt is an attempt at a fresh sign-in, started at now: an issuer's session older than FreshFor doesn't
+// stand in for signing in, so the issuer's own sign-in for the client (for Admin, the passkey) runs again.
+func FreshAttempt(now time.Time) Attempt {
+	a := NewAttempt()
+	a.Since = now
+	return a
+}
+
+// AuthorizeURL is where the browser goes to sign in: the code flow, PKCE with S256. A fresh attempt adds max_age
+// (FreshFor), which the issuer checks against the session's last sign-in at every authorize; prompt=login would
+// also make a new session's first sign-in ask for the passkey twice.
+func (c Client) AuthorizeURL(e Endpoints, a Attempt) string {
 	sum := sha256.Sum256([]byte(a.Verifier))
 	v := url.Values{
 		"response_type":         {"code"},
@@ -120,9 +139,8 @@ func (c Client) AuthorizeURL(e Endpoints, a Attempt, fresh bool) string {
 		"code_challenge":        {base64.RawURLEncoding.EncodeToString(sum[:])},
 		"code_challenge_method": {"S256"},
 	}
-	if fresh {
-		v.Set("prompt", "login")
-		v.Set("max_age", "0")
+	if !a.Since.IsZero() {
+		v.Set("max_age", strconv.Itoa(int(FreshFor/time.Second)))
 	}
 	sep := "?"
 	if strings.Contains(e.Authorize, "?") {
@@ -171,8 +189,16 @@ func (c Client) Finish(ctx context.Context, e Endpoints, a Attempt, state, code 
 	if resp.StatusCode != http.StatusOK || tok.IDToken == "" {
 		return Claims{}, fmt.Errorf("%w: the token endpoint answered %d %s", ErrRefused, resp.StatusCode, tok.Error)
 	}
-	return c.Verify(ctx, e, tok.IDToken, a.Nonce, now)
+	cl, err := c.Verify(ctx, e, tok.IDToken, a.Nonce, now)
+	// auth_time is in whole seconds: a second's leeway, and a few for the clocks.
+	if err == nil && !a.Since.IsZero() && (cl.AuthTime.IsZero() || cl.AuthTime.Before(a.Since.Add(-FreshFor-5*time.Second))) {
+		return Claims{}, fmt.Errorf("%w: not a fresh sign-in: the person signed in at %v, before this attempt", ErrRefused, cl.AuthTime)
+	}
+	return cl, err
 }
+
+// skew is the clock difference allowed between the issuer and the relying party.
+const skew = time.Minute
 
 // Verify checks an ID token: its signature with one of the issuer's keys (RS256 or ES256, never "none" or a shared
 // secret), its issuer, that the client is its audience (and authorized party), that it is within its lifetime, and
@@ -235,7 +261,6 @@ func (c Client) Verify(ctx context.Context, e Endpoints, token, nonce string, no
 			aud = []string{one}
 		}
 	}
-	const skew = time.Minute
 	switch {
 	case raw.Issuer != c.Issuer:
 		return Claims{}, fmt.Errorf("%w: issued by %q", ErrRefused, raw.Issuer)

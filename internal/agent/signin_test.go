@@ -210,8 +210,14 @@ func TestTheSignInsStatusComesFromItsUnitAndItsHealthCheck(t *testing.T) {
 		t.Errorf("a stopped unit: %+v", s)
 	}
 	h.Mend()
-	if code, _ := call(t, sock, "GET", "/v1/sign-in/logs", nil); code != http.StatusOK || h.Ran("journalctl --unit=homerslab-authentik.service --lines=200 --no-pager --output=short-iso") < 0 {
+	code, body := call(t, sock, "GET", "/v1/sign-in/logs", nil)
+	if code != http.StatusOK || h.Ran("journalctl --unit=homerslab-authentik.service --lines=200 --no-pager --output=short-iso") < 0 {
 		t.Errorf("the logs: %d", code)
+	}
+	// An Authentik that logged requests (before its log level was lowered) wrote enrolment links' tokens: the logs
+	// endpoint never hands one on (review of #17).
+	if strings.Contains(string(body), agenttest.JournalToken) || !strings.Contains(string(body), "homerslab-passkey-enrolment") {
+		t.Errorf("the logs hand on an enrolment link's token, or lost its line: %s", body)
 	}
 }
 

@@ -183,6 +183,9 @@ func (h *Host) Mend() {
 }
 
 // Run is the agent's host.Runner.
+// JournalToken is the enrolment link's token in the stub's journal of the sign-in.
+const JournalToken = "9d3afc7b-58ba-4c1e-9f0e-2b6a1c0d7e11"
+
 func (h *Host) Run(ctx context.Context, c host.Cmd) ([]byte, error) {
 	h.mu.Lock()
 	if h.block && (c.Name == "docker" || c.Name == "systemctl") {
@@ -255,7 +258,11 @@ func (h *Host) Run(ctx context.Context, c host.Cmd) ([]byte, error) {
 	case strings.HasPrefix(line, "netbird up"):
 		return nil, nil
 	case c.Name == "journalctl":
-		return []byte("2026-11-11T10:00:00+0000 primary docker[812]: server-1 | {\"event\": \"Starting authentik server\"}\n"), nil
+		// The unit's journal, with request lines as an Authentik logging at info writes them: an enrolment link's
+		// token in the URL, plain and URL-encoded.
+		return []byte("2026-11-11T10:00:00+0000 primary docker[812]: server-1 | {\"event\": \"Starting authentik server\"}\n" +
+			"2026-11-11T10:01:00+0000 primary docker[812]: server-1 | {\"event\": \"/if/flow/homerslab-passkey-enrolment/?itoken=" + JournalToken + "\"}\n" +
+			"2026-11-11T10:01:01+0000 primary docker[812]: server-1 | {\"event\": \"/api/v3/flows/executor/homerslab-passkey-enrolment/?query=itoken%3D" + JournalToken + "&x=1\"}\n"), nil
 	case line == "netbird status --json":
 		return fmt.Appendf(nil, `{"management":{"connected":true},"netbirdIp":"%s/16","fqdn":"study-pc.netbird.selfhosted"}`, h.NetbirdIP), nil
 	case c.Name == "systemd-creds" && len(c.Args) == 5 && c.Args[0] == "encrypt":

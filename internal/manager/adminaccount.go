@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"errors"
+	"fmt"
 	"io/fs"
 	"net/http"
 	"slices"
@@ -16,6 +17,7 @@ import (
 	"github.com/ArjunRachithcf/homerslab/internal/idp"
 	"github.com/ArjunRachithcf/homerslab/internal/manager/setup"
 	"github.com/ArjunRachithcf/homerslab/internal/manager/store"
+	"github.com/ArjunRachithcf/homerslab/internal/mesh"
 	"github.com/ArjunRachithcf/homerslab/internal/oidc"
 )
 
@@ -139,14 +141,16 @@ func (m *Manager) signInStart(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusBadGateway, "sign-in-unreachable")
 		return
 	}
-	a := oidc.NewAttempt()
+	// Always a fresh sign-in: the passkey every time, never a session the person holds at the sign-in already, which
+	// the provider's own ways in could have made (#84).
+	a := oidc.FreshAttempt(m.cfg.Now())
 	id := random()
 	if !m.attempts.put(id, attempt{Attempt: a, expires: m.cfg.Now().Add(attemptLife)}, m.cfg.Now()) {
 		fail(w, http.StatusTooManyRequests, "too-many-sign-ins")
 		return
 	}
 	setCookie(w, signInCookie, id, attemptLife)
-	http.Redirect(w, r, c.AuthorizeURL(e, a, false), http.StatusSeeOther)
+	http.Redirect(w, r, c.AuthorizeURL(e, a), http.StatusSeeOther)
 }
 
 // signInDone takes the browser back from the sign-in: the attempt must be this browser's, the code good, the ID token
@@ -216,11 +220,24 @@ func (m *Manager) signInDone(w http.ResponseWriter, r *http.Request) {
 
 // firstSignIn is the first admin's first sign-in over the mesh: their device is on the mesh and their passkey works,
 // so the join and passkey steps are done, and the setup link's LAN listener closes for good (the firewall table drops
-// its exception, and the listener answers nothing from then on).
+// its exception, and the listener answers nothing from then on). The device key has done its work, so it ends.
 func (m *Manager) firstSignIn(ctx context.Context, ans map[string]string) error {
 	if !m.lanClosed.Load() {
 		if err := m.CloseLANListener(ctx); err != nil {
 			return err
+		}
+	}
+	if id := ans[ansDeviceKey]; id != "" {
+		t, err := m.currentToken(ctx, ans)
+		var nb mesh.Mesh
+		if err == nil {
+			nb, err = m.netbird.Open(ans[ansURL], t)
+		}
+		if err == nil {
+			err = nb.RevokeKey(ctx, id)
+		}
+		if err != nil {
+			return fmt.Errorf("ending the admin's device key: %w", err)
 		}
 	}
 	now := m.cfg.Now()

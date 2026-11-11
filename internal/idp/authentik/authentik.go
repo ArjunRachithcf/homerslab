@@ -8,7 +8,10 @@
 //     required, then the session. It is the brand's sign-in, and every client's that is passkey-only;
 //   - the passkey-enrolment flow, run only from a one-time link: an invitation for one person, then a passkey with
 //     user verification required. It is never the brand's recovery flow, and it has no other stage;
-//   - the brand of the sign-in's own name.
+//   - the brand of the sign-in's own name;
+//   - in every other flow that signs a person in (Authentik's default authentication flow among them), a refusal
+//     for the household's people just before its login: they sign in with their passkey, through HomersLab's flow,
+//     and nowhere else, whatever password or TOTP a stolen session gave them.
 //
 // Authentik's own first-admin flow (initial-setup) applies to nobody: akadmin has a random password and is inactive,
 // the flow wants a superuser, and a policy that refuses everyone is bound to it.
@@ -48,6 +51,9 @@ const (
 	stageEnrol      = "homerslab-enrolment-passkey"
 	stageAfter      = "homerslab-enrolment-done"
 	policyPerson    = "homerslab-enrolment-person"
+	stageNotHere    = "homerslab-passkey-only"
+	policyHousehold = "homerslab-household-person"
+	loginStageModel = "authentik_stages_user_login.userloginstage"
 	policyNever     = "homerslab-never"
 	firstAdminFlow  = "initial-setup"
 	firstAdmin      = "akadmin"
@@ -448,6 +454,24 @@ plan.context["pending_user"] = person
 return True
 `
 
+// householdPerson is the policy that knows the household's people: HomersLab's users, and anyone in a role's group.
+var householdPerson = `# HomersLab: a person of the household, who signs in with a passkey through HomersLab's sign-in only.
+user = request.user
+if not getattr(user, "pk", None):
+    return False
+if getattr(user, "path", "") == "` + userPath + `":
+    return True
+return user.all_groups().filter(name__in=["` + strings.Join(roleGroups(), `", "`) + `"]).exists()
+`
+
+func roleGroups() []string {
+	var gs []string
+	for _, r := range idp.Roles() {
+		gs = append(gs, idp.RoleGroup(r))
+	}
+	return gs
+}
+
 // Prepare makes the household's sign-in. See the package's comment for what it holds.
 func (a *Authentik) Prepare(ctx context.Context, h idp.Household) error {
 	if h.SignIn() != a.h.SignIn() || h.Origin() != a.h.Origin() {
@@ -484,6 +508,7 @@ func (a *Authentik) Prepare(ctx context.Context, h idp.Household) error {
 			"resident_key_requirement": "required", "authenticator_attachment": nil, "hints": []string{},
 			"device_type_restrictions": []string{}, "max_attempts": 5, "configure_flow": nil}},
 		{"/stages/redirect/", stageAfter, map[string]any{"mode": "static", "target_static": a.landing, "keep_context": false}},
+		{"/stages/deny/", stageNotHere, map[string]any{"deny_message": "Sign in with your passkey."}},
 	}
 	pks := map[string]string{}
 	for _, s := range steps {
@@ -524,7 +549,136 @@ func (a *Authentik) Prepare(ctx context.Context, h idp.Household) error {
 	}
 	// Nothing but an enrolment link starts the enrolment flow: it needs no other binding, and only invitations
 	// HomersLab minted (for this flow, with a person) get past its first stages.
+	household, err := a.ensure(ctx, "/policies/expression/", policyHousehold, map[string]any{"name": policyHousehold, "expression": householdPerson})
+	if err != nil {
+		return err
+	}
+	if err := a.refuseElsewhere(ctx, signIn, pks[stageNotHere], household); err != nil {
+		return err
+	}
 	return a.ensureBrand(ctx, signIn)
+}
+
+// flowBinding is a stage binding of a flow, as the refusal elsewhere reads it.
+type flowBinding struct {
+	PK     string `json:"pk"`
+	PBM    string `json:"policybindingmodel_ptr_id"`
+	Stage  string `json:"stage"`
+	Order  int    `json:"order"`
+	OnPlan bool   `json:"evaluate_on_plan"`
+	ReEval bool   `json:"re_evaluate_policies"`
+	Obj    struct {
+		Model string `json:"meta_model_name"`
+	} `json:"stage_obj"`
+}
+
+// loginsElsewhere is every flow but HomersLab's sign-in that signs a person in, with its stage bindings and the order
+// a refusal must have there: just before its first login, after whatever it asks (so it tells no one who isn't past
+// its password and code that the person is the household's).
+func (a *Authentik) loginsElsewhere(ctx context.Context, signIn string) (map[string][]flowBinding, map[string]int, error) {
+	flows, err := list[flow](ctx, a.api, "/flows/instances/")
+	if err != nil {
+		return nil, nil, err
+	}
+	bindings, at := map[string][]flowBinding{}, map[string]int{}
+	for _, f := range flows {
+		if f.PK == signIn || f.Slug == SignInFlow {
+			continue
+		}
+		bs, err := list[flowBinding](ctx, a.api, "/flows/bindings/?target="+q(f.PK))
+		if err != nil {
+			return nil, nil, err
+		}
+		first, login := 0, false
+		for _, b := range bs {
+			if b.Obj.Model == loginStageModel && (!login || b.Order < first) {
+				first, login = b.Order, true
+			}
+		}
+		if login {
+			bindings[f.PK], at[f.PK] = bs, first-1
+		}
+	}
+	return bindings, at, nil
+}
+
+// refuseElsewhere puts the refusal for the household's people into every other flow that signs a person in.
+func (a *Authentik) refuseElsewhere(ctx context.Context, signIn, refusal, household string) error {
+	flows, at, err := a.loginsElsewhere(ctx, signIn)
+	if err != nil {
+		return err
+	}
+	for f, bs := range flows {
+		kept := ""
+		for _, b := range bs {
+			if b.Stage != refusal {
+				continue
+			}
+			if kept == "" && b.Order == at[f] && !b.OnPlan && b.ReEval {
+				kept = b.PBM
+				continue
+			}
+			if err := a.api.call(ctx, http.MethodDelete, "/flows/bindings/"+b.PK+"/", nil, nil); err != nil {
+				return err
+			}
+		}
+		if kept == "" {
+			var out struct {
+				PBM string `json:"policybindingmodel_ptr_id"`
+			}
+			if err := a.api.call(ctx, http.MethodPost, "/flows/bindings/", map[string]any{"target": f, "stage": refusal,
+				"order": at[f], "evaluate_on_plan": false, "re_evaluate_policies": true, "invalid_response_action": "retry",
+				"policy_engine_mode": "all"}, &out); err != nil {
+				return err
+			}
+			kept = out.PBM
+		}
+		if err := a.bindPolicies(ctx, kept, []binding{{Policy: household}}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// refusedElsewhere says whether every other flow that signs a person in refuses the household's people before its
+// login.
+func (a *Authentik) refusedElsewhere(ctx context.Context) (bool, error) {
+	refusal, err1 := one[struct {
+		PK string `json:"pk"`
+	}](ctx, a.api, "/stages/deny/?name="+q(stageNotHere))
+	household, err2 := one[struct {
+		PK string `json:"pk"`
+	}](ctx, a.api, "/policies/expression/?name="+q(policyHousehold))
+	signIn, err3 := a.flow(ctx, SignInFlow)
+	if err := errors.Join(err1, err2, err3); err != nil || refusal == nil || household == nil || signIn == nil {
+		return false, err
+	}
+	flows, at, err := a.loginsElsewhere(ctx, signIn.PK)
+	if err != nil {
+		return false, err
+	}
+	for f, bs := range flows {
+		ok := false
+		for _, b := range bs {
+			if b.Stage != refusal.PK || b.Order != at[f] || b.OnPlan || !b.ReEval {
+				continue
+			}
+			type pb struct {
+				Policy string `json:"policy"`
+				Negate bool   `json:"negate"`
+				On     bool   `json:"enabled"`
+			}
+			ps, err := list[pb](ctx, a.api, "/policies/bindings/?target="+q(b.PBM))
+			if err != nil {
+				return false, err
+			}
+			ok = len(ps) == 1 && ps[0].Policy == household.PK && !ps[0].Negate && ps[0].On
+		}
+		if !ok {
+			return false, nil
+		}
+	}
+	return true, nil
 }
 
 // ensureBrand makes the brand of the sign-in's own name: the household's name, HomersLab's passkey-only sign-in, and
@@ -534,9 +688,34 @@ func (a *Authentik) ensureBrand(ctx context.Context, signIn string) error {
 		UUID   string `json:"brand_uuid"`
 		Domain string `json:"domain"`
 	}
-	have, err := one[brand](ctx, a.api, "/core/brands/?domain="+q(a.h.SignIn()))
+	type brandFlow struct {
+		UUID   string  `json:"brand_uuid"`
+		Domain string  `json:"domain"`
+		SignIn *string `json:"flow_authentication"`
+	}
+	all, err := list[brandFlow](ctx, a.api, "/core/brands/")
 	if err != nil {
 		return err
+	}
+	// The brand of the sign-in's name, or else the one serving HomersLab's sign-in under another name; any other that
+	// serves it goes, so the sign-in has one name.
+	var have *brand
+	for _, b := range all {
+		if b.Domain == a.h.SignIn() {
+			have = &brand{UUID: b.UUID, Domain: b.Domain}
+		}
+	}
+	for _, b := range all {
+		if b.Domain == a.h.SignIn() || b.SignIn == nil || *b.SignIn != signIn {
+			continue
+		}
+		if have == nil {
+			have = &brand{UUID: b.UUID, Domain: b.Domain}
+			continue
+		}
+		if err := a.api.call(ctx, http.MethodDelete, "/core/brands/"+b.UUID+"/", nil, nil); err != nil {
+			return err
+		}
 	}
 	body := map[string]any{"domain": a.h.SignIn(), "default": false, "branding_title": a.h.Name, "flow_authentication": signIn,
 		"flow_recovery": nil, "flow_unenrollment": nil}
@@ -826,8 +1005,31 @@ func (a *Authentik) Report(ctx context.Context) (idp.Report, error) {
 	if err := a.api.call(ctx, http.MethodGet, "/admin/version/", nil, &v); err != nil {
 		return idp.Report{}, err
 	}
-	r := idp.Report{Provider: "authentik", Version: v.Current, OIDC: true, ForwardAuth: true, LDAP: true,
-		RPID: a.h.SignIn(), Origin: a.h.Origin()}
+	r := idp.Report{Provider: "authentik", Version: v.Current, OIDC: true, ForwardAuth: true, LDAP: true}
+	// Authentik binds a passkey to the name a flow is served under, and checks the origin it is served at: for
+	// HomersLab's sign-in, that is the domain of the brand that serves it. The port is the edge's.
+	if f, err := a.flow(ctx, SignInFlow); err != nil {
+		return idp.Report{}, err
+	} else if f != nil {
+		type brand struct {
+			Domain string  `json:"domain"`
+			SignIn *string `json:"flow_authentication"`
+		}
+		bs, err := list[brand](ctx, a.api, "/core/brands/")
+		if err != nil {
+			return idp.Report{}, err
+		}
+		var names []string
+		for _, b := range bs {
+			if b.SignIn != nil && *b.SignIn == f.PK {
+				names = append(names, b.Domain)
+			}
+		}
+		if len(names) == 1 {
+			r.RPID = names[0]
+			r.Origin = "https://" + names[0] + strings.TrimPrefix(a.h.Origin(), "https://"+a.h.SignIn()) // and the edge's port
+		}
+	}
 	type webauthnSetup struct {
 		UV string `json:"user_verification"`
 	}
@@ -853,6 +1055,13 @@ func (a *Authentik) Report(ctx context.Context) (idp.Report, error) {
 		}
 		r.PasskeyOnlySignIn = ident != nil && ident.Password == nil && ident.Passless == nil &&
 			slices.Equal(check.Classes, []string{"webauthn"}) && check.NotConf == "deny"
+	}
+	if r.PasskeyOnlySignIn {
+		only, err := a.refusedElsewhere(ctx)
+		if err != nil {
+			return idp.Report{}, err
+		}
+		r.PasskeyOnlySignIn = only
 	}
 	ak, err := one[user](ctx, a.api, "/core/users/?username="+q(firstAdmin))
 	if err != nil {

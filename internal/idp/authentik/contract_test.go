@@ -10,12 +10,16 @@ import (
 	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
+	"crypto/hmac"
 	"crypto/rand"
+	"crypto/sha1"
 	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/base32"
 	"encoding/base64"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -29,6 +33,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"slices"
 	"strings"
@@ -150,6 +155,19 @@ func TestTheIdentityProviderContractOnAuthentik(t *testing.T) {
 		inABrowser(t, w, a)
 	})
 
+	t.Run("Authentik's logs, which reach the journal, never hold an enrolment link's token", func(t *testing.T) {
+		out, err := w.composeOut("logs", "--no-color", "server", "worker")
+		if err != nil {
+			t.Fatalf("docker compose logs: %v", err)
+		}
+		if m := regexp.MustCompile(`itoken(=|%3D|%253D)[0-9a-fA-F-]{8,}`).FindString(out); m != "" {
+			t.Errorf("a log line holds an enrolment link's token (%d bytes of logs): %.20s…", len(out), m)
+		}
+		if !strings.Contains(out, "Starting authentik server") && !strings.Contains(out, "authentik") {
+			t.Errorf("no logs to check")
+		}
+	})
+
 	t.Run("the enrolment flow is HomersLab's own: only an invitation and a passkey, never the recovery flow (#84, #87)", func(t *testing.T) {
 		var brands struct {
 			Results []struct {
@@ -209,7 +227,7 @@ func inABrowser(t *testing.T, w *world, a *authentik.Authentik) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	at := oidc.NewAttempt()
+	at := oidc.FreshAttempt(time.Now()) // as Admin asks
 
 	key, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	tmpl := &x509.Certificate{SerialNumber: big.NewInt(17), Subject: pkix.Name{CommonName: "auth.example.test"},
@@ -238,7 +256,7 @@ func inABrowser(t *testing.T, w *world, a *authentik.Authentik) {
 	dir := t.TempDir()
 	out := filepath.Join(dir, "callback.txt")
 	spec, _ := json.Marshal(map[string]string{"address": strings.TrimPrefix(edge.URL, "https://"), "spki": base64.StdEncoding.EncodeToString(sum[:]),
-		"enrolment": link.URL.Reveal(), "authorize": c.AuthorizeURL(e, at, false), "username": "marta", "redirect": redirect,
+		"enrolment": link.URL.Reveal(), "authorize": c.AuthorizeURL(e, at), "username": "marta", "redirect": redirect,
 		"landing": landing, "out": out})
 	if err := os.WriteFile(filepath.Join(dir, "world.json"), spec, 0o600); err != nil {
 		t.Fatal(err)
@@ -460,6 +478,38 @@ func (w *world) Expire(t *testing.T, username string) {
 }
 
 func (w *world) Drift(t *testing.T) {
+	var brands struct {
+		Results []struct {
+			UUID   string `json:"brand_uuid"`
+			Domain string `json:"domain"`
+		}
+	}
+	w.raw(t, w.own, "GET", "/api/v3/core/brands/", nil, &brands)
+	for _, b := range brands.Results {
+		if b.Domain == household.SignIn() {
+			w.raw(t, w.own, "PATCH", "/api/v3/core/brands/"+b.UUID+"/", map[string]string{"domain": "sso." + household.Domain}, nil)
+		}
+	}
+	var f struct {
+		Results []struct {
+			PK string `json:"pk"`
+		}
+	}
+	w.raw(t, w.own, "GET", "/api/v3/flows/instances/?slug=default-authentication-flow", nil, &f)
+	var bs struct {
+		Results []struct {
+			PK    string `json:"pk"`
+			Stage struct {
+				Name string `json:"name"`
+			} `json:"stage_obj"`
+		}
+	}
+	w.raw(t, w.own, "GET", "/api/v3/flows/bindings/?target="+f.Results[0].PK, nil, &bs)
+	for _, b := range bs.Results {
+		if strings.HasPrefix(b.Stage.Name, "homerslab-") {
+			w.raw(t, w.own, "DELETE", "/api/v3/flows/bindings/"+b.PK+"/", nil, nil)
+		}
+	}
 	for _, s := range []struct{ path, field string }{{"/api/v3/stages/authenticator/webauthn/", "user_verification"},
 		{"/api/v3/stages/authenticator/validate/", "webauthn_user_verification"}} {
 		var l struct {
@@ -477,10 +527,84 @@ func (w *world) Drift(t *testing.T) {
 	}
 }
 
-func (w *world) GivePassword(t *testing.T, username string) string {
-	pw := secret()
-	w.raw(t, w.own, "POST", fmt.Sprintf("/api/v3/core/users/%d/set_password/", w.userPK(t, username)), map[string]string{"password": pw}, nil)
-	return pw
+// GiveFactors is a stolen session's doing: signed in with the person's passkey through HomersLab's sign-in, it runs
+// Authentik's own TOTP-setup flow and password-change flow (which ask for nothing more), and checks both took.
+func (w *world) GiveFactors(t *testing.T, ib idptest.Browser, username string) idptest.Factors {
+	t.Helper()
+	b := ib.(*browser)
+	if _, err := b.flow(t, authentik.SignInFlow, "", username, idptest.Factors{}); err != nil {
+		t.Fatalf("the passkey sign-in: %v", err)
+	}
+	ch := w.executor(t, b.c, "default-authenticator-totp-setup", "", nil)
+	cfg, _ := url.Parse(fmt.Sprint(ch["config_url"]))
+	if ch["component"] != "ak-stage-authenticator-totp" || cfg == nil || cfg.Query().Get("secret") == "" {
+		t.Fatalf("the TOTP setup: %v", ch)
+	}
+	code := totp(t, cfg.Query().Get("secret"))
+	ch = w.executor(t, b.c, "default-authenticator-totp-setup", "", map[string]any{"component": "ak-stage-authenticator-totp", "code": code()})
+	if ch["component"] != "xak-flow-redirect" {
+		t.Fatalf("the TOTP setup took no code: %v", ch)
+	}
+	pw := secret() + "-Aa1!"
+	ch = w.executor(t, b.c, "default-password-change", "", nil)
+	if ch["component"] == "ak-stage-prompt" {
+		ch = w.executor(t, b.c, "default-password-change", "", map[string]any{"component": "ak-stage-prompt", "password": pw, "password_repeat": pw})
+	}
+	if ch["component"] != "xak-flow-redirect" {
+		t.Fatalf("the password change: %v", ch)
+	}
+	var devs struct{ Results []any }
+	w.raw(t, w.own, "GET", fmt.Sprintf("/api/v3/authenticators/admin/totp/?user=%d", w.userPK(t, username)), nil, &devs)
+	if len(devs.Results) != 1 {
+		t.Fatalf("TOTP devices: %d, want 1", len(devs.Results))
+	}
+	return idptest.Factors{Password: pw, TOTP: code}
+}
+
+// ProviderSignIn runs Authentik's default authentication flow, which takes a password and TOTP. A wrong password or
+// code fails the test: the factors must be taken, so a refusal is the flow's.
+func (w *world) ProviderSignIn(t *testing.T, ib idptest.Browser, username string, f idptest.Factors) error {
+	t.Helper()
+	b := ib.(*browser)
+	b.strict = true
+	defer func() { b.strict = false }()
+	if _, err := b.flow(t, "default-authentication-flow", "", username, f); err != nil {
+		return err
+	}
+	resp, err := b.c.Get(household.URL("/api/v3/core/users/me/"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK || !strings.Contains(string(body), fmt.Sprintf("%q:%q", "username", username)) {
+		return fmt.Errorf("no session: %d", resp.StatusCode)
+	}
+	return nil
+}
+
+// totp is RFC 6238's code maker for a base32 secret (SHA-1, 6 digits, 30 s): each call a code of a later period than
+// the last, since Authentik takes a period's code only once.
+func totp(t *testing.T, secret string) func() string {
+	key, err := base32.StdEncoding.WithPadding(base32.NoPadding).DecodeString(strings.ToUpper(strings.TrimRight(secret, "=")))
+	if err != nil {
+		t.Fatalf("the TOTP secret: %v", err)
+	}
+	last := int64(-1)
+	return func() string {
+		step := time.Now().Unix() / 30
+		for step <= last {
+			time.Sleep(time.Until(time.Unix((step+1)*30, 0)) + 100*time.Millisecond)
+			step = time.Now().Unix() / 30
+		}
+		last = step
+		m := hmac.New(sha1.New, key)
+		_ = binary.Write(m, binary.BigEndian, step)
+		sum := m.Sum(nil)
+		o := sum[len(sum)-1] & 0x0f
+		n := binary.BigEndian.Uint32(sum[o:o+4]) & 0x7fffffff
+		return fmt.Sprintf("%06d", n%1000000)
+	}
 }
 
 // FirstAdmin tries Authentik's first-admin paths as a stranger: the setup page, the first-admin flow's page, and its
@@ -580,6 +704,8 @@ type browser struct {
 	w *world
 	c *http.Client
 	a *webauthntest.Authenticator
+	// strict fails the test when a stage turns down a password or code: the harness's factors must be right.
+	strict bool
 }
 
 func (b *browser) Enrol(t *testing.T, link idp.Link) (idptest.Enrolment, error) {
@@ -624,7 +750,7 @@ func (b *browser) Enrol(t *testing.T, link idp.Link) (idptest.Enrolment, error) 
 	return e, errors.New("the enrolment flow never ended")
 }
 
-func (b *browser) SignIn(t *testing.T, authorize, username, password string) (string, string, error) {
+func (b *browser) SignIn(t *testing.T, authorize, username string, f idptest.Factors) (string, string, error) {
 	next := authorize
 	for range 20 {
 		req, _ := http.NewRequest("GET", next, nil)
@@ -652,7 +778,7 @@ func (b *browser) SignIn(t *testing.T, authorize, username, password string) (st
 			return "", "", fmt.Errorf("GET %s: %d", u.Path, resp.StatusCode)
 		}
 		slug := strings.Trim(strings.TrimPrefix(u.Path, "/if/flow/"), "/")
-		to, err := b.flow(t, slug, u.RawQuery, username, password)
+		to, err := b.flow(t, slug, u.RawQuery, username, f)
 		if err != nil {
 			return "", "", err
 		}
@@ -663,21 +789,24 @@ func (b *browser) SignIn(t *testing.T, authorize, username, password string) (st
 }
 
 // flow runs one flow to its end, and returns where it sends the browser.
-func (b *browser) flow(t *testing.T, slug, query, username, password string) (string, error) {
+func (b *browser) flow(t *testing.T, slug, query, username string, f idptest.Factors) (string, error) {
 	ch := b.w.executor(t, b.c, slug, query, nil)
 	for range 10 {
 		switch ch["component"] {
 		case "ak-stage-identification":
 			r := map[string]any{"component": "ak-stage-identification", "uid_field": username}
-			if password != "" {
-				r["password"] = password
+			if f.Password != "" {
+				r["password"] = f.Password
 			}
 			ch = b.w.executor(t, b.c, slug, query, r)
 		case "ak-stage-password":
-			if password == "" {
+			if f.Password == "" {
 				return "", errors.New("the flow asked for a password")
 			}
-			ch = b.w.executor(t, b.c, slug, query, map[string]any{"component": "ak-stage-password", "password": password})
+			ch = b.w.executor(t, b.c, slug, query, map[string]any{"component": "ak-stage-password", "password": f.Password})
+			if b.strict && ch["component"] == "ak-stage-password" {
+				t.Fatalf("the password was refused: %v", ch["response_errors"])
+			}
 		case "ak-stage-authenticator-validate":
 			raw, _ := json.Marshal(ch["device_challenges"])
 			var dcs []struct {
@@ -687,24 +816,29 @@ func (b *browser) flow(t *testing.T, slug, query, username, password string) (st
 			_ = json.Unmarshal(raw, &dcs)
 			var resp map[string]any
 			for _, dc := range dcs {
-				if dc.Class != "webauthn" {
-					continue
+				switch {
+				case dc.Class == "webauthn" && b.a.Passkeys() > 0:
+					var o webauthntest.RequestOptions
+					if err := json.Unmarshal(dc.Challenge, &o); err != nil {
+						return "", err
+					}
+					cred, err := b.a.Get(o)
+					if err != nil {
+						return "", err
+					}
+					resp = map[string]any{"component": "ak-stage-authenticator-validate", "webauthn": cred}
+				case dc.Class == "totp" && f.TOTP != nil && resp == nil:
+					resp = map[string]any{"component": "ak-stage-authenticator-validate", "code": f.TOTP()}
 				}
-				var o webauthntest.RequestOptions
-				if err := json.Unmarshal(dc.Challenge, &o); err != nil {
-					return "", err
-				}
-				cred, err := b.a.Get(o)
-				if err != nil {
-					return "", err
-				}
-				resp = map[string]any{"component": "ak-stage-authenticator-validate", "webauthn": cred}
 			}
 			if resp == nil {
-				return "", fmt.Errorf("the flow offered no passkey: %v", dcs)
+				return "", fmt.Errorf("the flow offered nothing this browser has: %v", dcs)
 			}
 			ch = b.w.executor(t, b.c, slug, query, resp)
 			if ch["component"] == "ak-stage-authenticator-validate" {
+				if b.strict {
+					t.Fatalf("the code was refused: %v", ch["response_errors"])
+				}
 				return "", fmt.Errorf("the passkey was refused: %v", ch["response_errors"])
 			}
 		case "xak-flow-redirect":
