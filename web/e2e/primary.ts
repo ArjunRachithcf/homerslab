@@ -18,6 +18,7 @@ export type Link = { url: string; localUrl: string; expiresAt: string };
 export class Primary {
   private agent?: ChildProcess;
   private manager?: ChildProcess;
+  private readonly logs: string[] = [];
   private constructor(readonly dir: string, private readonly env: NodeJS.ProcessEnv) {}
 
   static async start(): Promise<Primary> {
@@ -36,7 +37,10 @@ export class Primary {
 
   private spawn(...args: string[]): ChildProcess {
     const child = spawn(bin, args, { env: this.env, stdio: ['ignore', 'ignore', 'pipe'] });
-    child.stderr?.on('data', (b: Buffer) => process.env.FLOW_LOGS && process.stderr.write(`${args[0]}: ${b}`));
+    child.stderr?.on('data', (b: Buffer) => {
+      this.logs.push(`${args[0]}: ${b}`);
+      if (process.env.FLOW_LOGS) process.stderr.write(`${args[0]}: ${b}`);
+    });
     return child;
   }
 
@@ -56,6 +60,11 @@ export class Primary {
   async newLink(): Promise<Link> {
     const { stdout } = await run(bin, ['setup', 'link', '--json', '--control-socket', this.at('manager.sock')], { env: this.env });
     return JSON.parse(stdout) as Link;
+  }
+
+  // What the agent and the manager have logged so far.
+  log(): string {
+    return this.logs.join('');
   }
 
   async stop(): Promise<void> {
