@@ -282,6 +282,13 @@ async function unscroll(page: Page): Promise<void> {
     const w = window as { a11yScrolled?: [Element, number, number][] };
     for (const [e, left, top] of (w.a11yScrolled ?? []).reverse()) e.scrollTo({ left, top, behavior: 'instant' }); // the first record of each wins
     delete w.a11yScrolled;
+    // textRuns' sheet that stops scroll snapping while words are scrolled to (the positions are back, so nothing snaps away)
+    const snap = (window as { a11ySnap?: CSSStyleSheet }).a11ySnap;
+    if (snap) {
+      const roots: (Document | ShadowRoot)[] = [document, ...[...document.querySelectorAll('*')].flatMap((e) => (e.shadowRoot ? [e.shadowRoot] : []))];
+      for (const r of roots) r.adoptedStyleSheets = r.adoptedStyleSheets.filter((x) => x !== snap);
+      delete (window as { a11ySnap?: CSSStyleSheet }).a11ySnap;
+    }
   });
 }
 
