@@ -108,7 +108,7 @@ func (a *Agent) join(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	next := a.state
-	next.Enforcing = true
+	next.Enforcing, next.Lost = true, false
 	if req.SetupPort != 0 {
 		next.SetupPort = req.SetupPort
 	}
@@ -120,17 +120,18 @@ func (a *Agent) join(w http.ResponseWriter, r *http.Request) {
 	}
 	// The node's address on its mesh, as the mesh gives it now: a rejoin may bring another, and the old one is gone.
 	next.MeshIPs = []netip.Addr{st.IP}
-	// Kept first, so a restart always brings the table back; undone if the table can't be applied.
-	prev := a.state
-	a.state = next
+	// Kept first, so a restart always brings the table back; undone if the table can't be applied. A join rebuilds a
+	// state that was lost.
+	prev, prevErr := a.state, a.stateErr
+	a.state, a.stateErr = next, nil
 	if err := a.save(); err != nil {
-		a.state = prev
+		a.state, a.stateErr = prev, prevErr
 		a.log.Error("saving the agent's state", "err", err)
 		fail(w, http.StatusInternalServerError, "state-unsaved")
 		return
 	}
 	if err := a.fw.Apply(ctx, a.firewallState(ctx)); err != nil {
-		a.state = prev
+		a.state, a.stateErr = prev, prevErr
 		_ = a.save()
 		a.log.Error("turning the firewall table on", "err", err)
 		fail(w, http.StatusInternalServerError, "firewall-failed")
@@ -172,6 +173,9 @@ func writeFile(path string, b []byte) error {
 type FirewallStatus struct {
 	firewall.Status
 	SetupListener SetupListener `json:"setupListener"`
+	// StateUnreadable: the agent's saved state couldn't be read when it started (a power cut mid-write, a disk
+	// error), so it knows nothing of its join until the next change it saves.
+	StateUnreadable bool `json:"stateUnreadable"`
 }
 
 // SetupListener is the setup link's LAN listener in the firewall table.
@@ -181,7 +185,8 @@ type SetupListener struct {
 }
 
 func (a *Agent) firewallStatus() FirewallStatus {
-	s := FirewallStatus{Status: a.fw.Status(), SetupListener: SetupListener{Port: a.cfg.SetupPort, Open: !a.state.SetupClosed}}
+	s := FirewallStatus{Status: a.fw.Status(), SetupListener: SetupListener{Port: a.setupPort(), Open: !a.state.SetupClosed},
+		StateUnreadable: a.stateErr != nil || a.state.Lost}
 	if s.Drift == nil {
 		s.Drift = []firewall.Drift{}
 	}
@@ -212,13 +217,20 @@ func (a *Agent) checkFirewall(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, a.firewallStatus())
 }
 
-// setupListener closes the setup link's LAN listener in the firewall table, for good: it never opens again.
+// setupListener closes the setup link's LAN listener in the firewall table, for good: it never opens again. While
+// it is open, the manager gives its port here (open, with the port): kept in the agent's state, for the table and for
+// the next boot's closed one.
 func (a *Agent) setupListener(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Open *bool `json:"open"`
+		Port *int  `json:"port"`
 	}
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<10)).Decode(&req); err != nil || req.Open == nil {
 		fail(w, http.StatusBadRequest, "not-json")
+		return
+	}
+	if req.Port != nil && (*req.Port <= 0 || *req.Port > 65535 || !*req.Open) {
+		fail(w, http.StatusBadRequest, "bad-setup-port")
 		return
 	}
 	a.mu.Lock()
@@ -228,11 +240,31 @@ func (a *Agent) setupListener(w http.ResponseWriter, r *http.Request) {
 			fail(w, http.StatusConflict, "closed-for-good")
 			return
 		}
+		if req.Port != nil && *req.Port != a.state.SetupPort {
+			prev := a.state.SetupPort
+			a.state.SetupPort = *req.Port
+			if err := a.save(); err != nil {
+				a.state.SetupPort = prev
+				a.log.Error("saving the agent's state", "err", err)
+				fail(w, http.StatusInternalServerError, "state-unsaved")
+				return
+			}
+			if a.state.Enforcing {
+				if err := a.fw.Apply(r.Context(), a.firewallState(r.Context())); err != nil {
+					a.fw.Want(a.firewallState(r.Context()))
+					a.log.Error("moving the setup listener in the firewall table", "err", err)
+					fail(w, http.StatusInternalServerError, "firewall-failed")
+					return
+				}
+			}
+		}
 		writeJSON(w, http.StatusOK, a.firewallStatus())
 		return
 	}
-	// Closed for good, saved first; the table follows, and a retry applies it again until it holds.
-	if !a.state.SetupClosed {
+	// Closed for good, saved first; the table follows, and a retry applies it again until it holds. Closing it again
+	// (the manager says so at every run) leaves an applied table alone.
+	wasClosed := a.state.SetupClosed
+	if !wasClosed {
 		a.state.SetupClosed = true
 		if err := a.save(); err != nil {
 			a.state.SetupClosed = false
@@ -242,7 +274,7 @@ func (a *Agent) setupListener(w http.ResponseWriter, r *http.Request) {
 		}
 		a.log.Info("the setup link's LAN listener is closed, for good")
 	}
-	if a.state.Enforcing {
+	if a.state.Enforcing && (!wasClosed || !a.fw.Applied()) {
 		if err := a.fw.Apply(r.Context(), a.firewallState(r.Context())); err != nil {
 			a.fw.Want(a.firewallState(r.Context()))
 			a.log.Error("closing the setup listener in the firewall table", "err", err)

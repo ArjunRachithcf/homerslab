@@ -2,6 +2,8 @@ package firewall_test
 
 import (
 	"context"
+	_ "embed"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"strings"
@@ -70,8 +72,8 @@ func TestTheTableAppliedIsSavedForTheNextBoot(t *testing.T) {
 	if fi, _ := os.Stat(path); fi.Mode().Perm() != 0o600 {
 		t.Errorf("saved with mode %o, want 600", fi.Mode().Perm())
 	}
-	if got, err := firewall.RestoreScript(path, 7020); err != nil || got != applied {
-		t.Errorf("the restore loads %q, %v; want what was applied", got, err)
+	if got, unusable := firewall.RestoreScript(path, 7020); unusable != nil || got != applied {
+		t.Errorf("the restore loads %q, %v; want what was applied", got, unusable)
 	}
 }
 
@@ -84,10 +86,50 @@ func TestAMachineWithNoSavedTableBootsClosed(t *testing.T) {
 	if strings.Count(got, "policy drop;") != 2 || !strings.Contains(got, "tcp dport 7020 accept") || strings.Count(got, "accept") != 6 {
 		t.Errorf("the closed table:\n%s", got)
 	}
-	bad := filepath.Join(t.TempDir(), "bad.nft")
-	_ = os.WriteFile(bad, []byte("flush ruleset\n"), 0o600)
-	if _, err := firewall.RestoreScript(bad, 7020); err == nil {
-		t.Error("a file that isn't HomersLab's table was loaded")
+}
+
+// savedBefore129 is a table as the agent saved it before #129, rendered by that agent's code.
+//
+//go:embed testdata/saved-before-129.nft
+var savedBefore129 []byte
+
+func TestASavedTableThatCantBeUsedBootsClosed(t *testing.T) {
+	testenv.Isolate(t)
+	table := firewall.Render(firewall.State{Mesh: []string{"wt0"}, LAN: []string{"enp5s0"}, Bridges: []string{"docker0"}})
+	dir := t.TempDir()
+	for name, content := range map[string]string{
+		"empty (a power cut before the data reached the disk)": "",
+		"cut short in a chain":                                 table[:len(table)/2],
+		"cut short at a chain's end":                           table[:strings.LastIndex(table, "\t}\n")+3],
+		"cut short by its last newline":                        strings.TrimSuffix(table, "\n"),
+		"not HomersLab's table":                                "flush ruleset\n",
+		"HomersLab's table after something else":               "flush ruleset\n" + table,
+		"HomersLab's table and another after it":               table + "}\n" + "table inet other {\n}\n",
+		"HomersLab's table and a stray brace":                  table + "}\n",
+	} {
+		path := filepath.Join(dir, "firewall.nft")
+		if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		got, unusable := firewall.RestoreScript(path, 7444)
+		if got != firewall.Closed(7444) || unusable == nil {
+			t.Errorf("%s: the restore loads (%v):\n%s", name, unusable, got)
+		}
+	}
+	// A table an earlier agent saved (before #129) is whole: it is loaded as it is.
+	// (Embedded: the firewall's test binary also runs on its own, as root in CI.)
+	legacy := filepath.Join(dir, "legacy.nft")
+	if err := os.WriteFile(legacy, savedBefore129, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got, unusable := firewall.RestoreScript(legacy, 7444); unusable != nil || got != string(savedBefore129) {
+		t.Errorf("a table an earlier agent saved: %v", unusable)
+	}
+	// Unreadable: a folder where the file should be.
+	unreadable := filepath.Join(dir, "folder.nft")
+	_ = os.Mkdir(unreadable, 0o700)
+	if got, unusable := firewall.RestoreScript(unreadable, 7444); got != firewall.Closed(7444) || unusable == nil {
+		t.Errorf("unreadable: the restore loads (%v):\n%s", unusable, got)
 	}
 }
 
@@ -102,5 +144,41 @@ func TestNoNameNftWouldMisreadIsRendered(t *testing.T) {
 	}
 	if !strings.Contains(r, `"br-ok"`) || !strings.Contains(r, `"docker0"`) {
 		t.Errorf("a valid name went missing:\n%s", r)
+	}
+}
+
+func TestPort53IsTheGatewaysOwnAndTheResolversOnlyThroughTheLAN(t *testing.T) {
+	testenv.Isolate(t)
+	s := firewall.State{Mesh: []string{"wt0"}, LAN: []string{"enp5s0"}, Bridges: []string{"docker0"},
+		Resolvers: []netip.Addr{netip.MustParseAddr("192.168.1.1"), netip.MustParseAddr("2001:db8:1::1")}}
+	r := firewall.Render(s)
+	chain := func(name string) string {
+		_, after, _ := strings.Cut(r, "\tchain "+name+" {\n")
+		body, _, _ := strings.Cut(after, "\t}\n")
+		return body
+	}
+	local := "meta l4proto { tcp, udp } th dport 53 fib daddr . iif type local accept"
+	if got := chain("apps_in"); !strings.HasPrefix(got, "\t\t"+local+"\n") || strings.Count(got, "dport 53") != 1 {
+		t.Errorf("apps_in lets port 53 in beyond the bridge's own address:\n%s", got)
+	}
+	if got := chain("virtual_in"); got != "\t\tudp dport { 67, 547 } accept\n\t\t"+local+"\n\t\tmeta l4proto { tcp, udp } th dport 53 drop\n" {
+		t.Errorf("virtual_in, want its own gateway's DNS and then port 53 dropped:\n%s", got)
+	}
+	out := chain("apps_out")
+	for _, want := range []string{
+		`oifname { "enp5s0" } ip daddr { 192.168.1.1 } meta l4proto { tcp, udp } th dport 53 accept`,
+		`oifname { "enp5s0" } ip6 daddr { 2001:db8:1::1 } meta l4proto { tcp, udp } th dport 53 accept`,
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("apps_out lacks %q:\n%s", want, out)
+		}
+	}
+	if n := strings.Count(out, "dport 53"); n != 2 {
+		t.Errorf("apps_out has %d port-53 rules, want the two through the LAN:\n%s", n, out)
+	}
+	noLAN := s
+	noLAN.LAN = nil
+	if strings.Contains(firewall.Render(noLAN), "daddr { 192.168.1.1 }") {
+		t.Error("with no LAN known, apps still reach a resolver, through any interface")
 	}
 }

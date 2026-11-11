@@ -246,6 +246,50 @@ func TestFirewallRestoreLoadsTheSavedTableOrAClosedOne(t *testing.T) {
 	}
 }
 
+func TestFirewallRestoreLoadsAClosedTableWhenTheSavedOneCantBeUsed(t *testing.T) {
+	testenv.Isolate(t)
+	state := t.TempDir()
+	saved := firewall.Render(firewall.State{Mesh: []string{"wt0"}, LAN: []string{"enp5s0"}})
+	if err := os.WriteFile(filepath.Join(state, "firewall.nft"), []byte(saved[:len(saved)/3]), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	code, out, errOut := runWith(t, "", "firewall", "restore", "--print", "--state-dir", state)
+	if code != 0 || out != firewall.Closed(7020) || !strings.Contains(errOut, "closed") {
+		t.Errorf("a truncated table: exit %d, stderr %q, loads:\n%s", code, errOut, out)
+	}
+}
+
+// The closed table's LAN exception is the manager's setup port, as the manager last gave it to the agent; none once
+// the listener closed for good.
+func TestFirewallRestoreTakesTheManagersSetupPort(t *testing.T) {
+	testenv.Isolate(t)
+	for name, c := range map[string]struct {
+		state string
+		want  int
+	}{
+		"the manager's port":                         {`{"enforcing":false,"setupPort":7444}`, 7444},
+		"closed for good":                            {`{"enforcing":true,"setupClosed":true,"setupPort":7444}`, 0},
+		"no port given yet":                          {`{"enforcing":false}`, 7020},
+		"an agent state that isn't one: the default": {``, 7020},
+	} {
+		state := t.TempDir()
+		if err := os.WriteFile(filepath.Join(state, "agent.json"), []byte(c.state), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if code, out, errOut := runWith(t, "", "firewall", "restore", "--print", "--state-dir", state); code != 0 || out != firewall.Closed(c.want) {
+			t.Errorf("%s: exit %d %s, loads:\n%s", name, code, errOut, out)
+		}
+	}
+	// A state that can't be read for now (an I/O error) may say "closed for good": no LAN exception then.
+	state := t.TempDir()
+	if err := os.Mkdir(filepath.Join(state, "agent.json"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if code, out, errOut := runWith(t, "", "firewall", "restore", "--print", "--state-dir", state); code != 0 || out != firewall.Closed(0) {
+		t.Errorf("an agent state that can't be read: exit %d %s, loads:\n%s", code, errOut, out)
+	}
+}
+
 func TestMeshOwnerPasswordIsForRootAndWarns(t *testing.T) {
 	testenv.Isolate(t)
 	sock, got := fakeControl(t, http.StatusOK, `{"password":"owner-PASSWORD-Aa1"}`)

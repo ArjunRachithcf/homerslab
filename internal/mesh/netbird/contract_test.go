@@ -267,10 +267,20 @@ func TestTheMeshContractOnSelfHostedNetBird(t *testing.T) {
 					"name": p.Name, "enabled": true, "action": "accept", "bidirectional": true, "protocol": "tcp", "ports": []string{"22", "443"},
 					"sources": []string{ids[mesh.RoleGroup(mesh.Kid)]}, "destinations": []string{ids[mesh.NodesGroup]}}}})
 			case "homerslab-adults-to-nodes": // a port range instead of the ports, every port in it
-				w.raw(t, tok, "PUT", "/api/policies/"+p.ID, map[string]any{"name": p.Name, "enabled": true, "rules": []map[string]any{{
-					"name": p.Name, "enabled": true, "action": "accept", "bidirectional": false, "protocol": "tcp",
-					"port_ranges": []map[string]int{{"start": 1, "end": 65535}},
-					"sources":     []string{ids[mesh.RoleGroup(mesh.Adult)]}, "destinations": []string{ids[mesh.NodesGroup]}}}})
+				rule := map[string]any{"name": p.Name, "enabled": true, "action": "accept", "bidirectional": false, "protocol": "tcp",
+					"ports": []string{"80", "443"}, "port_ranges": []map[string]int{{"start": 1, "end": 65535}},
+					"sources": []string{ids[mesh.RoleGroup(mesh.Adult)]}, "destinations": []string{ids[mesh.NodesGroup]}}
+				// The ports as they were and a range beside them, where only the range tells the rule from HomersLab's.
+				// NetBird 0.82 refuses a rule with both ("specify either individual ports or port ranges, not both"),
+				// so a range always shows in the ports too: then the range replaces the ports.
+				switch code, body := w.do(t, tok, "PUT", "/api/policies/"+p.ID, map[string]any{"name": p.Name, "enabled": true,
+					"rules": []map[string]any{rule}}); {
+				case code == http.StatusUnprocessableEntity && bytes.Contains(body, []byte("not both")):
+					delete(rule, "ports")
+					w.raw(t, tok, "PUT", "/api/policies/"+p.ID, map[string]any{"name": p.Name, "enabled": true, "rules": []map[string]any{rule}})
+				case code/100 != 2:
+					t.Fatalf("PUT /api/policies/%s: %d", p.ID, code)
+				}
 			case "homerslab-admins-to-nodes": // a posture check added, the rule as it was
 				w.raw(t, tok, "PUT", "/api/policies/"+p.ID, map[string]any{"name": p.Name, "enabled": true, "source_posture_checks": []string{check.ID},
 					"rules": []map[string]any{{"name": p.Name, "enabled": true, "action": "accept", "bidirectional": false, "protocol": "tcp",
@@ -423,6 +433,16 @@ func (w *world) sh(t *testing.T, m meshtest.Machine, script string) (string, err
 // raw is a call to the management API outside the adapter, for what the suite checks or sets up by hand.
 func (w *world) raw(t *testing.T, tok mesh.Secret, method, path string, body any) []byte {
 	t.Helper()
+	code, b := w.do(t, tok, method, path, body)
+	if code/100 != 2 {
+		t.Fatalf("%s %s: %d", method, path, code) // never the body: it may carry a token's hash
+	}
+	return b
+}
+
+// do is one call to the management API, whatever it answers.
+func (w *world) do(t *testing.T, tok mesh.Secret, method, path string, body any) (int, []byte) {
+	t.Helper()
 	var r *bytes.Reader = bytes.NewReader(nil)
 	if body != nil {
 		b, _ := json.Marshal(body)
@@ -438,10 +458,7 @@ func (w *world) raw(t *testing.T, tok mesh.Secret, method, path string, body any
 	defer resp.Body.Close()
 	var buf bytes.Buffer
 	_, _ = buf.ReadFrom(resp.Body)
-	if resp.StatusCode/100 != 2 {
-		t.Fatalf("%s %s: %d", method, path, resp.StatusCode) // never the body: it may carry a token's hash
-	}
-	return buf.Bytes()
+	return resp.StatusCode, buf.Bytes()
 }
 
 func decode(t *testing.T, b []byte, v any) {
