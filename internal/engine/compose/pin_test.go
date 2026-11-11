@@ -1,10 +1,13 @@
 package compose_test
 
 import (
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 
+	"golang.org/x/mod/modfile"
 	"golang.org/x/mod/semver"
 
 	"github.com/ArjunRachithcf/homerslab/internal/testenv"
@@ -14,24 +17,19 @@ import (
 // else may move them, or the engine's behaviour changes under the pin (Compose SDK spike, pinning rules 1, 2 and 8).
 func TestTheComposeSDKIsPinnedWithItsOwnModules(t *testing.T) {
 	testenv.Isolate(t)
-	selected := goList(t)
+	selected := requires(t, filepath.Join("..", "..", "..", "go.mod")) // go mod tidy keeps every module the build uses here
 	sdk := selected["github.com/docker/compose/v5"]
 	if sdk == "" || semver.Compare(sdk, "v5.7.0") < 0 {
 		t.Fatalf("github.com/docker/compose/v5 is %q, want v5.7.0 or later", sdk)
 	}
-	requires := map[string]string{}
-	for line := range strings.Lines(goCmd(t, "mod", "graph")) {
-		from, to, ok := strings.Cut(strings.TrimSpace(line), " ")
-		if ok && from == "github.com/docker/compose/v5@"+sdk {
-			path, version, _ := strings.Cut(to, "@")
-			requires[path] = version
-		}
-	}
+	// What the pinned SDK's own go.mod requires, from the module cache: the test needs no network.
+	cache := strings.TrimSpace(goCmd(t, "env", "GOMODCACHE"))
+	own := requires(t, filepath.Join(cache, "cache", "download", "github.com", "docker", "compose", "v5", "@v", sdk+".mod"))
 	for _, m := range []string{"github.com/docker/cli", "github.com/moby/moby/client", "github.com/moby/moby/api", "github.com/compose-spec/compose-go/v2"} {
-		if requires[m] == "" {
+		if own[m] == "" {
 			t.Errorf("compose %s doesn't require %s any more: review the pinning rules", sdk, m)
-		} else if selected[m] != requires[m] {
-			t.Errorf("%s is %s, but compose %s is built against %s", m, selected[m], sdk, requires[m])
+		} else if selected[m] != own[m] {
+			t.Errorf("%s is %s, but compose %s is built against %s", m, selected[m], sdk, own[m])
 		}
 	}
 	// Modules the SDK brings, held past known advisories.
@@ -47,13 +45,20 @@ func TestTheComposeSDKIsPinnedWithItsOwnModules(t *testing.T) {
 	}
 }
 
-func goList(t *testing.T) map[string]string {
+// requires is a go.mod file's required modules and their versions.
+func requires(t *testing.T, path string) map[string]string {
 	t.Helper()
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f, err := modfile.ParseLax(path, b, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
 	out := map[string]string{}
-	for line := range strings.Lines(goCmd(t, "list", "-m", "-f", "{{.Path}} {{.Version}}", "all")) {
-		if path, version, ok := strings.Cut(strings.TrimSpace(line), " "); ok {
-			out[path] = version
-		}
+	for _, r := range f.Require {
+		out[r.Mod.Path] = r.Mod.Version
 	}
 	return out
 }
@@ -61,10 +66,11 @@ func goList(t *testing.T) map[string]string {
 func goCmd(t *testing.T, args ...string) string {
 	t.Helper()
 	cmd := exec.Command("go", args...)
-	cmd.Env = append(cmd.Environ(), "GOFLAGS=-mod=readonly", "GOWORK=off")
+	var stderr strings.Builder
+	cmd.Stderr = &stderr
 	b, err := cmd.Output()
 	if err != nil {
-		t.Fatalf("go %s: %v", strings.Join(args, " "), err)
+		t.Fatalf("go %s: %v: %s", strings.Join(args, " "), err, stderr.String())
 	}
 	return string(b)
 }
