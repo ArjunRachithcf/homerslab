@@ -12,6 +12,7 @@ export type Screen = {
   body?: ReactNode;
   moreLabel?: string;
   more?: ReactNode;
+  notice?: ReactNode; // what went wrong with the last answer, beside the button that sends it
   primary?: { label: string; ok?: boolean; why?: string; busy?: boolean };
 };
 
@@ -70,6 +71,7 @@ export function Assistant(p: Props) {
           <div className="more-body">{p.more}</div>
         </details>
       )}
+      {p.notice}
       {p.primary && (
         <div className="as-actions">
           <button type="submit" className="btn btn-primary" disabled={off} aria-busy={p.primary.busy || undefined}
