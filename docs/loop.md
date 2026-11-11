@@ -32,7 +32,9 @@ when its ticket is merged, waiting for the maintainer, or parked, and the tracke
   several axes at once: security, correctness, the spec and ADRs, tests and isolation, the design system and
   accessibility, and supply chain and CI. It runs up to three rounds, incrementally (see step 9). When a round passes,
   the loop squash-merges it into `main` (the maintainer, 2026-11-11). Three failed rounds park it for the maintainer.
-- **Up to three iterations run at once** on independent tickets, each in its own worktree.
+- **At most two agents run at once**, counting implementers and reviewers together, so the work stays inside the
+  usage limit (the maintainer, 2026-11-11). Reviews that unblock `integration` come first, then the critical path.
+  Agents keep their reports short (about 300 words), and the orchestrator keeps its own turns brief.
 
 ## Steps
 
@@ -96,7 +98,7 @@ The digest is the maintainer's one place to look.
 
 ## Standing work
 
-The loop never idles. Whenever a slot is free (fewer than three tickets running, or nothing on the frontier), it runs
+The loop never idles. Whenever a slot is free (under the two-agent limit, or nothing on the frontier), it runs
 the next item of this rotation in a fresh subagent:
 
 1. **Bug hunt.** Read and run what's merged on `main` and `integration`. Try the edge cases the tests skip. Write a
