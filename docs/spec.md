@@ -191,8 +191,8 @@ such as a NAS or a GPU box. It is private by default and never needs a router po
 56. As a household admin, I want every app's own data backed up every hour, deduplicated and encrypted, to a target I
     choose (disk, SFTP, S3, B2, or Proton Drive), so that a dead disk or a fire doesn't lose the family's photos. Big
     shared folders (films, music) are backed up only where I opt in.
-57. As a household admin, I want a weekly write-only archive of the small, sensitive things, encrypted to a key that
-    isn't on the machines, so that even someone who takes over a machine can't read it.
+57. As a household admin, I want a write-only archive of the small, sensitive things, made on change and at least
+    weekly, encrypted to a key that isn't on the machines, so that even someone who takes over a machine can't read it.
 58. As a household admin, I want a restore test of every app every week, with the result in Admin, so that I know a
     restore works before I need one.
 59. As a household admin, I want to restore one app to an earlier point, so that a mistake can be undone.
@@ -221,8 +221,9 @@ such as a NAS or a GPU box. It is private by default and never needs a router po
 ### Security
 
 67. As a household admin, I want risky changes to ask for my passkey every time, so that a stolen session can't do
-    damage. Risky changes are deleting data, nodes, roles, sign-in settings, anything public, extras, restoring an app,
-    eject, trusting a catalog, making a join code, replacing a mesh token and making a new recovery kit.
+    damage. The glossary's **Risky change** lists them. The archive's key, backup targets, domains, DNS tokens, the
+    mail account and API or MCP tokens joined that list, and sign-in settings were defined, as recommended in #85 (the
+    maintainer may overrule).
 68. As a household admin, I want Admin reachable only over the mesh, so that it is never on the internet.
 69. As a household admin, I want Home unable to reach anything privileged, so that a flaw in the public-facing part
     can't become control of the household.
@@ -321,6 +322,34 @@ such as a NAS or a GPU box. It is private by default and never needs a router po
 114. As a person, I want Home to tell me plainly when an app isn't working and that the admin knows, so that I don't
      have to ask.
 
+### People leaving and visiting
+
+Stories 115–119 are recommended in #86; the maintainer may overrule.
+
+115. As a household admin, I want removing a person to end their sessions in every app that can, and the plan to name
+     each app that can't, so that someone who has left can't keep opening a public app.
+116. As a household admin, I want removing a person to list what they own in each app, keep it under their name, and
+     offer them a download first, so that nothing of theirs is lost by accident.
+117. As a household admin, I want to invite a guest until an end date, to named apps only, so that a visitor leaves on
+     their own.
+118. As an adult or a kid, I want to add a new device of mine to the mesh from another of my devices, with my
+     passkey, so that a broken phone doesn't wait for the admin.
+119. As a household admin, I want a role change to reach every app's kid view by the person's next sign-in, so that a
+     kid growing up needs no per-app settings.
+
+### Getting back in, and losing a node
+
+Stories 120–121 are recommended in #87; the maintainer may overrule.
+
+120. As the only household admin, I want two passkeys from the start and a way back in from the machine's terminal,
+     so that losing my passkey doesn't lock the household out.
+121. As a household admin, I want to restore the sign-in from its backups at the machine's terminal, so that a corrupt
+     sign-in doesn't need the sign-in to fix it.
+122. As a household admin, I want to replace the DNS token at the machine's terminal, so that an expired certificate
+     doesn't lock me out of the place that fixes it.
+123. As a household admin, I want one plan that cuts off a lost or stolen node and replaces everything it held, so that
+     a stolen machine opens nothing in the household.
+
 ## Implementation Decisions
 
 ### Modules
@@ -352,7 +381,28 @@ such as a NAS or a GPU box. It is private by default and never needs a router po
     Compose SDK, pinned exactly, for status, health, logs and planning, in a project-name namespace reserved for
     HomersLab.
   - **Host apps**: the vendor's repository and package, per distro.
-  - **The firewall table**: no published ports, mesh-only listeners, the LAN kept out, drift corrected.
+  - **The firewall table**: no published ports, mesh-only listeners, the LAN kept out, drift corrected. Also
+    ([ADR 0020](adr/0020-only-the-edge-reaches-an-app.md); recommended in #82; the maintainer may overrule):
+    - **only the edge reaches an app**. The agent, not the compose file, wires each app's one upstream: a bridge
+      address on Docker and rootful Podman, a loopback port on rootless Podman. New connections to it are accepted
+      only from the edge's user, and from the agent's, for its health probes;
+    - **apps reach the internet, and nothing else**. New connections from apps to the LAN, the mesh, other apps'
+      networks and the node's own addresses (except the engine's DNS resolver) are dropped, unless an extra ("reaches
+      the LAN", "reaches the mesh") says so;
+    - **the sign-in is the one exception, decided here, unlike app-to-app calls**. Apps with native sign-in call it
+      from their server (OIDC's token, userinfo and keys; LDAP binds). The edge can't tell apps apart by source
+      address (rootless Podman, apps on other nodes, a desktop primary), so apps reach it through a listener of their
+      own:
+      - the **sign-in listener** has its own address on each node, on the household's port (ADR 0021), and carries
+        only the sign-in's route. SNI and `Host` must both equal `auth.<main domain>` (`Host` compared without its port);
+      - the agent makes `auth.<main domain>` resolve to that address inside app containers;
+      - on the primary it serves the sign-in; on other nodes, the node's own edge forwards it to the primary;
+      - an app whose sign-in method is LDAP also reaches the same address on port 636 (LDAPS), which leads to the
+        identity provider's LDAP outpost: directly on the primary, through the node's own edge on other nodes;
+      - the firewall lets app networks reach that listener, and its LDAP port for LDAP apps, and nothing else on the
+        node;
+    - open: how one app uses another household app's API, such as a local AI model. The implementing ticket asks the
+      maintainer before building it.
   - **The mesh clients**: NetBird, and Tailscale's client, which also serves Headscale. Per-app tsnet nodes serve
     Headscale households, Tailscale households without a domain, and Funnel.
     - Router port mapping (UPnP, NAT-PMP, PCP) is switched off in every client: `NB_DISABLE_NAT_MAPPER=true`,
@@ -366,11 +416,30 @@ such as a NAS or a GPU box. It is private by default and never needs a router po
   - **Storage locations**: local folders, and network shares over the mesh.
   - **Health probes, backup and restore runs, and eject.**
 - **Edge** (on every node; unprivileged Caddy 2.11.2 or later, with only the capability to bind low ports).
-  - Per-app sites on the node's mesh addresses.
+  - Per-app sites on the node's mesh addresses, at the household's port
+    ([ADR 0021](adr/0021-one-url-per-name.md)). A name that isn't on this node gets 421 Misdirected Request, so a
+    browser that reuses a connection for two apps opens a new one (#81).
   - Forward-auth to the identity provider for guarded apps, after stripping identity headers that a client could
     forge, passing the sign-in's refreshed session cookie back to the browser.
-  - A public listener that requires PROXY protocol v2, for NetBird's TLS passthrough.
+  - **Apps are same-site with Admin and the sign-in**, so the edge keeps their cookies apart (#83):
+    - it strips the guard's own cookie from the request before proxying to the app;
+    - it drops any `Set-Cookie` in an app's response whose `Domain` is a household domain, unless the app's manifest
+      declares that cookie and the plan says so;
+    - with Authentik, every guarded app has its own provider (`forward_single`), never one for the whole domain.
+  - A public listener that requires PROXY protocol v2, for NetBird's TLS passthrough (#81):
+    - it holds only the routes of this node's public apps, and Home's when Home is public. Admin and mesh-only apps
+      are absent from it, not merely refused;
+    - while anything is public, the primary's public listener also holds `auth.<main domain>`, because public
+      visitors sign in there too. The public-path plan lists the sign-in's service;
+    - a `Host` that differs from the connection's SNI gets 421, and so does a name this node doesn't serve publicly.
   - Funnel traffic arrives through the agent's tsnet listeners.
+  - **No private key is readable through the edge** (#78):
+    - it runs with Caddy's autosave off (`admin.config.persist: false`), and the agent pushes the whole
+      configuration again whenever the edge starts;
+    - certificates load from files that the edge's unit receives as systemd credentials sealed by the agent, never
+      inline, so the admin API never shows a key;
+    - the admin socket sits in a directory only the edge's user and root can enter;
+    - on a node without a TPM, Admin says that the node's copy of the certificate is only as safe as its disk.
 - **Catalog**.
   - The app definition schema, and the loader.
   - Signature checks against the publisher keys the household trusts.
@@ -384,6 +453,11 @@ such as a NAS or a GPU box. It is private by default and never needs a router po
 - **Surfaces**.
   - **Admin**: React with TypeScript, served by the manager, mesh only.
   - **Home**: a separate unprivileged process that reads only a projection of apps, audiences and health; a PWA.
+  - **Admin and Home refuse cross-site changes**, because every app is same-site with them (#83):
+    - a state-changing request needs `Sec-Fetch-Site: same-origin`, or the header absent, for token-authenticated CLI
+      calls;
+    - a cookie-authenticated one also needs an exact `Origin`;
+    - session cookies are `__Host-` prefixed.
   - **The desktop family app**: Tauri, on macOS, Windows and Linux; it signs in through the browser.
   - **The setup app**: Tauri; it installs over SSH, then hands over to first-time setup's link.
   - All strings come from translation files. English ships at 1.0. WCAG 2.2 AA.
@@ -392,6 +466,9 @@ such as a NAS or a GPU box. It is private by default and never needs a router po
   - MCP tokens are scoped, and their use is audited.
   - No result ever carries a secret.
   - Risky changes need a person's step-up, so no token or assistant can make one.
+  - **No token applies an invite, an audience change or a removal** (recommended in #85; the maintainer may overrule).
+    They stay one click for an admin signed in to Admin. An MCP token's apply scope covers updates, and installs
+    without extras, and nothing else.
 
 ### Adapter contracts
 
@@ -399,7 +476,7 @@ such as a NAS or a GPU box. It is private by default and never needs a router po
 |---|---|---|
 | Identity provider | Authentik; Kanidm with oauth2-proxy | See below |
 | Mesh | NetBird (cloud or self-hosted); Tailscale (cloud); Headscale (self-hosted, with Tailscale's clients) | See below |
-| DNS provider | libdns providers | Create, update and delete only records HomersLab owns (ACME challenges, the public path's CNAME and validation), each with an ownership marker; check that a name is free; never touch other records |
+| DNS provider | libdns providers | Create, update and delete only records HomersLab owns (ACME challenges, the public path's CNAMEs and validation), as the manager's database and the inventory record list them; check through the provider's API listing that a name is free; never touch other records |
 | Container engine | Docker; Podman rootful; Podman rootless | Run, stop and inspect a compose project; logs and health; device and capability extras; GPUs (NVIDIA through CDI, Intel through its render devices) |
 | Backup target | Disk, SFTP, S3, B2 (restic); Proton Drive (official CLI, as a copy target) | Store, list and prune; immutable where the target supports it |
 
@@ -407,22 +484,39 @@ such as a NAS or a GPU box. It is private by default and never needs a router po
 - per-app OIDC clients, created, changed and deleted;
 - a forward-auth guard per app and audience;
 - LDAP access for apps that need it (with Kanidm, a person creates an app's LDAP password themselves);
-- people: invite, role, passkey reset, removal;
+- people: invite (with an optional end date, for guests), role, passkey reset, removal;
 - groups for roles and audiences;
 - step-up, as a fresh passkey assertion bound to a plan;
+- passkeys with the RP ID `auth.<main domain>`, never the bare domain, and an exact origin check (#83);
 - revocation that reaches the guard: removing a person, a role or an app also ends that app's guard sessions;
-- admins who hold passkeys only, enforced by HomersLab where the provider doesn't;
+- passkeys that require user verification, at enrolment and at every assertion (#84);
+- no first-comer admin (#84):
+  - the provider's own first-admin flow can't apply to anyone before the sign-in is served. For Authentik, `akadmin`
+    gets a random password and is deactivated, because blocking the flow's page at the edge isn't enough: the flow
+    executor API runs it too;
+  - the first admin's passkey comes only from the manager's one-time enrolment link;
+- enrolment and recovery links that run a HomersLab-owned flow with only a passkey-enrolment stage, never the
+  provider's own recovery flow (#84, #87);
+- admins who hold passkeys only, enforced by HomersLab with either provider (#84):
+  - admins sign in, step-up included, only through a passkey-only authentication flow, so a password or second
+    factor that a stolen session adds can't sign them in;
+  - the provider's own password, second-factor and recovery flows refuse admins;
+  - before accepting a step-up, HomersLab also asks the provider for the admin's credentials. Anything but passkeys
+    refuses the step-up, raises a security event, and says the way out (`homerslab admin recover`, or another
+    admin);
 - optional SSH sign-in on nodes: SSSD with Authentik, kanidm-unixd with Kanidm;
 - a report of what it can do.
 
 **Meshes** must provide:
-- a key for joining a node;
-- device invites and revocation, per person and role;
+- a key for joining a node, and removing one: its peers deleted and its keys revoked (#91);
+- device invites and revocation, per person and role, including a one-off key a person makes for their own device
+  (#86);
 - per-app names that resolve to the right node: wildcard records, split DNS, or a per-app node;
-- policies per role;
+- policies per role, and a group of their own for guests (#86);
 - router port mapping switched off in its clients;
 - a public path, where the mesh has one: NetBird's reverse proxy in TLS passthrough, or Funnel;
-- a report of what it can do, for example "no public path" on Headscale.
+- a report of what it can do, for example "no public path" on Headscale, or the TLS ports NetBird's cloud cluster
+  accepts, found by trying during first-time setup (#92).
 
 **The mesh implementations**, against that contract:
 
@@ -454,7 +548,8 @@ One folder per app: a manifest, a plain compose file (none for a host app), icon
 - **identity**: id, name, description, category;
 - **versions**: image digests per engine and architecture;
 - **sign-in methods**, in order of preference, with their settings;
-- **names and exposure**: the default exposure, and whether a public path is allowed;
+- **names and exposure**: the default exposure, whether a public path is allowed, and a cookie for the whole domain
+  where the app truly needs one (#83);
 - **audience**: the default audience, and the kid view;
 - **data to back up**: paths, and database dumps through declared commands;
 - **secrets to generate**, and the UID that reads them;
@@ -463,7 +558,9 @@ One folder per app: a manifest, a plain compose file (none for a host app), icon
 - **extras**;
 - **the host-app recipe**: the vendor's repository and package, per distro;
 - **update notes**;
-- **tier**.
+- **tier**;
+- **people**, for a Verified app: how to end one person's sessions and disable their account in it, and how they
+  export what they own, where the app can (recommended in #86; the maintainer may overrule).
 
 ### The floor
 
@@ -477,15 +574,35 @@ The manager refuses an app definition unless:
 - a sign-in method and a health check are declared;
 - its CI install test passes.
 
+### Catalogs
+
+Recommended in #89; the maintainer may overrule. Details are in the amended
+[ADR 0009](adr/0009-catalog-floor-and-tiers.md).
+- **No rollback, no freeze.** A catalog's signed metadata carries a version that only goes up, and an expiry 30 days
+  out.
+  - The publisher signs it again on a schedule (weekly), even when nothing changed, as TUF's timestamp role does,
+    with a separate timestamp key. That key may only sign the version, the expiry and the hash of content the
+    publisher's key signed.
+  - The manager refuses a version lower than the last one it accepted.
+  - Admin warns as the expiry nears. After it, Admin says "This catalog hasn't been updated since …"; installed apps
+    keep running, and new installs from that catalog wait.
+- **Each catalog acts only on its own apps.**
+  - App ids are scoped to their catalog.
+  - An installed app updates only from the catalog and publisher key it came from.
+  - A catalog's declared image signers apply to its own apps only.
+
 ### The install plan
 
 - A plan is one object, shown the same way in Admin, the CLI and the MCP server. It holds:
   - what gets created: the names, the sign-in client, the audience, a public service;
+  - the catalog and publisher, beside the tier (recommended in #89; the maintainer may overrule);
   - the placement;
   - each extra, in plain words;
   - what is backed up, and when;
   - the resources check.
 - A plan is immutable.
+- A plan records who made it (a person, the CLI or a named token), and its page shows that before the passkey:
+  "Prepared by the assistant token *Claude*" (#85).
 - Applying takes the plan's id, plus a step-up when the plan holds a risky change.
 - Updates, removals, ejects, moves and deleting data are plans too.
 
@@ -493,6 +610,11 @@ The manager refuses an app definition unless:
 
 - **Updates.**
   - Each catalog release pins versions; a bot proposes bumps.
+  - **Upstream releases wait, unless they are security releases** (recommended in #89; the maintainer may overrule):
+    - in the official catalog, a pin bump is merged by the maintainer, never by an agent;
+    - a new upstream version is offered three days after its release, unless the catalog marks it a security release;
+    - where an upstream signs its images, the catalog pins the expected signer, and the agent checks it as it does a
+      feedstock's.
   - CI installs, signs in, updates and restores every verified app.
   - The admin applies an update, or opts in per app.
   - An update runs snapshot → update → health check → rollback if unhealthy.
@@ -506,6 +628,27 @@ The manager refuses an app definition unless:
   ([ADR 0012](adr/0012-every-app-can-be-ejected.md)).
 - **Restore to an earlier point.** A plan that takes a snapshot first.
 
+### Backups and the archive
+
+Details are in [ADR 0010](adr/0010-backups-restic-and-a-write-only-archive.md), amended for #88 and #90.
+- **The platform's own state is backed up hourly**, with the apps: the identity provider's database and the manager's
+  (#88).
+- **The archive also runs on change** (#88). Every secret created or rotated, every change to the sign-in's people or
+  clients, and every change to the manager's desired state starts an archive run, once things have been quiet for 10
+  minutes, and at most 30 minutes later. The weekly run stays as the floor.
+- **Overlapping rotation**: a rotated token's predecessor is revoked only after an archive that holds its successor
+  has been written (#88).
+- **The restore plan** compares each app's last backup with the archive's secrets. When an app's secrets are older than
+  its data, it says so before anything happens (#88).
+- **A TPM that no longer opens the secrets** (#88): at boot, a credential that fails to decrypt is reported once, as
+  "this machine's TPM no longer opens HomersLab's secrets", in the machine's terminal and in an alert when one can
+  still be sent, with the restore-from-archive command.
+- **One restic repository per node** (recommended in #90; the maintainer may overrule), at the same target, each with
+  its own key and, where the target allows it, credentials scoped to its own path or bucket.
+  - A node holds only its own repository's key. The primary holds them all, for restore tests and moves.
+  - The recovery kit lists each repository and key, so adding a node asks for a new kit.
+  - Moving an app between nodes restores from the source node's repository, then backs up into the target node's.
+
 ### Names and certificates
 
 - **With a domain**, every app is `<name>.<domain>` on the mesh, resolving to its node.
@@ -514,8 +657,37 @@ The manager refuses an app definition unless:
   - Headscale: its base domain is the household domain, set once in first-time setup. Every app is its own tsnet node,
     so a device learns only the names its person may open
     ([Headscale spike](research/2026-11-09-spike-headscale-tsnet.md)).
+- **One URL per name**: `https://<name>.<domain>[:<port>]`, with the household's port chosen once in first-time
+  setup's mesh step ([ADR 0021](adr/0021-one-url-per-name.md); #92).
+  - 443 when the mesh's public path can use it (self-hosted NetBird), or when the household's meshes have no public
+    path (Headscale alone).
+  - NetBird's cloud: the TLS port its cluster accepts, even before anything is public, so the first public app changes
+    no URL. The mesh step finds it (#103):
+    - a throwaway TLS passthrough service with a random, recognisable name (`homerslab-probe-<random>`), under the
+      cluster's own domain, points at a probe listener on the primary that serves nothing;
+    - it tries the candidate ports in order (443, 8443, 9443), and the first that reaches the probe listener wins;
+    - the service is removed at once, and leftovers are swept by name at every run and in drift checks;
+    - when the probe can't run (the household's plan has no reverse proxy), or no candidate port works, the port is 443, and Admin says that
+      going public later is a guided migration.
+  - Tailscale's Funnel serves only `*.ts.net` names. Where it fits a household with a domain (the sign-in's name, and
+    so the passkeys' RP ID) is open in #102.
+  - The edge serves every site on the mesh at that port too. Every URL HomersLab writes uses it: base URLs, redirect
+    addresses, the sign-in's origin, mails, invites and Home.
+  - Changing it later is a guided migration, like renaming the main domain.
 - **Certificates**: one wildcard certificate per household domain, issued on the primary and handed to the edges over
   the agents' mTLS. The household's app names never appear in public Certificate Transparency logs.
+- **Renewal** starts when a third of the certificate's lifetime is left, read from the certificate itself. The first
+  failed renewal raises a warning, before the 14-day alert (#80).
+- **The DNS challenge** (#79):
+  - the solver asks public resolvers, never the system's, which on the primary may answer from the mesh's own zone;
+  - its propagation check asks the zone's authoritative servers for the exact TXT record, and never follows a CNAME,
+    because the public wildcard also answers for `_acme-challenge.<domain>`.
+- **CAA**: the domain step reads the zone's CAA records, and says plainly when the chosen CA isn't allowed (#80).
+- **Restores and rehearsals** (#80):
+  - the certificate, its key and the ACME account key are in the archive;
+  - a restore puts back a certificate that is still valid, and issues a new one only when it must, or when the old
+    machine was lost or stolen (see A lost or stolen node);
+  - importer rehearsals and CI use the CA's staging endpoint, never production, so they never use up its limits.
 - **Headscale always needs a domain.** Its support for `tailscale cert` was merged into its main branch on 2026-10-18
   but isn't in a release yet (v0.29.7). Even then it would need a DNS provider for the household's domain.
 - **On Tailscale without a domain**, every app is its own tagged tsnet node, named `<name>.<tailnet>.ts.net`, with
@@ -527,13 +699,22 @@ The manager refuses an app definition unless:
 - **Records HomersLab writes**, through the DNS token ([ADR 0016](adr/0016-domains-own-records-equal-domains-one-sign-in.md)):
   - the certificate challenges;
   - when the first app goes public through NetBird's proxy, its wildcard CNAME and validation record, shown in the
-    plan and removed when nothing is public any more.
-- **Only its own records**: each one carries an ownership marker. Other records (MX, SPF, DKIM, DMARC, the apex) are
-  never edited or deleted, and a name already taken by someone else's record is refused with a reason.
+    plan and removed when nothing is public any more;
+  - where the zone already holds a `*` record HomersLab didn't create, a CNAME per public app instead. The plan says
+    why in plain words ("your domain already sends every name to …") (#79).
+- **Only its own records** (#79):
+  - the manager's database is the source of truth for the records HomersLab created: provider ID, name, type and
+    value;
+  - one inventory record, a `_homerslab.<domain>` TXT, lists them by name and type, so a restored primary finds them
+    again. Nothing is ever written beside a CNAME;
+  - other records (MX, SPF, DKIM, DMARC, the apex) are never edited or deleted;
+  - a name already taken by someone else's record is refused with a reason. Whether a name is free is read from the
+    provider's API listing, never from DNS, where the public wildcard answers every name.
 - **More domains**: Admin's settings add them, each with its own DNS token and wildcard certificate. Every app answers
   on every domain, with no redirect.
 - **One sign-in domain**: the identity provider lives on the main domain only, so one passkey works everywhere. Each
-  app's OIDC client lists one address per domain, and guards set a cookie per domain.
+  app's OIDC client lists one address per domain, and each guard sets its cookie on its own app's name, never on the
+  whole domain (#83).
 - **Renaming the main domain**: a guided migration (a plan with step-up).
   - A new certificate; every app re-pointed, and every sign-in client updated.
   - The old domain keeps answering for 90 days.
@@ -594,6 +775,94 @@ Details are in [ADR 0018](adr/0018-uptime-and-notifications.md).
   silencing their own alerts and showing "updating" on Home.
 - **The family** hears on Home only. There is no status page.
 
+### Getting back in
+
+When the usual way in is what broke, the household admin gets back in from the primary's own terminal.
+- **Terminal commands** run as root on the primary, over the manager's control socket. Root on the primary can already
+  do anything, so they grant nothing new.
+  - `homerslab dns token` replaces the DNS token, read from stdin as in first-time setup, for when an expired
+    certificate keeps everyone out of Admin (#80). From Admin, the same change is a risky change.
+  - `homerslab admin recover <person>` prints a one-time link that enrols a new passkey for that admin, at the
+    sign-in's own address over the mesh. The admin may have no device left on the mesh, so it also prints a one-off
+    mesh key and QR code for one device of theirs, as first-time setup's second half does. Both last 30 minutes and
+    work once, and the command raises a security event (recommended in #87; the maintainer may overrule).
+  - `homerslab idp restore --list` and `--to <time>` restore the identity provider from the hourly backups, with no
+    browser. The command says whose passkeys, added since that point, are lost (recommended in #87; the maintainer may
+    overrule).
+- **Two ways in for the first admin**: first-time setup finishes only when the first admin has two passkeys (say, the
+  phone plus a laptop or a security key), or a second admin has joined with a passkey (recommended in #87; the
+  maintainer may overrule).
+- **The mesh's control plane down** (recommended in #87; the maintainer may overrule):
+  - there is no LAN fallback for apps ([ADR 0005](adr/0005-three-meshes-one-contract-tls-ends-at-home.md));
+  - alerts name the cause ("NetBird's control plane hasn't answered for 20 minutes"), and a node that loses the
+    primary says when the mesh may be the cause, rather than reporting the primary down;
+  - for a self-hosted control plane, the recovery kit holds what's needed to reach the server again: its address, the
+    owner's sign-in, and how to restore it.
+- **Mail down as well**: nothing more; each admin's choice of channels already covers it (ADR 0018).
+
+### People leaving and visiting
+
+Recommended in #86; the maintainer may overrule.
+- **Removing a person ends their sessions in every app.** The app definition says how, for each Verified app, and the
+  removal runs it in every app. For an app that can't, the plan says so in plain words: "Their Immich session on
+  their phone keeps working until they sign out; Immich can't end it".
+- **What they leave behind.** The removal plan lists, per app, what the person owns.
+  - It is kept by default, under their name, marked "left the household".
+  - Before the account goes, they're offered a download from each app that can export.
+  - Deleting it is a separate plan, with step-up.
+- **Guests.** An invite may carry an end date. On that date the guest is removed as above.
+  - A guest is in no role's group, and has their own group on the mesh.
+  - Their audience is named apps only, never a role's, and the invite chooses whether they get the kid views.
+  - A guest can't be an admin, and can't add devices.
+- **A new device, for adults and kids.** A person adds one of their own devices, with another device of theirs.
+  - Home links to the manager's device page: its own origin, mesh only, reachable by people's own devices, with a
+    step-up at the sign-in. The request never passes through Home's process
+    ([ADR 0013](adr/0013-two-surfaces.md), amended).
+  - The mesh gives a one-off key for their own role's groups, and the admins are told.
+  - At most five devices per person; admins can turn this off.
+- **Role changes** reach every app's kid view by the person's next sign-in at the latest.
+
+### A lost or stolen node
+
+A node that is lost, stolen or dead can't be removed in the usual way, because nothing can be moved off it first
+(#91). Admin offers "This node is lost or stolen" for an offline node: a plan with step-up that needs nothing from
+the node. It:
+- revokes the node's agent certificate, which the manager refuses from then on;
+- deletes its peers on every mesh in use, and revokes its keys;
+- revokes every household domain's wildcard certificate at the CA, and issues it again with a new key, which reaches
+  the remaining edges before the plan finishes;
+- rotates every credential the node held that lives elsewhere: its storage locations' share credentials, its apps'
+  OIDC client secrets, its backup repository's key and target credentials;
+- restores each of its apps onto another node from its latest backup, or marks it "lost with the node", as chosen in
+  the plan;
+- says what a thief could read: whether its disks were encrypted and TPM-sealed, and which apps' data it held;
+- raises a security event, and the incident log records what was rotated.
+
+**A lost or stolen primary.** Restoring onto new hardware asks "was the old primary lost or stolen?". If it was, the
+restore plan also revokes and reissues the certificates, and replaces everything the primary held:
+- the node authority: a new one, with every node enrolled again;
+- the old primary's mesh peers, deleted, and every outstanding setup key revoked. The recovery kit says how to delete
+  the peer from the mesh's dashboard at once, before new hardware exists;
+- the DNS token and the mesh tokens;
+- the mail account's password;
+- every node's restic key, the backup and archive targets' credentials, and Proton Drive's session;
+- the sign-in: every app's OIDC client secret, the identity provider's keys (for Authentik, its secret key and outpost
+  tokens), and every session ended;
+- every API and MCP token, and the manager's own API token to the identity provider;
+- the guards' cookie secrets (Authentik's per-provider proxy cookie secret; oauth2-proxy's for Kanidm), so no one can
+  forge a guard session;
+- every outstanding invite, enrolment link and recovery link held in the restored sign-in database;
+- the ACME account: deactivated and registered anew, because a valid authorization can outlive the old DNS token for
+  up to 30 days;
+- the storage locations' share credentials, the notification channels' credentials (ntfy, webhooks) and the outside
+  heartbeat's URL, so a thief can't keep the heartbeat green.
+
+The plan also lists the people, credentials and tokens created after a chosen time, and offers an earlier restore
+point. Nothing needs replacing for:
+- the archive's age key, because only its public key was on the machine;
+- the edge's admin socket, which exists only on the machine;
+- passkeys, because the identity provider holds only their public keys.
+
 ### First-time setup in two halves
 
 - **The one-time link** works on the machine or its LAN for 30 minutes. It covers everything up to "mesh connected,
@@ -601,6 +870,9 @@ Details are in [ADR 0018](adr/0018-uptime-and-notifications.md).
   mail, and the recovery kit.
 - **Then the admin joins this device to the mesh** (a QR code) and finishes at the sign-in's own address, where the
   admin's passkey is created. The passkey is bound to the name the household will use every day.
+  - It comes from a one-time enrolment link for the admin's account, which the manager mints (30 minutes, once) and
+    the claimed setup session hands over, as a QR code beside the mesh one. No other path creates the first admin
+    (#84).
 - **The LAN listener closes for good** at the admin's first sign-in over the mesh.
 - **Headscale households** also make one guided change in Headscale's configuration: its base domain.
 - **The first half travels over plain HTTP on the LAN**, including the mesh token, the DNS token and the mail
@@ -627,6 +899,8 @@ Details are in [ADR 0018](adr/0018-uptime-and-notifications.md).
 - TLS ends on the household's machines.
 - HTTPS only once the certificate exists, with HSTS; no secret ever crosses plain HTTP (#64).
 - The LAN sees the machines, not the apps.
+- Only the edge reaches an app, and apps reach only the internet unless an extra says so (recommended in #82; the
+  maintainer may overrule).
 - Admin is reachable over the mesh only.
 - Secrets travel only inward: a front end may send one, and no response carries one.
 - Signed releases, an SBOM, image digests pinned in the catalog, signed catalogs.
@@ -665,20 +939,52 @@ Details are in [ADR 0018](adr/0018-uptime-and-notifications.md).
   - the agent's API;
   - the adapter contracts.
 - **Contract suites**, one per adapter kind, run against the real software in containers:
-  - Authentik, and Kanidm with oauth2-proxy;
+  - Authentik, and Kanidm with oauth2-proxy, including the RP ID read from the provider (#83), and the first-admin
+    flow, the enrolment link, admins' credentials and user verification (#84);
   - Headscale and self-hosted NetBird;
   - Docker, rootful Podman and rootless Podman;
-  - a test ACME CA with a test DNS server;
+  - a test ACME CA with a test DNS server, including:
+    - issuance on a primary that resolves the household's domain through a mesh zone with no SOA, beside a public `*`
+      CNAME (#79);
+    - with a fake clock, a renewal that fails, the terminal command replacing the DNS token, and a restore that issues
+      nothing (#80);
   - restic targets: local, SFTP and S3-compatible.
 - **The floor checker**: table tests over app definitions, one passing and one failing case per rule.
 - **The converter**: golden tests, a template in and a definition out.
 - **Every verified app in CI**: install → sign in through a headless browser → update → restore test → eject → run the
   ejected project.
 - **The edge**: a request matrix for every app's names: who asks what, through which listener, and which answer they
-  get. Prior art: classic's request matrix, a real Caddy with stub upstreams and a stub identity provider.
+  get. Prior art: classic's request matrix, a real Caddy with stub upstreams and a stub identity provider. Its rows
+  include:
+  - through the PROXY v2 listener, a public app's SNI with the `Host` of a mesh-only app, of Admin, or of a public app
+    on another node → 421; SNI equal to `Host` → served (#81);
+  - a cross-app `POST` to Admin → refused; an app's response that sets a cookie on the household domain → stripped
+    (#83);
+  - a local unprivileged process that connects to an app's upstream with a forged identity header → refused before
+    the app sees anything (#82);
+  - Authentik's first-admin flow, at `/if/flow/initial-setup/` and through the flow executor API
+    (`/api/v3/flows/executor/initial-setup/`) → refused on every listener (#84);
+  - the sign-in listener: SNI `auth.<main domain>` with Admin's `Host` → refused; an app on rootless Podman, and an
+    app on another node, reach the sign-in through it → served (#82);
+  - the primary's public listener with something public: SNI and `Host` `auth.<main domain>` → the sign-in; with
+    nothing public → refused (#81).
+- **The firewall**: namespace tests in which a container tries the LAN, the mesh and its node's own addresses, and is
+  refused unless its extras allow it (#82).
 - **Golden renders**: what HomersLab writes for an app (compose project, edge configuration, policies) is compared
   byte for byte with a committed baseline. A deliberate change updates the baseline and explains the diff. Prior art:
   classic's golden tests.
+  - The edge's configuration has autosave off and no inline key, and a test finds no file under the edge's state
+    directories that holds a private key (#78).
+- **Claims each implementing ticket tests first**, before building on them. They are reported, not verified:
+  - Caddy answers a request that no route matches with an empty response, not an error (#81);
+  - the DNS challenge's zone lookup on the primary reaches the mesh's local zone, which has no SOA (#79);
+  - Kanidm's sign-in takes a single origin, which holds with one URL per name, a port other than 443 included;
+    Authentik derives the origin from the request (#92);
+  - Authentik's WebAuthn stages don't require user verification unless told to, so a touch alone could approve a
+    risky change (#84);
+  - NetBird's cloud lets HomersLab create a TLS passthrough service on a name under the cluster's own domain, and
+    remove it, by API, so the mesh step can find the cluster's port (#92);
+  - container DNS resolves `auth.<main domain>` to the sign-in listener on hosts running systemd-resolved (#82).
 - **Restore by hand**: CI follows the recovery kit's how-to, using only plain restic and age.
 - **Compose SDK upgrades** pass an API diff, the engine contract suite and a golden test of config hashes.
 - **Distros and architectures**: package install tests in containers and VMs.
@@ -690,6 +996,11 @@ Details are in [ADR 0018](adr/0018-uptime-and-notifications.md).
   - a test that stubs a container engine points it at nowhere;
   - tests get their own home directory;
   - nothing touches a live household.
+- **No secret in any result**: checked against every secret HomersLab generated or holds, in plain, base64 and
+  URL-encoded forms, across every tool's output, logs included (#85).
+- **People and nodes**: role changes reach kid views, tested in both directions (#86). A lost node: a two-node CI
+  job kills one node, applies the plan, then tries every old credential, and the test CA refuses the old certificate's
+  serial (#91).
 - **The manual release checklist**, on the maintainer's household: GPUs, cloud control planes, Funnel, and a real phone
   joining the mesh.
 
@@ -852,7 +1163,7 @@ Every answer of the grilling (2026-11-09) and where it lives:
 | 13 | Data on its node; storage locations | ADR 0003; story 48 |
 | 14 | The agent owns the host; the manager's scheduler | ADR 0007 |
 | 15 | First-time setup by a one-time local link | Stories 2–9 |
-| 16 | restic plus a weekly write-only archive | ADR 0010 |
+| 16 | restic plus a write-only archive, on change and at least weekly | ADR 0010 (amended for #88) |
 | 17 | Catalog pins; the admin applies; snapshot and rollback | Stories 51–55 |
 | 18 | Remove keeps data | Stories 63–64 |
 | 19 | Admin, adult, kid; audiences | Stories 20, 38–39; glossary |
@@ -972,3 +1283,53 @@ Every answer of the grilling (2026-11-09) and where it lives:
 | 133 | The setup session is a per-tab bearer token, not a cookie | First-time setup in two halves (#14 Q12–Q13) |
 | 134 | The manager's database is SQLite | ADR 0019 (#14 Q4) |
 | 135 | HTTPS enforced eventually; no secret over plain HTTP | Security defaults; First-time setup in two halves (#64) |
+| 136 | No private key readable through the edge: no autosave, certificates as credential files, a closed admin socket | Modules (Edge); Testing Decisions (#78) |
+| 137 | DNS ownership kept in the manager's database and one inventory record; nothing beside a CNAME | ADR 0016 (amended); Domains; Adapter contracts (#79) |
+| 138 | The DNS challenge asks public resolvers and the authoritative servers, never following a CNAME | Names and certificates; Testing Decisions, claims to test first (#79) |
+| 139 | Free names read from the provider's API; an existing `*` record means a CNAME per public app | ADR 0016 (amended); Domains (#79) |
+| 140 | Renewal at a third of the lifetime left, a warning at the first failure; CAA read before issuing | Names and certificates (#80) |
+| 141 | The certificate and ACME account in the archive; restores and rehearsals issue nothing they needn't | Names and certificates; Testing Decisions (#80) |
+| 142 | The DNS token replaced from the machine's terminal | Getting back in; story 122 (#80) |
+| 143 | The public listener holds only public routes; 421 when `Host` and SNI differ, or for a name not on the node | Modules (Edge); Testing Decisions, claims to test first (#81) |
+| 144 | Admin and Home refuse cross-site changes; `__Host-` session cookies | Modules (Surfaces); Testing Decisions (#83) |
+| 145 | The edge strips the guard's cookie and apps' domain cookies; a guard provider per app | ADR 0016 (amended); Modules (Edge); Domains; The app definition (#83) |
+| 146 | Passkeys' RP ID is the sign-in's own name | Adapter contracts (#83) |
+| 147 | One URL per name, its port chosen in first-time setup | ADR 0021; Names and certificates; Adapter contracts; Testing Decisions, claims to test first (#92) |
+| 148 | Only the edge reaches an app, by the edge's user in the firewall (recommended) | ADR 0020; ADR 0006 (amended); Modules (Agent); Security defaults; Testing Decisions (#82) |
+| 149 | Apps reach only the internet, never the LAN, the mesh, other apps' networks or the node; the LAN and the mesh are extras (recommended) | ADR 0020; Modules (Agent); Security defaults; Testing Decisions (#82) |
+| 150 | No first-comer admin; the first passkey from a one-time enrolment link | Adapter contracts; First-time setup in two halves; Testing Decisions (#84) |
+| 151 | Admins hold passkeys only with either provider; step-up refused when an admin holds anything else | ADR 0004 (amended); Adapter contracts; Testing Decisions (#84) |
+| 152 | User verification required for every passkey | Adapter contracts; Testing Decisions, claims to test first (#84) |
+| 153 | Six more risky changes; sign-in settings defined (recommended) | Glossary; story 67 (#85) |
+| 154 | No token applies invites, audience changes or removals (recommended) | Modules (CLI and MCP server) (#85) |
+| 155 | A plan names who made it; secrets looked for in every encoding | The install plan; Testing Decisions (#85) |
+| 156 | Removing a person ends their sessions in every app, or the plan names the apps that can't (recommended) | People leaving and visiting; The app definition; story 115 (#86) |
+| 157 | A removed person's data kept under their name, offered for download first (recommended) | People leaving and visiting; story 116 (#86) |
+| 158 | Guests: an invite with an end date, named apps only (recommended) | People leaving and visiting; Adapter contracts; story 117; glossary (#86) |
+| 159 | A person adds their own device from Home with their passkey (recommended) | People leaving and visiting; Adapter contracts; story 118 (#86) |
+| 160 | Role changes reach kid views by the next sign-in (recommended) | People leaving and visiting; Testing Decisions; story 119 (#86) |
+| 161 | Two passkeys or two admins before first-time setup finishes (recommended) | Getting back in; story 120 (#87) |
+| 162 | An admin's recovery link and the sign-in's restore, from the machine's terminal (recommended) | Getting back in; stories 120–121 (#87) |
+| 163 | The mesh's control plane down: no LAN fallback, alerts that name the cause (recommended) | Getting back in (#87) |
+| 164 | A lost or stolen node: cut off, its certificate and credentials replaced, its apps restored | A lost or stolen node; Adapter contracts; Testing Decisions; story 123 (#91) |
+| 165 | The archive also runs on change; a rotated token's predecessor outlives the next archive | ADR 0010 (amended); Backups and the archive; glossary (#88) |
+| 166 | The platform's own state is backed up hourly | ADR 0010 (amended); Backups and the archive (#88) |
+| 167 | Restore plans compare secrets with data; a TPM that no longer opens the secrets is reported at boot | ADR 0011 (amended); Backups and the archive (#88) |
+| 168 | Catalog versions only go up, and expire (recommended) | ADR 0009 (amended); Catalogs (#89) |
+| 169 | Each catalog acts only on its own apps and signers (recommended) | ADR 0009, ADR 0015 (amended); Catalogs; The install plan (#89) |
+| 170 | Official pin bumps merged by the maintainer; upstream releases wait three days; upstream signers checked (recommended) | ADR 0009 (amended); Updates, removal, eject (#89) |
+| 171 | One restic repository per node (recommended) | ADR 0010 (amended); Backups and the archive (#90) |
+| 172 | Apps reach the sign-in through a sign-in listener of their own on the household's port, and the LDAP outpost on its port 636; the agent's probes reach apps (recommended, #82) | ADR 0020; Modules (Agent); Testing Decisions (#82, reviews of #94) |
+| 173 | The provider's first-admin flow applies to nobody before the sign-in is served, the executor API included | ADR 0004 (amended); Adapter contracts; Testing Decisions (#84, review of #94) |
+| 174 | The recovery command also gives one of the admin's devices a mesh key (recommended) | Getting back in (#87, review of #94) |
+| 175 | Guests in no role, with their own mesh group; never admins; they can't add devices; the invite chooses the kid views (recommended) | People leaving and visiting; glossary (#86, review of #94) |
+| 176 | A new device through the manager's device page, mesh only, never through Home's process (recommended) | People leaving and visiting; ADR 0013 (amended) (#86, reviews of #94) |
+| 177 | Funnel with a household's domain: open | ADR 0021; Names and certificates (#92, #102) |
+| 178 | The cluster's port found by a throwaway service; 443 when it can't run | ADR 0021; Names and certificates; Testing Decisions, claims to test first (#92, review of #94) |
+| 179 | A lost or stolen primary: certificates reissued and the ACME account replaced; the node authority, peers, tokens, targets, the sign-in's secrets, guard cookie secrets, outstanding links and sessions replaced | A lost or stolen node; Names and certificates (#91, reviews of #94) |
+| 180 | Catalogs signed again weekly; Admin warns before expiry (recommended) | ADR 0009 (amended); Catalogs (#89, review of #94) |
+| 181 | The primary's public listener carries the sign-in while anything is public | Modules (Edge); Testing Decisions (#81, second review of #94) |
+| 182 | The probe: a recognisable throwaway service, a listener that serves nothing, named ports, leftovers swept | ADR 0021; Names and certificates (#92, #103) |
+| 183 | Catalogs signed again with a separate timestamp key, limited to version, expiry and hash (recommended) | ADR 0009 (amended); Catalogs (#89, second review of #94) |
+| 184 | Admins sign in only through a passkey-only authentication flow | ADR 0004 (amended); Adapter contracts (#84, second review of #94) |
+| 185 | Enrolment and recovery links run HomersLab's own passkey-enrolment flow | Adapter contracts (#84, #87, second review of #94) |
