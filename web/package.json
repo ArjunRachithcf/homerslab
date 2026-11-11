@@ -14,6 +14,7 @@
     "test": "playwright test"
   },
   "dependencies": {
+    "lodash": "4.17.20",
     "react": "19.3.1",
     "react-dom": "19.3.1"
   },

@@ -4,6 +4,7 @@ go 1.27.4
 
 require (
 	github.com/makiuchi-d/gozxing v0.1.1
+	golang.org/x/text v0.3.7
 	modernc.org/sqlite v1.62.0
 	rsc.io/qr v0.2.0
 )
@@ -15,7 +16,6 @@ require (
 	github.com/ncruces/go-strftime v1.1.0 // indirect
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
 	golang.org/x/sys v0.49.0 // indirect
-	golang.org/x/text v0.3.7 // indirect
 	golang.org/x/xerrors v0.0.0-20200804184101-5ec99f83aff1 // indirect
 	modernc.org/libc v1.80.1 // indirect
 	modernc.org/mathutil v1.7.1 // indirect
