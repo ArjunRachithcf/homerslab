@@ -2,19 +2,22 @@
 // everything but the machine itself, and keeps apps away from the LAN and the mesh (spec: the agent owns the firewall
 // table; story 73; #82).
 //
-// Coming in, on every interface that is neither loopback, a mesh nor a container bridge (the LAN, and anything else
-// plugged in):
-//   - no published ports: nothing that arrives there is forwarded, so Docker's DNAT to a container is dropped too;
-//   - listeners on the mesh only: no new connection reaches this machine, except
-//   - the machine itself: ICMP (ping, IPv6 neighbour discovery), DHCP and mDNS replies, and the mesh's WireGuard
-//     port, so peers at home connect directly;
-//   - the setup link's LAN listener, while it is open, until the admin's first sign-in over the mesh closes it;
-//   - nothing from the LAN is routed.
+// It knows four kinds of interface, each by its exact name: loopback, the mesh (NetBird's wt0), the container
+// engines' bridges (as Docker and Podman list them), and the LAN (the interfaces that carry the default route).
+// Everything else is a local virtual network (libvirt's virbr0, LXD's lxdbr0, a bridge nobody declared): its VMs
+// keep the internet, and nothing more. A name proves nothing: a LAN bridge called br-iot is not a container bridge,
+// and while no engine answers (at boot) no bridge is trusted.
 //
-// Going out, from the container bridges (apps): the internet, and each other's bridges, but no new connection to the
-// LAN's prefixes, private and link-local ranges, the mesh, or this machine itself except its DNS (the resolver an
-// engine provides on a bridge's gateway). Extras that let an app reach the LAN or the mesh come with the install plan
-// (#19, #82).
+//   - From the LAN: the machine itself only, by ICMP (ping, IPv6 neighbour discovery), DHCP and mDNS replies, the
+//     mesh's WireGuard port (so peers at home connect directly), and the setup link's listener while it is open,
+//     until the admin's first sign-in over the mesh closes it. No listener, no published port (DNAT to a container
+//     is forwarding, and dropped), and nothing routed.
+//   - From the mesh: any listener of this machine (the mesh's own policies filter it), but nothing routed: only the
+//     edge, on this machine, reaches an app (#19).
+//   - From the apps (the engines' bridges): this machine's DNS, each other's bridges, and the internet; never the
+//     LAN, the mesh, a private range or a local virtual network. Extras that let an app reach the LAN or the mesh
+//     come with the install plan (#19, #82).
+//   - From a local virtual network: no listener, and the internet only.
 //
 // A drop in any base chain is final in nftables, whatever other tables (firewalld, Docker's) accept, so this table
 // holds whatever else the machine runs. It changes no other table.
@@ -36,10 +39,6 @@ import (
 // Table is the table's family and name.
 const Table = "inet homerslab"
 
-// Bridges are the interface names of container networks on this machine: Docker's and Podman's. Traffic from them is
-// the machine's own containers.
-var Bridges = []string{"docker0", "br-*", "podman*", "cni-podman*"}
-
 // Private are the ranges no app reaches: RFC 1918, CGNAT (where meshes live), link-local, IPv6 ULA and link-local.
 var Private = []netip.Prefix{
 	netip.MustParsePrefix("10.0.0.0/8"), netip.MustParsePrefix("172.16.0.0/12"), netip.MustParsePrefix("192.168.0.0/16"),
@@ -56,7 +55,7 @@ type State struct {
 	// SetupPort is the setup link's LAN listener while it is open, or 0.
 	SetupPort int `json:"setupPort"`
 	// LAN are the interfaces that carry the default route, and their prefixes (a LAN may use global IPv6
-	// addresses). A LAN interface is never taken for a container bridge, whatever its name (a bridge named br-lan).
+	// addresses). With none (no default route yet), nothing is let in from outside but the machine's own basics.
 	LAN         []string       `json:"lan"`
 	LANPrefixes []netip.Prefix `json:"lanPrefixes"`
 	// AppsReachEdge are the edge's listeners that apps on this machine's bridges may open: the hook through which apps
@@ -64,6 +63,9 @@ type State struct {
 	// until the install plan wires an app's sign-in (#19, #20); then apps_in accepts exactly these, and nothing else of
 	// the node's.
 	AppsReachEdge []netip.AddrPort `json:"appsReachEdge,omitempty"`
+	// Bridges are the container engines' bridges, by their exact names, as the engines list them. A LAN interface
+	// is never one, whatever the engines say.
+	Bridges []string `json:"bridges"`
 }
 
 // Equal says whether two states make the same table.
@@ -74,42 +76,50 @@ func (s State) Equal(o State) bool { return Render(s) == Render(o) }
 func Render(s State) string {
 	var b strings.Builder
 	w := func(f string, a ...any) { fmt.Fprintf(&b, f+"\n", a...) }
+	lan := uniqStrings(s.LAN)
+	mesh := uniqStrings(s.Mesh)
+	bridges := slices.DeleteFunc(uniqStrings(s.Bridges), func(n string) bool { return slices.Contains(lan, n) || slices.Contains(mesh, n) })
 	w("# HomersLab's agent owns this table, and puts it back when it drifts.")
 	w("table %s", Table)
 	w("delete table %s", Table)
 	w("table %s {", Table)
-	notLAN := ""
-	if len(s.LAN) > 0 {
-		notLAN = " iifname != " + set(quoted(s.LAN))
-	}
-	inside := func(apps string) {
-		w("\t\tiif \"lo\" accept")
-		for _, m := range s.Mesh {
-			w("\t\tiifname %q accept", m)
-		}
-		for _, br := range Bridges {
-			w("\t\tiifname %q%s jump %s", br, notLAN, apps)
-		}
-	}
+
 	w("\tchain input {")
 	w("\t\ttype filter hook input priority filter - 5; policy drop;")
 	w("\t\tct state established,related accept")
 	w("\t\tct state invalid drop")
-	inside("apps_in")
+	w("\t\tiif \"lo\" accept")
+	if len(mesh) > 0 {
+		w("\t\tiifname %s accept", set(quoted(mesh)))
+	}
+	if len(bridges) > 0 {
+		w("\t\tiifname %s jump apps_in", set(quoted(bridges)))
+	}
 	w("\t\tmeta l4proto { icmp, ipv6-icmp } accept")
 	w("\t\tudp dport { 68, 546, 5353 } accept")
 	for _, p := range uniq(s.WireGuard) {
 		w("\t\tudp dport %d accept", p)
 	}
-	if s.SetupPort > 0 {
-		w("\t\ttcp dport %d accept", s.SetupPort)
+	if s.SetupPort > 0 && len(lan) > 0 {
+		w("\t\tiifname %s tcp dport %d accept", set(quoted(lan)), s.SetupPort)
 	}
 	w("\t}")
+
 	w("\tchain forward {")
 	w("\t\ttype filter hook forward priority filter - 5; policy drop;")
 	w("\t\tct state established,related accept")
-	inside("apps_out")
+	if len(mesh) > 0 {
+		w("\t\tiifname %s drop", set(quoted(mesh)))
+	}
+	if len(bridges) > 0 {
+		w("\t\tiifname %s jump apps_out", set(quoted(bridges)))
+	}
+	if len(lan) > 0 {
+		w("\t\tiifname %s drop", set(quoted(lan)))
+	}
+	w("\t\tjump outbound")
 	w("\t}")
+
 	// Apps to this machine: only the DNS an engine serves on a bridge's gateway, and the edge's listeners the hook
 	// names.
 	w("\tchain apps_in {")
@@ -123,17 +133,18 @@ func Render(s State) string {
 	}
 	w("\t\tdrop")
 	w("\t}")
-	// Apps out: their own bridges, and the internet; never the LAN, the mesh or a private range.
 	w("\tchain apps_out {")
-	notLANOut := ""
-	if len(s.LAN) > 0 {
-		notLANOut = " oifname != " + set(quoted(s.LAN))
+	if len(bridges) > 0 {
+		w("\t\toifname %s accept", set(quoted(bridges)))
 	}
-	for _, br := range Bridges {
-		w("\t\toifname %q%s accept", br, notLANOut)
-	}
-	if len(s.Mesh) > 0 {
-		w("\t\toifname %s drop", set(quoted(s.Mesh)))
+	w("\t\tjump outbound")
+	w("\t}")
+	// To the internet only: out through the LAN's uplink, to an address that is neither private nor the LAN's.
+	w("\tchain outbound {")
+	if len(lan) > 0 {
+		w("\t\toifname != %s drop", set(quoted(lan)))
+	} else {
+		w("\t\tdrop")
 	}
 	var v4, v6 []string
 	for _, p := range disjoint(append(slices.Clone(Private), s.LANPrefixes...)) {
@@ -232,6 +243,13 @@ func (f *Firewall) Apply(ctx context.Context, s State) error {
 	}
 	f.on, f.state = true, s
 	return nil
+}
+
+// Applied says whether the table was applied, and not lost since (as far as the last check knows).
+func (f *Firewall) Applied() bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.on && f.listing != ""
 }
 
 // Want makes s the table Check keeps, without applying it now: for a table that couldn't be applied, so the next

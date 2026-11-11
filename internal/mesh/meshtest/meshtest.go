@@ -8,6 +8,7 @@ import (
 	"errors"
 	"net/netip"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -74,8 +75,11 @@ func Run(t *testing.T, w World, ms Machines, want mesh.Report) mesh.Mesh {
 		}
 	})
 
-	t.Run("policies per role, and the mesh's own default removed", func(t *testing.T) {
+	t.Run("policies per role, and the mesh's own default removed where HomersLab set the mesh up", func(t *testing.T) {
 		if err := m.EnsurePolicies(ctx, want.Port); err != nil {
+			t.Fatal(err)
+		}
+		if err := m.RemoveDefault(ctx); err != nil {
 			t.Fatal(err)
 		}
 		checkPolicies(t, w.Policies(t), want.Port)
@@ -211,24 +215,29 @@ func Run(t *testing.T, w World, ms Machines, want mesh.Report) mesh.Mesh {
 	return m
 }
 
-// checkPolicies wants exactly HomersLab's policies for the household's port, plus none of the mesh's own default.
+// checkPolicies wants HomersLab's policies for the household's port exactly, none other of its name, and none of the
+// mesh's own default.
 func checkPolicies(t *testing.T, have map[string]mesh.Rule, port int) {
 	t.Helper()
 	if _, ok := have["Default"]; ok {
 		t.Error("the mesh's Default policy is still there")
 	}
-	for _, want := range mesh.Policies(port) {
-		got, ok := have[want.Name]
+	want := map[string]bool{}
+	for _, w := range mesh.Policies(port) {
+		want[w.Name] = true
+		got, ok := have[w.Name]
 		if !ok {
-			t.Errorf("no policy %s", want.Name)
+			t.Errorf("no policy %s", w.Name)
 			continue
 		}
 		slices.Sort(got.Ports)
-		if got.From != want.From || got.To != want.To || !slices.Equal(got.Ports, want.Ports) {
-			t.Errorf("policy %s: %+v, want %+v", want.Name, got, want)
+		if got.From != w.From || got.To != w.To || !slices.Equal(got.Ports, w.Ports) {
+			t.Errorf("policy %s: %+v, want %+v", w.Name, got, w)
 		}
 	}
-	if len(have) != len(mesh.Policies(port)) {
-		t.Errorf("%d policies, want %d: %v", len(have), len(mesh.Policies(port)), have)
+	for name := range have {
+		if strings.HasPrefix(name, "homerslab-") && !want[name] {
+			t.Errorf("a policy %s that HomersLab doesn't make", name)
+		}
 	}
 }

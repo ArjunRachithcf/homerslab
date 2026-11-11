@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"io/fs"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
@@ -68,6 +70,14 @@ type primary struct {
 	domains  manager.Domains
 	// agentConfig is the agent's, filled in by agenttest.
 	agentConfig agent.Config
+	log         *slog.Logger // the manager's and the agent's, when a test reads them
+}
+
+// withLogs gives the manager and its agent one logger, at debug level, writing to w.
+func withLogs(w io.Writer) option {
+	return func(p *primary) {
+		p.log = slog.New(slog.NewTextHandler(w, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	}
 }
 
 type option func(*primary)
@@ -98,7 +108,9 @@ func newPrimary(t *testing.T, opts ...option) *primary {
 		o(p)
 	}
 	if p.agent == "" {
-		p.agent, p.host = agenttest.StartWith(t, p.agentConfig)
+		cfg := p.agentConfig
+		cfg.Log = p.log
+		p.agent, p.host = agenttest.StartWith(t, cfg)
 	}
 	p.open()
 	return p
@@ -124,6 +136,7 @@ func (p *primary) open() {
 		Steps:      p.steps,
 		NetBird:    p.netbird,
 		Domains:    p.domains,
+		Log:        p.log,
 	})
 	if err != nil {
 		p.t.Fatal(err)

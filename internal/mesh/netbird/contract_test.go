@@ -31,7 +31,13 @@ import (
 	"github.com/ArjunRachithcf/homerslab/internal/testenv"
 )
 
-const project = "hltest-15"
+// project is the compose project: hltest-15, or HOMERSLAB_TEST_PROJECT.
+var project = func() string {
+	if p := os.Getenv("HOMERSLAB_TEST_PROJECT"); p != "" {
+		return p
+	}
+	return "hltest-15"
+}()
 
 // managementURL is the server as the machines on the test's mesh reach it.
 const managementURL = "http://nb.hltest15.test:80"
@@ -51,17 +57,18 @@ func TestTheMeshContractOnSelfHostedNetBird(t *testing.T) {
 		if err != nil || !required {
 			t.Fatalf("a fresh server: setup required %v, %v", required, err)
 		}
-		var setupToken mesh.Secret
-		var kept []mesh.Token
-		keep := func(tk mesh.Token) error { kept = append(kept, tk); return nil }
 		o := netbird.Owner{Name: "Inês Ferreira", Mail: "ines@ferreira.family", Password: netbird.NewPassword()}
-		b, err := netbird.BootstrapSeeing(ctx, w.api, o, keep, &setupToken)
+		st, err := netbird.Setup(ctx, w.api, o)
 		if err != nil {
 			t.Fatal(err)
 		}
-		own = b
-		if len(kept) != 1 || kept[0].ID != own.ID {
-			t.Error("the token wasn't handed to keep before the bootstrap finished")
+		a, err := netbird.Adopt(ctx, w.api, st.Value)
+		if err != nil {
+			t.Fatal(err)
+		}
+		own = a.Token
+		if len(a.Stale) != 0 {
+			t.Errorf("a new service user has older tokens: %v", a.Stale)
 		}
 		if life := time.Until(own.ExpiresAt); life > mesh.MaxTokenLife || life < mesh.MaxTokenLife-48*time.Hour {
 			t.Errorf("HomersLab's token lives %v, want 365 days", life)
@@ -84,15 +91,20 @@ func TestTheMeshContractOnSelfHostedNetBird(t *testing.T) {
 		if !owner || !svc {
 			t.Fatalf("users: owner %v, HomersLab's admin service user with the token %v", owner, svc)
 		}
-		if setupToken == "" {
-			t.Fatal("no setup token was made")
+		// The setup token works until HomersLab's own one has taken over and revokes it: a setup that stopped
+		// half-way resumes from it.
+		setup, _ := netbird.Open(w.api, mesh.Token{Value: st.Value})
+		if _, err := setup.Report(ctx); err != nil {
+			t.Errorf("the setup token before it is revoked: %v", err)
 		}
-		setup, _ := netbird.Open(w.api, mesh.Token{Value: setupToken})
+		if err := netbird.RevokeSetup(ctx, w.api, st); err != nil {
+			t.Fatal(err)
+		}
 		if _, err := setup.Report(ctx); !errors.Is(err, mesh.ErrTokenRefused) {
-			t.Errorf("the owner's one-day setup token after the bootstrap: %v, want it revoked", err)
+			t.Errorf("the owner's one-day setup token after RevokeSetup: %v, want it revoked", err)
 		}
-		if _, err := netbird.Bootstrap(ctx, w.api, netbird.Owner{Name: "Mallory", Mail: "m@example.org", Password: netbird.NewPassword()}, keep); !errors.Is(err, mesh.ErrAlreadySetUp) {
-			t.Errorf("bootstrapping a second time: %v, want ErrAlreadySetUp", err)
+		if _, err := netbird.Setup(ctx, w.api, netbird.Owner{Name: "Mallory", Mail: "m@example.org", Password: netbird.NewPassword()}); !errors.Is(err, mesh.ErrAlreadySetUp) {
+			t.Errorf("setting up a second time: %v, want ErrAlreadySetUp", err)
 		}
 	})
 	if own.Value == "" {
@@ -102,16 +114,28 @@ func TestTheMeshContractOnSelfHostedNetBird(t *testing.T) {
 	t.Run("the admin's token is given once; HomersLab makes its own", func(t *testing.T) {
 		// What the admin brings from the dashboard (the cloud's guided step): a token of a service user they made.
 		given := w.adminToken(t, own.Value)
-		next, err := netbird.Adopt(ctx, w.api, given)
+		a, err := netbird.Adopt(ctx, w.api, given)
 		if err != nil {
 			t.Fatal(err)
 		}
+		next := a.Token
 		if next.UserID != own.UserID || next.ID == own.ID {
 			t.Errorf("adopting again: user %s token %s, want the same service user %s with a new token", next.UserID, next.ID, own.UserID)
 		}
+		if len(a.Stale) != 1 || a.Stale[0].ID != own.ID {
+			t.Fatalf("the older tokens: %+v, want HomersLab's earlier one", a.Stale)
+		}
+		// The older token works until the caller has kept the new one and revokes it.
 		old, _ := netbird.Open(w.api, own)
+		if _, err := old.Report(ctx); err != nil {
+			t.Errorf("HomersLab's earlier token before the caller revokes it: %v", err)
+		}
+		nm, _ := netbird.Open(w.api, next)
+		if err := nm.Revoke(ctx, a.Stale[0]); err != nil {
+			t.Fatal(err)
+		}
 		if _, err := old.Report(ctx); !errors.Is(err, mesh.ErrTokenRefused) {
-			t.Errorf("HomersLab's earlier token after adopting again: %v, want it revoked", err)
+			t.Errorf("HomersLab's earlier token after its revocation: %v, want it refused", err)
 		}
 		if _, err := netbird.Adopt(ctx, w.api, "nbp_not-a-real-token-at-all-000000000000"); !errors.Is(err, mesh.ErrTokenRefused) {
 			t.Errorf("a wrong token: %v, want ErrTokenRefused", err)
@@ -124,51 +148,71 @@ func TestTheMeshContractOnSelfHostedNetBird(t *testing.T) {
 		t.Fatal(err)
 	}
 	w.m = m
-	t.Run("the household's own policies that reach every peer are found, and switched off only when asked", func(t *testing.T) {
+	t.Run("the household's own policies that reach every peer are found, and switched off as they were", func(t *testing.T) {
 		tok := m.Token().Value
-		var groups []struct{ ID, Name string }
-		decode(t, w.raw(t, tok, "GET", "/api/groups", nil), &groups)
-		var all string
-		for _, g := range groups {
-			if g.Name == "All" {
-				all = g.ID
-			}
-		}
-		var made struct{ ID string }
-		decode(t, w.raw(t, tok, "POST", "/api/policies", map[string]any{"name": "ssh-for-everyone", "enabled": true,
+		all := w.group(t, tok, "All")
+		var check struct{ ID string }
+		decode(t, w.raw(t, tok, "POST", "/api/posture-checks", map[string]any{"name": "recent-client",
+			"checks": map[string]any{"nb_version_check": map[string]any{"min_version": "0.1.0"}}}), &check)
+		ranges := w.policy(t, tok, map[string]any{"name": "ssh-for-everyone", "enabled": true, "source_posture_checks": []string{check.ID},
 			"rules": []map[string]any{{"name": "ssh", "enabled": true, "action": "accept", "bidirectional": false, "protocol": "tcp",
-				"ports": []string{"22"}, "sources": []string{all}, "destinations": []string{all}}}}), &made)
-		c, err := m.Conflicts(ctx)
-		if err != nil {
+				"port_ranges": []map[string]int{{"start": 2200, "end": 2299}}, "sources": []string{all}, "destinations": []string{all}}}})
+		blocked := w.policy(t, tok, map[string]any{"name": "no-telnet", "enabled": true,
+			"rules": []map[string]any{{"name": "telnet", "enabled": true, "action": "drop", "bidirectional": true, "protocol": "tcp",
+				"ports": []string{"23"}, "sources": []string{all}, "destinations": []string{all}}}})
+		names := conflictNames(t, m)
+		if !slices.Contains(names, "ssh-for-everyone") || !slices.Contains(names, "Default") || slices.Contains(names, "no-telnet") {
+			t.Errorf("conflicts: %v, want the household's accept policy and NetBird's Default, never a drop", names)
+		}
+		before := w.raw(t, tok, "GET", "/api/policies/"+ranges, nil)
+		if err := m.Disable(ctx, []string{ranges}); err != nil {
 			t.Fatal(err)
 		}
-		var names []string
-		for _, p := range c {
-			names = append(names, p.Name)
+		var was, now map[string]any
+		decode(t, before, &was)
+		decode(t, w.raw(t, tok, "GET", "/api/policies/"+ranges, nil), &now)
+		if now["enabled"] != false {
+			t.Error("the policy is still on")
 		}
-		if !slices.Contains(names, "ssh-for-everyone") || !slices.Contains(names, "Default") {
-			t.Errorf("conflicts: %v, want the household's policy and NetBird's Default", names)
+		was["enabled"] = false
+		if g, w := mustJSON(t, now), mustJSON(t, was); g != w {
+			t.Errorf("switching it off changed more than enabled:\n got %s\nwant %s", g, w)
 		}
-		var ids []string
-		for _, p := range c {
-			ids = append(ids, p.ID)
+		if slices.Contains(conflictNames(t, m), "ssh-for-everyone") {
+			t.Error("a switched-off policy is still a conflict")
 		}
-		if err := m.Disable(ctx, ids); err != nil {
+		_ = blocked
+	})
+
+	t.Run("only an all-to-all accept counts as NetBird's Default, whatever its name", func(t *testing.T) {
+		tok := m.Token().Value
+		all := w.group(t, tok, "All")
+		renamed := w.policy(t, tok, map[string]any{"name": "everyone", "enabled": true, "rules": []map[string]any{{"name": "x",
+			"enabled": true, "action": "accept", "bidirectional": true, "protocol": "all", "sources": []string{all}, "destinations": []string{all}}}})
+		namedLikeIt := w.policy(t, tok, map[string]any{"name": "Default", "enabled": true, "rules": []map[string]any{{"name": "x",
+			"enabled": true, "action": "accept", "bidirectional": false, "protocol": "tcp", "ports": []string{"8080"},
+			"sources": []string{all}, "destinations": []string{w.group(t, tok, mesh.RoleGroup(mesh.Adult))}}}})
+		if err := m.EnsurePolicies(ctx, 443); err != nil {
 			t.Fatal(err)
 		}
-		if c, _ := m.Conflicts(ctx); len(c) != 0 {
-			t.Errorf("after switching them off: %v", c)
+		if !w.exists(t, tok, renamed) {
+			t.Fatal("EnsurePolicies deleted a policy of the household's")
 		}
-		var p struct{ Enabled bool }
-		decode(t, w.raw(t, tok, "GET", "/api/policies/"+made.ID, nil), &p)
-		if p.Enabled {
-			t.Error("the household's policy is still on")
+		if err := m.RemoveDefault(ctx); err != nil {
+			t.Fatal(err)
 		}
+		if w.exists(t, tok, renamed) {
+			t.Error("an all-to-all accept under another name stayed")
+		}
+		if !w.exists(t, tok, namedLikeIt) {
+			t.Error("a policy merely named Default was deleted")
+		}
+		w.raw(t, tok, "DELETE", "/api/policies/"+namedLikeIt, nil)
 	})
 
 	w.m = meshtest.Run(t, w, meshtest.Machines{Primary: "primary", Second: "resolved", Device: "phone", Outsider: "guest"}, mesh.Report{
 		Mesh: "netbird", ControlPlane: "self-hosted", Version: "0.82.0", PerAppNames: "wildcard-records",
-		PublicPath: "netbird-reverse-proxy", PublicPathReady: false, DomainRequired: true, PortMappingOff: true, Port: 443,
+		PublicPath: "netbird-reverse-proxy", PublicPathReady: false, DomainRequired: true, Port: 443,
 	})
 
 	t.Run("claim (#79): the mesh's zone answers the household's names on the primary, with no SOA", func(t *testing.T) {
@@ -182,7 +226,25 @@ func TestTheMeshContractOnSelfHostedNetBird(t *testing.T) {
 		}
 	})
 
-	t.Run("policies that drifted are put back, and a new Default goes again", func(t *testing.T) {
+	t.Run("a node's own groups and its peer resource count too", func(t *testing.T) {
+		tok := w.m.Token().Value
+		all := w.group(t, tok, "All")
+		primary := w.peer(t, "primary")
+		var garage struct{ ID string }
+		decode(t, w.raw(t, tok, "POST", "/api/groups", map[string]any{"name": "garage", "peers": []string{primary.ID}}), &garage)
+		w.policy(t, tok, map[string]any{"name": "garage-ssh", "enabled": true, "rules": []map[string]any{{"name": "x", "enabled": true,
+			"action": "accept", "bidirectional": false, "protocol": "tcp", "ports": []string{"22"}, "sources": []string{all},
+			"destinations": []string{garage.ID}}}})
+		w.policy(t, tok, map[string]any{"name": "to-the-box", "enabled": true, "rules": []map[string]any{{"name": "x", "enabled": true,
+			"action": "accept", "bidirectional": false, "protocol": "tcp", "ports": []string{"8080"}, "sources": []string{all},
+			"destinationResource": map[string]string{"id": primary.ID, "type": "peer"}}}})
+		names := conflictNames(t, w.m)
+		if !slices.Contains(names, "garage-ssh") || !slices.Contains(names, "to-the-box") {
+			t.Errorf("conflicts: %v, want the policy to the node's own group and the one to the node as a peer", names)
+		}
+	})
+
+	t.Run("policies that drifted are put back, and a new all-to-all is a conflict, not deleted", func(t *testing.T) {
 		tok := w.m.Token().Value
 		var groups []struct{ ID, Name string }
 		decode(t, w.raw(t, tok, "GET", "/api/groups", nil), &groups)
@@ -206,8 +268,11 @@ func TestTheMeshContractOnSelfHostedNetBird(t *testing.T) {
 			t.Fatal(err)
 		}
 		have := w.Policies(t)
-		if _, ok := have["Default"]; ok {
-			t.Error("a Default policy made again stayed")
+		if _, ok := have["Default"]; !ok {
+			t.Error("the hourly check deleted a policy of the household's")
+		}
+		if !slices.Contains(conflictNames(t, w.m), "Default") {
+			t.Error("a new all-to-all policy isn't listed as a conflict")
 		}
 		if got := have["homerslab-kids-to-nodes"]; len(got.Ports) != 2 || got.Ports[0] != 80 || got.Ports[1] != 443 {
 			t.Errorf("the kids' policy after the check: %+v", got)
@@ -413,6 +478,7 @@ func (w *world) JoinDevice(t *testing.T, m meshtest.Machine, r mesh.Role) netip.
 }
 
 type peer struct {
+	ID       string `json:"id"`
 	Name     string `json:"name"`
 	Hostname string `json:"hostname"`
 	DNSLabel string `json:"dns_label"`
@@ -548,4 +614,53 @@ func (w *world) Resolves(t *testing.T, m meshtest.Machine, name string) bool {
 		time.Sleep(300 * time.Millisecond)
 	}
 	return false
+}
+
+func (w *world) group(t *testing.T, tok mesh.Secret, name string) string {
+	t.Helper()
+	var groups []struct{ ID, Name string }
+	decode(t, w.raw(t, tok, "GET", "/api/groups", nil), &groups)
+	for _, g := range groups {
+		if g.Name == name {
+			return g.ID
+		}
+	}
+	t.Fatalf("no group %s", name)
+	return ""
+}
+
+func (w *world) policy(t *testing.T, tok mesh.Secret, body map[string]any) string {
+	t.Helper()
+	var p struct{ ID string }
+	decode(t, w.raw(t, tok, "POST", "/api/policies", body), &p)
+	return p.ID
+}
+
+func (w *world) exists(t *testing.T, tok mesh.Secret, policy string) bool {
+	t.Helper()
+	var list []struct{ ID string }
+	decode(t, w.raw(t, tok, "GET", "/api/policies", nil), &list)
+	return slices.ContainsFunc(list, func(p struct{ ID string }) bool { return p.ID == policy })
+}
+
+func conflictNames(t *testing.T, m mesh.Mesh) []string {
+	t.Helper()
+	c, err := m.Conflicts(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var names []string
+	for _, p := range c {
+		names = append(names, p.Name)
+	}
+	return names
+}
+
+func mustJSON(t *testing.T, v any) string {
+	t.Helper()
+	b, err := json.Marshal(v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(b)
 }

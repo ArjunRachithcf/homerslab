@@ -120,3 +120,13 @@ func (a *agentClient) edgeCertificate(ctx context.Context, domain string, chain 
 	return (&agentClient{http: &c}).call(ctx, http.MethodPut, "/v1/edge/certificates/"+domain,
 		map[string]string{"chain": string(chain), "key": key.Reveal()}, nil)
 }
+
+func (a *agentClient) forget(ctx context.Context, name string) error {
+	return a.call(ctx, http.MethodDelete, "/v1/credentials/"+name, nil, nil)
+}
+
+// meshNode is the node's mesh client as its agent finds it.
+func (a *agentClient) meshNode(ctx context.Context) (agent.MeshStatus, error) {
+	var s agent.MeshStatus
+	return s, a.call(ctx, http.MethodGet, "/v1/mesh", nil, &s)
+}

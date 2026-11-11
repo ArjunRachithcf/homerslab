@@ -34,12 +34,17 @@ type fakeNetBird struct {
 	now           func() time.Time
 	setupRequired bool
 	bootstrapped  []netbird.Owner
+	setupTokens   []string // the setup tokens made, by value
+	setupRevoked  []string
 	adopted       []string
+	stale         []mesh.Token // HomersLab's older tokens, which Adopt hands back
+	failAdopts    int          // how many of the next Adopts fail, as a network would
 	issued        int
 	revoked       []string
 	ensured       int
+	defaults      int // RemoveDefault calls
 	keys          int
-	conflicts     []mesh.Policy // the household's own policies that reach every peer
+	conflicts     []mesh.Policy // the household's own policies that reach a node
 	disabled      []string
 	broken        map[string]bool // token IDs that NetBird refuses
 	// beforeBootstrap runs as the bootstrap starts, before NetBird has heard of the owner.
@@ -50,6 +55,8 @@ type fakeNetBird struct {
 	port      int
 	names     []string
 }
+
+const setupToken = "nbp_SETUP0000000000000000000000000000000"
 
 func (f *fakeNetBird) token() mesh.Token {
 	f.issued++
@@ -67,30 +74,40 @@ func (f *fakeNetBird) Probe(_ context.Context, url string) (bool, error) {
 	return f.setupRequired, nil
 }
 
-func (f *fakeNetBird) Bootstrap(_ context.Context, _ string, o netbird.Owner, keep func(mesh.Token) error) (mesh.Token, error) {
+func (f *fakeNetBird) Setup(_ context.Context, _ string, o netbird.Owner) (netbird.SetupToken, error) {
 	if f.beforeBootstrap != nil {
 		f.beforeBootstrap()
 	}
 	f.mu.Lock()
+	defer f.mu.Unlock()
 	if !f.setupRequired {
-		f.mu.Unlock()
-		return mesh.Token{}, mesh.ErrAlreadySetUp
+		return netbird.SetupToken{}, mesh.ErrAlreadySetUp
 	}
 	f.setupRequired = false
 	f.bootstrapped = append(f.bootstrapped, o)
-	t := f.token()
-	f.mu.Unlock()
-	return t, keep(t)
+	f.setupTokens = append(f.setupTokens, setupToken)
+	return netbird.SetupToken{Value: setupToken, UserID: "owner"}, nil
 }
 
-func (f *fakeNetBird) Adopt(_ context.Context, _ string, given mesh.Secret) (mesh.Token, error) {
+func (f *fakeNetBird) RevokeSetup(_ context.Context, _ string, st netbird.SetupToken) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if given.Reveal() != givenToken {
-		return mesh.Token{}, mesh.ErrTokenRefused
+	f.setupRevoked = append(f.setupRevoked, st.Value.Reveal())
+	return nil
+}
+
+func (f *fakeNetBird) Adopt(_ context.Context, _ string, given mesh.Secret) (netbird.Adopted, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.failAdopts > 0 {
+		f.failAdopts--
+		return netbird.Adopted{}, mesh.ErrUnreachable
+	}
+	if given.Reveal() != givenToken && !slices.Contains(f.setupTokens, given.Reveal()) {
+		return netbird.Adopted{}, mesh.ErrTokenRefused
 	}
 	f.adopted = append(f.adopted, given.Reveal())
-	return f.token(), nil
+	return netbird.Adopted{Token: f.token(), Stale: f.stale}, nil
 }
 
 func (f *fakeNetBird) Open(_ string, t mesh.Token) (mesh.Mesh, error) {
@@ -109,6 +126,13 @@ func (m *fakeMesh) Report(context.Context) (mesh.Report, error) {
 		return mesh.Report{}, mesh.ErrTokenRefused
 	}
 	return mesh.Report{Mesh: "netbird", Port: m.f.cloudPort}, nil
+}
+func (m *fakeMesh) RemoveDefault(context.Context) error {
+	m.f.mu.Lock()
+	defer m.f.mu.Unlock()
+	m.f.defaults++
+	m.f.conflicts = slices.DeleteFunc(m.f.conflicts, func(p mesh.Policy) bool { return p.Name == "Default" })
+	return nil
 }
 func (m *fakeMesh) Conflicts(context.Context) ([]mesh.Policy, error) {
 	m.f.mu.Lock()
@@ -191,6 +215,10 @@ func TestTheLANPageRefusesEverySecretAndPointsToTheCommand(t *testing.T) {
 		{"mesh": "netbird", "controlPlane": "self-hosted", "url": "https://netbird.ferreira.family", "apiKey": "x"},
 		{"mesh": "netbird", "netbird": map[string]any{"setupKey": "x"}},
 		{"mesh": "netbird", "list": []any{map[string]any{"password": "x"}}},
+		{"mesh": "netbird", "controlPlane": "cloud", "netbirdApiToken": "x"},
+		{"mesh": "netbird", "controlPlane": "cloud", "ADMIN_PASSWORD": "x"},
+		{"mesh": "netbird", "controlPlane": "cloud", "clientSecret": "x"},
+		{"mesh": "netbird", "controlPlane": "cloud", "privateKey": "x"},
 	} {
 		r := b.answer("network", body)
 		var e struct{ Error, Command string }
@@ -293,7 +321,96 @@ func TestANewSelfHostedNetBirdIsSetUpInOneStep(t *testing.T) {
 	if s.Answers["meshUrl"] != "https://netbird.ferreira.family" || s.Answers["meshControlPlane"] != "self-hosted" {
 		t.Errorf("answers %v", s.Answers)
 	}
-	assertNoSecretAt(t, p, nb.bootstrapped[0].Password.Reveal(), "nbp_OWN")
+	assertNoSecretAt(t, p, nb.bootstrapped[0].Password.Reveal(), "nbp_OWN", setupToken)
+	if nb.defaults != 1 {
+		t.Errorf("RemoveDefault ran %d times on a NetBird HomersLab set up, want once", nb.defaults)
+	}
+	if !slices.Equal(nb.setupRevoked, []string{setupToken}) {
+		t.Errorf("setup tokens revoked: %d, want the one", len(nb.setupRevoked))
+	}
+	if r := serveAgent(t, p.agent, "GET", "/v1/credentials/manager-mesh-setup-token"); r.Code != http.StatusNotFound {
+		t.Error("the setup token is still sealed after its work was done")
+	}
+}
+
+func TestAStoppedBootstrapResumesFromItsSealedSetupToken(t *testing.T) {
+	testenv.Isolate(t)
+	nb := &fakeNetBird{setupRequired: true, failAdopts: 1}
+	p, b := atNetwork(t, nb)
+	body := map[string]string{"mesh": "netbird", "controlPlane": "self-hosted", "url": "https://netbird.ferreira.family"}
+	if r := b.answer("network", body); r.Code == http.StatusOK {
+		t.Fatalf("with NetBird gone after its setup: %d %s", r.Code, r.Body)
+	}
+	if p.unseal(t, "manager-mesh-setup-token") != setupToken || len(nb.setupRevoked) != 0 {
+		t.Fatal("the setup token wasn't kept for the retry")
+	}
+	// NetBird now says it is set up: only the sealed setup token gets HomersLab back in.
+	s := b.mustAnswer("network", body)
+	if stepState(s, "network") != "done" || len(nb.bootstrapped) != 1 {
+		t.Fatalf("the retry: network %q, set up %d times", stepState(s, "network"), len(nb.bootstrapped))
+	}
+	if !slices.Equal(nb.setupRevoked, []string{setupToken}) || nb.defaults != 1 {
+		t.Errorf("after the retry: setup tokens revoked %d, Default removed %d times", len(nb.setupRevoked), nb.defaults)
+	}
+	if r := serveAgent(t, p.agent, "GET", "/v1/credentials/manager-mesh-setup-token"); r.Code != http.StatusNotFound {
+		t.Error("the setup token is still sealed")
+	}
+}
+
+func TestOnAnAccountHomersLabDidntSetUpDefaultTakesTheAdminsYes(t *testing.T) {
+	testenv.Isolate(t)
+	nb := &fakeNetBird{conflicts: []mesh.Policy{{ID: "d", Name: "Default"}}}
+	p, b := atNetwork(t, nb)
+	b.mustAnswer("network", map[string]string{"mesh": "netbird", "controlPlane": "cloud"})
+	p.secret("mesh", givenToken)
+	if s := b.state(); stepState(s, "network") != "waiting" || s.Answers["meshConflicts"] != "Default" || nb.defaults != 0 {
+		t.Fatalf("on the cloud: network %q, conflicts %q, RemoveDefault ran %d times", stepState(s, "network"), s.Answers["meshConflicts"], nb.defaults)
+	}
+	b.mustAnswer("network", map[string]any{"mesh": "netbird", "controlPlane": "cloud", "switchOff": true})
+	if !slices.Equal(nb.disabled, []string{"d"}) || nb.defaults != 0 {
+		t.Errorf("after the yes: disabled %v (want it switched off, not deleted), RemoveDefault %d", nb.disabled, nb.defaults)
+	}
+}
+
+func TestHomersLabsOlderTokensGoOnlyOnceTheNewOneIsKeptAndWorks(t *testing.T) {
+	testenv.Isolate(t)
+	old := mesh.Token{UserID: "svc", ID: "pat-old"}
+	nb := &fakeNetBird{stale: []mesh.Token{old}, broken: map[string]bool{"pat-1": true}}
+	p, b := atNetwork(t, nb)
+	b.mustAnswer("network", map[string]string{"mesh": "netbird", "controlPlane": "cloud"})
+	if r := p.secret("mesh", givenToken); r.Code == http.StatusOK {
+		t.Fatal("a new token that doesn't work was taken")
+	}
+	if len(nb.revoked) != 0 {
+		t.Fatalf("revoked %v before the new token worked", nb.revoked)
+	}
+	nb.mu.Lock()
+	nb.broken = nil
+	nb.mu.Unlock()
+	if r := p.secret("mesh", givenToken); r.Code != http.StatusOK {
+		t.Fatalf("%d %s", r.Code, r.Body)
+	}
+	if !slices.Contains(nb.revoked, "pat-old") {
+		t.Errorf("revoked %v, want the older token once the new one worked", nb.revoked)
+	}
+}
+
+func TestTheMeshReportSaysWhatTheNodesClientDoes(t *testing.T) {
+	testenv.Isolate(t)
+	nb := &fakeNetBird{}
+	p, _ := joinedOnTheCloud(t, nb)
+	report := func() map[string]any {
+		var r map[string]any
+		p.control("GET", "/api/v1/mesh", nil).json(t, &r)
+		return r
+	}
+	if r := report(); r["portMappingOff"] != true || r["mesh"] != "netbird" {
+		t.Errorf("after the join: %v", r)
+	}
+	p.host.RestartNetBirdWithoutItsDropIn()
+	if r := report(); r["portMappingOff"] != false {
+		t.Errorf("with the client running without its drop-in, the report says %v", r["portMappingOff"])
+	}
 }
 
 func TestASelfHostedNetBirdSetUpBeforeWaitsForItsToken(t *testing.T) {
@@ -547,5 +664,56 @@ func TestAnsweringTheNetworkStepAgainChangesNothing(t *testing.T) {
 	}
 	if r := b.answer("network", map[string]string{"mesh": "netbird", "controlPlane": "self-hosted", "url": "https://other.example.org"}); r.Code != http.StatusBadRequest {
 		t.Errorf("moving to another mesh in place: %d %s, want 400", r.Code, r.Body)
+	}
+}
+
+// lockedBuffer is a log both processes write to.
+type lockedBuffer struct {
+	mu sync.Mutex
+	b  bytes.Buffer
+}
+
+func (l *lockedBuffer) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.Write(p)
+}
+
+func (l *lockedBuffer) String() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.String()
+}
+
+func TestSecretsNeverReachTheLogs(t *testing.T) {
+	testenv.Isolate(t)
+	var logs lockedBuffer
+	nb := &fakeNetBird{setupRequired: true, failAdopts: 1, conflicts: []mesh.Policy{{ID: "p1", Name: "ssh-for-everyone"}}}
+	p := newPrimary(t, withBuiltSteps("signin"), withNetBird(nb), withLogs(&logs))
+	nb.now = p.clock.Now
+	b := p.claimed()
+	b.firstThree()
+	b.mustAnswer("signin", nil)
+	// Every path a secret takes: refused over HTTP, a self-hosted bootstrap that stops and resumes, the yes, the
+	// join, a rotation.
+	b.answer("network", map[string]string{"mesh": "netbird", "controlPlane": "cloud", "token": givenToken})
+	body := map[string]any{"mesh": "netbird", "controlPlane": "self-hosted", "url": "https://netbird.ferreira.family"}
+	b.answer("network", body)
+	b.answer("network", body)
+	body["switchOff"] = true
+	b.mustAnswer("network", body)
+	p.secret("mesh", wrongToken)
+	p.clock.Add(mesh.MaxTokenLife)
+	p.m.RunDue(context.Background())
+
+	out := logs.String()
+	if !strings.Contains(out, "the primary joined the mesh") {
+		t.Fatalf("the logs didn't see the join:\n%s", out)
+	}
+	secrets := []string{givenToken, wrongToken, setupToken, "nbp_OWN", "JOINKEY", nb.bootstrapped[0].Password.Reveal()}
+	for _, s := range secrets {
+		if strings.Contains(out, s) {
+			t.Errorf("a secret (%.8s…) is in the logs", s)
+		}
 	}
 }

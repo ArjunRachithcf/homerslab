@@ -125,8 +125,9 @@ type Report struct {
 	PublicPathReady bool   `json:"publicPathReady"`
 	// DomainRequired says whether the household needs a domain of its own with this mesh.
 	DomainRequired bool `json:"domainRequired"`
-	// PortMappingOff says the mesh's clients on HomersLab's nodes never ask the router for a port. The adapter's node
-	// side is where that is enforced; the contract suite checks it in the real client.
+	// PortMappingOff says every node's client runs with router port mapping off, as the nodes' agents find it
+	// (drop-in in place, and the running service's environment). The control plane can't know: the manager fills it
+	// in from the agents.
 	PortMappingOff bool `json:"portMappingOff"`
 	// Port is the household's port with this mesh, the one URL every name has (ADR 0021): 443, or the TLS port the
 	// public path's cluster accepts.
@@ -137,15 +138,18 @@ type Report struct {
 type Mesh interface {
 	// Report says what the mesh can do.
 	Report(ctx context.Context) (Report, error)
-	// EnsurePolicies makes the groups and Policies for the household's port, corrects any that drifted, and removes
-	// the mesh's own default policy. It changes nothing that isn't HomersLab's otherwise.
+	// EnsurePolicies makes the groups and Policies for the household's port, and corrects any that drifted. It
+	// changes nothing that isn't HomersLab's.
 	EnsurePolicies(ctx context.Context, port int) error
+	// RemoveDefault deletes the mesh's own "everyone reaches everything" policy, recognised by its shape. Only on a
+	// control plane HomersLab set up itself; elsewhere it is one of the Conflicts.
+	RemoveDefault(ctx context.Context) error
 	// EnsureNames makes the household's domain resolve on the mesh, for the NameGroups' machines only: every name
 	// under it (a wildcard) at the node's address to. Records of HomersLab's that drifted are put back.
 	EnsureNames(ctx context.Context, domain string, to netip.Addr) error
 	// Conflicts are the household's own policies that would let devices reach HomersLab's nodes past the policies per
-	// role: enabled, not HomersLab's, and reaching every peer (NetBird's All) or the nodes' group. Disable switches
-	// them off, keeping them for the household to look at; only with the admin's yes.
+	// role: enabled accept rules, not HomersLab's, reaching every peer or any group or peer that is a node. Disable
+	// switches them off, keeping each exactly as it was otherwise; only with the admin's yes.
 	Conflicts(ctx context.Context) ([]Policy, error)
 	Disable(ctx context.Context, ids []string) error
 	// NewJoinKey makes a one-time key for one node, named so the mesh's dashboard says what it is for.
