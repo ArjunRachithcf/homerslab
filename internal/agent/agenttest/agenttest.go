@@ -6,9 +6,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
+	"net/http"
 	"net/netip"
 	"os"
 	"path/filepath"
@@ -79,6 +82,11 @@ func StartWith(t testing.TB, c agent.Config) (string, *Host) {
 	if c.JoinWait == 0 {
 		c.JoinWait = 2 * time.Second
 	}
+	if c.Edge.Unit == "" {
+		c.Edge = agent.DefaultEdge
+		c.Edge.AdminSocket = filepath.Join(dir, "edge-admin.sock")
+		h.Edge = startEdge(t, c.Edge.AdminSocket)
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() { done <- agent.Serve(ctx, c) }()
@@ -111,7 +119,9 @@ type Host struct {
 	dropInAt  map[string][]byte // the NetBird drop-in as it was when each command ran
 	fail      map[string]error
 	NetbirdIP string
-	pid       int // NetBird's main process, 0 while it doesn't run
+	// Edge is the node's edge: Caddy's admin API, as a stand-in.
+	Edge *Edge
+	pid  int // NetBird's main process, 0 while it doesn't run
 	// restartedWith is NetBird's drop-in as it was when the service last restarted: the running service's environment.
 	restartedWith []byte
 	docker        map[string]string // the engine's bridge networks: ID → the bridge's name option ("" for none)
@@ -200,6 +210,9 @@ func (h *Host) Run(ctx context.Context, c host.Cmd) ([]byte, error) {
 			return nil, &host.Error{Cmd: line, Err: errors.New("exit status 1"), Stderr: "Error: No such file or directory"}
 		}
 		return []byte(h.table), nil
+	case line == "systemctl restart homerslab-edge.service" && h.Edge != nil:
+		h.Edge.Restart()
+		return nil, nil
 	case line == "systemctl restart netbird.service" || line == "systemctl --no-block restart netbird.service":
 		h.restartedWith = h.dropInAt[line]
 		env := ""
@@ -322,4 +335,77 @@ func (h *Host) Tamper(how string) {
 		return
 	}
 	h.table = string(bytes.Replace([]byte(h.table), []byte("policy drop"), []byte("policy accept"), 1))
+}
+
+// Edge stands in for Caddy's admin API on the edge's socket: it takes a configuration at /load and gives it back at
+// /config/, re-marshalled as Caddy does. Restart puts it back to its boot configuration, which has no sites.
+type Edge struct {
+	mu      sync.Mutex
+	config  []byte
+	loads   int
+	running bool // the unit has started: until then nothing answers on the socket
+}
+
+// Boot is the edge's configuration as it starts (packaging/edge/boot.json).
+const Boot = `{"admin":{"listen":"unix//run/homerslab-edge/admin.sock|0660","config":{"persist":false}}}`
+
+func startEdge(t testing.TB, sock string) *Edge {
+	e := &Edge{config: []byte(Boot)}
+	ln, err := net.Listen("unix", sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := &http.Server{Handler: http.HandlerFunc(e.serve)}
+	go func() { _ = srv.Serve(ln) }()
+	t.Cleanup(func() { _ = srv.Close() })
+	return e
+}
+
+func (e *Edge) serve(w http.ResponseWriter, r *http.Request) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if !e.running { // as a socket nobody listens on: the connection goes
+		if c, _, err := http.NewResponseController(w).Hijack(); err == nil {
+			_ = c.Close()
+		}
+		return
+	}
+	switch {
+	case r.Method == http.MethodPost && r.URL.Path == "/load":
+		b, _ := io.ReadAll(r.Body)
+		if !json.Valid(b) {
+			http.Error(w, `{"error":"invalid JSON"}`, http.StatusBadRequest)
+			return
+		}
+		e.config, e.loads = b, e.loads+1
+	case r.Method == http.MethodGet && r.URL.Path == "/config/":
+		var v any
+		_ = json.Unmarshal(e.config, &v)
+		b, _ := json.Marshal(v)
+		_, _ = w.Write(b)
+	default:
+		http.NotFound(w, r)
+	}
+}
+
+// Config is the configuration the edge runs.
+func (e *Edge) Config() []byte {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return bytes.Clone(e.config)
+}
+
+// Loads is how many configurations the edge took.
+func (e *Edge) Loads() int {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.loads
+}
+
+// Restart is the edge starting again, on its boot configuration. The edge's unit starts only when the agent starts
+// it.
+func (e *Edge) Restart() {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.config, e.running = []byte(Boot), true
 }

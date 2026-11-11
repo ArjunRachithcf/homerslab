@@ -123,6 +123,15 @@ services:
       mesh:
         ipv4_address: 10.215.0.31
 
+  # A peer the household made by hand, in none of HomersLab's groups.
+  guest:
+    <<: *client
+    hostname: guest
+    volumes: [guest_state:/var/lib/netbird]
+    networks:
+      mesh:
+        ipv4_address: 10.215.0.33
+
   # A node whose machine resolves through systemd-resolved (testdata/resolved).
   resolved:
     build: ./resolved
@@ -142,4 +151,5 @@ volumes:
   server_data:
   primary_state:
   phone_state:
+  guest_state:
   resolved_state:

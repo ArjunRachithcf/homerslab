@@ -18,9 +18,11 @@ import (
 	"net/http"
 	"net/netip"
 	"os"
+	"sync"
 	"sync/atomic"
 	"time"
 
+	"github.com/ArjunRachithcf/homerslab/internal/certs"
 	"github.com/ArjunRachithcf/homerslab/internal/lan"
 	"github.com/ArjunRachithcf/homerslab/internal/manager/setup"
 	"github.com/ArjunRachithcf/homerslab/internal/manager/store"
@@ -47,6 +49,11 @@ type Config struct {
 	Steps map[string]setup.Handler
 	// NetBird reaches NetBird's management API; the netbird package when nil.
 	NetBird NetBird
+	// Authority is the certificate authority (Let's Encrypt when its Directory is empty; its staging endpoint for
+	// rehearsals and CI), and Domains how the manager reaches it and the DNS provider: Authority through the dns and
+	// certs packages when nil.
+	Authority certs.Authority
+	Domains   Domains
 	// ScheduleEvery is how often the scheduler looks for due jobs.
 	ScheduleEvery time.Duration
 	Web           fs.FS // the built pages; surfaces.Dist() when nil
@@ -60,9 +67,11 @@ type Manager struct {
 	setup     *setup.Setup
 	agent     *agentClient
 	netbird   NetBird
+	domains   Domains
 	web       fs.FS
 	log       *slog.Logger
 	lanClosed atomic.Bool
+	certMu    sync.Mutex // one issuance or renewal at a time
 }
 
 // New opens the manager's database.
@@ -91,6 +100,9 @@ func New(c Config) (*Manager, error) {
 	if c.NetBird == nil {
 		c.NetBird = realNetBird{}
 	}
+	if c.Authority.Directory == "" {
+		c.Authority = certs.LetsEncrypt
+	}
 	if c.ScheduleEvery == 0 {
 		c.ScheduleEvery = time.Hour
 	}
@@ -98,15 +110,20 @@ func New(c Config) (*Manager, error) {
 	if err != nil {
 		return nil, err
 	}
-	m := &Manager{cfg: c, db: db, agent: newAgentClient(c.AgentSocket), netbird: c.NetBird, web: c.Web, log: c.Log}
-	handlers := map[string]setup.Handler{"network": m.network}
+	if c.Domains == nil {
+		a := c.Authority
+		a.Log = c.Log
+		c.Domains = realDomains{a: a, book: db.Book()}
+	}
+	m := &Manager{cfg: c, db: db, agent: newAgentClient(c.AgentSocket), netbird: c.NetBird, domains: c.Domains, web: c.Web, log: c.Log}
+	handlers := map[string]setup.Handler{"network": m.network, "domain": m.domain}
 	for id, h := range setup.Built {
 		handlers[id] = h
 	}
 	for id, h := range c.Steps {
 		handlers[id] = h
 	}
-	m.setup = setup.New(db, c.Now, handlers, map[string]setup.SecretHandler{"mesh": m.meshSecret})
+	m.setup = setup.New(db, c.Now, handlers, map[string]setup.SecretHandler{"mesh": m.meshSecret, "dns": m.dnsSecret})
 	answers, err := db.Answers(context.Background())
 	if err != nil {
 		db.Close()
@@ -119,20 +136,27 @@ func New(c Config) (*Manager, error) {
 // Close closes the database.
 func (m *Manager) Close() error { return m.db.Close() }
 
-// Serve answers on the setup listener and the control socket until ctx ends.
-func (m *Manager) Serve(ctx context.Context, setupLn, controlLn net.Listener) error {
+// Serve answers on the setup listener, the control socket and Admin's socket (for the edge; none when adminLn is
+// nil) until ctx ends.
+func (m *Manager) Serve(ctx context.Context, setupLn, controlLn, adminLn net.Listener) error {
 	servers := []*http.Server{
 		{Handler: m.Setup(), ReadHeaderTimeout: 10 * time.Second, ReadTimeout: 30 * time.Second,
 			// The network step bootstraps a mesh and joins it, waiting for the client to connect: up to a few minutes.
 			WriteTimeout: 3 * time.Minute, IdleTimeout: 2 * time.Minute},
 		{Handler: m.Control(), ReadHeaderTimeout: 10 * time.Second},
+		{Handler: m.Admin(), ReadHeaderTimeout: 10 * time.Second, ReadTimeout: 30 * time.Second, IdleTimeout: 2 * time.Minute},
+	}
+	listeners := []net.Listener{setupLn, controlLn, adminLn}
+	if adminLn == nil {
+		servers, listeners = servers[:2], listeners[:2]
 	}
 	scheduled, stop := context.WithCancel(ctx)
 	defer stop()
 	go m.schedule(scheduled)
-	errc := make(chan error, 2)
-	go func() { errc <- servers[0].Serve(setupLn) }()
-	go func() { errc <- servers[1].Serve(controlLn) }()
+	errc := make(chan error, len(servers))
+	for i, s := range servers {
+		go func() { errc <- s.Serve(listeners[i]) }()
+	}
 	var err error
 	select {
 	case err = <-errc:
@@ -159,6 +183,9 @@ func (m *Manager) Control() http.Handler {
 	mux.HandleFunc("GET /api/v1/mesh/owner-password", m.getOwnerPassword)
 	mux.HandleFunc("GET /api/v1/setup", m.getSetup)
 	mux.HandleFunc("GET /api/v1/nodes/primary", m.getPrimary)
+	mux.HandleFunc("GET /api/v1/dns", m.getDNS)
+	mux.HandleFunc("PUT /api/v1/dns/token", m.putDNSToken)
+	mux.HandleFunc("GET /api/v1/warnings", m.getWarnings)
 	mux.HandleFunc("/", notFound)
 	return mux
 }
