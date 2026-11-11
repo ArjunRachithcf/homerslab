@@ -51,3 +51,22 @@ It can be rehearsed and rolled back.
   - an ownership marker;
   - a check that a name is free.
 - Tailscale households without a domain can add one later through the same migration.
+
+## Amended (2026-11-11)
+
+The intent stands: HomersLab knows which records are its own, and touches nothing else. Two details change.
+
+- **Where ownership is kept** (#79). "An owner TXT record beside it" can't work for the records that matter most: the
+  public path's records are CNAMEs, and no other data may sit at a name that holds a CNAME (RFC 1034 §3.6.2,
+  RFC 2181 §10.1). Instead:
+  - the manager's database is the source of truth for the records HomersLab created;
+  - one inventory record, a `_homerslab.<domain>` TXT, lists them by name and type, so a restored primary finds them
+    again;
+  - whether a name is free is read from the provider's API listing, never from DNS, where the public wildcard answers
+    every name;
+  - where the zone already holds a `*` record HomersLab didn't create, the public path uses a CNAME per public app
+    instead of the wildcard, and the plan says why.
+- **Guard cookies** (#83). "Guards set a cookie per domain" becomes a cookie per app name. Every app is same-site with
+  Admin and the sign-in, so a cookie on the whole domain would reach every app; with Authentik, every guarded app has
+  its own provider. The cost is one extra hop the first time a person opens each guarded app, instead of once per
+  domain.

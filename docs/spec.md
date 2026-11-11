@@ -366,11 +366,28 @@ such as a NAS or a GPU box. It is private by default and never needs a router po
   - **Storage locations**: local folders, and network shares over the mesh.
   - **Health probes, backup and restore runs, and eject.**
 - **Edge** (on every node; unprivileged Caddy 2.11.2 or later, with only the capability to bind low ports).
-  - Per-app sites on the node's mesh addresses.
+  - Per-app sites on the node's mesh addresses, at the household's port
+    ([ADR 0021](adr/0021-one-url-per-name.md)). A name that isn't on this node gets 421 Misdirected Request, so a
+    browser that reuses a connection for two apps opens a new one (#81).
   - Forward-auth to the identity provider for guarded apps, after stripping identity headers that a client could
     forge, passing the sign-in's refreshed session cookie back to the browser.
-  - A public listener that requires PROXY protocol v2, for NetBird's TLS passthrough.
+  - **Apps are same-site with Admin and the sign-in**, so the edge keeps their cookies apart (#83):
+    - it strips the guard's own cookie from the request before proxying to the app;
+    - it drops any `Set-Cookie` in an app's response whose `Domain` is a household domain, unless the app's manifest
+      declares that cookie and the plan says so;
+    - with Authentik, every guarded app has its own provider (`forward_single`), never one for the whole domain.
+  - A public listener that requires PROXY protocol v2, for NetBird's TLS passthrough (#81):
+    - it holds only the routes of this node's public apps, and Home's when Home is public. Admin and mesh-only apps
+      are absent from it, not merely refused;
+    - a `Host` that differs from the connection's SNI gets 421, and so does a name this node doesn't serve publicly.
   - Funnel traffic arrives through the agent's tsnet listeners.
+  - **No private key is readable through the edge** (#78):
+    - it runs with Caddy's autosave off (`admin.config.persist: false`), and the agent pushes the whole
+      configuration again whenever the edge starts;
+    - certificates load from files that the edge's unit receives as systemd credentials sealed by the agent, never
+      inline, so the admin API never shows a key;
+    - the admin socket sits in a directory only the edge's user and root can enter;
+    - on a node without a TPM, Admin says that the node's copy of the certificate is only as safe as its disk.
 - **Catalog**.
   - The app definition schema, and the loader.
   - Signature checks against the publisher keys the household trusts.
@@ -384,6 +401,9 @@ such as a NAS or a GPU box. It is private by default and never needs a router po
 - **Surfaces**.
   - **Admin**: React with TypeScript, served by the manager, mesh only.
   - **Home**: a separate unprivileged process that reads only a projection of apps, audiences and health; a PWA.
+  - **Admin and Home refuse cross-site changes**, because every app is same-site with them (#83):
+    - a state-changing request needs `Sec-Fetch-Site: same-origin` (or none, for the CLI) and an exact `Origin`;
+    - session cookies are `__Host-` prefixed.
   - **The desktop family app**: Tauri, on macOS, Windows and Linux; it signs in through the browser.
   - **The setup app**: Tauri; it installs over SSH, then hands over to first-time setup's link.
   - All strings come from translation files. English ships at 1.0. WCAG 2.2 AA.
@@ -399,7 +419,7 @@ such as a NAS or a GPU box. It is private by default and never needs a router po
 |---|---|---|
 | Identity provider | Authentik; Kanidm with oauth2-proxy | See below |
 | Mesh | NetBird (cloud or self-hosted); Tailscale (cloud); Headscale (self-hosted, with Tailscale's clients) | See below |
-| DNS provider | libdns providers | Create, update and delete only records HomersLab owns (ACME challenges, the public path's CNAME and validation), each with an ownership marker; check that a name is free; never touch other records |
+| DNS provider | libdns providers | Create, update and delete only records HomersLab owns (ACME challenges, the public path's CNAMEs and validation), as the manager's database and the inventory record list them; check through the provider's API listing that a name is free; never touch other records |
 | Container engine | Docker; Podman rootful; Podman rootless | Run, stop and inspect a compose project; logs and health; device and capability extras; GPUs (NVIDIA through CDI, Intel through its render devices) |
 | Backup target | Disk, SFTP, S3, B2 (restic); Proton Drive (official CLI, as a copy target) | Store, list and prune; immutable where the target supports it |
 
@@ -410,6 +430,7 @@ such as a NAS or a GPU box. It is private by default and never needs a router po
 - people: invite, role, passkey reset, removal;
 - groups for roles and audiences;
 - step-up, as a fresh passkey assertion bound to a plan;
+- passkeys with the RP ID `auth.<main domain>`, never the bare domain, and an exact origin check (#83);
 - revocation that reaches the guard: removing a person, a role or an app also ends that app's guard sessions;
 - admins who hold passkeys only, enforced by HomersLab where the provider doesn't;
 - optional SSH sign-in on nodes: SSSD with Authentik, kanidm-unixd with Kanidm;
@@ -422,7 +443,8 @@ such as a NAS or a GPU box. It is private by default and never needs a router po
 - policies per role;
 - router port mapping switched off in its clients;
 - a public path, where the mesh has one: NetBird's reverse proxy in TLS passthrough, or Funnel;
-- a report of what it can do, for example "no public path" on Headscale.
+- a report of what it can do, for example "no public path" on Headscale, or the TLS ports NetBird's cloud cluster
+  accepts, found by trying during first-time setup (#92).
 
 **The mesh implementations**, against that contract:
 
@@ -454,7 +476,8 @@ One folder per app: a manifest, a plain compose file (none for a host app), icon
 - **identity**: id, name, description, category;
 - **versions**: image digests per engine and architecture;
 - **sign-in methods**, in order of preference, with their settings;
-- **names and exposure**: the default exposure, and whether a public path is allowed;
+- **names and exposure**: the default exposure, whether a public path is allowed, and a cookie for the whole domain
+  where the app truly needs one (#83);
 - **audience**: the default audience, and the kid view;
 - **data to back up**: paths, and database dumps through declared commands;
 - **secrets to generate**, and the UID that reads them;
@@ -514,8 +537,29 @@ The manager refuses an app definition unless:
   - Headscale: its base domain is the household domain, set once in first-time setup. Every app is its own tsnet node,
     so a device learns only the names its person may open
     ([Headscale spike](research/2026-11-09-spike-headscale-tsnet.md)).
+- **One URL per name**: `https://<name>.<domain>[:<port>]`, with the household's port chosen once in first-time
+  setup's mesh step ([ADR 0021](adr/0021-one-url-per-name.md); #92).
+  - 443 when the mesh's public path can use it (self-hosted NetBird, Funnel), or when the household's meshes have no
+    public path (Headscale alone).
+  - NetBird's cloud: the TLS port its cluster accepts, even before anything is public, so the first public app changes
+    no URL.
+  - The edge serves every site on the mesh at that port too. Every URL HomersLab writes uses it: base URLs, redirect
+    addresses, the sign-in's origin, mails, invites and Home.
+  - Changing it later is a guided migration, like renaming the main domain.
 - **Certificates**: one wildcard certificate per household domain, issued on the primary and handed to the edges over
   the agents' mTLS. The household's app names never appear in public Certificate Transparency logs.
+- **Renewal** starts when a third of the certificate's lifetime is left, read from the certificate itself. The first
+  failed renewal raises a warning, before the 14-day alert (#80).
+- **The DNS challenge** (#79):
+  - the solver asks public resolvers, never the system's, which on the primary may answer from the mesh's own zone;
+  - its propagation check asks the zone's authoritative servers for the exact TXT record, and never follows a CNAME,
+    because the public wildcard also answers for `_acme-challenge.<domain>`.
+- **CAA**: the domain step reads the zone's CAA records, and says plainly when the chosen CA isn't allowed (#80).
+- **Restores and rehearsals** (#80):
+  - the certificate, its key and the ACME account key are in the archive;
+  - a restore puts back a certificate that is still valid, and issues a new one only when it must, or when the old
+    machine was lost or stolen;
+  - importer rehearsals and CI use the CA's staging endpoint, never production, so they never use up its limits.
 - **Headscale always needs a domain.** Its support for `tailscale cert` was merged into its main branch on 2026-10-18
   but isn't in a release yet (v0.29.7). Even then it would need a DNS provider for the household's domain.
 - **On Tailscale without a domain**, every app is its own tagged tsnet node, named `<name>.<tailnet>.ts.net`, with
@@ -527,13 +571,22 @@ The manager refuses an app definition unless:
 - **Records HomersLab writes**, through the DNS token ([ADR 0016](adr/0016-domains-own-records-equal-domains-one-sign-in.md)):
   - the certificate challenges;
   - when the first app goes public through NetBird's proxy, its wildcard CNAME and validation record, shown in the
-    plan and removed when nothing is public any more.
-- **Only its own records**: each one carries an ownership marker. Other records (MX, SPF, DKIM, DMARC, the apex) are
-  never edited or deleted, and a name already taken by someone else's record is refused with a reason.
+    plan and removed when nothing is public any more;
+  - where the zone already holds a `*` record HomersLab didn't create, a CNAME per public app instead. The plan says
+    why in plain words ("your domain already sends every name to …") (#79).
+- **Only its own records** (#79):
+  - the manager's database is the source of truth for the records HomersLab created: provider ID, name, type and
+    value;
+  - one inventory record, a `_homerslab.<domain>` TXT, lists them by name and type, so a restored primary finds them
+    again. Nothing is ever written beside a CNAME;
+  - other records (MX, SPF, DKIM, DMARC, the apex) are never edited or deleted;
+  - a name already taken by someone else's record is refused with a reason. Whether a name is free is read from the
+    provider's API listing, never from DNS, where the public wildcard answers every name.
 - **More domains**: Admin's settings add them, each with its own DNS token and wildcard certificate. Every app answers
   on every domain, with no redirect.
 - **One sign-in domain**: the identity provider lives on the main domain only, so one passkey works everywhere. Each
-  app's OIDC client lists one address per domain, and guards set a cookie per domain.
+  app's OIDC client lists one address per domain, and each guard sets its cookie on its own app's name, never on the
+  whole domain (#83).
 - **Renaming the main domain**: a guided migration (a plan with step-up).
   - A new certificate; every app re-pointed, and every sign-in client updated.
   - The old domain keeps answering for 90 days.
@@ -593,6 +646,14 @@ Details are in [ADR 0018](adr/0018-uptime-and-notifications.md).
 - **The maintenance window**: nightly, 02:00–05:00 by default. Updates, scrubs, restore tests and moves run in it,
   silencing their own alerts and showing "updating" on Home.
 - **The family** hears on Home only. There is no status page.
+
+### Getting back in
+
+When the usual way in is what broke, the household admin gets back in from the primary's console.
+- **Console commands** run as root on the primary, over the manager's control socket. Root on the primary can already
+  do anything, so they grant nothing new.
+  - `homerslab dns token` replaces the DNS token, read from stdin as in first-time setup, for when an expired
+    certificate keeps everyone out of Admin (#80). From Admin, the same change is a risky change.
 
 ### First-time setup in two halves
 
@@ -668,17 +729,33 @@ Details are in [ADR 0018](adr/0018-uptime-and-notifications.md).
   - Authentik, and Kanidm with oauth2-proxy;
   - Headscale and self-hosted NetBird;
   - Docker, rootful Podman and rootless Podman;
-  - a test ACME CA with a test DNS server;
+  - a test ACME CA with a test DNS server, including:
+    - issuance on a primary that resolves the household's domain through a mesh zone with no SOA, beside a public `*`
+      CNAME (#79);
+    - with a fake clock, a renewal that fails, the console replacing the DNS token, and a restore that issues nothing
+      (#80);
   - restic targets: local, SFTP and S3-compatible.
 - **The floor checker**: table tests over app definitions, one passing and one failing case per rule.
 - **The converter**: golden tests, a template in and a definition out.
 - **Every verified app in CI**: install → sign in through a headless browser → update → restore test → eject → run the
   ejected project.
 - **The edge**: a request matrix for every app's names: who asks what, through which listener, and which answer they
-  get. Prior art: classic's request matrix, a real Caddy with stub upstreams and a stub identity provider.
+  get. Prior art: classic's request matrix, a real Caddy with stub upstreams and a stub identity provider. Its rows
+  include:
+  - through the PROXY v2 listener, a public app's SNI with the `Host` of a mesh-only app, of Admin, or of a public app
+    on another node → 421; SNI equal to `Host` → served (#81);
+  - a cross-app `POST` to Admin → refused; an app's response that sets a cookie on the household domain → stripped
+    (#83).
 - **Golden renders**: what HomersLab writes for an app (compose project, edge configuration, policies) is compared
   byte for byte with a committed baseline. A deliberate change updates the baseline and explains the diff. Prior art:
   classic's golden tests.
+  - The edge's configuration has autosave off and no inline key, and a test finds no file under the edge's state
+    directories that holds a private key (#78).
+- **Claims each implementing ticket tests first**, before building on them. They are reported, not verified:
+  - Caddy answers a request that no route matches with an empty response, not an error (#81);
+  - the DNS challenge's zone lookup on the primary reaches the mesh's local zone, which has no SOA (#79);
+  - Kanidm's sign-in takes a single origin, which holds with one URL per name, a port other than 443 included;
+    Authentik derives the origin from the request (#92).
 - **Restore by hand**: CI follows the recovery kit's how-to, using only plain restic and age.
 - **Compose SDK upgrades** pass an API diff, the engine contract suite and a golden test of config hashes.
 - **Distros and architectures**: package install tests in containers and VMs.
@@ -972,3 +1049,15 @@ Every answer of the grilling (2026-11-09) and where it lives:
 | 133 | The setup session is a per-tab bearer token, not a cookie | First-time setup in two halves (#14 Q12–Q13) |
 | 134 | The manager's database is SQLite | ADR 0019 (#14 Q4) |
 | 135 | HTTPS enforced eventually; no secret over plain HTTP | Security defaults; First-time setup in two halves (#64) |
+| 136 | No private key readable through the edge: no autosave, certificates as credential files, a closed admin socket | Modules (Edge); Testing Decisions (#78) |
+| 137 | DNS ownership kept in the manager's database and one inventory record; nothing beside a CNAME | ADR 0016 (amended); Domains; Adapter contracts (#79) |
+| 138 | The DNS challenge asks public resolvers and the authoritative servers, never following a CNAME | Names and certificates; Testing Decisions, claims to test first (#79) |
+| 139 | Free names read from the provider's API; an existing `*` record means a CNAME per public app | ADR 0016 (amended); Domains (#79) |
+| 140 | Renewal at a third of the lifetime left, a warning at the first failure; CAA read before issuing | Names and certificates (#80) |
+| 141 | The certificate and ACME account in the archive; restores and rehearsals issue nothing they needn't | Names and certificates; Testing Decisions (#80) |
+| 142 | The DNS token replaced from the console | Getting back in (#80) |
+| 143 | The public listener holds only public routes; 421 when `Host` and SNI differ, or for a name not on the node | Modules (Edge); Testing Decisions, claims to test first (#81) |
+| 144 | Admin and Home refuse cross-site changes; `__Host-` session cookies | Modules (Surfaces); Testing Decisions (#83) |
+| 145 | The edge strips the guard's cookie and apps' domain cookies; a guard provider per app | ADR 0016 (amended); Modules (Edge); Domains; The app definition (#83) |
+| 146 | Passkeys' RP ID is the sign-in's own name | Adapter contracts (#83) |
+| 147 | One URL per name, its port chosen in first-time setup | ADR 0021; Names and certificates; Adapter contracts; Testing Decisions, claims to test first (#92) |
