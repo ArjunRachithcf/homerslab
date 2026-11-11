@@ -6,9 +6,11 @@ import (
 	"encoding/json"
 	"net"
 	"net/http"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -272,5 +274,95 @@ func TestAMachineWithoutTPMSealsWithTheHostKey(t *testing.T) {
 	call(t, sock, "PUT", "/v1/credentials/manager-mesh-token", map[string]string{"value": "x"})
 	if args := strings.Join(h.Cmds()[h.Ran("systemd-creds encrypt")].Args, " "); !strings.Contains(args, "--with-key=host ") {
 		t.Errorf("systemd-creds %s, want --with-key=host", args)
+	}
+}
+
+func TestAnAgentThatCantApplyItsTableKeepsTryingAndServes(t *testing.T) {
+	testenv.Isolate(t)
+	state := t.TempDir()
+	h := agenttest.NewHost(t.TempDir())
+	sock, _ := agenttest.StartWith(t, agent.Config{StateDir: state, Run: h.Run, Root: h.Root})
+	call(t, sock, "POST", "/v1/mesh/join", joinBody())
+
+	// After a reboot nft fails at first (a module still loading): the agent comes up anyway, and the next check
+	// applies the table.
+	h2 := agenttest.NewHost(t.TempDir())
+	h2.Fail("nft -f")
+	sock2, _ := agenttest.StartWith(t, agent.Config{StateDir: state, Run: h2.Run, Root: h2.Root})
+	if _, on := h2.Table(); on {
+		t.Fatal("a table, though nft failed")
+	}
+	h2.Mend()
+	if code, body := call(t, sock2, "POST", "/v1/firewall/check", nil); code != http.StatusOK {
+		t.Fatalf("check: %d %s", code, body)
+	}
+	if table, on := h2.Table(); !on || !strings.Contains(table, `iifname "wt0" accept`) {
+		t.Errorf("the check didn't apply the table:\n%s", table)
+	}
+}
+
+func TestClosingTheSetupListenerHoldsEvenWhenTheFirstTryFails(t *testing.T) {
+	testenv.Isolate(t)
+	sock, h := agenttest.StartWith(t, agent.Config{})
+	call(t, sock, "POST", "/v1/mesh/join", joinBody())
+	h.Fail("nft -f")
+	if code, _ := call(t, sock, "PUT", "/v1/firewall/setup-listener", map[string]bool{"open": false}); code != http.StatusInternalServerError {
+		t.Errorf("closing with nft failing: %d, want 500", code)
+	}
+	h.Mend()
+	if code, _ := call(t, sock, "PUT", "/v1/firewall/setup-listener", map[string]bool{"open": false}); code != http.StatusOK {
+		t.Errorf("closing again: %d", code)
+	}
+	if table, _ := h.Table(); strings.Contains(table, "7020") {
+		t.Errorf("after the retry the table still lets the setup listener in:\n%s", table)
+	}
+}
+
+func TestTheTableFollowsTheLAN(t *testing.T) {
+	testenv.Isolate(t)
+	var mu sync.Mutex
+	prefix := "192.168.1.0/24"
+	lan := func() ([]string, []netip.Prefix) {
+		mu.Lock()
+		defer mu.Unlock()
+		return []string{"enp5s0"}, []netip.Prefix{netip.MustParsePrefix(prefix)}
+	}
+	sock, h := agenttest.StartWith(t, agent.Config{LAN: lan})
+	call(t, sock, "POST", "/v1/mesh/join", joinBody())
+	if table, _ := h.Table(); !strings.Contains(table, `iifname "br-*" iifname != { "enp5s0" }`) {
+		t.Errorf("the LAN interface isn't kept from the bridges' rules:\n%s", table)
+	}
+	mu.Lock()
+	prefix = "2001:db8:5::/64"
+	mu.Unlock()
+	call(t, sock, "POST", "/v1/firewall/check", nil)
+	if table, _ := h.Table(); !strings.Contains(table, "2001:db8:5::/64") {
+		t.Errorf("the table didn't follow the LAN's new prefix:\n%s", table)
+	}
+}
+
+func TestTheAgentTellsSystemdItIsReadyOnceItsTableIsBack(t *testing.T) {
+	testenv.Isolate(t)
+	state := t.TempDir()
+	sock, _ := agenttest.StartWith(t, agent.Config{StateDir: state})
+	call(t, sock, "POST", "/v1/mesh/join", joinBody())
+
+	notify := filepath.Join(t.TempDir(), "notify.sock")
+	ln, err := net.ListenUnixgram("unixgram", &net.UnixAddr{Name: notify, Net: "unixgram"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	t.Setenv("NOTIFY_SOCKET", notify)
+	h := agenttest.NewHost(t.TempDir())
+	agenttest.StartWith(t, agent.Config{StateDir: state, Run: h.Run, Root: h.Root})
+	_ = ln.SetReadDeadline(time.Now().Add(5 * time.Second))
+	buf := make([]byte, 64)
+	n, err := ln.Read(buf)
+	if err != nil || string(buf[:n]) != "READY=1" {
+		t.Fatalf("systemd heard %q, %v", buf[:n], err)
+	}
+	if _, on := h.Table(); !on {
+		t.Error("ready before the firewall table was back")
 	}
 }

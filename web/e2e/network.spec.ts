@@ -4,14 +4,17 @@
 import type { Page, Route } from '@playwright/test';
 import { expect, test } from './primary';
 
-type Step = { id: string; half: 'lan' | 'mesh'; state: string; secret?: string; command?: string };
+type Step = { id: string; half: 'lan' | 'mesh'; state: string; secret?: string; command?: string; confirm?: string };
 
-function setupAt(network: 'todo' | 'waiting' | 'done', answers: Record<string, string> = {}) {
+function setupAt(network: 'todo' | 'waiting' | 'confirm' | 'done', answers: Record<string, string> = {}) {
   const ids = ['welcome', 'you', 'household', 'signin', 'network', 'domain', 'mail', 'kit', 'join', 'passkey', 'done'];
-  const steps: Step[] = ids.map((id, i) => ({ id, half: i < 8 ? 'lan' : 'mesh', state: i < 4 ? 'done' : 'todo' }));
-  steps[4] = network === 'waiting'
-    ? { ...steps[4], state: 'waiting', secret: 'mesh', command: 'sudo homerslab setup secret mesh' }
-    : { ...steps[4], state: network };
+  const steps: Step[] = ids.map((id, i): Step => {
+    const step: Step = { id, half: i < 8 ? 'lan' : 'mesh', state: i < 4 ? 'done' : 'todo' };
+    if (id !== 'network') return step;
+    if (network === 'waiting') return { ...step, state: 'waiting', secret: 'mesh', command: 'sudo homerslab setup secret mesh' };
+    if (network === 'confirm') return { ...step, state: 'waiting', confirm: 'mesh-policies' };
+    return { ...step, state: network };
+  });
   const current = network === 'done' ? 'domain' : 'network';
   return { half: 'lan', current, steps, answers: { name: 'Inês Ferreira', mail: 'ines@ferreira.family', household: 'The Ferreira household', ...answers } };
 }
@@ -70,4 +73,25 @@ test('a self-hosted NetBird needs its https address, and only that', async ({ pa
   await next.click();
   await expect(page.getByRole('heading', { level: 1 })).toContainText('Your domain');
   expect(sent).toEqual([{ mesh: 'netbird', controlPlane: 'self-hosted', url: 'https://netbird.ferreira.family' }]);
+});
+
+test('policies that reach every device are listed, and switched off only with the admin’s yes', async ({ page, primary }) => {
+  const sent: Record<string, unknown>[] = [];
+  let network: 'confirm' | 'done' = 'confirm';
+  const state = () => setupAt(network, { mesh: 'netbird', meshControlPlane: 'cloud', meshConflicts: 'ssh-for-everyone\nold-laptops' });
+  await standIn(page, state, (body) => {
+    sent.push(body);
+    network = 'done';
+    return state();
+  });
+  await page.goto((await primary.newLink()).localUrl);
+  await page.getByRole('button', { name: 'Continue where I stopped' }).click();
+  await expect(page.getByRole('heading', { level: 1 })).toContainText('Switch off what lets everything through?');
+  const list = page.getByRole('list', { name: 'Policies that reach every device' });
+  await expect(list).toContainText('ssh-for-everyone');
+  await expect(list).toContainText('old-laptops');
+  expect(sent).toEqual([]);
+  await page.getByRole('button', { name: 'Switch them off and continue' }).click();
+  await expect(page.getByRole('heading', { level: 1 })).toContainText('Your domain');
+  expect(sent).toEqual([{ mesh: 'netbird', controlPlane: 'cloud', switchOff: true }]);
 });

@@ -19,6 +19,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -51,13 +52,16 @@ func TestTheMeshContractOnSelfHostedNetBird(t *testing.T) {
 			t.Fatalf("a fresh server: setup required %v, %v", required, err)
 		}
 		var setupToken mesh.Secret
-		b, err := netbird.BootstrapSeeing(ctx, w.api, netbird.Owner{Name: "Inês Ferreira", Mail: "ines@ferreira.family"}, &setupToken)
+		var kept []mesh.Token
+		keep := func(tk mesh.Token) error { kept = append(kept, tk); return nil }
+		o := netbird.Owner{Name: "Inês Ferreira", Mail: "ines@ferreira.family", Password: netbird.NewPassword()}
+		b, err := netbird.BootstrapSeeing(ctx, w.api, o, keep, &setupToken)
 		if err != nil {
 			t.Fatal(err)
 		}
-		own = b.Token
-		if b.OwnerPassword == "" || len(b.OwnerPassword.Reveal()) < 24 {
-			t.Error("no proper owner password for the recovery kit")
+		own = b
+		if len(kept) != 1 || kept[0].ID != own.ID {
+			t.Error("the token wasn't handed to keep before the bootstrap finished")
 		}
 		if life := time.Until(own.ExpiresAt); life > mesh.MaxTokenLife || life < mesh.MaxTokenLife-48*time.Hour {
 			t.Errorf("HomersLab's token lives %v, want 365 days", life)
@@ -87,7 +91,7 @@ func TestTheMeshContractOnSelfHostedNetBird(t *testing.T) {
 		if _, err := setup.Report(ctx); !errors.Is(err, mesh.ErrTokenRefused) {
 			t.Errorf("the owner's one-day setup token after the bootstrap: %v, want it revoked", err)
 		}
-		if _, err := netbird.Bootstrap(ctx, w.api, netbird.Owner{Name: "Mallory", Mail: "m@example.org"}); !errors.Is(err, mesh.ErrAlreadySetUp) {
+		if _, err := netbird.Bootstrap(ctx, w.api, netbird.Owner{Name: "Mallory", Mail: "m@example.org", Password: netbird.NewPassword()}, keep); !errors.Is(err, mesh.ErrAlreadySetUp) {
 			t.Errorf("bootstrapping a second time: %v, want ErrAlreadySetUp", err)
 		}
 	})
@@ -120,6 +124,48 @@ func TestTheMeshContractOnSelfHostedNetBird(t *testing.T) {
 		t.Fatal(err)
 	}
 	w.m = m
+	t.Run("the household's own policies that reach every peer are found, and switched off only when asked", func(t *testing.T) {
+		tok := m.Token().Value
+		var groups []struct{ ID, Name string }
+		decode(t, w.raw(t, tok, "GET", "/api/groups", nil), &groups)
+		var all string
+		for _, g := range groups {
+			if g.Name == "All" {
+				all = g.ID
+			}
+		}
+		var made struct{ ID string }
+		decode(t, w.raw(t, tok, "POST", "/api/policies", map[string]any{"name": "ssh-for-everyone", "enabled": true,
+			"rules": []map[string]any{{"name": "ssh", "enabled": true, "action": "accept", "bidirectional": false, "protocol": "tcp",
+				"ports": []string{"22"}, "sources": []string{all}, "destinations": []string{all}}}}), &made)
+		c, err := m.Conflicts(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var names []string
+		for _, p := range c {
+			names = append(names, p.Name)
+		}
+		if !slices.Contains(names, "ssh-for-everyone") || !slices.Contains(names, "Default") {
+			t.Errorf("conflicts: %v, want the household's policy and NetBird's Default", names)
+		}
+		var ids []string
+		for _, p := range c {
+			ids = append(ids, p.ID)
+		}
+		if err := m.Disable(ctx, ids); err != nil {
+			t.Fatal(err)
+		}
+		if c, _ := m.Conflicts(ctx); len(c) != 0 {
+			t.Errorf("after switching them off: %v", c)
+		}
+		var p struct{ Enabled bool }
+		decode(t, w.raw(t, tok, "GET", "/api/policies/"+made.ID, nil), &p)
+		if p.Enabled {
+			t.Error("the household's policy is still on")
+		}
+	})
+
 	w.m = meshtest.Run(t, w, meshtest.Machines{Primary: "primary", Second: "resolved", Device: "phone"}, mesh.Report{
 		Mesh: "netbird", ControlPlane: "self-hosted", Version: "0.82.0", PerAppNames: "wildcard-records",
 		PublicPath: "netbird-reverse-proxy", PublicPathReady: false, DomainRequired: true, PortMappingOff: true,
@@ -390,8 +436,9 @@ func (w *world) OutsideName() string { return "outside.hltest15.test" }
 func (w *world) Policies(t *testing.T) map[string]mesh.Rule {
 	t.Helper()
 	var list []struct {
-		Name  string
-		Rules []struct {
+		Name    string
+		Enabled bool
+		Rules   []struct {
 			Protocol     string
 			Action       string
 			Ports        []string
@@ -402,6 +449,9 @@ func (w *world) Policies(t *testing.T) map[string]mesh.Rule {
 	decode(t, w.raw(t, w.m.Token().Value, "GET", "/api/policies", nil), &list)
 	out := map[string]mesh.Rule{}
 	for _, p := range list {
+		if !p.Enabled {
+			continue // switched off: it lets nothing through
+		}
 		r := mesh.Rule{Name: p.Name}
 		if len(p.Rules) == 1 && p.Rules[0].Protocol == "tcp" && p.Rules[0].Action == "accept" &&
 			len(p.Rules[0].Sources) == 1 && len(p.Rules[0].Destinations) == 1 {

@@ -152,61 +152,62 @@ func Probe(ctx context.Context, rawURL string) (setupRequired bool, err error) {
 	return *inst.SetupRequired, nil
 }
 
-// Owner is the person a new self-hosted NetBird is set up for: the household admin. Its password is generated, and
-// is the way back in at NetBird's own dashboard if every token is lost.
+// Owner is the person a new self-hosted NetBird is set up for: the household admin. Password is the way back in at
+// NetBird's own dashboard if every token is lost; the caller makes it (NewPassword) and keeps it before Bootstrap
+// runs, so it is never lost half-way.
 type Owner struct {
 	Name, Mail string
+	Password   mesh.Secret
 }
 
-// Bootstrapped is what HomersLab keeps from setting up a new self-hosted NetBird: its own token, and the owner's
-// generated password (for the recovery kit).
-type Bootstrapped struct {
-	Token         mesh.Token
-	OwnerPassword mesh.Secret
+// Bootstrap sets up a new self-hosted NetBird in one step: its owner (with a setup token that lasts a day),
+// HomersLab's service user and its 365-day token, which keep must store before anything else happens, and then it
+// revokes the setup token. It is refused with mesh.ErrAlreadySetUp when the server was set up before.
+func Bootstrap(ctx context.Context, rawURL string, o Owner, keep func(mesh.Token) error) (mesh.Token, error) {
+	return bootstrap(ctx, rawURL, o, keep, func(mesh.Secret) {})
 }
 
-// Bootstrap sets up a new self-hosted NetBird in one step: its owner (with a generated password and a setup token
-// that lasts a day), HomersLab's service user and its 365-day token, and then it revokes the setup token. It is
-// refused with mesh.ErrAlreadySetUp when the server was set up before.
-func Bootstrap(ctx context.Context, rawURL string, o Owner) (Bootstrapped, error) {
-	return bootstrap(ctx, rawURL, o, func(mesh.Secret) {})
-}
-
-func bootstrap(ctx context.Context, rawURL string, o Owner, seen func(mesh.Secret)) (Bootstrapped, error) {
+func bootstrap(ctx context.Context, rawURL string, o Owner, keep func(mesh.Token) error, seen func(mesh.Secret)) (mesh.Token, error) {
+	if len(o.Password.Reveal()) < 16 {
+		return mesh.Token{}, errors.New("the owner's password is too short")
+	}
 	required, err := Probe(ctx, rawURL)
 	if err != nil {
-		return Bootstrapped{}, err
+		return mesh.Token{}, err
 	}
 	if !required {
-		return Bootstrapped{}, mesh.ErrAlreadySetUp
+		return mesh.Token{}, mesh.ErrAlreadySetUp
 	}
 	a, err := newAPI(rawURL, "")
 	if err != nil {
-		return Bootstrapped{}, err
+		return mesh.Token{}, err
 	}
-	password := newPassword()
 	var setup struct {
 		UserID string `json:"user_id"`
 		PAT    string `json:"personal_access_token"`
 	}
 	err = a.call(ctx, http.MethodPost, "/api/setup", map[string]any{
-		"email": o.Mail, "name": o.Name, "password": password.Reveal(), "create_pat": true, "pat_expire_in": 1,
+		"email": o.Mail, "name": o.Name, "password": o.Password.Reveal(), "create_pat": true, "pat_expire_in": 1,
 	}, &setup)
 	var ae *APIError
 	if errors.As(err, &ae) && ae.Status == http.StatusPreconditionFailed {
-		return Bootstrapped{}, mesh.ErrAlreadySetUp // someone else was quicker
+		return mesh.Token{}, mesh.ErrAlreadySetUp // someone else was quicker
 	}
 	if err != nil {
-		return Bootstrapped{}, err
+		return mesh.Token{}, err
 	}
 	if setup.PAT == "" {
-		return Bootstrapped{}, errors.New("NetBird's setup made no token: is NB_SETUP_PAT_ENABLED=true set on the server?")
+		return mesh.Token{}, errors.New("NetBird's setup made no token: is NB_SETUP_PAT_ENABLED=true set on the server?")
 	}
 	setupToken := mesh.Secret(setup.PAT)
 	seen(setupToken)
 	t, err := Adopt(ctx, rawURL, setupToken)
 	if err != nil {
-		return Bootstrapped{}, err
+		return mesh.Token{}, err
+	}
+	if err := keep(t); err != nil {
+		// The setup token stays until it expires in a day, and the owner's password is the way in.
+		return mesh.Token{}, err
 	}
 	// The setup token has done its work; HomersLab's own one takes over.
 	owner := &api{base: a.base, token: setupToken, http: a.http, now: a.now}
@@ -215,14 +216,14 @@ func bootstrap(ctx context.Context, rawURL string, o Owner, seen func(mesh.Secre
 		Name string `json:"name"`
 	}
 	if err := owner.call(ctx, http.MethodGet, "/api/users/"+url.PathEscape(setup.UserID)+"/tokens", nil, &pats); err != nil {
-		return Bootstrapped{}, err
+		return mesh.Token{}, err
 	}
 	for _, p := range pats {
 		if err := owner.call(ctx, http.MethodDelete, "/api/users/"+url.PathEscape(setup.UserID)+"/tokens/"+url.PathEscape(p.ID), nil, nil); err != nil {
-			return Bootstrapped{}, err
+			return mesh.Token{}, err
 		}
 	}
-	return Bootstrapped{Token: t, OwnerPassword: password}, nil
+	return t, nil
 }
 
 // Adopt takes the token the admin gave once and makes HomersLab's own: its service user (made if missing) and that
@@ -505,6 +506,65 @@ func (m *Mesh) EnsurePolicies(ctx context.Context) error {
 	return nil
 }
 
+// Conflicts are policies that aren't HomersLab's, are enabled, and reach every peer (the group All, which every peer
+// is in) or the nodes' group: they would let devices past the policies per role.
+func (m *Mesh) Conflicts(ctx context.Context) ([]mesh.Policy, error) {
+	var list []group
+	if err := m.api.call(ctx, http.MethodGet, "/api/groups", nil, &list); err != nil {
+		return nil, err
+	}
+	reach := map[string]bool{}
+	for _, g := range list {
+		if g.Name == "All" || g.Name == mesh.NodesGroup {
+			reach[g.ID] = true
+		}
+	}
+	ours := map[string]bool{}
+	for _, r := range mesh.Policies() {
+		ours[r.Name] = true
+	}
+	var have []policy
+	if err := m.api.call(ctx, http.MethodGet, "/api/policies", nil, &have); err != nil {
+		return nil, err
+	}
+	var out []mesh.Policy
+	for _, p := range have {
+		if !p.Enabled || ours[p.Name] {
+			continue
+		}
+		for _, r := range p.Rules {
+			hits := slices.ContainsFunc(r.Destinations, func(id string) bool { return reach[id] }) ||
+				(r.Bidirectional && slices.ContainsFunc(r.Sources, func(id string) bool { return reach[id] }))
+			if r.Enabled && hits {
+				out = append(out, mesh.Policy{ID: p.ID, Name: p.Name})
+				break
+			}
+		}
+	}
+	return out, nil
+}
+
+// Disable switches policies off. They stay on the account, disabled.
+func (m *Mesh) Disable(ctx context.Context, ids []string) error {
+	for _, id := range ids {
+		var raw map[string]json.RawMessage
+		if err := m.api.call(ctx, http.MethodGet, "/api/policies/"+url.PathEscape(id), nil, &raw); err != nil {
+			return err
+		}
+		var p policy
+		b, _ := json.Marshal(raw)
+		if err := json.Unmarshal(b, &p); err != nil {
+			return err
+		}
+		p.Enabled = false
+		p.ID = ""
+		if err := m.api.call(ctx, http.MethodPut, "/api/policies/"+url.PathEscape(id), p, nil); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // NewJoinKey makes a one-off setup key that puts one node in the nodes group, and expires in mesh.JoinKeyLife.
 func (m *Mesh) NewJoinKey(ctx context.Context, node string) (mesh.JoinKey, error) {
 	ids, err := m.groups(ctx)
@@ -528,8 +588,8 @@ func (m *Mesh) NewJoinKey(ctx context.Context, node string) (mesh.JoinKey, error
 	return mesh.JoinKey{Value: mesh.Secret(k.Key), ID: k.ID, ExpiresAt: k.Expires}, nil
 }
 
-// newPassword is a password NetBird's embedded sign-in takes: 32 random characters, with every class it may ask for.
-func newPassword() mesh.Secret {
+// NewPassword is a password NetBird's embedded sign-in takes: 32 random characters, with every class it may ask for.
+func NewPassword() mesh.Secret {
 	b := make([]byte, 24)
 	_, _ = rand.Read(b)
 	return mesh.Secret(base64.RawURLEncoding.EncodeToString(b) + "-Aa1")

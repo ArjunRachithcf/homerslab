@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -60,6 +61,11 @@ func StartWith(t testing.TB, c agent.Config) (string, *Host) {
 	if c.Resolve == nil {
 		c.Resolve = func(context.Context, string) ([]string, error) { return []string{"192.0.2.1"}, nil }
 	}
+	if c.LAN == nil {
+		c.LAN = func() ([]string, []netip.Prefix) {
+			return []string{"enp5s0"}, []netip.Prefix{netip.MustParsePrefix("192.168.1.0/24"), netip.MustParsePrefix("2001:db8:1::/64")}
+		}
+	}
 	if c.SetupPort == 0 {
 		c.SetupPort = 7020
 	}
@@ -110,6 +116,13 @@ func (h *Host) Fail(prefix string) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.fail[prefix] = errors.New("failed, as the test asked")
+}
+
+// Mend makes every command work again.
+func (h *Host) Mend() {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	clear(h.fail)
 }
 
 // Run is the agent's host.Runner.

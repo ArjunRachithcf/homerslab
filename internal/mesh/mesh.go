@@ -52,6 +52,12 @@ func Policies() []Rule {
 	return append(out, Rule{Name: "homerslab-nodes-to-nodes", From: NodesGroup, To: NodesGroup, Ports: []int{443}})
 }
 
+// Policy is one of the mesh's policies, by its ID and name.
+type Policy struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+}
+
 // Secret is a credential. It never prints, never marshals and never logs; Reveal hands it to the one place that needs
 // it.
 type Secret string
@@ -117,6 +123,11 @@ type Mesh interface {
 	// EnsurePolicies makes the groups and Policies, corrects any that drifted, and removes the mesh's own default
 	// policy. It changes nothing that isn't HomersLab's otherwise.
 	EnsurePolicies(ctx context.Context) error
+	// Conflicts are the household's own policies that would let devices reach HomersLab's nodes past the policies per
+	// role: enabled, not HomersLab's, and reaching every peer (NetBird's All) or the nodes' group. Disable switches
+	// them off, keeping them for the household to look at; only with the admin's yes.
+	Conflicts(ctx context.Context) ([]Policy, error)
+	Disable(ctx context.Context, ids []string) error
 	// NewJoinKey makes a one-time key for one node, named so the mesh's dashboard says what it is for.
 	NewJoinKey(ctx context.Context, node string) (JoinKey, error)
 	// Rotate makes HomersLab's next token, which the caller keeps before calling Revoke on the current one.

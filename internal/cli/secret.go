@@ -36,7 +36,7 @@ func setupSecret(ctx context.Context, args []string, env Env) error {
 		fs.Usage()
 		return errUsage
 	}
-	value, err := readSecret(env, prompt)
+	value, err := readSecret(ctx, env, prompt)
 	if err != nil {
 		return err
 	}
@@ -70,8 +70,9 @@ var secretRefusals = map[string]string{
 	"no-value":         "nothing was read: paste the secret, then press Enter",
 }
 
-// readSecret reads one line from stdin. On a terminal it asks with prompt, on stderr, and turns echo off meanwhile.
-func readSecret(env Env, prompt string) (string, error) {
+// readSecret reads one line from stdin. On a terminal it asks with prompt, on stderr, and turns echo off meanwhile;
+// Ctrl-C (ctx) gives up, with the terminal as it was.
+func readSecret(ctx context.Context, env Env, prompt string) (string, error) {
 	in := env.Stdin
 	if in == nil {
 		in = os.Stdin
@@ -90,11 +91,25 @@ func readSecret(env Env, prompt string) (string, error) {
 			}()
 		}
 	}
-	line, err := bufio.NewReader(io.LimitReader(in, 16<<10)).ReadString('\n')
-	if err != nil && !errors.Is(err, io.EOF) {
-		return "", err
+	type read struct {
+		line string
+		err  error
 	}
-	line = strings.TrimSpace(line)
+	got := make(chan read, 1)
+	go func() {
+		line, err := bufio.NewReader(io.LimitReader(in, 16<<10)).ReadString('\n')
+		got <- read{line, err}
+	}()
+	var r read
+	select {
+	case <-ctx.Done():
+		return "", errors.New("stopped: nothing was sent")
+	case r = <-got:
+	}
+	if r.err != nil && !errors.Is(r.err, io.EOF) {
+		return "", r.err
+	}
+	line := strings.TrimSpace(r.line)
 	if line == "" {
 		return "", errors.New(secretRefusals["no-value"])
 	}

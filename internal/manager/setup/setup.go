@@ -63,6 +63,15 @@ type NeedsSecret struct {
 
 func (e *NeedsSecret) Error() string { return "waiting for the secret " + e.Secret }
 
+// NeedsConfirm is a handler's answer when its step found something only the admin may say yes to (Confirm names
+// it); the step keeps Keep and waits for the answer again with the yes.
+type NeedsConfirm struct {
+	Confirm string
+	Keep    map[string]string
+}
+
+func (e *NeedsConfirm) Error() string { return "waiting for the admin's yes to " + e.Confirm }
+
 // SecretOverHTTP refuses an answer over the LAN page that carries a secret: no secret travels over plain HTTP (#64).
 // Command is what to run in the machine's terminal instead.
 type SecretOverHTTP struct{ Command string }
@@ -138,9 +147,10 @@ type StepState struct {
 	ID    string `json:"id"`
 	Half  Half   `json:"half"`
 	State string `json:"state"` // todo, waiting (for Secret, given in the terminal) or done
-	// Secret is the secret a waiting step needs, and Command what gives it.
+	// Secret is the secret a waiting step needs, and Command what gives it; or Confirm, what it asks a yes to.
 	Secret  string `json:"secret,omitempty"`
 	Command string `json:"command,omitempty"`
+	Confirm string `json:"confirm,omitempty"`
 }
 
 // State reads where setup stands.
@@ -159,8 +169,11 @@ func (s *Setup) State(ctx context.Context) (State, error) {
 		if r.Done {
 			ss.State = "done"
 		} else {
-			if r.Waits != "" {
-				ss.State, ss.Secret, ss.Command = "waiting", r.Waits, Command(r.Waits)
+			switch r.WaitKind {
+			case "secret":
+				ss.State, ss.Secret, ss.Command = "waiting", r.WaitName, Command(r.WaitName)
+			case "confirm":
+				ss.State, ss.Confirm = "waiting", r.WaitName
 			}
 			if st.Current == "" {
 				st.Current, st.Half = r.ID, Half(r.Half)
@@ -217,17 +230,22 @@ func (s *Setup) Answer(ctx context.Context, id string, over Half, answer json.Ra
 		return State{}, ErrNotBuilt
 	}
 	keep, err := h(ctx, answer, st.Answers)
-	var needs *NeedsSecret
-	if errors.As(err, &needs) {
-		if err := s.db.WaitForSecret(ctx, id, needs.Secret, needs.Keep); err != nil {
-			return State{}, err
-		}
-		return s.State(ctx)
+	return s.settle(ctx, id, keep, err)
+}
+
+// settle keeps what a handler returned: the step done, waiting, or as it was with the handler's error.
+func (s *Setup) settle(ctx context.Context, id string, keep map[string]string, err error) (State, error) {
+	var secret *NeedsSecret
+	var confirm *NeedsConfirm
+	switch {
+	case errors.As(err, &secret):
+		err = s.db.Wait(ctx, id, "secret", secret.Secret, secret.Keep)
+	case errors.As(err, &confirm):
+		err = s.db.Wait(ctx, id, "confirm", confirm.Confirm, confirm.Keep)
+	case err == nil:
+		err = s.db.CompleteStep(ctx, id, keep, s.now())
 	}
 	if err != nil {
-		return State{}, err
-	}
-	if err := s.db.CompleteStep(ctx, id, keep, s.now()); err != nil {
 		return State{}, err
 	}
 	return s.State(ctx)
@@ -278,13 +296,7 @@ func (s *Setup) Secret(ctx context.Context, name, value string) (State, error) {
 		return State{}, ErrNotWaiting
 	}
 	keep, err := h(ctx, value, st.Answers)
-	if err != nil {
-		return State{}, err
-	}
-	if err := s.db.CompleteStep(ctx, step, keep, s.now()); err != nil {
-		return State{}, err
-	}
-	return s.State(ctx)
+	return s.settle(ctx, step, keep, err)
 }
 
 func index(id string) int {

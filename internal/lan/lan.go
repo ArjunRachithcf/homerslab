@@ -57,6 +57,21 @@ func Current() LAN {
 	return l
 }
 
+// OnLink is what the firewall table keeps apps away from: the interfaces that carry the default route, and every
+// prefix on them, private or global (a LAN may use global IPv6 addresses), but link-local, which the table covers
+// whole.
+func OnLink() (interfaces []string, prefixes []netip.Prefix) {
+	interfaces = DefaultRouteInterfaces(os.DirFS("/proc"))
+	for _, name := range interfaces {
+		for _, p := range addrs(name) {
+			if !p.Addr().IsLinkLocalUnicast() && !p.Addr().IsLoopback() {
+				prefixes = append(prefixes, p.Masked())
+			}
+		}
+	}
+	return interfaces, prefixes
+}
+
 // Address is this machine's IPv4 address on the LAN, for the links it prints; or the zero Addr if it has none.
 func (l LAN) Address() netip.Addr {
 	for _, a := range l.Addresses {

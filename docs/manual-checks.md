@@ -18,7 +18,9 @@ parts that only the cloud has are checked here.
    `homerslab-<date>` that expires in 365 days or less. Revoke the token from step 1: setup keeps working.
 4. **Groups and policies.** The groups `homerslab-nodes`, `homerslab-admins`, `homerslab-adults` and `homerslab-kids`
    exist; the policies are the four `homerslab-*` ones (TCP 80 and 443 to the nodes, 443 between nodes); the Default
-   policy is gone.
+   policy is gone. With a policy of your own that reaches `All` made beforehand, setup lists it and asks before it
+   switches it off; one made afterwards shows up in the manager's drift report within the hour, and stays on:
+   `sudo curl -s --unix-socket /run/homerslab/manager.sock http://manager/api/v1/drift`.
 5. **The primary joined, NAT mapper off.** The primary is a peer in `homerslab-nodes`, joined with a one-off setup key
    named `homerslab-node-<hostname>`. On the primary:
    `journalctl -u netbird | grep -E 'NAT port mapper disabled|port forwarding setup'` shows only the first.
@@ -26,4 +28,5 @@ parts that only the cloud has are checked here.
    systemd-resolved) answers, and so does a mesh peer's name.
 7. **The LAN is kept out.** From another device on the LAN: the machine answers ping; no app port and no SSH
    answers; the setup link's port answers until the admin's first sign-in over the mesh, and then never again.
-   `sudo nft list table inet homerslab` on the primary shows the table.
+   `sudo nft list table inet homerslab` on the primary shows the table, and it is there right after a reboot, before
+   Docker starts (`systemd-analyze critical-chain docker.service` has `homerslab-agent.service` in it).

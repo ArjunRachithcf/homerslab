@@ -12,6 +12,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"sync"
@@ -20,6 +21,7 @@ import (
 
 	"github.com/ArjunRachithcf/homerslab/internal/firewall"
 	"github.com/ArjunRachithcf/homerslab/internal/host"
+	"github.com/ArjunRachithcf/homerslab/internal/lan"
 	"github.com/ArjunRachithcf/homerslab/internal/node"
 )
 
@@ -41,6 +43,8 @@ type Config struct {
 	Run host.Runner
 	// Resolve looks a name up through the machine's own resolver; net.DefaultResolver's when nil.
 	Resolve func(ctx context.Context, name string) ([]string, error)
+	// LAN is the machine's LAN: the interfaces with the default route and their prefixes; lan.OnLink when nil.
+	LAN func() ([]string, []netip.Prefix)
 	// SetupPort is the setup link's LAN listener, the firewall table's one exception until it closes.
 	SetupPort int
 	// CheckEvery is how often the firewall table is checked for drift.
@@ -94,6 +98,9 @@ func New(ctx context.Context, c Config) (*Agent, error) {
 	if c.Resolve == nil {
 		c.Resolve = net.DefaultResolver.LookupHost
 	}
+	if c.LAN == nil {
+		c.LAN = lan.OnLink
+	}
 	a := &Agent{cfg: c, log: c.Log, fw: &firewall.Firewall{Run: c.Run, Now: c.Now}}
 	if c.StateDir != "" {
 		if err := os.MkdirAll(c.StateDir, 0o700); err != nil {
@@ -111,16 +118,20 @@ func New(ctx context.Context, c Config) (*Agent, error) {
 		}
 	}
 	if a.state.Enforcing {
+		// Fail toward keeping the table: an agent that can't apply it now keeps serving and tries again at each check.
 		if err := a.fw.Apply(ctx, a.firewallState()); err != nil {
-			return nil, err
+			a.log.Error("restoring the firewall table; trying again at the next check", "err", err)
+			a.fw.Want(a.firewallState())
+		} else {
+			a.log.Info("firewall table restored", "setupListener", !a.state.SetupClosed)
 		}
-		a.log.Info("firewall table restored", "setupListener", !a.state.SetupClosed)
 	}
 	return a, nil
 }
 
 func (a *Agent) firewallState() firewall.State {
-	s := firewall.State{Mesh: a.state.Mesh, WireGuard: a.state.WireGuard}
+	ifaces, prefixes := a.cfg.LAN()
+	s := firewall.State{Mesh: a.state.Mesh, WireGuard: a.state.WireGuard, LAN: ifaces, LANPrefixes: prefixes}
 	if !a.state.SetupClosed {
 		s.SetupPort = a.cfg.SetupPort
 	}
@@ -179,14 +190,32 @@ func (a *Agent) Watch(ctx context.Context) {
 }
 
 func (a *Agent) check(ctx context.Context) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if err := a.reconcile(ctx); err != nil {
+		a.log.Error("checking the firewall table", "err", err)
+	}
+}
+
+// reconcile keeps the table as it should be: it follows the LAN when the LAN moved (a new address, another
+// interface), and puts the table back when it drifted. The caller holds a.mu.
+func (a *Agent) reconcile(ctx context.Context) error {
+	if a.state.Enforcing {
+		if want := a.firewallState(); !want.Equal(a.fw.Status().State) {
+			if err := a.fw.Apply(ctx, want); err != nil {
+				a.fw.Want(want)
+				return err
+			}
+		}
+	}
 	d, err := a.fw.Check(ctx)
 	if err != nil {
-		a.log.Error("checking the firewall table", "err", err)
-		return
+		return err
 	}
 	if d != nil {
 		a.log.Warn("the firewall table had drifted, and was put back", "what", d.What)
 	}
+	return nil
 }
 
 // Serve runs the agent's API on its socket, and watches its firewall table, until ctx ends.
@@ -202,8 +231,29 @@ func Serve(ctx context.Context, c Config) error {
 	watch, stop := context.WithCancel(ctx)
 	defer stop()
 	go a.Watch(watch)
+	notifyReady(a.log) // systemd orders the network after this: the table, if any, is in place
 	srv := &http.Server{Handler: a.Handler(), ReadHeaderTimeout: 10 * time.Second}
 	return serveUntil(ctx, srv, ln)
+}
+
+// notifyReady tells systemd the agent is up (Type=notify), when systemd asks.
+func notifyReady(log *slog.Logger) {
+	path := os.Getenv("NOTIFY_SOCKET")
+	if path == "" {
+		return
+	}
+	if path[0] == '@' {
+		path = "\x00" + path[1:]
+	}
+	c, err := net.DialUnix("unixgram", nil, &net.UnixAddr{Name: path, Net: "unixgram"})
+	if err != nil {
+		log.Warn("telling systemd the agent is ready", "err", err)
+		return
+	}
+	defer c.Close()
+	if _, err := c.Write([]byte("READY=1")); err != nil {
+		log.Warn("telling systemd the agent is ready", "err", err)
+	}
 }
 
 // listenUnix listens on a fresh socket at path, owned by this process's user and gid, with mode perm.

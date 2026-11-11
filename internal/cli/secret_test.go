@@ -194,3 +194,37 @@ func TestSetupSecretOnATerminalNeverEchoesTheSecret(t *testing.T) {
 		t.Errorf("sent %d requests", len(*got))
 	}
 }
+
+func TestCtrlCAtThePromptStopsAndLeavesTheTerminalAsItWas(t *testing.T) {
+	testenv.Isolate(t)
+	sock, got := fakeControl(t, http.StatusOK, `{}`)
+	_, tty := openPTY(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	var errOut bytes.Buffer
+	done := make(chan int, 1)
+	go func() {
+		done <- cli.Main(ctx, []string{"setup", "secret", "mesh", "--control-socket", sock},
+			cli.Env{Stdin: tty, Stdout: io.Discard, Stderr: &errOut, Euid: func() int { return 0 }})
+	}()
+	for range 200 {
+		if tio, err := unix.IoctlGetTermios(int(tty.Fd()), unix.TCGETS); err == nil && tio.Lflag&unix.ECHO == 0 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	cancel() // Ctrl-C
+	select {
+	case code := <-done:
+		if code != 1 {
+			t.Errorf("exit %d after Ctrl-C", code)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Ctrl-C at the prompt didn't stop the command")
+	}
+	if tio, _ := unix.IoctlGetTermios(int(tty.Fd()), unix.TCGETS); tio.Lflag&unix.ECHO == 0 {
+		t.Error("the terminal was left without echo")
+	}
+	if len(*got) != 0 {
+		t.Error("something was sent")
+	}
+}

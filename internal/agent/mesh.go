@@ -108,17 +108,20 @@ func (a *Agent) join(w http.ResponseWriter, r *http.Request) {
 	if !slices.Contains(next.WireGuard, netbird.WireGuardPort) {
 		next.WireGuard = append(slices.Clone(next.WireGuard), netbird.WireGuardPort)
 	}
+	// Kept first, so a restart always brings the table back; undone if the table can't be applied.
 	prev := a.state
 	a.state = next
-	if err := a.fw.Apply(ctx, a.firewallState()); err != nil {
-		a.state = prev
-		a.log.Error("turning the firewall table on", "err", err)
-		fail(w, http.StatusInternalServerError, "firewall-failed")
-		return
-	}
 	if err := a.save(); err != nil {
+		a.state = prev
 		a.log.Error("saving the agent's state", "err", err)
 		fail(w, http.StatusInternalServerError, "state-unsaved")
+		return
+	}
+	if err := a.fw.Apply(ctx, a.firewallState()); err != nil {
+		a.state = prev
+		_ = a.save()
+		a.log.Error("turning the firewall table on", "err", err)
+		fail(w, http.StatusInternalServerError, "firewall-failed")
 		return
 	}
 	a.log.Info("joined the mesh; the firewall table keeps the LAN out", "mesh", "netbird", "ip", st.IP)
@@ -170,7 +173,7 @@ func (a *Agent) getFirewall(w http.ResponseWriter, _ *http.Request) {
 func (a *Agent) checkFirewall(w http.ResponseWriter, r *http.Request) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	if _, err := a.fw.Check(r.Context()); err != nil {
+	if err := a.reconcile(r.Context()); err != nil {
 		a.log.Error("checking the firewall table", "err", err)
 		fail(w, http.StatusInternalServerError, "check-failed")
 		return
@@ -197,23 +200,24 @@ func (a *Agent) setupListener(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, a.firewallStatus())
 		return
 	}
+	// Closed for good, saved first; the table follows, and a retry applies it again until it holds.
 	if !a.state.SetupClosed {
-		prev := a.state
 		a.state.SetupClosed = true
 		if err := a.save(); err != nil {
-			a.state = prev
+			a.state.SetupClosed = false
 			a.log.Error("saving the agent's state", "err", err)
 			fail(w, http.StatusInternalServerError, "state-unsaved")
 			return
 		}
-		if a.state.Enforcing {
-			if err := a.fw.Apply(r.Context(), a.firewallState()); err != nil {
-				a.log.Error("closing the setup listener in the firewall table", "err", err)
-				fail(w, http.StatusInternalServerError, "firewall-failed")
-				return
-			}
-		}
 		a.log.Info("the setup link's LAN listener is closed, for good")
+	}
+	if a.state.Enforcing {
+		if err := a.fw.Apply(r.Context(), a.firewallState()); err != nil {
+			a.fw.Want(a.firewallState())
+			a.log.Error("closing the setup listener in the firewall table", "err", err)
+			fail(w, http.StatusInternalServerError, "firewall-failed")
+			return
+		}
 	}
 	writeJSON(w, http.StatusOK, a.firewallStatus())
 }

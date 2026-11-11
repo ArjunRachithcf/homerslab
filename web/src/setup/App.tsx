@@ -157,7 +157,8 @@ function useStep(id: string, setup: Setup, facts: Facts | null, next: () => void
   const [plane, setPlane] = useState<'cloud' | 'self-hosted'>(a.meshControlPlane === 'self-hosted' ? 'self-hosted' : 'cloud');
   const [url, setUrl] = useState(a.meshControlPlane === 'self-hosted' ? (a.meshUrl ?? '') : '');
   const network = setup.steps.find((s) => s.id === 'network');
-  const waiting = id === 'network' && network?.state === 'waiting';
+  const waiting = id === 'network' && network?.state === 'waiting' && !!network.secret;
+  const confirming = id === 'network' && network?.state === 'waiting' && network.confirm === 'mesh-policies';
   const latest = useRef({ onAnswered, next });
   useEffect(() => {
     latest.current = { onAnswered, next };
@@ -174,7 +175,7 @@ function useStep(id: string, setup: Setup, facts: Facts | null, next: () => void
     return () => window.clearInterval(timer);
   }, [waiting]);
 
-  const send = async (body: Record<string, string>) => {
+  const send = async (body: Record<string, string | boolean>) => {
     setBusy(true);
     try {
       const s = await answer(id, body);
@@ -234,6 +235,21 @@ function useStep(id: string, setup: Setup, facts: Facts | null, next: () => void
       const choices: ['cloud' | 'self-hosted', Key, Key][] = [
         ['cloud', 'step.network.cloud', 'step.network.cloudSub'], ['self-hosted', 'step.network.own', 'step.network.ownSub'],
       ];
+      const answerNow: Record<string, string> = own ? { mesh: 'netbird', controlPlane: plane, url: url.trim() } : { mesh: 'netbird', controlPlane: plane };
+      if (confirming) {
+        const names = (a.meshConflicts ?? '').split('\n').filter(Boolean);
+        return {
+          illo: 'network', title: t('step.network.conflictsTitle'), lead: t('step.network.conflictsLead'),
+          body: <ul className="group" aria-label={t('step.network.conflictsList')}>
+            {names.map((n) => (
+              <li className="row" key={n}><span className="row-main"><span className="row-label wrap">{n}</span></span></li>
+            ))}
+          </ul>,
+          more: <p className="hint">{t('step.network.conflictsKept')}</p>,
+          primary: { label: t('step.network.switchOff'), busy },
+          onPrimary: () => send({ ...answerNow, switchOff: true }),
+        };
+      }
       if (waiting) {
         return {
           illo: 'network', title: t('step.network.waitTitle'), lead: t('step.network.waitLead'),
@@ -269,7 +285,7 @@ function useStep(id: string, setup: Setup, facts: Facts | null, next: () => void
         </>,
         more: <p className="hint">{t('step.network.later')}</p>,
         primary: { label: t('setup.continue'), ok: !own || /^https:\/\/\S+$/.test(url.trim()), why: t('step.network.why'), busy },
-        onPrimary: () => send(own ? { mesh: 'netbird', controlPlane: plane, url: url.trim() } : { mesh: 'netbird', controlPlane: plane }),
+        onPrimary: () => send(answerNow),
       };
     }
     case 'join':

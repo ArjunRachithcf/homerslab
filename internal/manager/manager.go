@@ -122,7 +122,9 @@ func (m *Manager) Close() error { return m.db.Close() }
 // Serve answers on the setup listener and the control socket until ctx ends.
 func (m *Manager) Serve(ctx context.Context, setupLn, controlLn net.Listener) error {
 	servers := []*http.Server{
-		{Handler: m.Setup(), ReadHeaderTimeout: 10 * time.Second, ReadTimeout: 30 * time.Second, WriteTimeout: 30 * time.Second, IdleTimeout: 2 * time.Minute},
+		{Handler: m.Setup(), ReadHeaderTimeout: 10 * time.Second, ReadTimeout: 30 * time.Second,
+			// The network step bootstraps a mesh and joins it, waiting for the client to connect: up to a few minutes.
+			WriteTimeout: 3 * time.Minute, IdleTimeout: 2 * time.Minute},
 		{Handler: m.Control(), ReadHeaderTimeout: 10 * time.Second},
 	}
 	scheduled, stop := context.WithCancel(ctx)
@@ -152,6 +154,7 @@ func (m *Manager) Control() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /api/v1/setup/links", m.newLink)
 	mux.HandleFunc("PUT /api/v1/setup/secrets/{name}", m.putSecret)
+	mux.HandleFunc("GET /api/v1/drift", m.getDrift)
 	mux.HandleFunc("GET /api/v1/setup", m.getSetup)
 	mux.HandleFunc("GET /api/v1/nodes/primary", m.getPrimary)
 	mux.HandleFunc("/", notFound)

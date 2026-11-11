@@ -75,13 +75,19 @@ func TestTheManagerRunsUnprivilegedAndTheAgentAsRoot(t *testing.T) {
 		"CapabilityBoundingSet": "CAP_CHOWN CAP_DAC_READ_SEARCH CAP_NET_ADMIN", "RestrictAddressFamilies": "AF_UNIX AF_NETLINK AF_INET AF_INET6",
 		"PrivateNetwork": "no", "SystemCallFilter": "@system-service", "SystemCallErrorNumber": "EPERM",
 		"MemoryDenyWriteExecute": "yes", "LockPersonality": "yes", "StateDirectory": "homerslab-agent",
-		"StateDirectoryMode": "0700", "ReadWritePaths": "/etc/systemd/system"} {
+		"StateDirectoryMode": "0700", "Type": "notify", "NotifyAccess": "main", "ReadWritePaths": "/etc/systemd/system /var/lib/systemd"} {
 		if got := agent[k]; len(got) != 1 || got[0] != want {
 			t.Errorf("the agent's %s = %v, want %s", k, got, want)
 		}
 	}
 	if got := one(t, agent, "UMask"); got != "0077" {
 		t.Errorf("the agent's UMask = %q, want 0077", got)
+	}
+
+	// The firewall table is up before the network and the engines come up at boot.
+	if b, err := os.ReadFile("systemd/homerslab-agent.service"); err != nil || !strings.Contains(string(b), "\nBefore=homerslab-manager.service network-pre.target docker.service podman.service netbird.service\n") ||
+		!strings.Contains(string(b), "\nWants=network-pre.target\n") {
+		t.Errorf("the agent isn't ordered before the network and the engines: %v", err)
 	}
 
 	sysusers, err := os.ReadFile("sysusers.d/homerslab.conf")

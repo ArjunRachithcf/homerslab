@@ -22,7 +22,7 @@ function keep(t: string) {
 }
 
 export type Half = 'lan' | 'mesh';
-export type StepState = { id: string; half: Half; state: 'todo' | 'waiting' | 'done'; secret?: string; command?: string };
+export type StepState = { id: string; half: Half; state: 'todo' | 'waiting' | 'done'; secret?: string; command?: string; confirm?: string };
 export type Setup = { half: Half; current: string; steps: StepState[]; answers: Record<string, string> };
 
 export type Facts = {
@@ -67,4 +67,4 @@ export async function claim(key: string): Promise<void> {
 }
 export const getSetup = () => call<Setup>('GET', '/api/v1/setup');
 export const getPrimary = () => call<Facts>('GET', '/api/v1/nodes/primary');
-export const answer = (step: string, body: Record<string, string>) => call<Setup>('PUT', `/api/v1/setup/steps/${encodeURIComponent(step)}`, body);
+export const answer = (step: string, body: Record<string, string | boolean>) => call<Setup>('PUT', `/api/v1/setup/steps/${encodeURIComponent(step)}`, body);

@@ -274,9 +274,10 @@ type state struct {
 	Half    string `json:"half"`
 	Current string `json:"current"`
 	Steps   []struct {
-		ID    string `json:"id"`
-		Half  string `json:"half"`
-		State string `json:"state"`
+		ID      string `json:"id"`
+		Half    string `json:"half"`
+		State   string `json:"state"`
+		Confirm string `json:"confirm"`
 	} `json:"steps"`
 	Answers map[string]string `json:"answers"`
 }

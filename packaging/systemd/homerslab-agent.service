@@ -2,10 +2,15 @@
 [Unit]
 Description=HomersLab agent
 Documentation=https://github.com/ArjunRachithcf/homerslab
-Before=homerslab-manager.service
+# The firewall table is up before the network, the engines and the mesh client: no LAN host meets a published port
+# or a listener while the machine boots.
+Wants=network-pre.target
+Before=homerslab-manager.service network-pre.target docker.service podman.service netbird.service
 
 [Service]
-Type=exec
+# Ready once the firewall table is restored and the socket listens.
+Type=notify
+NotifyAccess=main
 ExecStart=/usr/bin/homerslab agent
 RuntimeDirectory=homerslab-agent
 RuntimeDirectoryMode=0755
@@ -27,7 +32,8 @@ RestartSec=2s
 NoNewPrivileges=yes
 CapabilityBoundingSet=CAP_CHOWN CAP_DAC_READ_SEARCH CAP_NET_ADMIN
 ProtectSystem=strict
-ReadWritePaths=/etc/systemd/system
+# NetBird's drop-in, and systemd-creds' host key (/var/lib/systemd/credential.secret), made on first use.
+ReadWritePaths=/etc/systemd/system /var/lib/systemd
 ProtectHome=read-only
 PrivateTmp=yes
 PrivateNetwork=no

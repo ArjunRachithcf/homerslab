@@ -4,9 +4,10 @@ package firewall_test
 // itself again under `unshare -rn` (a user and network namespace; `unshare -n` as root, as in CI), and refuses to
 // touch any namespace that holds more than loopback. Prior art: classic's tests/firewall/guard.sh.
 //
-// The box (this process) has lan0 to a LAN host, wt0 to a mesh peer, and a container bridge br-test with one
-// container behind Docker-style DNAT (a published port). The LAN host routes the box's mesh address and the
-// container's network through the box, as a hostile device at home would.
+// The box (this process) has br-lan to a LAN host (a LAN interface whose name looks like a container bridge's), wt0
+// to a mesh peer, and a container bridge br-test with one container behind Docker-style DNAT (a published port). The
+// LAN host routes the box's mesh address and the container's network through the box, as a hostile device at home
+// would; it is also the box's router, with an address on "the internet" behind it.
 
 import (
 	"bytes"
@@ -14,6 +15,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/netip"
 	"os"
 	"os/exec"
 	"strconv"
@@ -76,9 +78,13 @@ func TestTheFirewallTableInNetworkNamespaces(t *testing.T) {
 	n.want(t, "before the table: the LAN host's route through the box reaches the container", "lan", "172.30.0.2:8444", true)
 	n.want(t, "before the table: the LAN reaches the published port", "lan", "192.168.77.1:8444", true)
 
+	n.want(t, "before the table: a container reaches the LAN host", "ctr", "192.168.77.50:9000", true)
+	n.want(t, "before the table: a container reaches a mesh peer", "ctr", "100.88.1.2:9002", true)
+
 	fw := &firewall.Firewall{Run: host.Exec}
 	ctx := context.Background()
-	open := firewall.State{Mesh: []string{"wt0"}, WireGuard: []int{51820}, SetupPort: 7020}
+	lan := []netip.Prefix{netip.MustParsePrefix("192.168.77.0/24"), netip.MustParsePrefix("fd00:77::/64"), netip.MustParsePrefix("2001:db8:77::/64")}
+	open := firewall.State{Mesh: []string{"wt0"}, WireGuard: []int{51820}, SetupPort: 7020, LAN: []string{"br-lan"}, LANPrefixes: lan}
 	if err := fw.Apply(ctx, open); err != nil {
 		t.Fatal(err)
 	}
@@ -86,6 +92,7 @@ func TestTheFirewallTableInNetworkNamespaces(t *testing.T) {
 		n.want(t, when+": the LAN reaches no listener on the box", "lan", "192.168.77.1:8022", false)
 		n.want(t, when+": the LAN reaches no listener at the box's mesh address", "lan", "100.88.1.1:8022", false)
 		n.want(t, when+": the LAN reaches no listener over IPv6", "lan", "[fd00:77::1]:8022", false)
+		n.want(t, when+": nor at the box's global IPv6 address", "lan", "[2001:db8:77::1]:8022", false)
 		n.want(t, when+": no published port answers the LAN", "lan", "192.168.77.1:8444", false)
 		n.want(t, when+": nothing from the LAN is routed to the containers", "lan", "172.30.0.2:8444", false)
 		n.want(t, when+": nothing from the LAN is routed to the mesh", "lan", "100.88.1.2:8022", false)
@@ -95,16 +102,27 @@ func TestTheFirewallTableInNetworkNamespaces(t *testing.T) {
 	n.ping(t, "the LAN still reaches the machine itself (ping)", "192.168.77.1", true)
 	n.want(t, "a mesh peer reaches the box", "peer", "100.88.1.1:8022", true)
 	n.want(t, "a mesh peer reaches the published port", "peer", "100.88.1.1:8444", true)
-	n.want(t, "a container reaches the box", "ctr", "172.30.0.1:8022", true)
-	n.want(t, "a container reaches the LAN (its own connections)", "ctr", "192.168.77.50:9000", true)
 	n.want(t, "the box reaches the LAN (its own connections)", "", "192.168.77.50:9000", true)
+	appsKeptIn := func(when string) {
+		n.want(t, when+": an app reaches the internet", "ctr", "203.0.113.50:9001", true)
+		n.want(t, when+": an app reaches the box's DNS", "ctr", "172.30.0.1:53", true)
+		n.want(t, when+": an app reaches no LAN host", "ctr", "192.168.77.50:9000", false)
+		n.want(t, when+": an app reaches no mesh peer", "ctr", "100.88.1.2:9002", false)
+		n.want(t, when+": an app reaches no listener of the box", "ctr", "172.30.0.1:8022", false)
+		n.want(t, when+": nor at the box's mesh address", "ctr", "100.88.1.1:8022", false)
+		n.want(t, when+": nor at its LAN address", "ctr", "192.168.77.1:8022", false)
+	}
+	appsKeptIn("with the table")
 
-	if err := fw.Apply(ctx, firewall.State{Mesh: []string{"wt0"}, WireGuard: []int{51820}}); err != nil {
+	closed := open
+	closed.SetupPort = 0
+	if err := fw.Apply(ctx, closed); err != nil {
 		t.Fatal(err)
 	}
 	n.want(t, "after the admin's first sign-in over the mesh, the LAN listener is closed", "lan", "192.168.77.1:7020", false)
 	n.want(t, "and the mesh still reaches it", "peer", "100.88.1.1:7020", true)
 	lanKeptOut("closed")
+	appsKeptIn("closed")
 
 	for _, tamper := range []struct{ what, nft string }{
 		{"changed", "flush chain inet homerslab input"},
@@ -122,6 +140,7 @@ func TestTheFirewallTableInNetworkNamespaces(t *testing.T) {
 			t.Errorf("after %q the check found %+v, want %s", tamper.nft, d, tamper.what)
 		}
 		lanKeptOut("after " + tamper.nft + " and the check")
+		appsKeptIn("after " + tamper.nft + " and the check")
 		if d, _ := fw.Check(ctx); d != nil {
 			t.Errorf("a check right after the table was put back found drift: %+v", d)
 		}
@@ -194,19 +213,22 @@ func newNet(t *testing.T) *netns {
 	}
 	sh(fmt.Sprintf(`
 		ip link set lo up
-		ip link add lan0 type veth peer name eth0 netns %d
+		ip link add br-lan type veth peer name eth0 netns %d
 		ip link add wt0 type veth peer name eth0 netns %d
 		ip link add br-test type bridge
 		ip link add veth-ctr type veth peer name eth0 netns %d
 		ip link set veth-ctr master br-test
-		ip addr add 192.168.77.1/24 dev lan0
-		ip -6 addr add fd00:77::1/64 dev lan0 nodad
+		ip addr add 192.168.77.1/24 dev br-lan
+		ip -6 addr add fd00:77::1/64 dev br-lan nodad
+		ip -6 addr add 2001:db8:77::1/64 dev br-lan nodad
 		ip addr add 100.88.1.1/16 dev wt0
 		ip addr add 172.30.0.1/24 dev br-test
-		for i in lan0 wt0 br-test veth-ctr; do ip link set "$i" up; done
+		for i in br-lan wt0 br-test veth-ctr; do ip link set "$i" up; done
+		ip route add default via 192.168.77.50
 		echo 1 > /proc/sys/net/ipv4/ip_forward`, n.pids["lan"], n.pids["peer"], n.pids["ctr"]))
 	in("lan", `ip link set lo up; ip link set eth0 up; ip addr add 192.168.77.50/24 dev eth0
-		ip -6 addr add fd00:77::50/64 dev eth0 nodad
+		ip -6 addr add fd00:77::50/64 dev eth0 nodad; ip -6 addr add 2001:db8:77::50/64 dev eth0 nodad
+		ip addr add 203.0.113.50/32 dev lo
 		ip route add 100.88.0.0/16 via 192.168.77.1; ip route add 172.30.0.0/24 via 192.168.77.1`)
 	in("peer", `ip link set lo up; ip link set eth0 up; ip addr add 100.88.1.2/16 dev eth0; ip route add default via 100.88.1.1`)
 	in("ctr", `ip link set lo up; ip link set eth0 up; ip addr add 172.30.0.2/24 dev eth0; ip route add default via 172.30.0.1`)
@@ -220,7 +242,7 @@ NFT`)
 
 	// Listeners: on the box for any address (an app, sshd), the setup listener, the container's app, and one on the
 	// LAN host.
-	for _, addr := range []string{":8022", ":7020"} {
+	for _, addr := range []string{":8022", ":7020", ":53"} {
 		ln, err := net.Listen("tcp", addr)
 		if err != nil {
 			t.Fatal(err)
@@ -239,6 +261,8 @@ NFT`)
 	}
 	n.listen(t, "ctr", "172.30.0.2:8444")
 	n.listen(t, "lan", "192.168.77.50:9000")
+	n.listen(t, "lan", "203.0.113.50:9001")
+	n.listen(t, "peer", "100.88.1.2:9002")
 	return n
 }
 
