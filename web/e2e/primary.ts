@@ -7,11 +7,9 @@ import net from 'node:net';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
+import { bin, sysroot } from './paths';
 
 const run = promisify(execFile);
-const here = path.dirname(new URL(import.meta.url).pathname);
-const bin = process.env.HOMERSLAB_BIN ?? path.join(here, '..', '..', 'bin', 'homerslab');
-const sysroot = path.join(here, '..', '..', 'testdata', 'primary');
 
 export type Link = { url: string; localUrl: string; expiresAt: string };
 
