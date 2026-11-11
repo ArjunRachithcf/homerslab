@@ -17,6 +17,7 @@ import (
 	"testing/fstest"
 	"time"
 
+	"github.com/ArjunRachithcf/homerslab/internal/agent"
 	"github.com/ArjunRachithcf/homerslab/internal/agent/agenttest"
 	"github.com/ArjunRachithcf/homerslab/internal/lan"
 	"github.com/ArjunRachithcf/homerslab/internal/manager"
@@ -62,6 +63,8 @@ type primary struct {
 	// lanReads counts how often the manager asks for the machine's LAN address.
 	lanReads atomic.Int32
 	steps    map[string]setup.Handler
+	host     *agenttest.Host // the primary's machine, as its agent sees it
+	netbird  manager.NetBird
 }
 
 type option func(*primary)
@@ -70,7 +73,7 @@ type option func(*primary)
 func withBuiltSteps(ids ...string) option {
 	return func(p *primary) {
 		for _, id := range ids {
-			p.steps[id] = func(context.Context, json.RawMessage) (map[string]string, error) { return nil, nil }
+			p.steps[id] = func(context.Context, json.RawMessage, map[string]string) (map[string]string, error) { return nil, nil }
 		}
 	}
 }
@@ -92,7 +95,7 @@ func newPrimary(t *testing.T, opts ...option) *primary {
 		o(p)
 	}
 	if p.agent == "" {
-		p.agent = agenttest.Start(t, agenttest.Primary())
+		p.agent, p.host = agenttest.StartWith(t, agent.Config{})
 	}
 	p.open()
 	return p
@@ -116,6 +119,7 @@ func (p *primary) open() {
 		LANAddress: func() netip.Addr { p.lanReads.Add(1); return netip.MustParseAddr("192.168.1.20") },
 		Web:        p.web,
 		Steps:      p.steps,
+		NetBird:    p.netbird,
 	})
 	if err != nil {
 		p.t.Fatal(err)

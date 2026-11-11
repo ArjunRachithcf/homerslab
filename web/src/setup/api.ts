@@ -22,7 +22,7 @@ function keep(t: string) {
 }
 
 export type Half = 'lan' | 'mesh';
-export type StepState = { id: string; half: Half; state: 'todo' | 'done' };
+export type StepState = { id: string; half: Half; state: 'todo' | 'waiting' | 'done'; secret?: string; command?: string };
 export type Setup = { half: Half; current: string; steps: StepState[]; answers: Record<string, string> };
 
 export type Facts = {

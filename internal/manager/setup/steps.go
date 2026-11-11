@@ -15,10 +15,12 @@ var Built = map[string]Handler{
 	"household": household,
 }
 
-func welcome(context.Context, json.RawMessage) (map[string]string, error) { return nil, nil }
+func welcome(context.Context, json.RawMessage, map[string]string) (map[string]string, error) {
+	return nil, nil
+}
 
 // you: the admin's name and mail address.
-func you(_ context.Context, raw json.RawMessage) (map[string]string, error) {
+func you(_ context.Context, raw json.RawMessage, _ map[string]string) (map[string]string, error) {
 	var a struct{ Name, Mail string }
 	_ = json.Unmarshal(raw, &a)
 	var bad []string
@@ -37,7 +39,7 @@ func you(_ context.Context, raw json.RawMessage) (map[string]string, error) {
 }
 
 // household: the household's name.
-func household(_ context.Context, raw json.RawMessage) (map[string]string, error) {
+func household(_ context.Context, raw json.RawMessage, _ map[string]string) (map[string]string, error) {
 	var a struct{ Name string }
 	_ = json.Unmarshal(raw, &a)
 	name := strings.TrimSpace(a.Name)

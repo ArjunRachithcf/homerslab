@@ -22,6 +22,8 @@ func runAgent(ctx context.Context, args []string, env Env) error {
 	socket := fs.String("socket", DefaultAgentSocket, "the agent API's Unix socket")
 	group := fs.String("socket-group", DefaultGroup, "the group that may use the socket: the manager's")
 	sysroot := fs.String("sysroot", "/", "the system root to read the machine's facts from")
+	state := fs.String("state-dir", DefaultAgentState, "the agent's state and the sealed credentials")
+	setupPort := fs.Int("setup-port", DefaultSetupPort, "the setup listener's port: the firewall table's one LAN exception until it closes")
 	if err := parse(fs, args); err != nil {
 		return err
 	}
@@ -31,7 +33,8 @@ func runAgent(ctx context.Context, args []string, env Env) error {
 	}
 	log := slog.New(slog.NewTextHandler(env.Stderr, nil))
 	log.Info("agent starting", "socket", *socket, "euid", env.Euid())
-	return agent.Serve(ctx, agent.Config{Socket: *socket, SocketGID: gid, Sysroot: os.DirFS(*sysroot), Log: log})
+	return agent.Serve(ctx, agent.Config{Socket: *socket, SocketGID: gid, Sysroot: os.DirFS(*sysroot), Root: "/",
+		StateDir: *state, SetupPort: *setupPort, Log: log})
 }
 
 func groupID(name string) (int, error) {

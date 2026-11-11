@@ -18,22 +18,28 @@ const (
 	DefaultControlSocket = "/run/homerslab/manager.sock"
 	DefaultDB            = "/var/lib/homerslab/manager.db"
 	DefaultListen        = ":7020"
+	DefaultSetupPort     = 7020
+	DefaultAgentState    = "/var/lib/homerslab-agent"
 	DefaultGroup         = "homerslab"
 )
 
 // Env is what a command reaches of the world.
 type Env struct {
+	Stdin          io.Reader
 	Stdout, Stderr io.Writer
 	Euid           func() int
 }
 
 // OS is the real environment.
-func OS() Env { return Env{Stdout: os.Stdout, Stderr: os.Stderr, Euid: os.Geteuid} }
+func OS() Env { return Env{Stdin: os.Stdin, Stdout: os.Stdout, Stderr: os.Stderr, Euid: os.Geteuid} }
 
 const usage = `Usage:
   homerslab agent      run the agent (as root, from homerslab-agent.service)
   homerslab manager    run the manager (unprivileged, from homerslab-manager.service)
   homerslab setup link make a one-time link to first-time setup, and show it with its QR code
+  homerslab setup secret mesh
+                       give first-time setup the mesh's token, from this machine's terminal (read from stdin,
+                       never shown)
   homerslab node       show this primary as its agent reports it
 
 Each command takes --help.
@@ -48,6 +54,8 @@ func Main(ctx context.Context, args []string, env Env) int {
 	switch strings.Join(first(args, 2), " ") {
 	case "setup link":
 		err = setupLink(ctx, args[2:], env)
+	case "setup secret":
+		err = setupSecret(ctx, args[2:], env)
 	default:
 		switch strings.Join(first(args, 1), " ") {
 		case "agent":

@@ -40,6 +40,51 @@ jobs:
       - name: go test
         run: go test -race -count=1 ./...
 
+  firewall:
+    name: Firewall table (network namespaces)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - name: The tools the test drives
+        run: sudo apt-get install -y --no-install-recommends nftables iproute2 iputils-ping
+      - name: Build the test
+        run: CGO_ENABLED=0 go test -c -o fw.test ./internal/firewall
+      # As root, the test puts itself in a fresh network namespace (unshare -n) before it touches anything, and refuses
+      # one that holds more than loopback: the runner's own firewall stays as it is.
+      - name: The table in throwaway namespaces
+        env:
+          HOMERSLAB_REQUIRE_NETNS: "1"
+          DOCKER_HOST: unix:///nonexistent
+          CONTAINER_HOST: unix:///nonexistent
+        run: sudo --preserve-env=HOMERSLAB_REQUIRE_NETNS,DOCKER_HOST,CONTAINER_HOST ./fw.test -test.v -test.count=1
+
+  mesh:
+    name: Mesh contract (self-hosted NetBird in containers)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - name: Kernel WireGuard, for the clients in their containers
+        run: sudo modprobe wireguard
+      # The harness, and only the harness, reaches the runner's Docker (HOMERSLAB_TEST_DOCKER_HOST), for compose project
+      # hltest-15; the code under test points at nowhere. Images are pinned by digest in testdata/compose.yaml.
+      - name: The contract suite
+        env:
+          HOMERSLAB_TEST_DOCKER_HOST: unix:///var/run/docker.sock
+          DOCKER_HOST: unix:///nonexistent
+          CONTAINER_HOST: unix:///nonexistent
+        run: go test -count=1 -v -run TestTheMeshContract ./internal/mesh/netbird/
+
   web:
     name: Web app (lint, types, build)
     runs-on: ubuntu-24.04

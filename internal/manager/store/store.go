@@ -27,6 +27,8 @@ type Step struct {
 	Position int
 	Done     bool
 	DoneAt   time.Time
+	// Waits is the secret a step waits for, or "".
+	Waits string
 }
 
 var migrations = []string{
@@ -54,6 +56,12 @@ var migrations = []string{
 		created_at INTEGER NOT NULL,
 		last_seen  INTEGER NOT NULL,
 		revoked_at INTEGER
+	);`,
+	// A step that waits for a secret, which only the terminal on this machine gives (#64): the secret's name, never
+	// the secret.
+	`CREATE TABLE setup_wait (
+		step   TEXT PRIMARY KEY REFERENCES setup_step (id) ON DELETE CASCADE,
+		secret TEXT NOT NULL
 	);`,
 }
 
@@ -129,7 +137,8 @@ func (s *Store) tx(ctx context.Context, fn func(*sql.Tx) error) error {
 
 // Steps lists setup's steps in order, with their state.
 func (s *Store) Steps(ctx context.Context) ([]Step, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id, position, half, state, done_at FROM setup_step ORDER BY position`)
+	rows, err := s.db.QueryContext(ctx, `SELECT id, position, half, state, done_at, coalesce(w.secret, '')
+		FROM setup_step LEFT JOIN setup_wait w ON w.step = setup_step.id ORDER BY position`)
 	if err != nil {
 		return nil, err
 	}
@@ -139,7 +148,7 @@ func (s *Store) Steps(ctx context.Context) ([]Step, error) {
 		var st Step
 		var state string
 		var doneAt sql.NullInt64
-		if err := rows.Scan(&st.ID, &st.Position, &st.Half, &state, &doneAt); err != nil {
+		if err := rows.Scan(&st.ID, &st.Position, &st.Half, &state, &doneAt, &st.Waits); err != nil {
 			return nil, err
 		}
 		st.Done = state == "done"
@@ -151,14 +160,44 @@ func (s *Store) Steps(ctx context.Context) ([]Step, error) {
 	return out, rows.Err()
 }
 
-// CompleteStep saves a step's answers and marks it done, in one transaction.
+func saveAnswers(ctx context.Context, tx *sql.Tx, answers map[string]string) error {
+	for k, v := range answers {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO setup_answer (key, value) VALUES (?, ?)
+			ON CONFLICT (key) DO UPDATE SET value = excluded.value`, k, v); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// SaveAnswers keeps answers, none of them secret.
+func (s *Store) SaveAnswers(ctx context.Context, answers map[string]string) error {
+	return s.tx(ctx, func(tx *sql.Tx) error { return saveAnswers(ctx, tx, answers) })
+}
+
+// WaitForSecret keeps a step's answers so far and marks it waiting for a secret, by name.
+func (s *Store) WaitForSecret(ctx context.Context, id, secret string, answers map[string]string) error {
+	return s.tx(ctx, func(tx *sql.Tx) error {
+		if err := saveAnswers(ctx, tx, answers); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE setup_step SET state = 'todo', done_at = NULL WHERE id = ?`, id); err != nil {
+			return err
+		}
+		_, err := tx.ExecContext(ctx, `INSERT INTO setup_wait (step, secret) VALUES (?, ?)
+			ON CONFLICT (step) DO UPDATE SET secret = excluded.secret`, id, secret)
+		return err
+	})
+}
+
+// CompleteStep saves a step's answers and marks it done, and no longer waiting, in one transaction.
 func (s *Store) CompleteStep(ctx context.Context, id string, answers map[string]string, at time.Time) error {
 	return s.tx(ctx, func(tx *sql.Tx) error {
-		for k, v := range answers {
-			if _, err := tx.ExecContext(ctx, `INSERT INTO setup_answer (key, value) VALUES (?, ?)
-				ON CONFLICT (key) DO UPDATE SET value = excluded.value`, k, v); err != nil {
-				return err
-			}
+		if err := saveAnswers(ctx, tx, answers); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `DELETE FROM setup_wait WHERE step = ?`, id); err != nil {
+			return err
 		}
 		res, err := tx.ExecContext(ctx, `UPDATE setup_step SET state = 'done', done_at = ? WHERE id = ?`, at.UnixMilli(), id)
 		if err != nil {
