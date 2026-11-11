@@ -1,6 +1,6 @@
 # HomersLab: spec
 
-- **Status**: the definition, 2026-11-09. No code yet.
+- **Status**: the definition, 2026-11-09. Code since 2026-11-11, from the first slice (#14). Nothing is released before 1.0.
 - **Vocabulary**: [GLOSSARY.md](../GLOSSARY.md).
 - **Decisions**: [adr/](adr/).
 - **Facts**: [research/](research/).
@@ -603,6 +603,19 @@ Details are in [ADR 0018](adr/0018-uptime-and-notifications.md).
   admin's passkey is created. The passkey is bound to the name the household will use every day.
 - **The LAN listener closes for good** at the admin's first sign-in over the mesh.
 - **Headscale households** also make one guided change in Headscale's configuration: its base domain.
+- **The first half travels over plain HTTP on the LAN**, including the mesh token, the DNS token and the mail
+  password. The threat model accepts this, because the window is narrow:
+  - the link works only from this machine or the LAN, for 30 minutes, and once;
+  - one claimer holds it, and a new link ends every earlier link and session;
+  - the listener answers only the machine's own names and addresses;
+  - the listener closes for good after the hand-off to the mesh.
+
+  A self-signed certificate was considered and refused: browser warnings teach the admin to click through them.
+- **The setup session is a bearer token**, not a cookie:
+  - the page keeps it in `sessionStorage`, so one tab holds it;
+  - it is bound to the address that claimed the link, ends after 30 minutes idle and 2 hours at most, and is stored
+    only as a hash;
+  - browsers send a cookie to every port on the same host, so another local service could replay one.
 
 ### Security defaults
 
@@ -950,3 +963,6 @@ Every answer of the grilling (2026-11-09) and where it lives:
 | 129 | A person may hide one of two same-purpose apps on their Home | Design decisions (round 4 answers) |
 | 130 | Setup defaults confirmed | Design decisions (round 4 answers) |
 | 131 | Admin's motion confirmed | Design decisions (round 4 answers) |
+| 132 | Setup's first half over plain HTTP on the LAN, accepted | First-time setup in two halves (#14 Q3) |
+| 133 | The setup session is a per-tab bearer token, not a cookie | First-time setup in two halves (#14 Q12–Q13) |
+| 134 | The manager's database is SQLite | ADR 0019 (#14 Q4) |

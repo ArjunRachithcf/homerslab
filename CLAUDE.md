@@ -15,8 +15,9 @@ parking, and asking the maintainer.
 ## Conventions
 
 - **Code**: Go for the manager and agents, React with TypeScript for Admin and Home. The design system in `design/` is
-  the source of truth for the UI; `prototypes/` show how screens behave. Prototype data and sessionStorage are never
-  product code.
+  the source of truth for the UI; `prototypes/` show how screens behave. Prototype data never becomes product code.
+  The product keeps state on the server; the one thing a browser holds is first-time setup's per-tab session token, in
+  `sessionStorage` (#14, Q12–Q13).
 - **Tests sit at the ticket's seam**, as named in the spec's Testing Decisions, and test behaviour through that seam.
   Adapters pass their contract suite against the real software in containers.
 - **This machine runs a live homelab** (the compose project `homelab`). Tests and spikes keep to their own world:
