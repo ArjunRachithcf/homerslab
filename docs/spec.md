@@ -1123,6 +1123,19 @@ From the interactive review of the reworked prototypes:
   - the DNS provider guessed from the domain's name servers.
 - **Admin's motion confirmed**: screens push and pop, and icons fly to their page, always in answer to a click.
 
+### The catalog's app waves (2026-11-11)
+
+- **The order**, the maintainer's:
+  - wave 0, Immich and BentoPDF, which prove the two install paths;
+  - the move's daily essentials (#118);
+  - the rest of the classic box's apps (#119);
+  - family apps (#120);
+  - downloads, opt-in (#121);
+  - apps beyond classic (#123);
+  - the maintainer's own apps in his private catalog (#122).
+- **Two apps per purpose** for the purposes added beyond classic, so that each household chooses (the maintainer). A
+  household may install either or both, and each person may hide the one they don't use.
+
 ### Spikes
 
 Run on 2026-11-09, each in throwaway containers on the maintainer's machine. The findings and code are in
@@ -1342,3 +1355,4 @@ Every answer of the grilling (2026-11-09) and where it lives:
 | 186 | The installer prints the command, not the link | First-time setup in two halves (#74) |
 | 187 | The LAN includes the default-route interfaces' on-link global IPv6 prefixes | First-time setup in two halves (#73) |
 | 188 | Admins' app-scoped LDAP credentials are exempt from the passkey-only check | Adapter contracts (#104) |
+| 189 | The catalog's app waves, and two apps per purpose beyond classic | The catalog's app waves (#118–#122, #123) |
