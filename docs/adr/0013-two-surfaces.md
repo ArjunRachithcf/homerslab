@@ -24,3 +24,16 @@ passkey.
 
 - **One web app, with pages chosen by role.** Simpler, but then the public surface would be the privileged one.
 - **A desktop app as the main way in.** The box would serve no admin UI, but nothing could be done without that app.
+
+## Amended (2026-11-11)
+
+Accepted (#86, the maintainer, 2026-11-11).
+
+**A third surface: the manager's device page.** A person adds one of their own devices to the mesh from another
+device of theirs. That needs a mesh key, which is privileged, so it can't come from Home's process. Instead, the
+manager serves a page of its own for it:
+- its own origin, separate from Admin's and Home's;
+- mesh only, like Admin, but reachable by every person's own devices, not only admins';
+- a step-up at the sign-in before any key is made.
+
+Home only links to it.
