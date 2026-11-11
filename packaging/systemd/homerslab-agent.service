@@ -14,12 +14,13 @@ Restart=on-failure
 RestartSec=2s
 
 # So far the agent reads the machine's facts (/etc, /proc, /sys, pci.ids, the space under /var/lib/homerslab), reads
-# apps' compose files for planning (in its private /tmp, through the Compose SDK, reaching no engine) and answers on
-# its socket, which it hands to the manager's group (CAP_CHOWN). Later tickets loosen this as its contract grows: the firewall (netlink,
+# apps' compose files for planning, and answers on its socket, which it hands to the manager's group (CAP_CHOWN).
+# Each compose read runs in a child of its own (homerslab agent read-project), in an empty folder of its private /tmp
+# that the agent gives to nobody (CAP_CHOWN); the child becomes nobody before it reads (CAP_SETUID, CAP_SETGID). Later tickets loosen this as its contract grows: the firewall (netlink,
 # CAP_NET_ADMIN), the engine, app units, disks. Checked as a transient user unit with these settings (Fedora 44):
 # the facts, TPM and GPUs included, read in full. To check again as root at the first package install (#48).
 NoNewPrivileges=yes
-CapabilityBoundingSet=CAP_CHOWN CAP_DAC_READ_SEARCH
+CapabilityBoundingSet=CAP_CHOWN CAP_DAC_READ_SEARCH CAP_SETUID CAP_SETGID
 ProtectSystem=strict
 ProtectHome=read-only
 PrivateTmp=yes
@@ -36,8 +37,8 @@ MemoryDenyWriteExecute=yes
 SystemCallArchitectures=native
 SystemCallFilter=@system-service
 SystemCallErrorNumber=EPERM
-# It parses the compose files it is sent as root: at most one core and 512 MB, far above what it uses (tens of MB,
-# one read at a time), so a hostile file costs the agent a restart, not the machine.
+# Its compose reads run as nobody, one at a time, each killed at its deadline and limited on its own; the unit, with
+# those children, gets at most one core and 512 MB, far above what it uses (tens of MB).
 MemoryMax=512M
 CPUQuota=100%
 

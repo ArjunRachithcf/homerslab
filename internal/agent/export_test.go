@@ -1,25 +1,18 @@
 package agent
 
 import (
-	"context"
 	"testing"
 	"time"
-
-	"github.com/ArjunRachithcf/homerslab/internal/engine"
 )
 
-type stuck struct{ release <-chan struct{} }
-
-// Read ignores its context, as a parse stuck in the SDK would, until it is released.
-func (s stuck) Read(context.Context, string, []byte) (engine.Project, error) {
-	<-s.release
-	return engine.Project{Name: "homerslab-web", Services: []engine.Service{}}, nil
-}
-
-// StuckReads makes every compose read hang until release is closed, with reads given d.
-func StuckReads(t *testing.T, d time.Duration, release <-chan struct{}) {
-	oldDeadline, oldReader := readDeadline, newProjectReader
+// HostileReads gives reads d, and makes every read's child burn CPU until it is killed. It returns a function that
+// puts the real child and deadline back.
+func HostileReads(t *testing.T, d time.Duration) (real func()) {
+	oldDeadline, oldCommand := readDeadline, readCommand
 	readDeadline = d
-	newProjectReader = func() (projectReader, error) { return stuck{release}, nil }
-	t.Cleanup(func() { readDeadline, newProjectReader = oldDeadline, oldReader })
+	readCommand = func() ([]string, error) {
+		return []string{"/bin/sh", "-c", "cat >/dev/null; while :; do :; done", "sh"}, nil
+	}
+	t.Cleanup(func() { readDeadline, readCommand = oldDeadline, oldCommand })
+	return func() { readDeadline, readCommand = oldDeadline, oldCommand }
 }

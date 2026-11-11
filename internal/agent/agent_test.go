@@ -4,10 +4,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
@@ -213,27 +215,85 @@ func TestAgentReadsAComposeProjectForPlanning(t *testing.T) {
 	}
 }
 
-// One read at a time, with a deadline: a read that doesn't finish in time is answered, and the next waits for the
-// slot instead of piling up beside it.
-func TestAgentReadsOneProjectAtATimeWithADeadline(t *testing.T) {
+// A read runs in a child that the agent kills at the deadline: the work really stops, the slot is free again at once,
+// and the agent answers for its facts while a hostile read burns CPU.
+func TestAHostileReadIsKilledAtItsDeadline(t *testing.T) {
 	testenv.Isolate(t)
-	release := make(chan struct{})
-	agent.StuckReads(t, 50*time.Millisecond, release)
+	real := agent.HostileReads(t, 300*time.Millisecond)
 	sock := agenttest.Start(t, agenttest.Primary())
 	body := map[string]string{"project": "homerslab-web", "compose": "services: {web: {image: x}}\n"}
 
+	facts := make(chan time.Duration, 1)
+	go func() {
+		time.Sleep(100 * time.Millisecond) // while the hostile read runs
+		start := time.Now()
+		if resp, _ := get(t, sock, "/v1/node"); resp.StatusCode == http.StatusOK {
+			facts <- time.Since(start)
+		}
+		close(facts)
+	}()
 	start := time.Now()
 	resp, out := post(t, sock, "/v1/projects/read", body)
-	if resp.StatusCode != http.StatusGatewayTimeout || !strings.Contains(string(out), "read-timeout") || time.Since(start) > time.Second {
-		t.Errorf("a stuck read: %d %s after %s, want 504 read-timeout at its deadline", resp.StatusCode, out, time.Since(start))
+	if took := time.Since(start); resp.StatusCode != http.StatusGatewayTimeout || !strings.Contains(string(out), "read-timeout") || took > 2*time.Second {
+		t.Errorf("a hostile read: %d %s after %s, want 504 read-timeout at its deadline", resp.StatusCode, out, took)
 	}
-	if resp, out := post(t, sock, "/v1/projects/read", body); resp.StatusCode != http.StatusServiceUnavailable || !strings.Contains(string(out), "busy") {
-		t.Errorf("a read while one is stuck: %d %s, want 503 busy", resp.StatusCode, out)
+	if took, ok := <-facts; !ok || took > time.Second {
+		t.Errorf("the facts during a hostile read: answered %v after %s", ok, took)
 	}
-	close(release)
-	time.Sleep(20 * time.Millisecond)
-	if resp, out := post(t, sock, "/v1/projects/read", body); resp.StatusCode != http.StatusOK {
-		t.Errorf("once the stuck read ends: %d %s", resp.StatusCode, out)
+
+	real()
+	start = time.Now()
+	if resp, out := post(t, sock, "/v1/projects/read", body); resp.StatusCode != http.StatusOK || time.Since(start) > 5*time.Second {
+		t.Errorf("right after the deadline: %d %s after %s, want the slot free and the read done", resp.StatusCode, out, time.Since(start))
+	}
+}
+
+// A read's child drops root and runs under its own limits; a file shaped to make Compose work hard is refused quickly.
+func TestAReadRunsConfinedAndRefusesWorkFast(t *testing.T) {
+	testenv.Isolate(t)
+	cmd := exec.Command(os.Args[0], "agent", "read-project", "--cpu-seconds", "5", "homerslab-web")
+	cmd.Stdin = strings.NewReader("services: {web: {image: x}}\n")
+	cmd.Dir = t.TempDir()
+	if os.Geteuid() == 0 {
+		if err := os.Chown(cmd.Dir, 65534, 65534); err != nil {
+			t.Fatal(err)
+		}
+	}
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("%v: %s", err, out)
+	}
+	var res struct {
+		Project *engine.Project
+		UID     int
+		Limits  map[string]int
+	}
+	if err := json.Unmarshal(out, &res); err != nil || res.Project == nil {
+		t.Fatalf("%v: %s", err, out)
+	}
+	if os.Geteuid() == 0 && res.UID != 65534 {
+		t.Errorf("the child ran as %d, want nobody (65534)", res.UID)
+	}
+	for k, want := range map[string]int{"core": 0, "cpu": 5, "files": 32, "fileSize": 1 << 20} {
+		if got, ok := res.Limits[k]; !ok || got != want {
+			t.Errorf("limit %s = %d, want %d", k, got, want)
+		}
+	}
+
+	var fan strings.Builder
+	fan.WriteString("services:\n")
+	for i := range 64 {
+		fmt.Fprintf(&fan, "  s%d: {image: x, depends_on: [", i)
+		for j := max(0, i-40); j < i; j++ {
+			fmt.Fprintf(&fan, "s%d, ", j)
+		}
+		fan.WriteString("]}\n")
+	}
+	sock := agenttest.Start(t, agenttest.Primary())
+	start := time.Now()
+	resp, body := post(t, sock, "/v1/projects/read", map[string]string{"project": "homerslab-web", "compose": fan.String()})
+	if resp.StatusCode != http.StatusUnprocessableEntity || !strings.Contains(string(body), "not-plain") || time.Since(start) > 2*time.Second {
+		t.Errorf("a depends_on fan: %d %s after %s, want it refused fast", resp.StatusCode, body, time.Since(start))
 	}
 }
 

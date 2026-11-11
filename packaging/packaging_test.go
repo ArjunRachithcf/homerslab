@@ -70,7 +70,7 @@ func TestTheManagerRunsUnprivilegedAndTheAgentAsRoot(t *testing.T) {
 	for k, want := range map[string]string{"ProtectHome": "read-only", "ProtectKernelModules": "yes", "ProtectClock": "yes",
 		"ProtectKernelLogs": "yes", "NoNewPrivileges": "yes", "ProtectSystem": "strict", "PrivateTmp": "yes",
 		"ProtectKernelTunables": "yes", "ProtectControlGroups": "yes", "RestrictSUIDSGID": "yes",
-		"CapabilityBoundingSet": "CAP_CHOWN CAP_DAC_READ_SEARCH", "RestrictAddressFamilies": "AF_UNIX",
+		"CapabilityBoundingSet": "CAP_CHOWN CAP_DAC_READ_SEARCH CAP_SETUID CAP_SETGID", "RestrictAddressFamilies": "AF_UNIX",
 		"PrivateNetwork": "yes", "SystemCallFilter": "@system-service", "SystemCallErrorNumber": "EPERM",
 		"MemoryDenyWriteExecute": "yes", "LockPersonality": "yes",
 		// It parses compose files as root: a file it is sent can't take the machine with it.

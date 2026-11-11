@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/compose-spec/compose-go/v2/cli"
+	"github.com/compose-spec/compose-go/v2/loader"
 	"github.com/docker/compose/v5/pkg/api"
 	"go.yaml.in/yaml/v3"
 
@@ -24,7 +25,7 @@ var projectName = regexp.MustCompile(`^` + engine.ProjectPrefix + `[a-z0-9]([a-z
 // The ways a read is refused.
 var (
 	ErrNotOurs  = errors.New("not one of HomersLab's compose project names (homerslab-<app>)")
-	ErrNotPlain = errors.New("an app's compose file is one plain file: no include, extends, env_file, label_file, profiles or aliases, nested at most 64 deep, at most 64 KiB")
+	ErrNotPlain = errors.New("an app's compose file is one plain file: no include, extends, env_file, label_file, profiles, aliases or merge keys; at most 64 KiB, nested at most 64 deep, 64 services and 128 references between them")
 )
 
 // readerOptions make the reader's service: a dry run with no stream, so nothing it is asked can change an engine.
@@ -56,6 +57,12 @@ func (r *Reader) Read(ctx context.Context, name string, file []byte) (engine.Pro
 	if err := plain(file); err != nil {
 		return engine.Project{}, err
 	}
+	return r.load(ctx, name, file)
+}
+
+// load loads a file that plain() passed. It follows no extends and no include, so it reads no other file even if
+// plain() missed one, and it refuses a project with a service it extends or one that a profile leaves out.
+func (r *Reader) load(ctx context.Context, name string, file []byte) (engine.Project, error) {
 	dir, err := os.MkdirTemp("", "homerslab-read-")
 	if err != nil {
 		return engine.Project{}, err
@@ -74,13 +81,20 @@ func (r *Reader) Read(ctx context.Context, name string, file []byte) (engine.Pro
 			cli.WithInterpolation(false),
 			cli.WithoutEnvironmentResolution,
 			cli.WithoutLabelsResolution,
+			cli.WithLoadOptions(func(o *loader.Options) { o.SkipInclude, o.SkipExtends = true, true }),
 		},
 	})
 	if err != nil {
 		return engine.Project{}, fmt.Errorf("the compose file: %s", strings.ReplaceAll(err.Error(), dir+string(filepath.Separator), ""))
 	}
+	if len(p.DisabledServices) > 0 {
+		return engine.Project{}, fmt.Errorf("%w: a service only a profile runs", ErrNotPlain)
+	}
 	out := engine.Project{Name: p.Name, Services: []engine.Service{}}
 	for _, s := range p.Services {
+		if s.Extends != nil {
+			return engine.Project{}, fmt.Errorf("%w: %s extends another service", ErrNotPlain, s.Name)
+		}
 		out.Services = append(out.Services, engine.Service{Name: s.Name, Image: s.Image})
 	}
 	slices.SortFunc(out.Services, func(a, b engine.Service) int { return strings.Compare(a.Name, b.Name) })
@@ -88,9 +102,13 @@ func (r *Reader) Read(ctx context.Context, name string, file []byte) (engine.Pro
 }
 
 // The bounds of a plain compose file: the agent parses it as root, so a small file must not make it work hard.
+// Compose's own work grows with the services and the references between them (depends_on, links, volumes_from, and
+// network_mode, ipc and pid set to service:<name>), so those are capped too.
 const (
-	maxFileBytes = 64 << 10
-	maxDepth     = 64
+	maxFileBytes  = 64 << 10
+	maxDepth      = 64
+	maxServices   = 64
+	maxReferences = 128
 )
 
 // plain refuses a compose file that would make the loader read another file or work hard, in any of its YAML
@@ -105,6 +123,7 @@ func plain(file []byte) error {
 		return err
 	}
 	dec := yaml.NewDecoder(bytes.NewReader(file))
+	count, refs := 0, 0
 	for {
 		var doc yaml.Node
 		err := dec.Decode(&doc)
@@ -128,18 +147,26 @@ func plain(file []byte) error {
 		if services == nil || services.Kind != yaml.MappingNode {
 			continue
 		}
+		if count += len(services.Content) / 2; count > maxServices {
+			return fmt.Errorf("%w: more than %d services", ErrNotPlain, maxServices)
+		}
 		for i := 1; i < len(services.Content); i += 2 {
+			s := services.Content[i]
 			for _, k := range []string{"extends", "env_file", "label_file", "profiles"} {
-				if value(services.Content[i], k) != nil {
+				if value(s, k) != nil {
 					return fmt.Errorf("%w: %s", ErrNotPlain, k)
 				}
+			}
+			if refs += references(s); refs > maxReferences {
+				return fmt.Errorf("%w: more than %d references between services", ErrNotPlain, maxReferences)
 			}
 		}
 	}
 }
 
-// shallow refuses flow nesting ([ and {) deeper than maxDepth before the YAML parser walks it: brackets in quotes and
-// comments don't count. walk checks every kind of nesting once the file is parsed.
+// shallow is an early exit: it refuses flow nesting ([ and {) deeper than maxDepth before the YAML parser walks it,
+// so that a deep file costs nothing. Brackets in quotes and comments don't count, and it can be fooled; walk, on the
+// parsed file, is the real check of every kind of nesting.
 func shallow(file []byte) error {
 	depth, quote, comment := 0, byte(0), false
 	for i, c := range file {
@@ -165,10 +192,30 @@ func shallow(file []byte) error {
 	return nil
 }
 
-// walk refuses aliases and nesting deeper than maxDepth.
+// references counts a service's references to other services.
+func references(s *yaml.Node) int {
+	n := 0
+	for _, k := range []string{"depends_on", "links", "volumes_from"} {
+		if v := value(s, k); v != nil {
+			n += max(len(v.Content), 1) // a list's items, or a mapping's keys and values: an upper bound
+		}
+	}
+	for _, k := range []string{"network_mode", "ipc", "pid"} {
+		if v := value(s, k); v != nil && strings.HasPrefix(v.Value, "service:") {
+			n++
+		}
+	}
+	return n
+}
+
+// walk refuses aliases, merge keys (<< and the !!merge tag, which merge one mapping into another with no alias, so
+// keys plain() refuses could hide behind them) and nesting deeper than maxDepth.
 func walk(n *yaml.Node, depth int) error {
 	if n.Kind == yaml.AliasNode {
 		return fmt.Errorf("%w: an alias (*%s)", ErrNotPlain, n.Value)
+	}
+	if n.Tag == "!!merge" || (n.Kind == yaml.ScalarNode && n.Value == "<<" && n.Style == 0) {
+		return fmt.Errorf("%w: a merge key", ErrNotPlain)
 	}
 	if n.Kind == yaml.MappingNode || n.Kind == yaml.SequenceNode {
 		if depth++; depth > maxDepth {

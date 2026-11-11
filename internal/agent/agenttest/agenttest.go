@@ -56,3 +56,13 @@ func Start(t testing.TB, sysroot agent.Sysroot) string {
 	t.Fatalf("the agent never listened on %s", sock)
 	return ""
 }
+
+// Main runs a test binary's tests, or, when the agent started it as a compose read's child, that read: the agent
+// starts reads by running its own executable, which in a test is the test binary. Every package whose tests run an
+// agent that reads calls it from TestMain.
+func Main(m *testing.M) {
+	if len(os.Args) > 2 && os.Args[1] == "agent" && os.Args[2] == "read-project" {
+		os.Exit(agent.ReadProjectMain(os.Args[3:], os.Stdin, os.Stdout))
+	}
+	os.Exit(m.Run())
+}

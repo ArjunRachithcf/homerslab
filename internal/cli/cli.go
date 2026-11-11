@@ -10,6 +10,8 @@ import (
 	"io"
 	"os"
 	"strings"
+
+	"github.com/ArjunRachithcf/homerslab/internal/agent"
 )
 
 // Defaults: where the packaged units put things.
@@ -54,6 +56,8 @@ func Main(ctx context.Context, args []string, env Env) int {
 	switch strings.Join(first(args, 2), " ") {
 	case "setup link":
 		err = setupLink(ctx, args[2:], env)
+	case "agent read-project": // the agent's own child for one compose read; not for people
+		return agent.ReadProjectMain(args[2:], os.Stdin, env.Stdout)
 	case "plan show":
 		err = showPlanByID(ctx, args[2:], env)
 	default:

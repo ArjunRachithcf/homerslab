@@ -2,6 +2,7 @@ package compose
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"go/parser"
 	"go/token"
@@ -105,6 +106,39 @@ func TestDeepFlowNestingIsRefusedBeforeParsing(t *testing.T) {
 	for _, s := range []string{"x: '" + deep + "'", `x: "` + deep + `"`, "# " + deep + "\nx: 1", "x: " + strings.Repeat("[", 64) + strings.Repeat("]", 64)} {
 		if err := shallow([]byte(s)); err != nil {
 			t.Errorf("%.20s…: %v", s, err)
+		}
+	}
+}
+
+// Behind plain(), the load itself reads no other file and keeps nothing out of sight: extends and includes are never
+// followed, and a project with a service it extends or one a profile leaves out is refused.
+func TestTheLoadRefusesWhatPlainWouldHaveCaught(t *testing.T) {
+	testenv.Isolate(t)
+	secret := filepath.Join(t.TempDir(), "secret.yaml")
+	if err := os.WriteFile(secret, []byte("services: {a: {image: 'from-the-secret-file'}}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	r, err := NewReader(NoEngine)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, file := range map[string]string{
+		"extends":  "services: {web: {image: x, extends: {file: " + secret + ", service: a}}}\n",
+		"include":  "include: [" + secret + "]\nservices: {web: {image: x}}\n",
+		"profiles": "services: {web: {image: x}, extra: {image: y, profiles: [later]}}\n",
+	} {
+		p, err := r.load(context.Background(), "homerslab-example", []byte(file))
+		if err == nil {
+			for _, s := range p.Services {
+				if s.Name != "web" {
+					t.Errorf("%s: the load brought in %s (%s)", name, s.Name, s.Image)
+				}
+			}
+			if name != "include" {
+				t.Errorf("%s: loaded %+v, want it refused", name, p)
+			}
+		} else if strings.Contains(err.Error(), "from-the-secret-file") {
+			t.Errorf("%s: the secret file's content reached the error: %v", name, err)
 		}
 	}
 }

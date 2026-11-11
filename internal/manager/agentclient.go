@@ -9,20 +9,23 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/ArjunRachithcf/homerslab/internal/agent"
 	"github.com/ArjunRachithcf/homerslab/internal/engine"
 	"github.com/ArjunRachithcf/homerslab/internal/node"
 )
 
-// agentClient asks the primary's agent, over its socket.
-type agentClient struct{ http *http.Client }
+// agentClient asks the primary's agent, over its socket. Compose reads get longer than the agent's own deadline for
+// them, so the manager hears the agent's read-timeout instead of giving up first.
+type agentClient struct{ http, reads *http.Client }
 
 func newAgentClient(socket string) *agentClient {
-	return &agentClient{http: &http.Client{
-		Timeout: 5 * time.Second,
-		Transport: &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-			return (&net.Dialer{}).DialContext(ctx, "unix", socket)
-		}},
+	t := &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+		return (&net.Dialer{}).DialContext(ctx, "unix", socket)
 	}}
+	return &agentClient{
+		http:  &http.Client{Timeout: 5 * time.Second, Transport: t},
+		reads: &http.Client{Timeout: agent.ReadDeadline + 5*time.Second, Transport: t},
+	}
 }
 
 func (a *agentClient) node(ctx context.Context) (node.Facts, error) {
@@ -64,7 +67,7 @@ func (a *agentClient) readProject(ctx context.Context, name string, compose []by
 		return p, err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	resp, err := a.http.Do(req)
+	resp, err := a.reads.Do(req)
 	if err != nil {
 		return p, err
 	}

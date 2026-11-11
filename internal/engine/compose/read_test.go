@@ -69,12 +69,16 @@ func TestOnlyHomersLabsProjectNamesAreRead(t *testing.T) {
 func TestAProjectReadsNothingButItsOwnFile(t *testing.T) {
 	testenv.Isolate(t)
 	for name, file := range map[string]string{
-		"include":           "include: [/etc/shadow]\nservices: {web: {image: x}}\n",
-		"extends":           "services: {web: {image: x, extends: {file: /etc/shadow, service: a}}}\n",
-		"env_file":          "services: {web: {image: x, env_file: [/etc/shadow]}}\n",
-		"label_file":        "services: {web: {image: x, label_file: [/etc/shadow]}}\n",
-		"a second document": "services: {web: {image: x}}\n---\ninclude: [/etc/shadow]\n",
-		"a later service":   "services: {web: {image: x}}\n---\nservices: {db: {image: y, env_file: [/etc/shadow]}}\n",
+		"include":                     "include: [/etc/shadow]\nservices: {web: {image: x}}\n",
+		"extends":                     "services: {web: {image: x, extends: {file: /etc/shadow, service: a}}}\n",
+		"env_file":                    "services: {web: {image: x, env_file: [/etc/shadow]}}\n",
+		"label_file":                  "services: {web: {image: x, label_file: [/etc/shadow]}}\n",
+		"a second document":           "services: {web: {image: x}}\n---\ninclude: [/etc/shadow]\n",
+		"extends behind a merge key":  "services: {web: {<<: {extends: {file: /tmp/secret.yaml, service: a}}, image: x}}\n",
+		"include behind a merge key":  "<<: {include: [/tmp/secret.yaml]}\nservices: {web: {image: x}}\n",
+		"env_file behind a merge key": "services: {web: {image: x, <<: {env_file: [/etc/shadow]}}}\n",
+		"a merge tag":                 "services: {web: {image: x, !!merge m: {env_file: [/etc/shadow]}}}\n",
+		"a later service":             "services: {web: {image: x}}\n---\nservices: {db: {image: y, env_file: [/etc/shadow]}}\n",
 	} {
 		if _, err := reader(t).Read(context.Background(), "homerslab-example", []byte(file)); !errors.Is(err, compose.ErrNotPlain) {
 			t.Errorf("%s: %v, want ErrNotPlain", name, err)
@@ -128,13 +132,20 @@ func TestAProjectThatWouldExhaustTheAgentIsRefusedFast(t *testing.T) {
 	testenv.Isolate(t)
 	r := reader(t)
 	for name, file := range map[string]string{
-		"a billion laughs":   laughs(9, 9),
-		"one alias":          "x-a: &a {image: x}\nservices: {web: *a}\n",
-		"nesting 9000 deep":  "services: {web: {image: x, x-deep: " + strings.Repeat("[", 9000) + strings.Repeat("]", 9000) + "}}\n",
-		"nesting 65 deep":    "services: {web: {image: x, x-deep: " + strings.Repeat("[", 62) + strings.Repeat("]", 62) + "}}\n",
-		"a file over 64 KiB": "services: {web: {image: x}}\n" + strings.Repeat("# padding\n", 7000),
-		"a hidden profile":   "services: {web: {image: x@sha256:" + strings.Repeat("1", 64) + "}, extra: {image: 'evil:latest', profiles: [later]}}\n",
-		"block nesting":      "services:\n  web:\n    image: x\n    x-deep:\n" + deepBlock(70),
+		"a billion laughs":                        laughs(9, 9),
+		"one alias":                               "x-a: &a {image: x}\nservices: {web: *a}\n",
+		"nesting 9000 deep":                       "services: {web: {image: x, x-deep: " + strings.Repeat("[", 9000) + strings.Repeat("]", 9000) + "}}\n",
+		"nesting 65 deep":                         "services: {web: {image: x, x-deep: " + strings.Repeat("[", 62) + strings.Repeat("]", 62) + "}}\n",
+		"a file over 64 KiB":                      "services: {web: {image: x}}\n" + strings.Repeat("# padding\n", 7000),
+		"a hidden profile":                        "services: {web: {image: x@sha256:" + strings.Repeat("1", 64) + "}, extra: {image: 'evil:latest', profiles: [later]}}\n",
+		"a profile behind a merge key":            "services: {web: {image: x}, extra: {<<: {image: 'evil:latest', profiles: [later]}}}\n",
+		"extends /dev/zero behind a merge key":    "services: {web: {image: x, <<: {extends: {file: /dev/zero, service: a}}}}\n",
+		"include /dev/urandom behind a merge key": "<<: {include: [/dev/urandom]}\nservices: {web: {image: x}}\n",
+		"65 services":                             services(65, 0),
+		"a depends_on fan":                        services(64, 40),
+		"a links fan":                             fan("links"),
+		"a volumes_from fan":                      fan("volumes_from"),
+		"block nesting":                           "services:\n  web:\n    image: x\n    x-deep:\n" + deepBlock(70),
 	} {
 		start := time.Now()
 		_, err := r.Read(context.Background(), "homerslab-example", []byte(file))
@@ -142,11 +153,74 @@ func TestAProjectThatWouldExhaustTheAgentIsRefusedFast(t *testing.T) {
 			t.Errorf("%s: %v after %s, want ErrNotPlain within 100 ms", name, err, took)
 		}
 	}
-	// 64 levels is still a plain file.
+	// The longest chains the caps allow read quickly.
+	for _, ref := range []string{"depends_on: [s%d]", "links: [s%d]", "volumes_from: [s%d]", "network_mode: 'service:s%d'", "ipc: 'service:s%d'", "pid: 'service:s%d'"} {
+		start := time.Now()
+		_, err := r.Read(context.Background(), "homerslab-example", []byte(chain(64, ref)))
+		if took := time.Since(start); took > time.Second {
+			t.Errorf("a chain of 64 by %s: %v after %s, want it read within a second", ref, err, took)
+		}
+	}
+	// 64 services, a few references each, and 64 levels are still a plain file.
+	for name, file := range map[string]string{"64 services": services(64, 1), "a short chain": chain(16, "links: [s%d]")} {
+		if _, err := r.Read(context.Background(), "homerslab-example", []byte(file)); err != nil {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
 	ok := "services: {web: {image: x, x-deep: " + strings.Repeat("[", 60) + strings.Repeat("]", 60) + "}}\n"
 	if _, err := r.Read(context.Background(), "homerslab-example", []byte(ok)); err != nil {
 		t.Errorf("nesting 64 deep: %v", err)
 	}
+}
+
+// services is n services, each depending on up to fan of the ones before it.
+func services(n, fan int) string {
+	var b strings.Builder
+	b.WriteString("services:\n")
+	for i := range n {
+		fmt.Fprintf(&b, "  s%d:\n    image: x\n", i)
+		if d := min(i, fan); d > 0 {
+			b.WriteString("    depends_on: [")
+			for j := i - d; j < i; j++ {
+				if j > i-d {
+					b.WriteString(", ")
+				}
+				fmt.Fprintf(&b, "s%d", j)
+			}
+			b.WriteString("]\n")
+		}
+	}
+	return b.String()
+}
+
+// fan is 64 services, each referring to all the earlier ones with kind (links, volumes_from).
+func fan(kind string) string {
+	var b strings.Builder
+	b.WriteString("services:\n")
+	for i := range 64 {
+		fmt.Fprintf(&b, "  s%d:\n    image: x\n", i)
+		if i > 0 {
+			fmt.Fprintf(&b, "    %s: [", kind)
+			for j := range i {
+				if j > 0 {
+					b.WriteString(", ")
+				}
+				fmt.Fprintf(&b, "s%d", j)
+			}
+			b.WriteString("]\n")
+		}
+	}
+	return b.String()
+}
+
+// chain is n services, each referring to the one before it with ref.
+func chain(n int, ref string) string {
+	var b strings.Builder
+	b.WriteString("services:\n  s0: {image: x}\n")
+	for i := 1; i < n; i++ {
+		fmt.Fprintf(&b, "  s%d: {image: x, %s}\n", i, fmt.Sprintf(ref, i-1))
+	}
+	return b.String()
 }
 
 func deepBlock(n int) string {

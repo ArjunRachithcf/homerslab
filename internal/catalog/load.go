@@ -25,10 +25,10 @@ var (
 // Load reads a catalog folder: catalog.yaml, then every app under apps/, in id order.
 func Load(fsys fs.FS) (*Catalog, error) {
 	var c Catalog
-	if err := decode(fsys, "catalog.yaml", &c); err != nil {
+	catalogFile, err := decode(fsys, "catalog.yaml", &c)
+	if err != nil {
 		return nil, err
 	}
-	catalogFile, _ := fs.ReadFile(fsys, "catalog.yaml")
 	if c.ID == "" || c.Name == "" || c.Publisher == "" {
 		return nil, errors.New("catalog.yaml: id, name and publisher are required")
 	}
@@ -47,12 +47,10 @@ func Load(fsys fs.FS) (*Catalog, error) {
 		if !d.IsDir() {
 			continue
 		}
-		a, err := loadApp(fsys, d.Name(), categories)
+		a, err := loadApp(fsys, d.Name(), categories, catalogDigest(c.ID, catalogFile))
 		if err != nil {
 			return nil, fmt.Errorf("app %s: %w", d.Name(), err)
 		}
-		manifest, _ := fs.ReadFile(fsys, path.Join("apps", d.Name(), "app.yaml"))
-		a.Digest = digest([]byte(c.ID), catalogFile, manifest, a.Compose)
 		c.Apps = append(c.Apps, a)
 	}
 	slices.SortFunc(c.Apps, func(a, b App) int { return strings.Compare(a.ID, b.ID) })
@@ -78,27 +76,33 @@ func digest(parts ...[]byte) string {
 	return "sha256:" + hex.EncodeToString(h.Sum(nil))
 }
 
-// decode reads one YAML file strictly: a field the schema doesn't know is an error.
-func decode(fsys fs.FS, name string, v any) error {
+// catalogDigest is what every app's digest starts from: its catalog's id and catalog.yaml.
+func catalogDigest(id string, file []byte) func(manifest, compose []byte) string {
+	return func(manifest, compose []byte) string { return digest([]byte(id), file, manifest, compose) }
+}
+
+// decode reads one YAML file strictly, a field the schema doesn't know being an error, and returns the bytes it read.
+func decode(fsys fs.FS, name string, v any) ([]byte, error) {
 	b, err := fs.ReadFile(fsys, name)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	dec := yaml.NewDecoder(bytes.NewReader(b))
 	dec.KnownFields(true)
 	if err := dec.Decode(v); err != nil && !errors.Is(err, io.EOF) {
-		return fmt.Errorf("%s: %w", name, err)
+		return nil, fmt.Errorf("%s: %w", name, err)
 	}
 	var more yaml.Node
 	if err := dec.Decode(&more); !errors.Is(err, io.EOF) {
-		return fmt.Errorf("%s: one document only", name)
+		return nil, fmt.Errorf("%s: one document only", name)
 	}
-	return nil
+	return b, nil
 }
 
-func loadApp(fsys fs.FS, dir string, categories map[string]bool) (App, error) {
+func loadApp(fsys fs.FS, dir string, categories map[string]bool, digestOf func(manifest, compose []byte) string) (App, error) {
 	var a App
-	if err := decode(fsys, path.Join("apps", dir, "app.yaml"), &a); err != nil {
+	manifest, err := decode(fsys, path.Join("apps", dir, "app.yaml"), &a)
+	if err != nil {
 		return a, err
 	}
 	p := problems{}
@@ -170,6 +174,7 @@ func loadApp(fsys fs.FS, dir string, categories map[string]bool) (App, error) {
 	default:
 		a.Compose = compose
 	}
+	a.Digest = digestOf(manifest, a.Compose)
 	return a, p.err()
 }
 

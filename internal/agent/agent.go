@@ -3,6 +3,7 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -12,7 +13,10 @@ import (
 	"net"
 	"net/http"
 	"os"
-	"sync"
+	"os/exec"
+	"path/filepath"
+	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -69,7 +73,7 @@ func Handler(sysroot Sysroot, log *slog.Logger) http.Handler {
 			log.Warn("a compose read ran out of time", "project", req.Project)
 			writeJSON(w, http.StatusGatewayTimeout, map[string]string{"error": "read-timeout"})
 		case errors.Is(err, errNoReader):
-			log.Error("making the compose reader", "err", err)
+			log.Error("starting a compose read", "err", err)
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "no-reader"})
 		case errors.Is(err, compose.ErrNotOurs):
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "not-ours"})
@@ -144,47 +148,33 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	_ = json.NewEncoder(w).Encode(v)
 }
 
-// readDeadline is how long a compose read may take before the agent answers that it couldn't.
-var readDeadline = 10 * time.Second
+// ReadDeadline is how long a compose read may take before the agent stops it. The manager waits longer, so that it
+// hears the agent's read-timeout.
+const ReadDeadline = 10 * time.Second
 
-type projectReader interface {
-	Read(ctx context.Context, name string, file []byte) (engine.Project, error)
+var readDeadline = ReadDeadline
+
+// readCommand is how the agent starts a compose read: itself, in its read-project mode.
+var readCommand = func() ([]string, error) {
+	exe, err := os.Executable()
+	if err != nil {
+		return nil, err
+	}
+	return []string{exe, "agent", "read-project"}, nil
 }
-
-// newProjectReader makes the compose reader. It points at no engine: reading needs none, and the agent never lets a
-// read reach one.
-var newProjectReader = func() (projectReader, error) { return compose.NewReader(compose.NoEngine) }
 
 var (
 	errBusy        = errors.New("another compose read is running")
 	errReadTimeout = errors.New("the compose read ran out of time")
-	errNoReader    = errors.New("no compose reader")
+	errNoReader    = errors.New("the compose reader didn't start")
 )
 
-// reads runs compose reads one at a time, each with a deadline. A read past its deadline is answered, but keeps its
-// slot until the SDK returns, so stuck reads never pile up beside each other. The plain-file rules
-// (engine/compose) bound how long a read can take; the agent's unit bounds its memory and CPU.
-type reads struct {
-	slot chan struct{}
-	mu   sync.Mutex
-	r    projectReader
-}
+// reads runs compose reads one at a time, each in a child process (ReadProjectMain) that the agent kills at the
+// deadline: the deadline really stops the work, and the slot is free again at once. The plain-file rules
+// (engine/compose) bound how long a read can take; the child's own limits and the agent's unit bound the rest.
+type reads struct{ slot chan struct{} }
 
 func newReads() *reads { return &reads{slot: make(chan struct{}, 1)} }
-
-// reader is made once it works: a failure to make it is tried again on the next read.
-func (rs *reads) reader() (projectReader, error) {
-	rs.mu.Lock()
-	defer rs.mu.Unlock()
-	if rs.r == nil {
-		r, err := newProjectReader()
-		if err != nil {
-			return nil, fmt.Errorf("%w: %w", errNoReader, err)
-		}
-		rs.r = r
-	}
-	return rs.r, nil
-}
 
 func (rs *reads) read(ctx context.Context, name string, file []byte) (engine.Project, error) {
 	ctx, cancel := context.WithTimeout(ctx, readDeadline)
@@ -194,25 +184,57 @@ func (rs *reads) read(ctx context.Context, name string, file []byte) (engine.Pro
 	case <-ctx.Done():
 		return engine.Project{}, errBusy
 	}
-	rd, err := rs.reader()
+	defer func() { <-rs.slot }()
+	argv, err := readCommand()
 	if err != nil {
-		<-rs.slot
-		return engine.Project{}, err
+		return engine.Project{}, fmt.Errorf("%w: %w", errNoReader, err)
 	}
-	type result struct {
-		p   engine.Project
-		err error
+	// The child's own folder: empty, and the only one it may write to.
+	dir, err := os.MkdirTemp("", "homerslab-read-")
+	if err != nil {
+		return engine.Project{}, fmt.Errorf("%w: %w", errNoReader, err)
 	}
-	done := make(chan result, 1)
-	go func() {
-		defer func() { <-rs.slot }()
-		p, err := rd.Read(ctx, name, file)
-		done <- result{p, err}
-	}()
-	select {
-	case res := <-done:
-		return res.p, res.err
-	case <-ctx.Done():
+	defer os.RemoveAll(dir)
+	if os.Geteuid() == 0 {
+		if err := os.Chown(dir, nobody, nobody); err != nil {
+			return engine.Project{}, fmt.Errorf("%w: %w", errNoReader, err)
+		}
+	}
+	seconds := int(readDeadline/time.Second) + 1
+	cmd := exec.CommandContext(ctx, argv[0], append(argv[1:], "--cpu-seconds", strconv.Itoa(seconds), name)...)
+	cmd.Dir = dir
+	cmd.Env = []string{"HOME=" + dir, "TMPDIR=" + dir, "DOCKER_CONFIG=" + filepath.Join(dir, ".docker"), "PATH=/usr/bin:/bin"}
+	cmd.Stdin = bytes.NewReader(file)
+	var out, errOut capped
+	cmd.Stdout, cmd.Stderr = &out, &errOut
+	cmd.SysProcAttr = &syscall.SysProcAttr{Pdeathsig: syscall.SIGKILL, Setpgid: true}
+	cmd.WaitDelay = time.Second
+	runErr := cmd.Run()
+	if ctx.Err() != nil {
 		return engine.Project{}, errReadTimeout
 	}
+	var res readResult
+	if err := json.Unmarshal(out.b.Bytes(), &res); err != nil {
+		return engine.Project{}, fmt.Errorf("%w: %v (%v) %s", errNoReader, err, runErr, strings.TrimSpace(errOut.b.String()))
+	}
+	switch res.Error {
+	case "":
+		return *res.Project, nil
+	case "not-ours":
+		return engine.Project{}, compose.ErrNotOurs
+	case "not-plain":
+		return engine.Project{}, fmt.Errorf("%w (%s)", compose.ErrNotPlain, res.Detail)
+	default:
+		return engine.Project{}, errors.New(res.Detail)
+	}
+}
+
+// capped is a child's output, of which it keeps the first MiB.
+type capped struct{ b bytes.Buffer }
+
+func (c *capped) Write(p []byte) (int, error) {
+	if room := 1<<20 - c.b.Len(); room > 0 {
+		c.b.Write(p[:min(len(p), room)])
+	}
+	return len(p), nil
 }
