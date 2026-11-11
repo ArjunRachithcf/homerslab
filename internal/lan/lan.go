@@ -129,6 +129,15 @@ func (l LAN) Address() netip.Addr {
 	return netip.Addr{}
 }
 
+// AddressFor is Address for a listener bound to an unspecified address: 0.0.0.0 answers IPv4 only, so its links
+// carry the LAN's IPv4 address or none; :: answers both.
+func (l LAN) AddressFor(listener netip.Addr) netip.Addr {
+	if a := l.Address(); listener.Is6() || a.Is4() {
+		return a
+	}
+	return netip.Addr{}
+}
+
 // Names are the names a browser on this machine or its LAN may use for it: loopback, its LAN addresses, and its
 // hostname, short and with .local (mDNS). Lower case.
 func Names(hostname string, l LAN) []string {

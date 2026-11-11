@@ -221,3 +221,27 @@ func sameSet[T comparable](a, b []T) bool {
 	}
 	return true
 }
+
+// A listener bound to 0.0.0.0 answers IPv4 only: the link carries the LAN's IPv4 address or none. One bound to ::
+// answers both.
+func TestTheLinksAddressFollowsTheListenersFamily(t *testing.T) {
+	testenv.Isolate(t)
+	v6only := lan.LAN{Addresses: []netip.Addr{netip.MustParseAddr("fd00:1::20")}}
+	both := lan.LAN{Addresses: []netip.Addr{netip.MustParseAddr("fd00:1::20"), netip.MustParseAddr("192.168.1.20")}}
+	for _, c := range []struct {
+		l        lan.LAN
+		listener string
+		want     string
+	}{
+		{v6only, "0.0.0.0", ""},
+		{v6only, "::", "fd00:1::20"},
+		{both, "0.0.0.0", "192.168.1.20"},
+		{both, "::", "192.168.1.20"},
+		{lan.LAN{}, "::", ""},
+	} {
+		got := c.l.AddressFor(netip.MustParseAddr(c.listener))
+		if want := c.want; (want == "" && got.IsValid()) || (want != "" && got != netip.MustParseAddr(want)) {
+			t.Errorf("AddressFor(%s) on %v = %v, want %q", c.listener, c.l.Addresses, got, want)
+		}
+	}
+}
