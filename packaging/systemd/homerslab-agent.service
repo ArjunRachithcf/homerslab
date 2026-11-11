@@ -2,28 +2,47 @@
 [Unit]
 Description=HomersLab agent
 Documentation=https://github.com/ArjunRachithcf/homerslab
+# The table is loaded at boot by homerslab-firewall-restore, before the network and the engines; the agent takes it
+# over after that, and orders itself against nothing of the engines' or the network's: it never waits on them, and
+# they never wait on it.
+Wants=homerslab-firewall-restore.service
+After=homerslab-firewall-restore.service
 Before=homerslab-manager.service
 
 [Service]
-Type=exec
+# Ready once the agent has applied its table (from its saved state: it asks no engine first) and its socket listens.
+Type=notify
+NotifyAccess=main
+TimeoutStartSec=30s
+# systemd-creds' host key, made once, outside the sandbox (which keeps /var/lib/systemd read-only).
+ExecStartPre=+/usr/bin/systemd-creds setup
 ExecStart=/usr/bin/homerslab agent
 RuntimeDirectory=homerslab-agent
 RuntimeDirectoryMode=0755
+# The agent's state (agent.json: the firewall table's settings) and the manager's sealed credentials.
+StateDirectory=homerslab-agent
+StateDirectoryMode=0700
 UMask=0077
 Restart=on-failure
 RestartSec=2s
 
-# So far the agent only reads the machine's facts (/etc, /proc, /sys, pci.ids) and answers on its socket, which it
-# hands to the manager's group (CAP_CHOWN). Later tickets loosen this as its contract grows: the firewall (netlink,
-# CAP_NET_ADMIN), the engine, app units, disks. Checked as a transient user unit with these settings (Fedora 44):
-# the facts, TPM and GPUs included, read in full. To check again as root at the first package install (#48).
+# The agent reads the machine's facts (/etc, /proc, /sys, pci.ids) and answers on its socket, which it hands to the
+# manager's group (CAP_CHOWN). Since #15 it also:
+#   - owns the firewall table, inet homerslab, in the host's own network (nft over netlink, CAP_NET_ADMIN);
+#   - joins the mesh: a drop-in for NetBird's service (NAT mapper off), systemctl, netbird up, and a check that the
+#     machine's resolver still answers (AF_INET, AF_INET6);
+#   - seals the manager's credentials with systemd-creds, in its state directory.
+# Later tickets loosen this as its contract grows: the engine, app units, disks. To check as root at the first package
+# install (#48).
 NoNewPrivileges=yes
-CapabilityBoundingSet=CAP_CHOWN CAP_DAC_READ_SEARCH
+CapabilityBoundingSet=CAP_CHOWN CAP_DAC_READ_SEARCH CAP_NET_ADMIN
 ProtectSystem=strict
+# NetBird's drop-in only (the folder comes from tmpfiles.d/homerslab.conf).
+ReadWritePaths=/etc/systemd/system/netbird.service.d
 ProtectHome=read-only
 PrivateTmp=yes
-PrivateNetwork=yes
-RestrictAddressFamilies=AF_UNIX
+PrivateNetwork=no
+RestrictAddressFamilies=AF_UNIX AF_NETLINK AF_INET AF_INET6
 ProtectKernelTunables=yes
 ProtectKernelModules=yes
 ProtectKernelLogs=yes

@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/ArjunRachithcf/homerslab/internal/manager/store"
@@ -39,13 +40,67 @@ var Steps = []Step{
 	{"join", Mesh}, {"passkey", Mesh}, {"done", Mesh},
 }
 
-// Handler checks a step's answer and returns what to keep of it. Answers kept here are never secret.
-type Handler func(ctx context.Context, answer json.RawMessage) (map[string]string, error)
+// Handler checks a step's answer and returns what to keep of it; earlier are the answers so far. Answers kept here are
+// never secret. A step that needs a secret returns *NeedsSecret.
+type Handler func(ctx context.Context, answer json.RawMessage, earlier map[string]string) (map[string]string, error)
+
+// SecretHandler takes a secret a waiting step asked for, given in this machine's terminal over the control socket,
+// and finishes the step: it returns what to keep, none of it secret.
+type SecretHandler func(ctx context.Context, value string, earlier map[string]string) (map[string]string, error)
 
 // Invalid is an answer that didn't pass its checks, naming the fields to fix.
 type Invalid struct{ Fields []string }
 
 func (e *Invalid) Error() string { return fmt.Sprintf("invalid answer: %v", e.Fields) }
+
+// NeedsSecret is a handler's answer when its step can't be finished without a secret: the step keeps Keep and waits
+// for the secret named Secret, which arrives through `homerslab setup secret <Secret>` (#64).
+type NeedsSecret struct {
+	Secret string
+	Keep   map[string]string
+}
+
+func (e *NeedsSecret) Error() string { return "waiting for the secret " + e.Secret }
+
+// NeedsConfirm is a handler's answer when its step found something only the admin may say yes to (Confirm names
+// it); the step keeps Keep and waits for the answer again with the yes.
+type NeedsConfirm struct {
+	Confirm string
+	Keep    map[string]string
+}
+
+func (e *NeedsConfirm) Error() string { return "waiting for the admin's yes to " + e.Confirm }
+
+// SecretOverHTTP refuses an answer over the LAN page that carries a secret: no secret travels over plain HTTP (#64).
+// Command is what to run in the machine's terminal instead.
+type SecretOverHTTP struct{ Command string }
+
+func (e *SecretOverHTTP) Error() string { return "secret-over-http" }
+
+// Secrets are the names of the secrets setup asks for, by the step that needs them. Each is given with
+// `sudo homerslab setup secret <name>`.
+var Secrets = map[string]string{"network": "mesh", "domain": "dns", "mail": "mail"}
+
+// Command is the terminal command that gives a secret.
+func Command(secret string) string { return "sudo homerslab setup secret " + secret }
+
+// secretParts are what the name of a field holding a secret contains, whatever its case. An answer from the LAN page
+// with such a field is refused, whatever its value.
+var secretParts = []string{"token", "secret", "password", "passwd", "key", "credential", "pat"}
+
+// secretName says whether a field's name says it holds a secret.
+func secretName(k string) bool {
+	k = strings.ToLower(k)
+	if k == "pat" {
+		return true
+	}
+	for _, p := range secretParts {
+		if p != "pat" && strings.Contains(k, p) {
+			return true
+		}
+	}
+	return false
+}
 
 // The ways a request can be refused.
 var (
@@ -56,6 +111,7 @@ var (
 	ErrLinkRefused     = errors.New("link-refused")      // unknown, used, ended or expired
 	ErrNoSession       = errors.New("no-session")
 	ErrLANHalfDone     = errors.New("lan-half-done") // setup continues over the mesh
+	ErrNotWaiting      = errors.New("not-waiting")   // a secret no step is waiting for
 )
 
 const (
@@ -72,11 +128,13 @@ type Setup struct {
 	db       *store.Store
 	now      func() time.Time
 	handlers map[string]Handler
+	secrets  map[string]SecretHandler
 }
 
 // New is first-time setup kept in db. Handlers answer the steps that are built; a step without one is not built yet.
-func New(db *store.Store, now func() time.Time, handlers map[string]Handler) *Setup {
-	return &Setup{db: db, now: now, handlers: handlers}
+// Secrets take the secrets that waiting steps ask for, by the secret's name.
+func New(db *store.Store, now func() time.Time, handlers map[string]Handler, secrets map[string]SecretHandler) *Setup {
+	return &Setup{db: db, now: now, handlers: handlers, secrets: secrets}
 }
 
 // StoreSteps are the steps as the database seeds them.
@@ -100,7 +158,11 @@ type State struct {
 type StepState struct {
 	ID    string `json:"id"`
 	Half  Half   `json:"half"`
-	State string `json:"state"` // todo or done
+	State string `json:"state"` // todo, waiting (for Secret, given in the terminal) or done
+	// Secret is the secret a waiting step needs, and Command what gives it; or Confirm, what it asks a yes to.
+	Secret  string `json:"secret,omitempty"`
+	Command string `json:"command,omitempty"`
+	Confirm string `json:"confirm,omitempty"`
 }
 
 // State reads where setup stands.
@@ -115,13 +177,21 @@ func (s *Setup) State(ctx context.Context) (State, error) {
 	}
 	st := State{Steps: make([]StepState, 0, len(rows)), Answers: answers}
 	for _, r := range rows {
-		state := "todo"
+		ss := StepState{ID: r.ID, Half: Half(r.Half), State: "todo"}
 		if r.Done {
-			state = "done"
-		} else if st.Current == "" {
-			st.Current, st.Half = r.ID, Half(r.Half)
+			ss.State = "done"
+		} else {
+			switch r.WaitKind {
+			case "secret":
+				ss.State, ss.Secret, ss.Command = "waiting", r.WaitName, Command(r.WaitName)
+			case "confirm":
+				ss.State, ss.Confirm = "waiting", r.WaitName
+			}
+			if st.Current == "" {
+				st.Current, st.Half = r.ID, Half(r.Half)
+			}
 		}
-		st.Steps = append(st.Steps, StepState{ID: r.ID, Half: Half(r.Half), State: state})
+		st.Steps = append(st.Steps, ss)
 	}
 	if st.Current == "" && len(rows) > 0 { // all done
 		last := rows[len(rows)-1]
@@ -160,18 +230,85 @@ func (s *Setup) Answer(ctx context.Context, id string, over Half, answer json.Ra
 			return State{}, ErrEarlierStepOpen
 		}
 	}
+	if over == LAN && carriesSecret(answer) {
+		secret := Secrets[id]
+		if secret == "" {
+			secret = "<name>"
+		}
+		return State{}, &SecretOverHTTP{Command: Command(secret)}
+	}
 	h := s.handlers[id]
 	if h == nil {
 		return State{}, ErrNotBuilt
 	}
-	keep, err := h(ctx, answer)
+	keep, err := h(ctx, answer, st.Answers)
+	return s.settle(ctx, id, keep, err)
+}
+
+// settle keeps what a handler returned: the step done, waiting, or as it was with the handler's error.
+func (s *Setup) settle(ctx context.Context, id string, keep map[string]string, err error) (State, error) {
+	var secret *NeedsSecret
+	var confirm *NeedsConfirm
+	switch {
+	case errors.As(err, &secret):
+		err = s.db.Wait(ctx, id, "secret", secret.Secret, secret.Keep)
+	case errors.As(err, &confirm):
+		err = s.db.Wait(ctx, id, "confirm", confirm.Confirm, confirm.Keep)
+	case err == nil:
+		err = s.db.CompleteStep(ctx, id, keep, s.now())
+	}
 	if err != nil {
 		return State{}, err
 	}
-	if err := s.db.CompleteStep(ctx, id, keep, s.now()); err != nil {
+	return s.State(ctx)
+}
+
+// carriesSecret says whether an answer has a field named like a secret, at any depth.
+func carriesSecret(raw json.RawMessage) bool {
+	var v any
+	if json.Unmarshal(raw, &v) != nil {
+		return false
+	}
+	var walk func(any) bool
+	walk = func(v any) bool {
+		switch x := v.(type) {
+		case map[string]any:
+			for k, inner := range x {
+				if secretName(k) || walk(inner) {
+					return true
+				}
+			}
+		case []any:
+			for _, inner := range x {
+				if walk(inner) {
+					return true
+				}
+			}
+		}
+		return false
+	}
+	return walk(v)
+}
+
+// Secret takes a secret, by name, for the step waiting for it, and finishes that step. It comes from this machine's
+// terminal over the control socket, never from the LAN page.
+func (s *Setup) Secret(ctx context.Context, name, value string) (State, error) {
+	st, err := s.State(ctx)
+	if err != nil {
 		return State{}, err
 	}
-	return s.State(ctx)
+	var step string
+	for _, ss := range st.Steps {
+		if ss.State == "waiting" && ss.Secret == name {
+			step = ss.ID
+		}
+	}
+	h := s.secrets[name]
+	if step == "" || h == nil {
+		return State{}, ErrNotWaiting
+	}
+	keep, err := h(ctx, value, st.Answers)
+	return s.settle(ctx, step, keep, err)
 }
 
 func index(id string) int {
