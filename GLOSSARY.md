@@ -39,6 +39,10 @@ _Avoid_: parental mode, child profile
 How a new person joins: an account, a role, and guidance for getting their devices onto the mesh.
 _Avoid_: registration, onboarding link
 
+**Guest**:
+A person invited until an end date, who sees only the apps named for them and leaves the household on that date.
+_Avoid_: visitor, temporary account, guest role
+
 ### Apps and catalogs
 
 **App**:

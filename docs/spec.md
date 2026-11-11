@@ -320,6 +320,34 @@ such as a NAS or a GPU box. It is private by default and never needs a router po
 114. As a person, I want Home to tell me plainly when an app isn't working and that the admin knows, so that I don't
      have to ask.
 
+### People leaving and visiting
+
+Stories 115–119 are recommended in #86; the maintainer may overrule.
+
+115. As a household admin, I want removing a person to end their sessions in every app that can, and the plan to name
+     each app that can't, so that someone who has left can't keep opening a public app.
+116. As a household admin, I want removing a person to list what they own in each app, keep it under their name, and
+     offer them a download first, so that nothing of theirs is lost by accident.
+117. As a household admin, I want to invite a guest until an end date, to named apps only, so that a visitor leaves on
+     their own.
+118. As a person, I want to add a new device of mine to the mesh from Home on another of my devices, with my passkey,
+     so that a broken phone doesn't wait for the admin.
+119. As a household admin, I want a role change to reach every app's kid view by the person's next sign-in, so that a
+     kid growing up needs no per-app settings.
+
+### Getting back in, and losing a node
+
+Stories 120–121 are recommended in #87; the maintainer may overrule.
+
+120. As the only household admin, I want two passkeys from the start and a way back in from the machine's console, so
+     that losing my passkey doesn't lock the household out.
+121. As a household admin, I want to restore the sign-in from its backups at the machine's console, so that a corrupt
+     sign-in doesn't need the sign-in to fix it.
+122. As a household admin, I want to replace the DNS token at the machine's console, so that an expired certificate
+     doesn't lock me out of the place that fixes it.
+123. As a household admin, I want one plan that cuts off a lost or stolen node and replaces everything it held, so that
+     a stolen machine opens nothing in the household.
+
 ## Implementation Decisions
 
 ### Modules
@@ -438,7 +466,7 @@ such as a NAS or a GPU box. It is private by default and never needs a router po
 - per-app OIDC clients, created, changed and deleted;
 - a forward-auth guard per app and audience;
 - LDAP access for apps that need it (with Kanidm, a person creates an app's LDAP password themselves);
-- people: invite, role, passkey reset, removal;
+- people: invite (with an optional end date, for guests), role, passkey reset, removal;
 - groups for roles and audiences;
 - step-up, as a fresh passkey assertion bound to a plan;
 - passkeys with the RP ID `auth.<main domain>`, never the bare domain, and an exact origin check (#83);
@@ -454,8 +482,9 @@ such as a NAS or a GPU box. It is private by default and never needs a router po
 - a report of what it can do.
 
 **Meshes** must provide:
-- a key for joining a node;
-- device invites and revocation, per person and role;
+- a key for joining a node, and removing one: its peers deleted and its keys revoked (#91);
+- device invites and revocation, per person and role, including a one-off key a person makes for their own device
+  (#86);
 - per-app names that resolve to the right node: wildcard records, split DNS, or a per-app node;
 - policies per role;
 - router port mapping switched off in its clients;
@@ -503,7 +532,9 @@ One folder per app: a manifest, a plain compose file (none for a host app), icon
 - **extras**;
 - **the host-app recipe**: the vendor's repository and package, per distro;
 - **update notes**;
-- **tier**.
+- **tier**;
+- **people**, for a Verified app: how to end one person's sessions and disable their account in it, and how they
+  export what they own, where the app can (recommended in #86; the maintainer may overrule).
 
 ### The floor
 
@@ -673,6 +704,56 @@ When the usual way in is what broke, the household admin gets back in from the p
   do anything, so they grant nothing new.
   - `homerslab dns token` replaces the DNS token, read from stdin as in first-time setup, for when an expired
     certificate keeps everyone out of Admin (#80). From Admin, the same change is a risky change.
+  - `homerslab admin recover <person>` prints a one-time link that enrols a new passkey for that admin, at the
+    sign-in's own address over the mesh, for 30 minutes and once, and raises a security event (recommended in #87;
+    the maintainer may overrule).
+  - `homerslab idp restore --list` and `--to <time>` restore the identity provider from the hourly backups, with no
+    browser. The command says whose passkeys, added since that point, are lost (recommended in #87; the maintainer may
+    overrule).
+- **Two ways in for the first admin**: first-time setup finishes only when the first admin has two passkeys (say, the
+  phone plus a laptop or a security key), or a second admin has been invited (recommended in #87; the maintainer may
+  overrule).
+- **The mesh's control plane down** (recommended in #87; the maintainer may overrule):
+  - there is no LAN fallback for apps ([ADR 0005](adr/0005-three-meshes-one-contract-tls-ends-at-home.md));
+  - alerts name the cause ("NetBird's control plane hasn't answered for 20 minutes"), and a node that loses the
+    primary says when the mesh may be the cause, rather than reporting the primary down;
+  - for a self-hosted control plane, the recovery kit holds what's needed to reach the server again: its address, the
+    owner's sign-in, and how to restore it.
+- **Mail down as well**: nothing more; each admin's choice of channels already covers it (ADR 0018).
+
+### People leaving and visiting
+
+Recommended in #86; the maintainer may overrule.
+- **Removing a person ends their sessions in every app.** The app definition says how, for each Verified app, and the
+  removal runs it in every app. For an app that can't, the plan says so in plain words: "Their Immich session on
+  their phone keeps working until they sign out; Immich can't end it".
+- **What they leave behind.** The removal plan lists, per app, what the person owns.
+  - It is kept by default, under their name, marked "left the household".
+  - Before the account goes, they're offered a download from each app that can export.
+  - Deleting it is a separate plan, with step-up.
+- **Guests.** An invite may carry an end date. On that date the guest is removed as above. A guest's audience is named
+  apps only, never a role's.
+- **A new device, from Home.** A person adds one of their own devices from Home on another device of theirs, with
+  their passkey, which the manager checks itself.
+  - The mesh gives a one-off key for their own role's groups, and the admins are told.
+  - At most five devices per person; admins can turn this off.
+- **Role changes** reach every app's kid view by the person's next sign-in at the latest.
+
+### A lost or stolen node
+
+A node that is lost, stolen or dead can't be removed in the usual way, because nothing can be moved off it first
+(#91). Admin offers "This node is lost or stolen" for an offline node: a plan with step-up that needs nothing from
+the node. It:
+- revokes the node's agent certificate, which the manager refuses from then on;
+- deletes its peers on every mesh in use, and revokes its keys;
+- revokes every household domain's wildcard certificate at the CA, and issues it again with a new key, which reaches
+  the remaining edges before the plan finishes;
+- rotates every credential the node held that lives elsewhere: its storage locations' share credentials, its apps'
+  OIDC client secrets, its backup repository's key and target credentials;
+- restores each of its apps onto another node from its latest backup, or marks it "lost with the node", as chosen in
+  the plan;
+- says what a thief could read: whether its disks were encrypted and TPM-sealed, and which apps' data it held;
+- raises a security event, and the incident log records what was rotated.
 
 ### First-time setup in two halves
 
@@ -801,6 +882,9 @@ When the usual way in is what broke, the household admin gets back in from the p
   - nothing touches a live household.
 - **No secret in any result**: checked against every secret HomersLab generated or holds, in plain, base64 and
   URL-encoded forms, across every tool's output, logs included (#85).
+- **People and nodes**: role changes reach kid views, tested in both directions (#86). A lost node: a two-node CI
+  job kills one node, applies the plan, then tries every old credential, and the test CA refuses the old certificate's
+  serial (#91).
 - **The manual release checklist**, on the maintainer's household: GPUs, cloud control planes, Funnel, and a real phone
   joining the mesh.
 
@@ -1089,7 +1173,7 @@ Every answer of the grilling (2026-11-09) and where it lives:
 | 139 | Free names read from the provider's API; an existing `*` record means a CNAME per public app | ADR 0016 (amended); Domains (#79) |
 | 140 | Renewal at a third of the lifetime left, a warning at the first failure; CAA read before issuing | Names and certificates (#80) |
 | 141 | The certificate and ACME account in the archive; restores and rehearsals issue nothing they needn't | Names and certificates; Testing Decisions (#80) |
-| 142 | The DNS token replaced from the console | Getting back in (#80) |
+| 142 | The DNS token replaced from the console | Getting back in; story 122 (#80) |
 | 143 | The public listener holds only public routes; 421 when `Host` and SNI differ, or for a name not on the node | Modules (Edge); Testing Decisions, claims to test first (#81) |
 | 144 | Admin and Home refuse cross-site changes; `__Host-` session cookies | Modules (Surfaces); Testing Decisions (#83) |
 | 145 | The edge strips the guard's cookie and apps' domain cookies; a guard provider per app | ADR 0016 (amended); Modules (Edge); Domains; The app definition (#83) |
@@ -1103,3 +1187,12 @@ Every answer of the grilling (2026-11-09) and where it lives:
 | 153 | Six more risky changes; sign-in settings defined (recommended) | Glossary; story 67 (#85) |
 | 154 | No token applies invites, audience changes or removals (recommended) | Modules (CLI and MCP server) (#85) |
 | 155 | A plan names who made it; secrets looked for in every encoding | The install plan; Testing Decisions (#85) |
+| 156 | Removing a person ends their sessions in every app, or the plan names the apps that can't (recommended) | People leaving and visiting; The app definition; story 115 (#86) |
+| 157 | A removed person's data kept under their name, offered for download first (recommended) | People leaving and visiting; story 116 (#86) |
+| 158 | Guests: an invite with an end date, named apps only (recommended) | People leaving and visiting; Adapter contracts; story 117; glossary (#86) |
+| 159 | A person adds their own device from Home with their passkey (recommended) | People leaving and visiting; Adapter contracts; story 118 (#86) |
+| 160 | Role changes reach kid views by the next sign-in (recommended) | People leaving and visiting; Testing Decisions; story 119 (#86) |
+| 161 | Two passkeys or two admins before first-time setup finishes (recommended) | Getting back in; story 120 (#87) |
+| 162 | An admin's recovery link and the sign-in's restore, from the console (recommended) | Getting back in; stories 120–121 (#87) |
+| 163 | The mesh's control plane down: no LAN fallback, alerts that name the cause (recommended) | Getting back in (#87) |
+| 164 | A lost or stolen node: cut off, its certificate and credentials replaced, its apps restored | A lost or stolen node; Adapter contracts; Testing Decisions; story 123 (#91) |
