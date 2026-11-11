@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"net"
 	"net/http"
 	"net/netip"
@@ -56,6 +57,9 @@ type fakeNetBird struct {
 	cloudPort int
 	port      int
 	names     []string
+	// deviceKeys counts the device keys made; revokedKeys are the keys revoked, by ID.
+	deviceKeys  int
+	revokedKeys []string
 }
 
 const setupToken = "nbp_SETUP0000000000000000000000000000000"
@@ -175,7 +179,18 @@ func (m *fakeMesh) NewJoinKey(context.Context, string) (mesh.JoinKey, error) {
 	return mesh.JoinKey{Value: "JOINKEY-0000-4000-8000-000000000001", ID: "k1", ExpiresAt: m.f.now().Add(mesh.JoinKeyLife)}, nil
 }
 func (m *fakeMesh) NewDeviceKey(_ context.Context, r mesh.Role, device string) (mesh.JoinKey, error) {
-	return mesh.JoinKey{Value: mesh.Secret("device-key-PLACEHOLDER-" + string(r) + "-" + device), ID: "dk-1", ExpiresAt: time.Now().Add(mesh.JoinKeyLife)}, nil
+	m.f.mu.Lock()
+	defer m.f.mu.Unlock()
+	m.f.deviceKeys++
+	id := fmt.Sprintf("dk-%d", m.f.deviceKeys)
+	return mesh.JoinKey{Value: mesh.Secret("device-key-PLACEHOLDER-" + string(r) + "-" + device + "-" + id), ID: id, ExpiresAt: time.Now().Add(mesh.JoinKeyLife)}, nil
+}
+
+func (m *fakeMesh) RevokeKey(_ context.Context, id string) error {
+	m.f.mu.Lock()
+	defer m.f.mu.Unlock()
+	m.f.revokedKeys = append(m.f.revokedKeys, id)
+	return nil
 }
 
 func (m *fakeMesh) Rotate(context.Context) (mesh.Token, error) {

@@ -57,18 +57,26 @@ type attempt struct {
 	expires time.Time
 }
 
-func (as *attempts) put(id string, a attempt, now time.Time) {
+// maxAttempts is how many sign-ins may be under way at once. Beyond it, a new one is refused rather than ending a live
+// one: a peer flooding /auth/sign-in never evicts an admin's sign-in.
+const maxAttempts = 256
+
+func (as *attempts) put(id string, a attempt, now time.Time) bool {
 	as.mu.Lock()
 	defer as.mu.Unlock()
 	if as.m == nil {
 		as.m = map[string]attempt{}
 	}
 	for k, v := range as.m {
-		if now.After(v.expires) || len(as.m) > 256 {
+		if now.After(v.expires) {
 			delete(as.m, k)
 		}
 	}
+	if len(as.m) >= maxAttempts {
+		return false
+	}
 	as.m[id] = a
+	return true
 }
 
 func (as *attempts) take(id string, now time.Time) (attempt, bool) {
@@ -133,7 +141,10 @@ func (m *Manager) signInStart(w http.ResponseWriter, r *http.Request) {
 	}
 	a := oidc.NewAttempt()
 	id := random()
-	m.attempts.put(id, attempt{Attempt: a, expires: m.cfg.Now().Add(attemptLife)}, m.cfg.Now())
+	if !m.attempts.put(id, attempt{Attempt: a, expires: m.cfg.Now().Add(attemptLife)}, m.cfg.Now()) {
+		fail(w, http.StatusTooManyRequests, "too-many-sign-ins")
+		return
+	}
 	setCookie(w, signInCookie, id, attemptLife)
 	http.Redirect(w, r, c.AuthorizeURL(e, a, false), http.StatusSeeOther)
 }
@@ -235,12 +246,11 @@ type ctxUser struct{}
 // signedIn wants a live Admin session; without one, a page goes to the sign-in and an API call is refused.
 func (m *Manager) signedIn(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		ck, err := r.Cookie(sessionCookie)
-		user := ""
-		if err == nil && ck.Value != "" {
+		user, err := "", store.ErrNotFound
+		if ck, cerr := r.Cookie(sessionCookie); cerr == nil && ck.Value != "" {
 			user, err = m.db.AdminSession(r.Context(), hash(ck.Value), m.cfg.Now())
 		}
-		if errors.Is(err, store.ErrNotFound) || user == "" {
+		if errors.Is(err, store.ErrNotFound) {
 			if strings.HasPrefix(r.URL.Path, "/api/") {
 				fail(w, http.StatusUnauthorized, "signed-out")
 				return
@@ -297,12 +307,12 @@ func (m *Manager) accountSetup(w http.ResponseWriter, r *http.Request) {
 	ans := st.Answers
 	out := map[string]any{"current": st.Current, "half": st.Half, "steps": st.Steps, "admin": AdminURL(ans),
 		"household": ans["household"], "command": "sudo homerslab setup passkey"}
-	if p, err := m.provider(ctx, ans); err == nil {
+	if p, err := m.provider(ctx, ans); err == nil && !done(st, "done") {
 		if keys, err := p.Passkeys(ctx, ans[ansAdminUser]); err == nil {
 			out["passkeys"] = len(keys)
-		}
-		if ok, err := twoWaysIn(ctx, p, ans[ansAdminUser]); err == nil {
-			out["twoWaysIn"] = ok
+			if ok, err := twoWaysIn(ctx, p, ans[ansAdminUser], len(keys)); err == nil {
+				out["twoWaysIn"] = ok
+			}
 		}
 	}
 	writeJSON(w, http.StatusOK, out)

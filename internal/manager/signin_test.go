@@ -49,6 +49,9 @@ type fakeSignIn struct {
 	key               *rsa.PrivateKey
 	codes             map[string]map[string]any
 	now               func() time.Time // the manager's clock
+	// beforeKeep and afterKeep run around the manager's keeping of its new token; unkept counts the ones it couldn't.
+	beforeKeep, afterKeep func()
+	unkept                int
 }
 
 func newFakeSignIn(t *testing.T) *fakeSignIn {
@@ -133,7 +136,7 @@ func (f *fakeSignIn) Ready(context.Context, string, idp.Household) error {
 	return nil
 }
 
-func (f *fakeSignIn) Bootstrap(_ context.Context, upstream string, h idp.Household, b idp.Secret) (idp.Secret, error) {
+func (f *fakeSignIn) Bootstrap(_ context.Context, upstream string, h idp.Household, b idp.Secret, keep func(idp.Secret) error) (idp.Secret, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if upstream != f.issuer.URL || h.SignIn() != "auth.example.test" {
@@ -141,6 +144,17 @@ func (f *fakeSignIn) Bootstrap(_ context.Context, upstream string, h idp.Househo
 	}
 	if len(f.bootstrap) > 0 {
 		return "", idp.ErrTokenRefused // the token is spent
+	}
+	if f.beforeKeep != nil {
+		f.beforeKeep()
+	}
+	err := keep(ownToken)
+	if f.afterKeep != nil {
+		f.afterKeep()
+	}
+	if err != nil {
+		f.unkept++
+		return "", err // as Authentik's adapter: the bootstrap token still works
 	}
 	f.bootstrap = append(f.bootstrap, b.Reveal())
 	r := serveAgent(f.t, f.agentSock, "GET", "/v1/edge")
@@ -489,6 +503,21 @@ func TestTheSecondHalfEndsAtTheAdminsFirstSignInOverTheMesh(t *testing.T) {
 	}
 }
 
+// Asked again, setup join makes a new device key and ends the one shown before (review of #17).
+func TestSetupJoinAgainEndsTheEarlierDeviceKey(t *testing.T) {
+	testenv.Isolate(t)
+	p, _, _ := atJoin(t)
+	nb := p.netbird.(*fakeNetBird)
+	for range 3 {
+		if r := p.control("POST", "/api/v1/setup/join", nil); r.Code != http.StatusOK {
+			t.Fatalf("setup join: %d %s", r.Code, r.Body)
+		}
+	}
+	if strings.Join(nb.revokedKeys, " ") != "dk-1 dk-2" {
+		t.Errorf("revoked %v, want the two earlier keys", nb.revokedKeys)
+	}
+}
+
 // A second admin who has joined with a passkey is the other way in (#87).
 func TestASecondAdminWithAPasskeyIsTheOtherWayIn(t *testing.T) {
 	testenv.Isolate(t)
@@ -535,6 +564,43 @@ func TestSettingUpTheHouseholdAccountResumes(t *testing.T) {
 	}
 	if r := p.control("POST", "/api/v1/setup/join", nil); r.Code != http.StatusOK || len(fs.bootstrap) != 1 {
 		t.Errorf("a third time: %d, bootstraps %d", r.Code, len(fs.bootstrap))
+	}
+}
+
+// HomersLab's new token is sealed before the bootstrap token stops working: a seal that fails leaves the bootstrap
+// token working, and the next try bootstraps with it (review of #17).
+func TestANewTokenThatCouldntBeKeptIsNeverTheOnlyOne(t *testing.T) {
+	testenv.Isolate(t)
+	p, _, fs := atJoin(t)
+	fs.beforeKeep = func() { p.host.Fail("systemd-creds encrypt") }
+	fs.afterKeep = func() { p.host.Mend() }
+	if r := p.control("POST", "/api/v1/setup/join", nil); r.Code != http.StatusBadGateway {
+		t.Fatalf("a token that couldn't be sealed: %d %s", r.Code, r.Body)
+	}
+	if fs.unkept != 1 || len(fs.bootstrap) != 0 {
+		t.Fatalf("unkept %d, bootstraps %d", fs.unkept, len(fs.bootstrap))
+	}
+	fs.beforeKeep, fs.afterKeep = nil, nil
+	if r := p.control("POST", "/api/v1/setup/join", nil); r.Code != http.StatusOK {
+		t.Fatalf("again: %d %s", r.Code, r.Body)
+	}
+	if p.unseal(t, "manager-sign-in-token") != ownToken || len(fs.bootstrap) != 1 {
+		t.Error("the second try didn't keep HomersLab's token")
+	}
+}
+
+// A renewal, or the certificate put on the edge again, keeps the sign-in on the edge (review of #17).
+func TestTheEdgeKeepsTheSignInWhenTheCertificateIsPutOnItAgain(t *testing.T) {
+	testenv.Isolate(t)
+	p, _, _ := atJoin(t)
+	if r := p.control("POST", "/api/v1/setup/join", nil); r.Code != http.StatusOK {
+		t.Fatalf("setup join: %d %s", r.Code, r.Body)
+	}
+	if r := p.control("PUT", "/api/v1/dns/token", map[string]string{"value": dnsToken}); r.Code != http.StatusOK {
+		t.Fatalf("the DNS token again: %d %s", r.Code, r.Body)
+	}
+	if s := p.edge(t); s.SignIn != "auth.example.test" || s.Admin != "admin.example.test" {
+		t.Errorf("after the certificate went on the edge again: %+v", s)
 	}
 }
 

@@ -198,7 +198,9 @@ func (a *Agent) applySignIn(ctx context.Context, next signInState) error {
 		func() error { return a.writeAt(a.signInDropIn(), a.signInCredentials(next.Bootstrapping)) },
 		func() error { return a.run(ctx, "systemctl", "daemon-reload") },
 		func() error { return a.run(ctx, "systemctl", "enable", SignInUnit) },
-		func() error { return a.run(ctx, "systemctl", "restart", SignInUnit) },
+		// Queued, not waited for: compose stops and starts containers for minutes, and the agent's lock is everyone's.
+		// The manager waits for the sign-in's readiness instead.
+		func() error { return a.run(ctx, "systemctl", "--no-block", "restart", SignInUnit) },
 	} {
 		if err := step(); err != nil {
 			return err
@@ -215,16 +217,17 @@ func (a *Agent) deleteBootstrapToken(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusNotFound, "no-sign-in")
 		return
 	}
+	// The token first: it is spent already (Authentik deleted it), so nothing is lost if the restart then fails.
+	if err := os.Remove(a.signInCred(credBootstrap)); err != nil && !errors.Is(err, os.ErrNotExist) {
+		a.log.Error("removing the bootstrap token", "err", err)
+		fail(w, http.StatusInternalServerError, "remove-failed")
+		return
+	}
 	next := *a.state.SignIn
 	next.Bootstrapping = false
 	if err := a.applySignIn(r.Context(), next); err != nil {
 		a.log.Error("restarting the sign-in without its bootstrap token", "err", err)
 		fail(w, http.StatusInternalServerError, "sign-in-failed")
-		return
-	}
-	if err := os.Remove(a.signInCred(credBootstrap)); err != nil && !errors.Is(err, os.ErrNotExist) {
-		a.log.Error("removing the bootstrap token", "err", err)
-		fail(w, http.StatusInternalServerError, "remove-failed")
 		return
 	}
 	a.log.Info("the sign-in's bootstrap token is gone")

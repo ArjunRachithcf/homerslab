@@ -93,7 +93,7 @@ func TestTheIdentityProviderContractOnAuthentik(t *testing.T) {
 	t.Run("bootstrap: HomersLab's own account from Authentik's bootstrap token, which then stops working", func(t *testing.T) {
 		var err error
 		for deadline := time.Now().Add(5 * time.Minute); ; time.Sleep(3 * time.Second) {
-			own, err = authentik.Bootstrap(ctx, upstream, household, w.bootstrap)
+			own, err = authentik.Bootstrap(ctx, upstream, household, w.bootstrap, func(idp.Secret) error { return nil })
 			if !errors.Is(err, idp.ErrNotReady) || time.Now().After(deadline) {
 				break
 			}
@@ -116,7 +116,7 @@ func TestTheIdentityProviderContractOnAuthentik(t *testing.T) {
 		if len(ak.Results) != 1 || ak.Results[0].IsActive {
 			t.Errorf("akadmin: %+v, want there and inactive", ak.Results)
 		}
-		if _, err := authentik.Bootstrap(ctx, upstream, household, w.bootstrap); !errors.Is(err, idp.ErrTokenRefused) {
+		if _, err := authentik.Bootstrap(ctx, upstream, household, w.bootstrap, func(idp.Secret) error { return nil }); !errors.Is(err, idp.ErrTokenRefused) {
 			t.Errorf("bootstrapping again with the spent token: %v, want refused", err)
 		}
 	})

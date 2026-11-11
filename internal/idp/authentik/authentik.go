@@ -121,12 +121,12 @@ type group struct {
 }
 
 // Bootstrap makes HomersLab's own service account and token with Authentik's bootstrap token, and closes Authentik's
-// own way to a first admin. It returns HomersLab's token, which the caller seals; the bootstrap token is deleted, and
-// stops working, before Bootstrap returns. A bootstrap token that is refused means bootstrap is done already (or
+// own way to a first admin. HomersLab's token goes to keep (the caller seals it) before anything else changes; only
+// then are akadmin closed and the bootstrap token deleted, so a token that couldn't be kept is never the only one. A bootstrap token that is refused means bootstrap is done already (or
 // never was given): ErrTokenRefused.
 //
 // It runs before the edge serves the sign-in's name, so nobody can reach Authentik's first-admin flow in between.
-func Bootstrap(ctx context.Context, base string, h idp.Household, bootstrap idp.Secret) (idp.Secret, error) {
+func Bootstrap(ctx context.Context, base string, h idp.Household, bootstrap idp.Secret, keep func(idp.Secret) error) (idp.Secret, error) {
 	b, err := newAPI(base, h, bootstrap)
 	if err != nil {
 		return "", err
@@ -180,6 +180,9 @@ func Bootstrap(ctx context.Context, base string, h idp.Household, bootstrap idp.
 	}
 	if err := o.call(ctx, http.MethodGet, "/core/users/me/", nil, &check); err != nil || check.User.Username != ServiceUser {
 		return "", fmt.Errorf("authentik: HomersLab's new token doesn't work: %v", err)
+	}
+	if err := keep(own); err != nil {
+		return "", fmt.Errorf("keeping HomersLab's new token: %w", err) // the bootstrap token still works: try again
 	}
 	a := &Authentik{api: o, h: h}
 	if err := a.closeFirstAdmin(ctx); err != nil {

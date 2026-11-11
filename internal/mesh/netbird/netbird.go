@@ -663,6 +663,16 @@ func (m *Mesh) NewDeviceKey(ctx context.Context, r mesh.Role, device string) (me
 	return m.newKey(ctx, "homerslab-"+string(r)+"-"+device, mesh.RoleGroup(r))
 }
 
+// RevokeKey deletes a setup key; one that is gone already counts as revoked.
+func (m *Mesh) RevokeKey(ctx context.Context, id string) error {
+	err := m.api.call(ctx, http.MethodDelete, "/api/setup-keys/"+url.PathEscape(id), nil, nil)
+	var ae *APIError
+	if errors.As(err, &ae) && ae.Status == http.StatusNotFound {
+		return nil
+	}
+	return err
+}
+
 func (m *Mesh) newKey(ctx context.Context, name, group string) (mesh.JoinKey, error) {
 	ids, err := m.groups(ctx)
 	if err != nil {

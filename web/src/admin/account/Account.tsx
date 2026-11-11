@@ -28,9 +28,10 @@ export function Account() {
   }, []);
   useEffect(() => {
     load();
+    if (done) return; // setup is finished: nothing more to wait for
     const timer = window.setInterval(load, 3000);
     return () => window.clearInterval(timer);
-  }, [load]);
+  }, [load, done]);
   const title = t(done ? 'account.done.title' : 'account.title');
   useEffect(() => {
     document.title = t('setup.title', { title });

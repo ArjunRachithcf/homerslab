@@ -23,7 +23,9 @@ import (
 // upstream is where the provider's server answers on this machine (the sign-in network's address).
 type SignIn interface {
 	Ready(ctx context.Context, upstream string, h idp.Household) error
-	Bootstrap(ctx context.Context, upstream string, h idp.Household, bootstrap idp.Secret) (idp.Secret, error)
+	// Bootstrap makes HomersLab's own token with the bootstrap token, and hands it to keep before the bootstrap token
+	// stops working: a token that couldn't be kept is never the only one.
+	Bootstrap(ctx context.Context, upstream string, h idp.Household, bootstrap idp.Secret, keep func(idp.Secret) error) (idp.Secret, error)
 	Open(upstream string, h idp.Household, token idp.Secret, landing string) (idp.Provider, error)
 }
 
@@ -32,8 +34,8 @@ type realSignIn struct{}
 func (realSignIn) Ready(ctx context.Context, upstream string, h idp.Household) error {
 	return authentik.Ready(ctx, upstream, h)
 }
-func (realSignIn) Bootstrap(ctx context.Context, upstream string, h idp.Household, b idp.Secret) (idp.Secret, error) {
-	return authentik.Bootstrap(ctx, upstream, h, b)
+func (realSignIn) Bootstrap(ctx context.Context, upstream string, h idp.Household, b idp.Secret, keep func(idp.Secret) error) (idp.Secret, error) {
+	return authentik.Bootstrap(ctx, upstream, h, b, keep)
 }
 func (realSignIn) Open(upstream string, h idp.Household, token idp.Secret, landing string) (idp.Provider, error) {
 	return authentik.Open(upstream, h, token, landing)
@@ -57,7 +59,8 @@ const (
 	ansAdminUser          = "adminUser"    // the first admin's username in the household account
 	ansClientID           = "adminClientId"
 	ansIssuer             = "adminIssuer"
-	ansSignedInAt         = "adminSignedInAt" // the first sign-in to Admin, over the mesh
+	ansSignedInAt         = "adminSignedInAt"  // the first sign-in to Admin, over the mesh
+	ansDeviceKey          = "adminDeviceKeyId" // the mesh key last handed over for the admin\'s device, by its ID
 )
 
 // adminSlug is Admin's OIDC client in the provider.
@@ -94,15 +97,21 @@ func (m *Manager) upstream() string {
 
 var notUsername = regexp.MustCompile(`[^a-z0-9._-]+`)
 
+// reserved are usernames the provider or HomersLab keep for themselves.
+var reserved = map[string]bool{"homerslab": true, "akadmin": true, "admin": true, "authentik": true, "root": true}
+
 // adminUsername is the first admin's username: their mail address's local part, as the provider takes it.
 func adminUsername(mail string) string {
 	local, _, _ := strings.Cut(strings.ToLower(mail), "@")
 	u := strings.Trim(notUsername.ReplaceAllString(local, "-"), "-.")
-	if u == "" {
-		u = "admin"
+	if len(u) > 60 {
+		u = u[:60]
 	}
-	if len(u) > 64 {
-		u = u[:64]
+	switch {
+	case u == "":
+		u = "first-admin"
+	case reserved[u] || strings.HasPrefix(u, "ak-"):
+		u += "-admin" // never one of HomersLab's or the provider's own accounts
 	}
 	return u
 }
@@ -142,7 +151,7 @@ func (m *Manager) ensureSignIn(ctx context.Context) (idp.Provider, error) {
 			err := try()
 			if err == nil || !(errors.Is(err, idp.ErrNotReady) || errors.Is(err, idp.ErrUnreachable)) || !time.Now().Before(deadline) {
 				if err != nil {
-					return fmt.Errorf("%w: %s: %v", errSignIn, what, err)
+					return fmt.Errorf("%w: %s: %w", errSignIn, what, err)
 				}
 				return nil
 			}
@@ -171,33 +180,41 @@ func (m *Manager) ensureSignIn(ctx context.Context) (idp.Provider, error) {
 		if err := wait("waiting for it to start", func() error { return m.cfg.SignIn.Ready(ctx, up, h) }); err != nil {
 			return nil, err
 		}
-		var own idp.Secret
+		// HomersLab's own token is sealed, and read back, before the bootstrap token stops working.
+		keep := func(own idp.Secret) error {
+			if err := m.agent.seal(ctx, credSignInToken, own); err != nil {
+				return err
+			}
+			if back, err := m.agent.unseal(ctx, credSignInToken); err != nil || back != own {
+				return errors.New("HomersLab's sign-in token didn't read back from the agent")
+			}
+			return nil
+		}
 		err = wait("bootstrapping it", func() error {
-			var err error
-			own, err = m.cfg.SignIn.Bootstrap(ctx, up, h, bt)
+			_, err := m.cfg.SignIn.Bootstrap(ctx, up, h, bt, keep)
 			return err
 		})
 		if errors.Is(err, idp.ErrTokenRefused) {
 			// Bootstrapped already, before this manager could keep the answer: its own token was sealed then.
-			if own, err = m.agent.unseal(ctx, credSignInToken); err != nil || own == "" {
+			if own, uerr := m.agent.unseal(ctx, credSignInToken); uerr != nil || own == "" {
 				return nil, fmt.Errorf("%w: the bootstrap token was refused, and HomersLab has no token of its own", errSignIn)
 			}
 		} else if err != nil {
 			return nil, err
-		} else if err := m.agent.seal(ctx, credSignInToken, own); err != nil {
-			return nil, err
-		}
-		if back, err := m.agent.unseal(ctx, credSignInToken); err != nil || back != own {
-			return nil, errors.New("HomersLab's sign-in token didn't read back from the agent")
 		}
 		if err := m.db.SaveAnswers(ctx, map[string]string{ansSignInBootstrapped: m.cfg.Now().UTC().Format(time.RFC3339)}); err != nil {
 			return nil, err
 		}
-		if err := m.agent.forgetBootstrap(ctx); err != nil {
-			m.log.Warn("the agent didn't forget the bootstrap token yet; Authentik deleted it already", "err", err)
-		}
-		_ = m.agent.forget(ctx, credBootstrap)
 		m.log.Info("the household account is HomersLab's: its own first-admin flow applies to nobody")
+	}
+	// The bootstrap token's work is done: the agent and the manager forget it, again at every call until they have.
+	if s, err := m.agent.signInStatus(ctx); err == nil && s.Bootstrapping {
+		if err := m.agent.forgetBootstrap(ctx); err != nil {
+			m.log.Warn("the agent didn't forget the bootstrap token yet (Authentik deleted it already); trying again next time", "err", err)
+		}
+	}
+	if err := m.agent.forget(ctx, credBootstrap); err != nil {
+		m.log.Warn("forgetting the bootstrap token", "err", err)
 	}
 	own, err := m.agent.unseal(ctx, credSignInToken)
 	if err != nil {
@@ -321,6 +338,13 @@ func (m *Manager) handOver(w http.ResponseWriter, r *http.Request, join bool) {
 				var k mesh.JoinKey
 				if k, err = nb.NewDeviceKey(ctx, mesh.Admin, "first"); err == nil {
 					out.DeviceKey, out.DeviceKeyExpires = k.Value, k.ExpiresAt
+					// A new key ends the one shown before, as a new link ends the earlier link.
+					if old := ans[ansDeviceKey]; old != "" && old != k.ID {
+						if rerr := nb.RevokeKey(ctx, old); rerr != nil {
+							m.log.Warn("revoking the admin's earlier device key; it expires by itself", "err", rerr)
+						}
+					}
+					err = m.db.SaveAnswers(ctx, map[string]string{ansDeviceKey: k.ID})
 				}
 			}
 		}
@@ -364,12 +388,8 @@ func (m *Manager) provider(ctx context.Context, ans map[string]string) (idp.Prov
 
 // twoWaysIn says whether the first admin can lose a passkey and still get in: two passkeys of their own, or another
 // admin who has a passkey (#87).
-func twoWaysIn(ctx context.Context, p idp.Provider, first string) (bool, error) {
-	keys, err := p.Passkeys(ctx, first)
-	if err != nil {
-		return false, err
-	}
-	if len(keys) >= 2 {
+func twoWaysIn(ctx context.Context, p idp.Provider, first string, keys int) (bool, error) {
+	if keys >= 2 {
 		return true, nil
 	}
 	admins, err := p.People(ctx, idp.Admin)
@@ -396,7 +416,11 @@ func (m *Manager) finish(ctx context.Context, _ json.RawMessage, earlier map[str
 	if err != nil {
 		return nil, err
 	}
-	ok, err := twoWaysIn(ctx, p, earlier[ansAdminUser])
+	keys, err := p.Passkeys(ctx, earlier[ansAdminUser])
+	if err != nil {
+		return nil, err
+	}
+	ok, err := twoWaysIn(ctx, p, earlier[ansAdminUser], len(keys))
 	if err != nil {
 		return nil, err
 	}

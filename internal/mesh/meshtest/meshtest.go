@@ -127,6 +127,16 @@ func Run(t *testing.T, w World, ms Machines, want mesh.Report) mesh.Mesh {
 		if _, err := m.NewDeviceKey(ctx, mesh.Role("superuser"), "x"); err == nil {
 			t.Error("a key for a role that isn't one")
 		}
+		// Asked again, setup makes a new key and revokes the older one: it joins nothing any more.
+		if err := m.RevokeKey(ctx, k.ID); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := w.Join(t, ms.Second, k); err == nil {
+			t.Error("a machine joined with a revoked device key")
+		}
+		if err := m.RevokeKey(ctx, k.ID); err != nil {
+			t.Errorf("revoking it again: %v", err)
+		}
 	})
 
 	t.Run("the policies hold between machines", func(t *testing.T) {

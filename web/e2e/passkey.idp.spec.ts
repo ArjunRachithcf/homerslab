@@ -37,6 +37,8 @@ test.use({
 
 // The admin's passkey, as the first test made it: the second puts it on an authenticator that doesn't verify the person.
 let passkey: Record<string, unknown> | null = null;
+// Where Admin's client was sent back, with its code: handed to the suite once both tests are done (it then ends).
+let callback = '';
 
 async function authenticator(context: BrowserContext, page: Page, verifies: boolean): Promise<{ cdp: CDPSession; id: string }> {
   const cdp = await context.newCDPSession(page);
@@ -68,9 +70,10 @@ test('the enrolment link makes a passkey for the sign-in’s own name, and Admin
   await page.waitForURL((u) => u.href.startsWith(w.landing), { timeout: 60_000 });
   const { credentials } = await cdp.send('WebAuthn.getCredentials', { authenticatorId: id });
   expect(credentials).toHaveLength(1);
-  expect(credentials[0].rpId).toBe('auth.example.test');
-  expect(credentials[0].isResidentCredential).toBe(true);
-  passkey = credentials[0] as unknown as Record<string, unknown>;
+  const made = credentials[0];
+  expect(made?.rpId).toBe('auth.example.test');
+  expect(made?.isResidentCredential).toBe(true);
+  passkey = (made ?? null) as unknown as Record<string, unknown> | null;
   await context.close();
 
   // The same passkey, on the person's device next time: a fresh browser with it on its authenticator.
@@ -80,7 +83,7 @@ test('the enrolment link makes a passkey for the sign-in’s own name, and Admin
   await second.cdp.send('WebAuthn.addCredential', { authenticatorId: second.id, credential: passkey as never });
   await signIn(again, w);
   await again.waitForURL((u) => u.href.startsWith(w.redirect), { timeout: 60_000 });
-  writeFileSync(w.out, again.url());
+  callback = again.url();
   await later.close();
 });
 
@@ -95,4 +98,5 @@ test('the same passkey, on an authenticator that doesn’t verify the person (a 
   await page.waitForTimeout(8_000);
   expect(page.url().startsWith(w.redirect)).toBe(false);
   await context.close();
+  writeFileSync(w.out, callback);
 });

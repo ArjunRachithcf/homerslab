@@ -104,7 +104,7 @@ func TestTheSignInRunsAsOneUnitWithItsSecretsSealedForIt(t *testing.T) {
 	if strings.Contains(d, bootstrap) {
 		t.Error("the drop-in holds the bootstrap token")
 	}
-	reload, enable, restart := h.Ran("systemctl daemon-reload"), h.Ran("systemctl enable homerslab-authentik.service"), h.Ran("systemctl restart homerslab-authentik.service")
+	reload, enable, restart := h.Ran("systemctl daemon-reload"), h.Ran("systemctl enable homerslab-authentik.service"), h.Ran("systemctl --no-block restart homerslab-authentik.service")
 	if reload < 0 || enable < reload || restart < enable {
 		t.Errorf("reload %d, enable %d, restart %d: the unit gets its credentials only as it starts", reload, enable, restart)
 	}
@@ -125,7 +125,7 @@ func TestTheSignInRunsAsOneUnitWithItsSecretsSealedForIt(t *testing.T) {
 	})
 
 	t.Run("the bootstrap token goes once it has done its work, and the unit restarts without it", func(t *testing.T) {
-		before := h.Times("systemctl restart homerslab-authentik.service")
+		before := h.Times("systemctl --no-block restart homerslab-authentik.service")
 		if code, body := call(t, sock, "DELETE", "/v1/sign-in/bootstrap-token", nil); code != http.StatusNoContent {
 			t.Fatalf("%d %s", code, body)
 		}
@@ -139,7 +139,7 @@ func TestTheSignInRunsAsOneUnitWithItsSecretsSealedForIt(t *testing.T) {
 		if !strings.Contains(d, "ExecStartPre=/usr/bin/install -m 0400 -o 1000 -g 1000 /dev/null /run/homerslab-authentik/bootstrap-token\n") {
 			t.Errorf("the unit doesn't empty the bootstrap file:\n%s", d)
 		}
-		if h.Times("systemctl restart homerslab-authentik.service") == before {
+		if h.Times("systemctl --no-block restart homerslab-authentik.service") == before {
 			t.Error("the unit wasn't restarted")
 		}
 		_, body := call(t, sock, "GET", "/v1/sign-in", nil)
