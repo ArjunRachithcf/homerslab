@@ -14,16 +14,17 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
-env:
-  # Test isolation: any container engine a test reaches points at nowhere.
-  DOCKER_HOST: unix:///nonexistent
-  CONTAINER_HOST: unix:///nonexistent
-
 jobs:
   go:
     name: Go (as root, so the primary's two processes are tested)
     runs-on: ubuntu-24.04
-    container: golang:1.27.3@sha256:e519d3b0a5b285e5aa53ab9eef02bc6bbb9cb04608389b743a136a9ce75f0d1e
+    container:
+      image: golang:1.27.3@sha256:e519d3b0a5b285e5aa53ab9eef02bc6bbb9cb04608389b743a136a9ce75f0d1e
+      # Test isolation: any container engine a test reaches points at nowhere. Set inside the container only:
+      # the runner itself reaches the job's container through DOCKER_HOST, so a job-wide value breaks checkout.
+      env:
+        DOCKER_HOST: unix:///nonexistent
+        CONTAINER_HOST: unix:///nonexistent
     env:
       GOFLAGS: -buildvcs=false
     steps:
@@ -82,6 +83,10 @@ jobs:
         run: npx playwright install --with-deps chromium
       - name: Flow tests
         working-directory: web
+        # Test isolation, as in the Go job.
+        env:
+          DOCKER_HOST: unix:///nonexistent
+          CONTAINER_HOST: unix:///nonexistent
         run: npx playwright test
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: failure()
