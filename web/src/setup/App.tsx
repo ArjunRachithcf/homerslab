@@ -456,15 +456,20 @@ const NAME_MAX = 64;
 
 /**
  * The household's name, made from the admin's surname: "The {surname} household", with the surname cut short to fit
- * when it is long, so the page never offers a name the manager refuses. A cut leaves nothing hanging that needs what
- * came after it: no mark or selector (variation, ideographic or Mongolian), no joiner, tag or tatweel.
+ * when it is long, so the page never offers a name the manager refuses. It is cut between grapheme clusters, so an
+ * accent, an emoji sequence or a flag stays whole or goes whole; and a tatweel left at the end goes too.
  */
 function defaultHousehold(surname: string): string {
   const whole = t('step.household.default', { surname });
-  const over = [...whole].length - NAME_MAX;
-  if (over <= 0) return whole;
-  const letters = [...surname];
-  const kept = letters.slice(0, Math.max(0, letters.length - over)).join('').replace(/(?:\p{M}|\p{Cf}|\u0640)+$/u, '');
+  let room = NAME_MAX - ([...whole].length - [...surname].length);
+  if (room >= [...surname].length) return whole;
+  let kept = '';
+  for (const { segment } of new Intl.Segmenter(undefined, { granularity: 'grapheme' }).segment(surname)) {
+    room -= [...segment].length;
+    if (room < 0) break;
+    kept += segment;
+  }
+  kept = kept.replace(/\u0640+$/u, '');
   return kept ? t('step.household.default', { surname: kept }) : '';
 }
 

@@ -185,7 +185,7 @@ test('the household name made from a long surname fits', async ({ page, primary 
 });
 
 // A cut that ends inside a flag, a variant or a joined word leaves no tag, selector or tatweel hanging (#69).
-test('the household name made from a surname with a flag fits, without the flag’s tags', async ({ page, primary }) => {
+test('the household name made from a surname with a flag fits, without a broken flag', async ({ page, primary }) => {
   await page.goto((await primary.newLink()).localUrl);
   await page.getByRole('button', { name: 'Get started' }).click();
   const scotland = '\u{1F3F4}\u{E0067}\u{E0062}\u{E0073}\u{E0063}\u{E0074}\u{E007F}';
@@ -193,7 +193,20 @@ test('the household name made from a surname with a flag fits, without the flag�
   await page.getByLabel('Your mail address', { exact: true }).fill('ana@example.org');
   await page.getByRole('button', { name: 'Continue' }).click();
   const household = page.getByLabel('The household’s name', { exact: true });
-  await expect(household).toHaveValue(`The ${'X'.repeat(46)}\u{1F3F4} household`);
+  await expect(household).toHaveValue(`The ${'X'.repeat(46)} household`); // the flag whole, or not at all
+  await page.getByRole('button', { name: 'Continue' }).click();
+  await expect(page.getByRole('heading', { level: 1 })).toContainText('How everyone signs in');
+});
+
+// The cut keeps an emoji ZWJ sequence whole, or leaves it out: never half a couple with a heart.
+test('the household name made from a surname with a joined emoji fits, without a broken emoji', async ({ page, primary }) => {
+  await page.goto((await primary.newLink()).localUrl);
+  await page.getByRole('button', { name: 'Get started' }).click();
+  const couple = '\u{1F469}\u200D\u2764\uFE0F\u200D\u{1F468}';
+  await page.getByLabel('Your name', { exact: true }).fill(`Ana ${'X'.repeat(46)}${couple}`);
+  await page.getByLabel('Your mail address', { exact: true }).fill('ana@example.org');
+  await page.getByRole('button', { name: 'Continue' }).click();
+  await expect(page.getByLabel('The household’s name', { exact: true })).toHaveValue(`The ${'X'.repeat(46)} household`);
   await page.getByRole('button', { name: 'Continue' }).click();
   await expect(page.getByRole('heading', { level: 1 })).toContainText('How everyone signs in');
 });

@@ -46,7 +46,7 @@ func name(typed string) (string, string) {
 	}
 	switch {
 	case !strings.ContainsFunc(n, func(r rune) bool { return unicode.IsLetter(r) || unicode.IsNumber(r) || unicode.IsSymbol(r) }) &&
-		!hasKeycap(n):
+		!hasKeycap(n) && !hasEmojiPresentation(n):
 		return "", Missing // marks, joiners and punctuation alone show as blank, or nearly
 	case utf8.RuneCountInString(n) > NameMax:
 		return "", TooLong
@@ -145,8 +145,8 @@ func rgiFlagTags(rs []rune) int {
 // emojiEndsAt says whether an emoji ends at rs[j].
 func emojiEndsAt(rs []rune, j int) bool {
 	if j >= 0 && unicode.Is(emojiModifier, rs[j]) {
-		j-- // the skin tone of the emoji before it
-		return j >= 0 && emojiAlone(rs[j])
+		j-- // a skin tone follows an Emoji_Modifier_Base, which may be drawn as text alone (U+26F9, U+1F3CB, U+1F3CC, U+1F575)
+		return j >= 0 && unicode.Is(emojiModifierBase, rs[j])
 	}
 	if j >= 1 && rs[j] == '\ufe0f' {
 		return unicode.Is(variationBase, rs[j-1]) && !keycapBase(rs[j-1])
@@ -166,6 +166,18 @@ func emojiStartsAt(rs []rune, i int) bool {
 // emojiAlone is a character drawn as an emoji without a VS16, and not a skin tone.
 func emojiAlone(r rune) bool {
 	return unicode.Is(emojiPresentation, r) && !unicode.Is(emojiModifier, r)
+}
+
+// hasEmojiPresentation says whether s holds an emoji drawn as one by its VS16, such as the wavy dash (U+3030) or the
+// part alternation mark (U+303D), which are punctuation without it.
+func hasEmojiPresentation(s string) bool {
+	rs := []rune(s)
+	for i := 1; i < len(rs); i++ {
+		if rs[i] == '\ufe0f' && unicode.Is(variationBase, rs[i-1]) && !keycapBase(rs[i-1]) {
+			return true
+		}
+	}
+	return false
 }
 
 // hasKeycap says whether s holds a keycap: #, * or a digit, VS16 perhaps, and U+20E3.
