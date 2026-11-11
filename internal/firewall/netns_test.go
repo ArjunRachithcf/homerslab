@@ -51,6 +51,36 @@ func TestMain(m *testing.M) {
 			_, _ = c.Write([]byte("hello\n"))
 			c.Close()
 		}
+	case "ulisten": // a UDP echo
+		c, err := net.ListenPacket("udp", os.Args[len(os.Args)-1])
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		fmt.Println("listening")
+		buf := make([]byte, 64)
+		for {
+			n, from, err := c.ReadFrom(buf)
+			if err != nil {
+				os.Exit(1)
+			}
+			_, _ = c.WriteTo(buf[:n], from)
+		}
+	case "udial":
+		c, err := net.Dial("udp", os.Args[len(os.Args)-1])
+		if err != nil {
+			os.Exit(1)
+		}
+		_ = c.SetDeadline(time.Now().Add(500 * time.Millisecond))
+		if _, err := c.Write([]byte("hello\n")); err != nil {
+			os.Exit(1)
+		}
+		b := make([]byte, 64)
+		n, err := c.Read(b)
+		if err != nil || string(b[:n]) != "hello\n" {
+			os.Exit(1)
+		}
+		os.Exit(0)
 	case "dial":
 		c, err := net.DialTimeout("tcp", os.Args[len(os.Args)-1], 500*time.Millisecond)
 		if err != nil {
@@ -88,7 +118,7 @@ func TestTheFirewallTableInNetworkNamespaces(t *testing.T) {
 	// The LAN is a bridge named br-iot: it is the LAN because it carries the default route, and the engines list
 	// br-test, not it.
 	open := firewall.State{Mesh: []string{"wt0"}, WireGuard: []int{51820}, SetupPort: 7020, LAN: []string{"br-iot"},
-		LANPrefixes: lanPrefixes, Bridges: []string{"br-test"}}
+		LANPrefixes: lanPrefixes, Bridges: []string{"br-test", "br-other"}, Resolvers: []netip.Addr{netip.MustParseAddr("192.168.77.50")}}
 	apply := func(s firewall.State) {
 		t.Helper()
 		if err := fw.Apply(ctx, s); err != nil {
@@ -109,7 +139,14 @@ func TestTheFirewallTableInNetworkNamespaces(t *testing.T) {
 	}
 	appsKeptIn := func(when string) {
 		n.want(t, when+": an app reaches the internet", "ctr", "203.0.113.50:9001", true)
+		n.want(t, when+": an app reaches the internet over IPv6", "ctr", "[2001:db8:ffff::50]:9005", true)
+		n.want(t, when+": an app reaches no LAN host at its global IPv6 address", "ctr", "[2001:db8:77::50]:9006", false)
 		n.want(t, when+": an app reaches the box's DNS", "ctr", "172.30.0.1:53", true)
+		n.want(t, when+": an app reaches the box's resolver", "ctr", "192.168.77.50:53", true)
+		n.wantUDP(t, when+": an app reaches the box's resolver over UDP", "ctr", "192.168.77.50:53", true)
+		n.wantUDP(t, when+": but nothing else on that host over UDP", "ctr", "192.168.77.50:9004", false)
+		n.want(t, when+": an app reaches its own network", "ctr", "172.30.0.3:8446", true)
+		n.want(t, when+": an app reaches no other app's network", "ctr", "172.31.0.2:8445", false)
 		n.want(t, when+": an app reaches no LAN host", "ctr", "192.168.77.50:9000", false)
 		n.want(t, when+": an app reaches no mesh peer", "ctr", "100.88.1.2:9002", false)
 		n.want(t, when+": an app reaches no local virtual network", "ctr", "192.168.122.2:9003", false)
@@ -127,6 +164,8 @@ func TestTheFirewallTableInNetworkNamespaces(t *testing.T) {
 	}
 	vmsKept := func(when string) {
 		n.want(t, when+": a VM on a local virtual network reaches the internet", "vm", "203.0.113.50:9001", true)
+		n.want(t, when+": a VM reaches the box's DNS (dnsmasq)", "vm", "192.168.122.1:53", true)
+		n.wantUDP(t, when+": a VM reaches the box's DHCP", "vm", "192.168.122.1:67", true)
 		n.want(t, when+": a VM reaches no listener of the box", "vm", "192.168.122.1:8022", false)
 		n.want(t, when+": a VM doesn't get the setup listener", "vm", "192.168.122.1:7020", false)
 		n.want(t, when+": a VM reaches no LAN host", "vm", "192.168.77.50:9000", false)
@@ -140,9 +179,15 @@ func TestTheFirewallTableInNetworkNamespaces(t *testing.T) {
 	n.want(t, "the box reaches the LAN (its own connections)", "", "192.168.77.50:9000", true)
 
 	confused := open
-	confused.Bridges = []string{"br-test", "br-iot"} // an engine naming the LAN as one of its bridges
+	confused.Bridges = []string{"br-test", "br-other", "br-iot"} // an engine naming the LAN as one of its bridges
 	apply(confused)
 	lanKeptOut("with the LAN also listed as a bridge")
+	// Names nft would read as wildcards, or that break its syntax: never rendered, and the table still applies.
+	hostile := open
+	hostile.Bridges = []string{"br-test", "br-other", "br-*", "l*", "*", `x"y`, "br-iot-but-far-too-long"}
+	apply(hostile)
+	lanKeptOut("with wildcards and a quote among the engines' names")
+	appsKeptIn("with wildcards and a quote among the engines' names")
 
 	closed := open
 	closed.SetupPort = 0
@@ -157,8 +202,21 @@ func TestTheFirewallTableInNetworkNamespaces(t *testing.T) {
 	lanKeptOut("with no default route and no engine")
 	n.want(t, "with no default route the setup listener is closed too", "lan", "192.168.77.1:7020", false)
 	n.want(t, "with no engine answering, a container reaches no LAN host", "ctr", "192.168.77.50:9000", false)
+	n.wantUDP(t, "nor the box's DHCP from the LAN", "lan", "192.168.77.1:67", false)
 	n.want(t, "nor the box's listeners", "ctr", "172.30.0.1:8022", false)
 	n.ping(t, "the LAN still reaches the machine itself", "192.168.77.1", true)
+
+	// The first boot's table, which homerslab-firewall-restore loads before the agent ever applied one.
+	if _, err := host.Exec(ctx, host.Cmd{Name: "nft", Args: []string{"-f", "-"}, Stdin: []byte(firewall.Closed(7020))}); err != nil {
+		t.Fatal(err)
+	}
+	n.want(t, "first boot: the setup listener answers the LAN", "lan", "192.168.77.1:7020", true)
+	n.want(t, "first boot: no other listener does", "lan", "192.168.77.1:8022", false)
+	n.want(t, "first boot: no published port", "lan", "192.168.77.1:8444", false)
+	n.want(t, "first boot: nothing from the LAN is routed", "lan", "172.30.0.2:8444", false)
+	n.want(t, "first boot: nothing is forwarded for a container either", "ctr", "203.0.113.50:9001", false)
+	n.want(t, "first boot: the mesh isn't trusted before it is joined", "peer", "100.88.1.1:8022", false)
+	n.ping(t, "first boot: the LAN still reaches the machine itself", "192.168.77.1", true)
 	apply(closed)
 
 	for _, tamper := range []struct{ what, nft string }{
@@ -230,7 +288,7 @@ func newNet(t *testing.T) *netns {
 		t.Fatalf("refusing: this network namespace isn't fresh (%d links)", len(lines))
 	}
 	n := &netns{pids: map[string]int{}}
-	for _, name := range []string{"lan", "peer", "ctr", "vm"} {
+	for _, name := range []string{"lan", "peer", "ctr", "ctr3", "ctr2", "vm"} {
 		c := exec.Command("unshare", "-n", "sleep", "300")
 		if err := c.Start(); err != nil {
 			t.Fatal(err)
@@ -256,6 +314,11 @@ func newNet(t *testing.T) *netns {
 		ip link add br-test type bridge
 		ip link add veth-ctr type veth peer name eth0 netns %d
 		ip link set veth-ctr master br-test
+		ip link add veth-ctr3 type veth peer name eth0 netns %d
+		ip link set veth-ctr3 master br-test
+		ip link add br-other type bridge
+		ip link add veth-ctr2 type veth peer name eth0 netns %d
+		ip link set veth-ctr2 master br-other
 		ip link add virbr0 type bridge
 		ip link add veth-vm type veth peer name eth0 netns %d
 		ip link set veth-vm master virbr0
@@ -264,17 +327,25 @@ func newNet(t *testing.T) *netns {
 		ip -6 addr add 2001:db8:77::1/64 dev br-iot nodad
 		ip addr add 100.88.1.1/16 dev wt0
 		ip addr add 172.30.0.1/24 dev br-test
+		ip -6 addr add 2001:db8:30::1/64 dev br-test nodad
+		ip addr add 172.31.0.1/24 dev br-other
 		ip addr add 192.168.122.1/24 dev virbr0
-		for i in br-iot wt0 br-test veth-ctr virbr0 veth-vm; do ip link set "$i" up; done
+		for i in br-iot wt0 br-test veth-ctr veth-ctr3 br-other veth-ctr2 virbr0 veth-vm; do ip link set "$i" up; done
 		ip route add default via 192.168.77.50
-		echo 1 > /proc/sys/net/ipv4/ip_forward`, n.pids["lan"], n.pids["peer"], n.pids["ctr"], n.pids["vm"]))
+		ip -6 route add default via 2001:db8:77::50
+		echo 1 > /proc/sys/net/ipv4/ip_forward
+		echo 1 > /proc/sys/net/ipv6/conf/all/forwarding`, n.pids["lan"], n.pids["peer"], n.pids["ctr"], n.pids["ctr3"], n.pids["ctr2"], n.pids["vm"]))
 	in("lan", `ip link set lo up; ip link set eth0 up; ip addr add 192.168.77.50/24 dev eth0
 		ip -6 addr add fd00:77::50/64 dev eth0 nodad; ip -6 addr add 2001:db8:77::50/64 dev eth0 nodad
-		ip addr add 203.0.113.50/32 dev lo
+		ip addr add 203.0.113.50/32 dev lo; ip -6 addr add 2001:db8:ffff::50/128 dev lo nodad
 		ip route add 100.88.0.0/16 via 192.168.77.1; ip route add 172.30.0.0/24 via 192.168.77.1
-		ip route add 192.168.122.0/24 via 192.168.77.1`)
+		ip route add 172.31.0.0/24 via 192.168.77.1; ip route add 192.168.122.0/24 via 192.168.77.1
+		ip -6 route add 2001:db8:30::/64 via 2001:db8:77::1`)
 	in("peer", `ip link set lo up; ip link set eth0 up; ip addr add 100.88.1.2/16 dev eth0; ip route add default via 100.88.1.1`)
-	in("ctr", `ip link set lo up; ip link set eth0 up; ip addr add 172.30.0.2/24 dev eth0; ip route add default via 172.30.0.1`)
+	in("ctr", `ip link set lo up; ip link set eth0 up; ip addr add 172.30.0.2/24 dev eth0; ip route add default via 172.30.0.1
+		ip -6 addr add 2001:db8:30::2/64 dev eth0 nodad; ip -6 route add default via 2001:db8:30::1`)
+	in("ctr3", `ip link set lo up; ip link set eth0 up; ip addr add 172.30.0.3/24 dev eth0; ip route add default via 172.30.0.1`)
+	in("ctr2", `ip link set lo up; ip link set eth0 up; ip addr add 172.31.0.2/24 dev eth0; ip route add default via 172.31.0.1`)
 	in("vm", `ip link set lo up; ip link set eth0 up; ip addr add 192.168.122.2/24 dev eth0; ip route add default via 192.168.122.1`)
 	// A published port, as Docker makes one: DNAT to the container, from outside and from the box itself.
 	sh(`nft -f - <<'NFT'
@@ -308,7 +379,37 @@ NFT`)
 	n.listen(t, "lan", "203.0.113.50:9001")
 	n.listen(t, "peer", "100.88.1.2:9002")
 	n.listen(t, "vm", "192.168.122.2:9003")
+	n.listen(t, "ctr3", "172.30.0.3:8446")
+	n.listen(t, "ctr2", "172.31.0.2:8445")
+	n.listen(t, "lan", "192.168.77.50:53")         // the box's resolver
+	n.listen(t, "lan", "[2001:db8:ffff::50]:9005") // the internet, over IPv6
+	n.listen(t, "lan", "[2001:db8:77::50]:9006")   // a LAN host at a global address
+	n.udpListen(t, "lan", "192.168.77.50:53")
+	n.udpListen(t, "lan", "192.168.77.50:9004")
+	n.udpListen(t, "", "0.0.0.0:67") // the box's DHCP server for its local virtual network
 	return n
+}
+
+func (n *netns) udpListen(t *testing.T, name, addr string) {
+	t.Helper()
+	cmd := n.helper(name, "ulisten", addr)
+	out, _ := cmd.StdoutPipe()
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = cmd.Process.Kill(); _ = cmd.Wait() })
+	line := make([]byte, 10)
+	if _, err := io.ReadFull(out, line); err != nil || string(line) != "listening\n" {
+		t.Fatalf("no UDP listener on %s in %s", addr, name)
+	}
+}
+
+func (n *netns) wantUDP(t *testing.T, what, from, addr string, reach bool) {
+	t.Helper()
+	got := n.helper(from, "udial", addr).Run() == nil
+	if got != reach {
+		t.Errorf("%s: %s → %s/udp answers %v, want %v", what, orBox(from), addr, got, reach)
+	}
 }
 
 func (n *netns) helper(name, mode, addr string) *exec.Cmd {

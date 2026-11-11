@@ -6,7 +6,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
@@ -15,6 +14,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -58,6 +58,12 @@ func StartWith(t testing.TB, c agent.Config) (string, *Host) {
 	}
 	if c.Run == nil {
 		c.Run = h.Run
+	}
+	if c.IsBridge == nil {
+		c.IsBridge = h.IsBridge
+	}
+	if c.Proc == "" {
+		c.Proc = filepath.Join(h.Root, "proc")
 	}
 	if c.Resolve == nil {
 		c.Resolve = func(context.Context, string) ([]string, error) { return []string{"192.0.2.1"}, nil }
@@ -105,18 +111,46 @@ type Host struct {
 	dropInAt  map[string][]byte // the NetBird drop-in as it was when each command ran
 	fail      map[string]error
 	NetbirdIP string
+	pid       int // NetBird's main process, 0 while it doesn't run
 	// restartedWith is NetBird's drop-in as it was when the service last restarted: the running service's environment.
 	restartedWith []byte
 	docker        map[string]string // the engine's bridge networks: ID → the bridge's name option ("" for none)
-	podman        []string          // Podman's bridges
+	notBridges    map[string]bool   // names the engines give that the kernel doesn't show as bridges
+	block         bool              // the engines and systemd never answer
 }
 
-// Engines makes Docker list bridge networks (ID → the name it was given, or "") and Podman list bridges. Without
-// it, no engine answers.
-func (h *Host) Engines(docker map[string]string, podman []string) {
+// IsBridge says whether the kernel would show a name as a bridge: every name an engine gives, but those NotABridge
+// names.
+func (h *Host) IsBridge(name string) bool {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	h.docker, h.podman = docker, podman
+	return !h.notBridges[name]
+}
+
+// NotABridge makes an engine's name one the kernel doesn't show as a bridge (a NIC, say).
+func (h *Host) NotABridge(name string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.notBridges == nil {
+		h.notBridges = map[string]bool{}
+	}
+	h.notBridges[name] = true
+}
+
+// Block makes Docker and systemd hang until the caller gives up, as a socket-activated engine waiting on the agent
+// would.
+func (h *Host) Block() {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.block = true
+}
+
+// Engines makes Docker run and list bridge networks (ID → the name it was given, or ""). Without it, Docker isn't
+// running.
+func (h *Host) Engines(docker map[string]string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.docker = docker
 }
 
 // NewHost is a machine whose root directory is root.
@@ -139,8 +173,13 @@ func (h *Host) Mend() {
 }
 
 // Run is the agent's host.Runner.
-func (h *Host) Run(_ context.Context, c host.Cmd) ([]byte, error) {
+func (h *Host) Run(ctx context.Context, c host.Cmd) ([]byte, error) {
 	h.mu.Lock()
+	if h.block && (c.Name == "docker" || c.Name == "systemctl") {
+		h.mu.Unlock()
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
 	defer h.mu.Unlock()
 	h.cmds = append(h.cmds, c)
 	line := c.String()
@@ -161,17 +200,26 @@ func (h *Host) Run(_ context.Context, c host.Cmd) ([]byte, error) {
 			return nil, &host.Error{Cmd: line, Err: errors.New("exit status 1"), Stderr: "Error: No such file or directory"}
 		}
 		return []byte(h.table), nil
-	case line == "systemctl restart netbird.service":
+	case line == "systemctl restart netbird.service" || line == "systemctl --no-block restart netbird.service":
 		h.restartedWith = h.dropInAt[line]
-		return nil, nil
-	case line == "systemctl show netbird.service --property=Environment --value":
-		var env []string
+		env := ""
 		for _, l := range strings.Split(string(h.restartedWith), "\n") {
 			if v, ok := strings.CutPrefix(l, "Environment="); ok {
-				env = append(env, v)
+				env += v + "\x00"
 			}
 		}
-		return []byte(strings.Join(env, " ") + "\n"), nil
+		h.pid++
+		if err := os.MkdirAll(filepath.Join(h.Root, "proc", strconv.Itoa(h.pid)), 0o755); err != nil {
+			return nil, err
+		}
+		return nil, os.WriteFile(filepath.Join(h.Root, "proc", strconv.Itoa(h.pid), "environ"), []byte("PATH=/usr/bin\x00"+env), 0o644)
+	case line == "systemctl show netbird.service --property=MainPID --value":
+		return fmt.Appendf(nil, "%d\n", h.pid), nil
+	case line == "systemctl is-active --quiet docker.service":
+		if h.docker == nil {
+			return nil, &host.Error{Cmd: line, Err: errors.New("exit status 3")}
+		}
+		return nil, nil
 	case c.Name == "systemctl":
 		return nil, nil
 	case c.Name == "docker" && h.docker != nil && len(c.Args) > 1 && c.Args[1] == "ls":
@@ -191,12 +239,6 @@ func (h *Host) Run(_ context.Context, c host.Cmd) ([]byte, error) {
 			out = append(out, id+" "+name)
 		}
 		return []byte(strings.Join(out, "\n") + "\n"), nil
-	case c.Name == "podman" && h.podman != nil:
-		var nets []map[string]string
-		for _, n := range h.podman {
-			nets = append(nets, map[string]string{"driver": "bridge", "network_interface": n})
-		}
-		return json.Marshal(nets)
 	case strings.HasPrefix(line, "netbird up"):
 		return nil, nil
 	case line == "netbird status --json":
@@ -255,6 +297,9 @@ func (h *Host) RestartNetBirdWithoutItsDropIn() {
 	defer h.mu.Unlock()
 	_ = os.Remove(filepath.Join(h.Root, "etc/systemd/system/netbird.service.d/10-homerslab.conf"))
 	h.restartedWith = nil
+	h.pid++
+	_ = os.MkdirAll(filepath.Join(h.Root, "proc", strconv.Itoa(h.pid)), 0o755)
+	_ = os.WriteFile(filepath.Join(h.Root, "proc", strconv.Itoa(h.pid), "environ"), []byte("PATH=/usr/bin\x00"), 0o644)
 }
 
 // RestartNetBirdBeforeItsDropIn stands for NetBird's service restarted with an environment of its own: the drop-in is
@@ -263,6 +308,9 @@ func (h *Host) RestartNetBirdBeforeItsDropIn() {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.restartedWith = nil
+	h.pid++
+	_ = os.MkdirAll(filepath.Join(h.Root, "proc", strconv.Itoa(h.pid)), 0o755)
+	_ = os.WriteFile(filepath.Join(h.Root, "proc", strconv.Itoa(h.pid), "environ"), []byte("PATH=/usr/bin\x00"), 0o644)
 }
 
 // Tamper changes the firewall table behind the agent's back: "missing" deletes it, anything else edits it.

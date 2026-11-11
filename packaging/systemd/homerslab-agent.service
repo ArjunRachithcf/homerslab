@@ -2,18 +2,18 @@
 [Unit]
 Description=HomersLab agent
 Documentation=https://github.com/ArjunRachithcf/homerslab
-# The firewall table is up before the network, the engines and the mesh client: no LAN host meets a published port
-# or a listener while the machine boots. Their own drop-ins (packaging/systemd/*.service.d) order them after the agent
-# too. The agent comes after the distro's firewalls, whose start would otherwise flush its table.
-Wants=network-pre.target
-Before=homerslab-manager.service network-pre.target docker.service podman.service netbird.service
-After=nftables.service firewalld.service
+# The table is loaded at boot by homerslab-firewall-restore, before the network and the engines; the agent takes it
+# over after that, and orders itself against nothing of the engines' or the network's: it never waits on them, and
+# they never wait on it.
+Wants=homerslab-firewall-restore.service
+After=homerslab-firewall-restore.service
+Before=homerslab-manager.service
 
 [Service]
-# Ready once the firewall table is restored and the socket listens; until then the network and the engines wait.
+# Ready once the agent has applied its table (from its saved state: it asks no engine first) and its socket listens.
 Type=notify
 NotifyAccess=main
-TimeoutStartSec=5min
+TimeoutStartSec=30s
 # systemd-creds' host key, made once, outside the sandbox (which keeps /var/lib/systemd read-only).
 ExecStartPre=+/usr/bin/systemd-creds setup
 ExecStart=/usr/bin/homerslab agent

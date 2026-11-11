@@ -156,6 +156,7 @@ func (m *Manager) Control() http.Handler {
 	mux.HandleFunc("PUT /api/v1/setup/secrets/{name}", m.putSecret)
 	mux.HandleFunc("GET /api/v1/drift", m.getDrift)
 	mux.HandleFunc("GET /api/v1/mesh", m.getMesh)
+	mux.HandleFunc("GET /api/v1/mesh/owner-password", m.getOwnerPassword)
 	mux.HandleFunc("GET /api/v1/setup", m.getSetup)
 	mux.HandleFunc("GET /api/v1/nodes/primary", m.getPrimary)
 	mux.HandleFunc("/", notFound)

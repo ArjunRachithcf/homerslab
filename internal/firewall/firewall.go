@@ -14,10 +14,14 @@
 //     is forwarding, and dropped), and nothing routed.
 //   - From the mesh: any listener of this machine (the mesh's own policies filter it), but nothing routed: only the
 //     edge, on this machine, reaches an app (#19).
-//   - From the apps (the engines' bridges): this machine's DNS, each other's bridges, and the internet; never the
-//     LAN, the mesh, a private range or a local virtual network. Extras that let an app reach the LAN or the mesh
-//     come with the install plan (#19, #82).
-//   - From a local virtual network: no listener, and the internet only.
+//   - From the apps (the engines' bridges): this machine's DNS and the resolvers it uses, IPv6 neighbour discovery,
+//     their own bridge, and the internet; never another app's bridge, the LAN, the mesh, a private range or a local
+//     virtual network (ADR 0020). Extras that let an app reach the LAN or the mesh come with the install plan (#19).
+//   - From a local virtual network: this machine's DHCP and DNS (libvirt's and LXD's dnsmasq), no other listener, and
+//     the internet only.
+//
+// An interface name is rendered only when it is a plain name an interface can have: a wildcard or a quote from an
+// engine never reaches nft.
 //
 // A drop in any base chain is final in nftables, whatever other tables (firewalld, Docker's) accept, so this table
 // holds whatever else the machine runs. It changes no other table.
@@ -28,6 +32,8 @@ import (
 	"errors"
 	"fmt"
 	"net/netip"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
@@ -61,6 +67,27 @@ type State struct {
 	// Bridges are the container engines' bridges, by their exact names, as the engines list them. A LAN interface
 	// is never one, whatever the engines say.
 	Bridges []string `json:"bridges"`
+	// Resolvers are the DNS servers this machine uses, which an engine hands its containers (Docker's default bridge
+	// copies them): apps may ask them, on port 53 only.
+	Resolvers []netip.Addr `json:"resolvers"`
+}
+
+// ValidName says whether an interface name is one nft may be given: Linux's limit of 15 characters, and none that
+// nft would read as a wildcard or a quote.
+func ValidName(n string) bool {
+	if n == "" || len(n) > 15 {
+		return false
+	}
+	for _, c := range n {
+		if !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '_' || c == '.' || c == '-') {
+			return false
+		}
+	}
+	return true
+}
+
+func valid(names []string) []string {
+	return slices.DeleteFunc(uniqStrings(names), func(n string) bool { return !ValidName(n) })
 }
 
 // Equal says whether two states make the same table.
@@ -71,9 +98,9 @@ func (s State) Equal(o State) bool { return Render(s) == Render(o) }
 func Render(s State) string {
 	var b strings.Builder
 	w := func(f string, a ...any) { fmt.Fprintf(&b, f+"\n", a...) }
-	lan := uniqStrings(s.LAN)
-	mesh := uniqStrings(s.Mesh)
-	bridges := slices.DeleteFunc(uniqStrings(s.Bridges), func(n string) bool { return slices.Contains(lan, n) || slices.Contains(mesh, n) })
+	lan := valid(s.LAN)
+	mesh := valid(s.Mesh)
+	bridges := slices.DeleteFunc(valid(s.Bridges), func(n string) bool { return slices.Contains(lan, n) || slices.Contains(mesh, n) })
 	w("# HomersLab's agent owns this table, and puts it back when it drifts.")
 	w("table %s", Table)
 	w("delete table %s", Table)
@@ -89,6 +116,10 @@ func Render(s State) string {
 	}
 	if len(bridges) > 0 {
 		w("\t\tiifname %s jump apps_in", set(quoted(bridges)))
+	}
+	if len(lan) > 0 {
+		// What is neither loopback, the mesh, a bridge nor the LAN is a local virtual network.
+		w("\t\tiifname != %s jump virtual_in", set(quoted(lan)))
 	}
 	w("\t\tmeta l4proto { icmp, ipv6-icmp } accept")
 	w("\t\tudp dport { 68, 546, 5353 } accept")
@@ -115,14 +146,37 @@ func Render(s State) string {
 	w("\t\tjump outbound")
 	w("\t}")
 
-	// Apps to this machine: only the DNS an engine serves on a bridge's gateway.
+	// Apps to this machine: only the DNS an engine serves on a bridge's gateway, and IPv6's neighbour discovery.
 	w("\tchain apps_in {")
 	w("\t\tmeta l4proto { tcp, udp } th dport 53 accept")
+	w("\t\ticmpv6 type { nd-neighbor-solicit, nd-neighbor-advert, nd-router-solicit } accept")
 	w("\t\tdrop")
 	w("\t}")
+	// Local virtual networks to this machine: their DHCP and DNS (dnsmasq), then the machine's basics.
+	w("\tchain virtual_in {")
+	w("\t\tudp dport { 67, 547 } accept")
+	w("\t\tmeta l4proto { tcp, udp } th dport 53 accept")
+	w("\t}")
+	// Apps out: their own bridge, the machine's resolvers, the internet.
 	w("\tchain apps_out {")
-	if len(bridges) > 0 {
-		w("\t\toifname %s accept", set(quoted(bridges)))
+	for _, br := range bridges {
+		w("\t\tiifname %q oifname %q accept", br, br)
+	}
+	var r4, r6 []string
+	for _, r := range s.Resolvers {
+		switch {
+		case r.IsLoopback() || r.IsUnspecified():
+		case r.Unmap().Is4():
+			r4 = append(r4, r.Unmap().String())
+		default:
+			r6 = append(r6, r.String())
+		}
+	}
+	if len(r4) > 0 {
+		w("\t\tip daddr %s meta l4proto { tcp, udp } th dport 53 accept", set(uniqStrings(r4)))
+	}
+	if len(r6) > 0 {
+		w("\t\tip6 daddr %s meta l4proto { tcp, udp } th dport 53 accept", set(uniqStrings(r6)))
 	}
 	w("\t\tjump outbound")
 	w("\t}")
@@ -209,6 +263,9 @@ type Status struct {
 type Firewall struct {
 	Run host.Runner
 	Now func() time.Time
+	// SavePath is where the table, once applied, is written (0600, atomically) for homerslab-firewall-restore, which
+	// loads it at boot before the network comes up; "" for none.
+	SavePath string
 
 	mu      sync.Mutex
 	on      bool
@@ -251,12 +308,86 @@ func (f *Firewall) apply(ctx context.Context, s State) error {
 	if _, err := f.Run(ctx, host.Cmd{Name: "nft", Args: []string{"-f", "-"}, Stdin: []byte(Render(s))}); err != nil {
 		return fmt.Errorf("applying the firewall table: %w", err)
 	}
+	if f.SavePath != "" {
+		if err := Save(f.SavePath, Render(s)); err != nil {
+			return fmt.Errorf("saving the firewall table for the next boot: %w", err)
+		}
+	}
 	listing, err := f.list(ctx)
 	if err != nil {
 		return err
 	}
 	f.listing, f.checked = listing, f.now()
 	return nil
+}
+
+// Save writes a table's script to path, atomically, for root only.
+func Save(path, script string) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	tmp := path + ".new"
+	if err := os.WriteFile(tmp, []byte(script), 0o600); err != nil {
+		return err
+	}
+	if err := os.Chmod(tmp, 0o600); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
+}
+
+// Closed is the table for a machine whose agent has applied none yet (its first boot): loopback, the machine's
+// basics (ICMP, DHCP and mDNS replies) and the setup listener only, from anywhere, and nothing forwarded.
+func Closed(setupPort int) string {
+	var b strings.Builder
+	w := func(f string, a ...any) { fmt.Fprintf(&b, f+"\n", a...) }
+	w("# HomersLab's first-boot table: closed until the agent applies its own.")
+	w("table %s", Table)
+	w("delete table %s", Table)
+	w("table %s {", Table)
+	w("\tchain input {")
+	w("\t\ttype filter hook input priority filter - 5; policy drop;")
+	w("\t\tct state established,related accept")
+	w("\t\tct state invalid drop")
+	w("\t\tiif \"lo\" accept")
+	w("\t\tmeta l4proto { icmp, ipv6-icmp } accept")
+	w("\t\tudp dport { 68, 546, 5353 } accept")
+	if setupPort > 0 && setupPort < 65536 {
+		w("\t\ttcp dport %d accept", setupPort)
+	}
+	w("\t}")
+	w("\tchain forward {")
+	w("\t\ttype filter hook forward priority filter - 5; policy drop;")
+	w("\t\tct state established,related accept")
+	w("\t}")
+	w("}")
+	return b.String()
+}
+
+// RestoreScript is what homerslab-firewall-restore loads at boot: the table the agent last applied, or Closed when
+// it never applied one.
+func RestoreScript(savePath string, setupPort int) (string, error) {
+	b, err := os.ReadFile(savePath)
+	if errors.Is(err, os.ErrNotExist) {
+		return Closed(setupPort), nil
+	}
+	if err != nil {
+		return "", err
+	}
+	if !strings.Contains(string(b), "table "+Table+" {") {
+		return "", fmt.Errorf("%s isn't a HomersLab firewall table", savePath)
+	}
+	return string(b), nil
+}
+
+// Note records something wrong the agent found and couldn't render (an engine's bridge with a refused name).
+func (f *Firewall) Note(what string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.drift = append(f.drift, Drift{At: f.now(), What: what})
+	if len(f.drift) > keep {
+		f.drift = f.drift[len(f.drift)-keep:]
+	}
 }
 
 var errMissing = errors.New("the table is missing")

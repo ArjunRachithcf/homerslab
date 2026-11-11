@@ -18,6 +18,7 @@ import (
 	"golang.org/x/sys/unix"
 
 	"github.com/ArjunRachithcf/homerslab/internal/cli"
+	"github.com/ArjunRachithcf/homerslab/internal/firewall"
 	"github.com/ArjunRachithcf/homerslab/internal/testenv"
 )
 
@@ -226,5 +227,44 @@ func TestCtrlCAtThePromptStopsAndLeavesTheTerminalAsItWas(t *testing.T) {
 	}
 	if len(*got) != 0 {
 		t.Error("something was sent")
+	}
+}
+
+func TestFirewallRestoreLoadsTheSavedTableOrAClosedOne(t *testing.T) {
+	testenv.Isolate(t)
+	state := t.TempDir()
+	code, out, errOut := runWith(t, "", "firewall", "restore", "--print", "--state-dir", state, "--setup-port", "7444")
+	if code != 0 || out != firewall.Closed(7444) {
+		t.Fatalf("first boot: %d %q %s", code, out, errOut)
+	}
+	saved := firewall.Render(firewall.State{Mesh: []string{"wt0"}, LAN: []string{"enp5s0"}})
+	if err := firewall.Save(filepath.Join(state, "firewall.nft"), saved); err != nil {
+		t.Fatal(err)
+	}
+	if code, out, _ := runWith(t, "", "firewall", "restore", "--print", "--state-dir", state); code != 0 || out != saved {
+		t.Errorf("with a saved table: %d %q", code, out)
+	}
+}
+
+func TestMeshOwnerPasswordIsForRootAndWarns(t *testing.T) {
+	testenv.Isolate(t)
+	sock, got := fakeControl(t, http.StatusOK, `{"password":"owner-PASSWORD-Aa1"}`)
+	var out, errOut bytes.Buffer
+	if code := cli.Main(context.Background(), []string{"mesh", "owner-password", "--control-socket", sock},
+		cli.Env{Stdout: &out, Stderr: &errOut, Euid: func() int { return 1000 }}); code != 1 || len(*got) != 0 {
+		t.Errorf("as a user: exit %d, asked %d times", code, len(*got))
+	}
+	out.Reset()
+	errOut.Reset()
+	if code := cli.Main(context.Background(), []string{"mesh", "owner-password", "--control-socket", sock},
+		cli.Env{Stdout: &out, Stderr: &errOut, Euid: func() int { return 0 }}); code != 0 {
+		t.Fatalf("as root: exit %d %s", code, errOut.String())
+	}
+	if out.String() != "owner-PASSWORD-Aa1\n" || !strings.Contains(errOut.String(), "password manager") || strings.Contains(errOut.String(), "owner-PASSWORD") {
+		t.Errorf("stdout %q, stderr %q", out.String(), errOut.String())
+	}
+	sock, _ = fakeControl(t, http.StatusNotFound, `{"error":"no-owner-password"}`)
+	if code, _, errOut := runWith(t, "", "mesh", "owner-password", "--control-socket", sock); code != 1 || !strings.Contains(errOut, "didn't set up this mesh") {
+		t.Errorf("without one: %d %q", code, errOut)
 	}
 }

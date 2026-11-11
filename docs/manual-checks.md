@@ -32,6 +32,9 @@ parts that only the cloud has are checked here.
    systemd-resolved) answers, and so does a mesh peer's name.
 7. **The LAN is kept out.** From another device on the LAN: the machine answers ping; no app port and no SSH
    answers; the setup link's port answers until the admin's first sign-in over the mesh, and then never again.
-   `sudo nft list table inet homerslab` on the primary shows the table, and it is there right after a reboot, before
-   Docker starts (`systemd-analyze critical-chain docker.service` has `homerslab-agent.service` in it). After
-   `sudo nft flush ruleset` the table is back within seconds.
+   `sudo nft list table inet homerslab` on the primary shows the table. After a reboot it is there before the network
+   and the engines: `systemd-analyze critical-chain docker.service` has `homerslab-firewall-restore.service` in it
+   and not `homerslab-agent.service`, and `journalctl -b -u homerslab-agent` shows READY within seconds even with
+   Docker socket-activated. After `sudo nft flush ruleset` the table is back within seconds.
+8. **A self-hosted NetBird HomersLab set up.** `sudo homerslab mesh owner-password` prints the owner's password, with a
+   warning, and it signs in at the NetBird dashboard. On an account HomersLab didn't set up, it says there is none.

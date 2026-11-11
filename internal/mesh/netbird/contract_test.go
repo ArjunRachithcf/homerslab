@@ -246,11 +246,24 @@ func TestTheMeshContractOnSelfHostedNetBird(t *testing.T) {
 		w.raw(t, tok, "POST", "/api/policies", allToAll)
 		var policies []struct{ ID, Name string }
 		decode(t, w.raw(t, tok, "GET", "/api/policies", nil), &policies)
+		var check struct{ ID string }
+		decode(t, w.raw(t, tok, "POST", "/api/posture-checks", map[string]any{"name": "any-client",
+			"checks": map[string]any{"nb_version_check": map[string]any{"min_version": "0.1.0"}}}), &check)
 		for _, p := range policies {
-			if p.Name == "homerslab-kids-to-nodes" {
+			switch p.Name {
+			case "homerslab-kids-to-nodes": // a port added
 				w.raw(t, tok, "PUT", "/api/policies/"+p.ID, map[string]any{"name": p.Name, "enabled": true, "rules": []map[string]any{{
 					"name": p.Name, "enabled": true, "action": "accept", "bidirectional": true, "protocol": "tcp", "ports": []string{"22", "443"},
 					"sources": []string{ids[mesh.RoleGroup(mesh.Kid)]}, "destinations": []string{ids[mesh.NodesGroup]}}}})
+			case "homerslab-adults-to-nodes": // a port range instead of the ports, every port in it
+				w.raw(t, tok, "PUT", "/api/policies/"+p.ID, map[string]any{"name": p.Name, "enabled": true, "rules": []map[string]any{{
+					"name": p.Name, "enabled": true, "action": "accept", "bidirectional": false, "protocol": "tcp",
+					"port_ranges": []map[string]int{{"start": 1, "end": 65535}},
+					"sources":     []string{ids[mesh.RoleGroup(mesh.Adult)]}, "destinations": []string{ids[mesh.NodesGroup]}}}})
+			case "homerslab-admins-to-nodes": // a posture check added, the rule as it was
+				w.raw(t, tok, "PUT", "/api/policies/"+p.ID, map[string]any{"name": p.Name, "enabled": true, "source_posture_checks": []string{check.ID},
+					"rules": []map[string]any{{"name": p.Name, "enabled": true, "action": "accept", "bidirectional": false, "protocol": "tcp",
+						"ports": []string{"80", "443"}, "sources": []string{ids[mesh.RoleGroup(mesh.Admin)]}, "destinations": []string{ids[mesh.NodesGroup]}}}})
 			}
 		}
 		if err := w.m.EnsurePolicies(ctx); err != nil {
@@ -265,6 +278,19 @@ func TestTheMeshContractOnSelfHostedNetBird(t *testing.T) {
 		}
 		if got := have["homerslab-kids-to-nodes"]; len(got.Ports) != 2 || got.Ports[0] != 80 || got.Ports[1] != 443 {
 			t.Errorf("the kids' policy after the check: %+v", got)
+		}
+		var raw []struct {
+			Name                string
+			SourcePostureChecks []string `json:"source_posture_checks"`
+			Rules               []struct {
+				PortRanges []any `json:"port_ranges"`
+			}
+		}
+		decode(t, w.raw(t, tok, "GET", "/api/policies", nil), &raw)
+		for _, p := range raw {
+			if strings.HasPrefix(p.Name, "homerslab-") && (len(p.SourcePostureChecks) != 0 || len(p.Rules) != 1 || len(p.Rules[0].PortRanges) != 0) {
+				t.Errorf("%s after the check: posture checks %v, rules %+v", p.Name, p.SourcePostureChecks, p.Rules)
+			}
 		}
 	})
 

@@ -38,6 +38,8 @@ type fakeNetBird struct {
 	adopted       []string
 	stale         []mesh.Token // HomersLab's older tokens, which Adopt hands back
 	failAdopts    int          // how many of the next Adopts fail, as a network would
+	failRevokes   int          // how many of the next RevokeSetups fail
+	setupExpired  bool         // the setup token is refused (it lasts a day)
 	issued        int
 	revoked       []string
 	ensured       int
@@ -86,6 +88,10 @@ func (f *fakeNetBird) Setup(_ context.Context, _ string, o netbird.Owner) (netbi
 func (f *fakeNetBird) RevokeSetup(_ context.Context, _ string, st netbird.SetupToken) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.failRevokes > 0 {
+		f.failRevokes--
+		return mesh.ErrUnreachable
+	}
 	f.setupRevoked = append(f.setupRevoked, st.Value.Reveal())
 	return nil
 }
@@ -96,6 +102,9 @@ func (f *fakeNetBird) Adopt(_ context.Context, _ string, given mesh.Secret) (net
 	if f.failAdopts > 0 {
 		f.failAdopts--
 		return netbird.Adopted{}, mesh.ErrUnreachable
+	}
+	if f.setupExpired && slices.Contains(f.setupTokens, given.Reveal()) {
+		return netbird.Adopted{}, mesh.ErrTokenRefused
 	}
 	if given.Reveal() != givenToken && !slices.Contains(f.setupTokens, given.Reveal()) {
 		return netbird.Adopted{}, mesh.ErrTokenRefused
@@ -344,6 +353,61 @@ func TestAStoppedBootstrapResumesFromItsSealedSetupToken(t *testing.T) {
 	}
 }
 
+func TestABootstrapThatStoppedAfterHomersLabHadItsTokenCarriesOnWithIt(t *testing.T) {
+	testenv.Isolate(t)
+	// HomersLab's own token is kept and works, then revoking the setup token fails and the join waits for a yes.
+	nb := &fakeNetBird{setupRequired: true, failRevokes: 1, conflicts: []mesh.Policy{{ID: "p1", Name: "ssh-for-everyone"}}}
+	p, b := atNetwork(t, nb)
+	body := map[string]any{"mesh": "netbird", "controlPlane": "self-hosted", "url": "https://netbird.ferreira.family"}
+	if s := b.mustAnswer("network", body); stepState(s, "network") != "waiting" {
+		t.Fatalf("network %q, want waiting for the yes", stepState(s, "network"))
+	}
+	body["switchOff"] = true
+	s := b.mustAnswer("network", body)
+	if stepState(s, "network") != "done" || len(nb.adopted) != 1 {
+		t.Fatalf("the retry: network %q, adopted %d times; want done with HomersLab's own token", stepState(s, "network"), len(nb.adopted))
+	}
+	if !slices.Equal(nb.setupRevoked, []string{setupToken}) || s.Answers["meshSetupUser"] != "" {
+		t.Errorf("the setup token: revoked %d times, answers say %q", len(nb.setupRevoked), s.Answers["meshSetupUser"])
+	}
+	if r := serveAgent(t, p.agent, "GET", "/v1/credentials/manager-mesh-setup-token"); r.Code != http.StatusNotFound {
+		t.Error("the setup token is still sealed")
+	}
+}
+
+func TestARefusedSetupTokenFallsBackToAskingForAToken(t *testing.T) {
+	testenv.Isolate(t)
+	nb := &fakeNetBird{setupRequired: true, failAdopts: 1}
+	p, b := atNetwork(t, nb)
+	body := map[string]string{"mesh": "netbird", "controlPlane": "self-hosted", "url": "https://netbird.ferreira.family"}
+	b.answer("network", body) // NetBird goes away right after its setup
+	nb.mu.Lock()
+	nb.setupExpired = true // a day later
+	nb.mu.Unlock()
+	s := b.mustAnswer("network", body)
+	if stepState(s, "network") != "waiting" || s.Answers["meshSetupUser"] != "" {
+		t.Fatalf("with the setup token refused: network %q, answers %v; want it waiting for a token", stepState(s, "network"), s.Answers)
+	}
+	if r := serveAgent(t, p.agent, "GET", "/v1/credentials/manager-mesh-setup-token"); r.Code != http.StatusNotFound {
+		t.Error("the refused setup token is still sealed")
+	}
+	if p.unseal(t, "manager-mesh-owner-password") == "" {
+		t.Error("the owner's password, the way to a new token, is gone")
+	}
+	if r := p.secret("mesh", givenToken); r.Code != http.StatusOK {
+		t.Fatalf("the token from the terminal: %d %s", r.Code, r.Body)
+	}
+	var owner struct{ Password string }
+	r := p.control("GET", "/api/v1/mesh/owner-password", nil)
+	r.json(t, &owner)
+	if r.Code != http.StatusOK || owner.Password != nb.bootstrapped[0].Password.Reveal() {
+		t.Errorf("the owner's password on the control socket: %d", r.Code)
+	}
+	if r := b.do("GET", "/api/v1/mesh/owner-password", nil); r.Code != http.StatusNotFound {
+		t.Errorf("the owner's password over the LAN listener: %d, want 404", r.Code)
+	}
+}
+
 func TestOnAnAccountHomersLabDidntSetUpDefaultTakesTheAdminsYes(t *testing.T) {
 	testenv.Isolate(t)
 	nb := &fakeNetBird{conflicts: []mesh.Policy{{ID: "d", Name: "Default"}}}
@@ -585,16 +649,17 @@ func TestPoliciesThatReachEveryPeerAreSwitchedOffOnlyWithTheAdminsYes(t *testing
 		t.Fatal("the primary joined, or policies were switched off, before the admin said yes")
 	}
 
-	// A policy appears between the page's list and the yes: the yes was for the other two, so it asks again.
+	// Between the page's list and the yes, one policy is swapped for another under the same name: the list reads the
+	// same, but the yes was for the policies shown, by their IDs, so it asks again.
 	nb.mu.Lock()
-	nb.conflicts = append(nb.conflicts, mesh.Policy{ID: "p3", Name: "new-one"})
+	nb.conflicts = []mesh.Policy{{ID: "p1", Name: "ssh-for-everyone"}, {ID: "p3", Name: "old-laptops"}}
 	nb.mu.Unlock()
 	s = b.mustAnswer("network", map[string]any{"mesh": "netbird", "controlPlane": "cloud", "switchOff": true})
-	if stepState(s, "network") != "waiting" || len(nb.disabled) != 0 || !strings.Contains(s.Answers["meshConflicts"], "new-one") {
+	if stepState(s, "network") != "waiting" || len(nb.disabled) != 0 || s.Answers["meshConflictIds"] != "p1\np3" {
 		t.Fatalf("a yes to an older list: network %q, disabled %v", stepState(s, "network"), nb.disabled)
 	}
 	s = b.mustAnswer("network", map[string]any{"mesh": "netbird", "controlPlane": "cloud", "switchOff": true})
-	if stepState(s, "network") != "done" || !slices.Equal(nb.disabled, []string{"p1", "p2", "p3"}) || p.host.Ran("netbird up") < 0 {
+	if stepState(s, "network") != "done" || !slices.Equal(nb.disabled, []string{"p1", "p3"}) || p.host.Ran("netbird up") < 0 {
 		t.Errorf("after the yes: network %q, disabled %v", stepState(s, "network"), nb.disabled)
 	}
 	if len(nb.adopted) != 1 {
@@ -616,10 +681,15 @@ func TestADriftCheckReportsNewPoliciesThatReachEveryPeer(t *testing.T) {
 	if len(drift) != 1 || drift[0].Source != "mesh" || !strings.Contains(drift[0].What, "someone-added-this") {
 		t.Errorf("drift reports: %+v", drift)
 	}
+	p.m.RunDue(context.Background()) // an hour later, still there: reported once
+	p.control("GET", "/api/v1/drift", nil).json(t, &drift)
+	if len(drift) != 1 {
+		t.Errorf("a standing conflict was reported %d times", len(drift))
+	}
 	if len(nb.disabled) != 0 {
 		t.Error("the drift check switched a policy off without the admin's yes")
 	}
-	if nb.ensured != ensured+1 {
+	if nb.ensured != ensured+2 { // each hourly check
 		t.Error("the drift check didn't put HomersLab's own policies back")
 	}
 }
