@@ -34,7 +34,10 @@ type Config struct {
 	// Local is the loopback address the setup listener answers on, for the link on this machine itself; the zero
 	// Addr when it doesn't.
 	Local netip.Addr
-	Now   func() time.Time
+	// Now is the wall clock, for what the manager records and shows; Elapsed is a monotonic clock, the time since a
+	// fixed moment in this process, for how old a link or a session is. Setting the wall clock moves only Now.
+	Now     func() time.Time
+	Elapsed func() time.Duration
 	// LAN is the home network; LANAddress is this machine's address on it, or the zero Addr when the setup listener
 	// isn't on the LAN.
 	LAN        func() lan.LAN
@@ -62,6 +65,10 @@ type Manager struct {
 func New(c Config) (*Manager, error) {
 	if c.Now == nil {
 		c.Now = time.Now
+	}
+	if c.Elapsed == nil {
+		start := time.Now()
+		c.Elapsed = func() time.Duration { return time.Since(start) } // monotonic: time.Now carries that reading
 	}
 	if c.LAN == nil {
 		c.LAN = lan.Cached(lan.Current, 5*time.Second)
@@ -95,7 +102,7 @@ func New(c Config) (*Manager, error) {
 	return &Manager{
 		cfg:   c,
 		db:    db,
-		setup: setup.New(db, c.Now, handlers),
+		setup: setup.New(db, setup.Clock{Now: c.Now, Elapsed: c.Elapsed}, handlers),
 		agent: newAgentClient(c.AgentSocket),
 		web:   c.Web,
 		log:   c.Log,

@@ -205,13 +205,29 @@ func (s *Store) NewLink(ctx context.Context, keyHash []byte, created, expires ti
 	})
 }
 
-// ClaimLink uses up a live link and opens a session in its place, for the client that claimed it. It returns
-// ErrNotFound when the link is unknown, already claimed, revoked or expired.
+// Link is a one-time link as the database keeps it. Its times are the wall clock's, for display and audit, and for
+// a manager started after the link was made.
+type Link struct {
+	CreatedAt, ExpiresAt time.Time
+}
+
+// Link reads a link by its key's hash, or returns ErrNotFound.
+func (s *Store) Link(ctx context.Context, keyHash []byte) (Link, error) {
+	var created, expires int64
+	err := s.db.QueryRowContext(ctx, `SELECT created_at, expires_at FROM setup_link WHERE key_hash = ?`, keyHash).Scan(&created, &expires)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Link{}, ErrNotFound
+	}
+	return Link{CreatedAt: time.UnixMilli(created).UTC(), ExpiresAt: time.UnixMilli(expires).UTC()}, err
+}
+
+// ClaimLink uses up a link that is neither claimed nor revoked, and opens a session in its place for the client that
+// claimed it. It returns ErrNotFound when the link is unknown, claimed or revoked; whether it is too old is the
+// caller's to say, by a clock the database doesn't have.
 func (s *Store) ClaimLink(ctx context.Context, keyHash, sessionHash []byte, client string, now time.Time) error {
 	return s.tx(ctx, func(tx *sql.Tx) error {
 		res, err := tx.ExecContext(ctx, `UPDATE setup_link SET claimed_at = ?
-			WHERE key_hash = ? AND claimed_at IS NULL AND revoked_at IS NULL AND expires_at > ?`,
-			now.UnixMilli(), keyHash, now.UnixMilli())
+			WHERE key_hash = ? AND claimed_at IS NULL AND revoked_at IS NULL`, now.UnixMilli(), keyHash)
 		if err != nil {
 			return err
 		}
@@ -224,17 +240,27 @@ func (s *Store) ClaimLink(ctx context.Context, keyHash, sessionHash []byte, clie
 	})
 }
 
-// TouchSession keeps a session open, if it is live, asked for by the client that opened it, last seen less than idle
-// ago and opened less than max ago. Otherwise it returns ErrNotFound.
-func (s *Store) TouchSession(ctx context.Context, tokenHash []byte, client string, now time.Time, idle, max time.Duration) error {
-	res, err := s.db.ExecContext(ctx, `UPDATE setup_session SET last_seen = ?
-		WHERE token_hash = ? AND client = ? AND revoked_at IS NULL AND last_seen > ? AND created_at > ?`,
-		now.UnixMilli(), tokenHash, client, now.Add(-idle).UnixMilli(), now.Add(-max).UnixMilli())
-	if err != nil {
-		return err
+// Session is a setup session as the database keeps it, with the wall clock's times.
+type Session struct {
+	Client              string
+	CreatedAt, LastSeen time.Time
+}
+
+// Session reads a session that wasn't revoked, by its token's hash, or returns ErrNotFound.
+func (s *Store) Session(ctx context.Context, tokenHash []byte) (Session, error) {
+	var out Session
+	var created, seen int64
+	err := s.db.QueryRowContext(ctx, `SELECT client, created_at, last_seen FROM setup_session
+		WHERE token_hash = ? AND revoked_at IS NULL`, tokenHash).Scan(&out.Client, &created, &seen)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Session{}, ErrNotFound
 	}
-	if n, _ := res.RowsAffected(); n != 1 {
-		return ErrNotFound
-	}
-	return nil
+	out.CreatedAt, out.LastSeen = time.UnixMilli(created).UTC(), time.UnixMilli(seen).UTC()
+	return out, err
+}
+
+// SeeSession records when a session was last used.
+func (s *Store) SeeSession(ctx context.Context, tokenHash []byte, at time.Time) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE setup_session SET last_seen = ? WHERE token_hash = ?`, at.UnixMilli(), tokenHash)
+	return err
 }

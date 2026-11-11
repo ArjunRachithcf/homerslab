@@ -35,17 +35,37 @@ const (
 	linkLocalV6 = "fe80::1234:1" // link-local: only with the zone of an interface that carries the default route
 )
 
-// clock is the test's time, moved by hand.
+// clock is the test's time, moved by hand: the wall clock, which can be set, and the monotonic clock of the manager's
+// process, which only goes on.
 type clock struct {
-	mu  sync.Mutex
-	now time.Time
+	mu      sync.Mutex
+	now     time.Time
+	elapsed time.Duration
 }
 
 func (c *clock) Now() time.Time { c.mu.Lock(); defer c.mu.Unlock(); return c.now }
+
+func (c *clock) Elapsed() time.Duration { c.mu.Lock(); defer c.mu.Unlock(); return c.elapsed }
+
+// Add lets d go by.
 func (c *clock) Add(d time.Duration) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	c.now, c.elapsed = c.now.Add(d), c.elapsed+d
+}
+
+// Set moves the wall clock by d, as NTP stepping it or someone setting it does; no time goes by.
+func (c *clock) Set(d time.Duration) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	c.now = c.now.Add(d)
+}
+
+// boot starts a new process's monotonic clock, which has nothing to do with the last one's.
+func (c *clock) boot() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.elapsed = 7 * time.Second
 }
 
 // primary is a manager with its own database and a real agent on the invented primary.
@@ -62,6 +82,8 @@ type primary struct {
 	// lanReads counts how often the manager asks for the machine's LAN address.
 	lanReads atomic.Int32
 	steps    map[string]setup.Handler
+	// claimedBrowser is a browser a test keeps across a restart.
+	claimedBrowser *browser
 }
 
 type option func(*primary)
@@ -106,6 +128,7 @@ func (p *primary) open() {
 		SetupPort:   p.port,
 		Local:       p.local,
 		Now:         p.clock.Now,
+		Elapsed:     p.clock.Elapsed,
 		LAN: func() lan.LAN {
 			return lan.LAN{
 				Prefixes:   []netip.Prefix{netip.MustParsePrefix("192.168.1.0/24"), netip.MustParsePrefix("fd00:1::/64")},
@@ -130,6 +153,7 @@ func (p *primary) restart() {
 	if err := p.m.Close(); err != nil {
 		p.t.Fatal(err)
 	}
+	p.clock.boot()
 	p.open()
 }
 

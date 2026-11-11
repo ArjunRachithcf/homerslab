@@ -3,6 +3,7 @@
 package setup
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
@@ -10,6 +11,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/ArjunRachithcf/homerslab/internal/manager/store"
@@ -67,16 +69,49 @@ const (
 	SessionMax = 2 * time.Hour
 )
 
+// Clock is setup's time.
+type Clock struct {
+	// Now is the wall clock: the times setup records and shows.
+	Now func() time.Time
+	// Elapsed is a monotonic clock, the time since a fixed moment in this process. How old a link or a session is goes
+	// by it, so setting the wall clock back or forward neither lengthens nor cuts them.
+	Elapsed func() time.Duration
+}
+
 // Setup is first-time setup on this primary.
 type Setup struct {
 	db       *store.Store
-	now      func() time.Time
+	clock    Clock
 	handlers map[string]Handler
+
+	// mu guards what this process knows of the live link and session, by its monotonic clock. A new link ends every
+	// earlier one and every session, so there is at most one of each.
+	mu      sync.Mutex
+	link    *liveLink
+	session *liveSession
 }
 
+// liveLink is the link this process made, and when (Elapsed).
+type liveLink struct {
+	hash []byte
+	made time.Duration
+}
+
+// liveSession is the session this process opened or took over: its token's hash, the client it is bound to, when it
+// was opened and last used, and when its last use was written to the database (Elapsed).
+type liveSession struct {
+	hash               []byte
+	client             string
+	opened, seen, kept time.Duration
+}
+
+// SeenEvery is how often a session's last use is written to the database, at most: reading setup writes nothing more,
+// and a restarted manager knows how long the session was idle, to within this.
+const SeenEvery = time.Minute
+
 // New is first-time setup kept in db. Handlers answer the steps that are built; a step without one is not built yet.
-func New(db *store.Store, now func() time.Time, handlers map[string]Handler) *Setup {
-	return &Setup{db: db, now: now, handlers: handlers}
+func New(db *store.Store, clock Clock, handlers map[string]Handler) *Setup {
+	return &Setup{db: db, clock: clock, handlers: handlers}
 }
 
 // StoreSteps are the steps as the database seeds them.
@@ -168,7 +203,7 @@ func (s *Setup) Answer(ctx context.Context, id string, over Half, answer json.Ra
 	if err != nil {
 		return State{}, err
 	}
-	if err := s.db.CompleteStep(ctx, id, keep, s.now()); err != nil {
+	if err := s.db.CompleteStep(ctx, id, keep, s.clock.Now()); err != nil {
 		return State{}, err
 	}
 	return s.State(ctx)
@@ -199,30 +234,91 @@ func (s *Setup) NewLink(ctx context.Context) (Link, error) {
 		return Link{}, ErrLANHalfDone
 	}
 	key, hash := token()
-	now := s.now()
+	now := s.clock.Now()
 	l := Link{Key: key, ExpiresAt: now.Add(LinkLife)}
-	return l, s.db.NewLink(ctx, hash, now, l.ExpiresAt)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.db.NewLink(ctx, hash, now, l.ExpiresAt); err != nil {
+		return Link{}, err
+	}
+	s.link, s.session = &liveLink{hash: hash, made: s.clock.Elapsed()}, nil
+	return l, nil
 }
 
 // Claim uses up a link and returns the token of the session it opens for client, the claiming device's address.
 func (s *Setup) Claim(ctx context.Context, key, client string) (string, error) {
-	session, sessionHash := token()
-	err := s.db.ClaimLink(ctx, digest(key), sessionHash, client, s.now())
+	hash := digest(key)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	row, err := s.db.Link(ctx, hash)
 	if errors.Is(err, store.ErrNotFound) {
 		return "", ErrLinkRefused
 	}
-	return session, err
+	if err != nil {
+		return "", err
+	}
+	elapsed := s.clock.Elapsed()
+	age := s.clock.Now().Sub(row.CreatedAt) // a link made before this process started
+	// Whether it was claimed or revoked, ClaimLink says, at once with using it up.
+	if s.link != nil && bytes.Equal(s.link.hash, hash) {
+		age = elapsed - s.link.made
+	}
+	if !within(age, LinkLife) {
+		return "", ErrLinkRefused
+	}
+	session, sessionHash := token()
+	err = s.db.ClaimLink(ctx, hash, sessionHash, client, s.clock.Now())
+	if errors.Is(err, store.ErrNotFound) {
+		return "", ErrLinkRefused
+	}
+	if err != nil {
+		return "", err
+	}
+	s.session = &liveSession{hash: sessionHash, client: client, opened: elapsed, seen: elapsed, kept: elapsed}
+	return session, nil
 }
 
 // Session checks a session's token, from client, and keeps the session open. The token travels in clear on the LAN,
-// so it is good only from the device that claimed the link, and for a while.
+// so it is good only from the device that claimed the link, and for a while. It writes to the database at most every
+// SeenEvery, and a write that fails doesn't refuse the session: reading setup must work on a full disk.
 func (s *Setup) Session(ctx context.Context, tok, client string) error {
-	err := s.db.TouchSession(ctx, digest(tok), client, s.now(), SessionIdle, SessionMax)
-	if errors.Is(err, store.ErrNotFound) {
+	hash := digest(tok)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	elapsed := s.clock.Elapsed()
+	live := s.session
+	if live == nil || !bytes.Equal(live.hash, hash) {
+		// Not this process's: a session opened before a restart carries on if the wall clock says it is within its
+		// limits. Its age by the wall clock is all there is, and an age below zero is unknown.
+		row, err := s.db.Session(ctx, hash)
+		if errors.Is(err, store.ErrNotFound) {
+			return ErrNoSession
+		}
+		if err != nil {
+			return err
+		}
+		now := s.clock.Now()
+		opened, idle := now.Sub(row.CreatedAt), now.Sub(row.LastSeen)
+		if !within(opened, SessionMax) || !within(idle, SessionIdle) {
+			return ErrNoSession
+		}
+		live = &liveSession{hash: hash, client: row.Client, opened: elapsed - opened, seen: elapsed - idle, kept: elapsed - idle}
+		s.session = live
+	}
+	if live.client != client || !within(elapsed-live.opened, SessionMax) || !within(elapsed-live.seen, SessionIdle) {
 		return ErrNoSession
 	}
-	return err
+	live.seen = elapsed
+	if elapsed-live.kept >= SeenEvery {
+		if err := s.db.SeeSession(ctx, hash, s.clock.Now()); err == nil {
+			live.kept = elapsed
+		}
+	}
+	return nil
 }
+
+// within says whether an age is known and below limit.
+func within(age, limit time.Duration) bool { return age >= 0 && age < limit }
 
 // token is 256 random bits, URL-safe, and the hash the database keeps of it.
 func token() (string, []byte) {
