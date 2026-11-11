@@ -7,6 +7,7 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -129,6 +130,7 @@ var (
 	ErrNoSession       = errors.New("no-session")
 	ErrLANHalfDone     = errors.New("lan-half-done") // setup continues over the mesh
 	ErrNotWaiting      = errors.New("not-waiting")   // a secret no step is waiting for
+	ErrBadNonce        = errors.New("bad-nonce")     // a claim without its tab's nonce: the link is still good
 )
 
 const (
@@ -138,7 +140,29 @@ const (
 	SessionIdle = 30 * time.Minute
 	// SessionMax is how long a session lasts at most; then a new link continues where setup stopped.
 	SessionMax = 2 * time.Hour
+	// ClaimAgainWithin is how long after a claim the same tab may send it again, from the same address with the same
+	// nonce, and get its session back: for a claim whose answer the network lost, or a reload while it was out.
+	ClaimAgainWithin = time.Minute
 )
+
+// A nonce is the claiming tab's: at least 128 random bits, URL-safe base64, and no longer than nonceMax.
+const (
+	nonceMin = 22
+	nonceMax = 128
+)
+
+// goodNonce says whether a claim's nonce is long enough to name one tab, and plain URL-safe base64.
+func goodNonce(n string) bool {
+	if len(n) < nonceMin || len(n) > nonceMax {
+		return false
+	}
+	for _, c := range []byte(n) {
+		if !('a' <= c && c <= 'z' || 'A' <= c && c <= 'Z' || '0' <= c && c <= '9' || c == '-' || c == '_') {
+			return false
+		}
+	}
+	return true
+}
 
 // Clock is setup's time.
 type Clock struct {
@@ -164,14 +188,17 @@ type Setup struct {
 	seen *lastUse
 }
 
-// lastUse is when this process last saw a session used, and when it last wrote that to the database (Elapsed).
+// lastUse is when this process last saw a session used, and when it last wrote that to the database (Elapsed). Used
+// says whether its token was ever used: then its claim got its answer, and is never answered again.
 type lastUse struct {
 	hash       []byte
 	seen, kept time.Duration
+	used       bool
 }
 
-// SeenEvery is how often a session's last use is written to the database, at most: reading setup writes nothing more,
-// and a restarted manager knows how long the session was idle, to within this.
+// SeenEvery is how often a session's last use is written to the database, at most, after its first use, which is
+// written at once (a claim whose session was used is never answered again, even after a restart). Reading setup
+// writes nothing more, and a restarted manager knows how long the session was idle, to within this.
 const SeenEvery = time.Minute
 
 // New is first-time setup kept in db. Handlers answer the steps that are built; a step without one is not built yet.
@@ -403,32 +430,68 @@ func age(now, then store.Moment) (time.Duration, bool) {
 	return now.Since - then.Since, true
 }
 
-// Claim uses up a link and returns the token of the session it opens for client, the claiming device's address.
-func (s *Setup) Claim(ctx context.Context, key, client string) (string, error) {
-	hash := digest(key)
+// Claim uses up a link and returns the token of the session it opens for client, the claiming device's address. Nonce
+// is the claiming tab's own: within ClaimAgainWithin of the claim, the same key and nonce from the same client get
+// the same session again, with a new token (the one whose answer was lost no longer opens it), and again says so.
+// Anyone else is refused.
+func (s *Setup) Claim(ctx context.Context, key, nonce, client string) (tok string, again bool, err error) {
+	if !goodNonce(nonce) {
+		return "", false, ErrBadNonce
+	}
+	hash, nonceHash := digest(key), digest(nonce)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	row, err := s.db.Link(ctx, hash)
 	if errors.Is(err, store.ErrNotFound) {
-		return "", ErrLinkRefused
+		return "", false, ErrLinkRefused
 	}
 	if err != nil {
-		return "", err
+		return "", false, err
 	}
 	// Whether it was claimed or revoked, ClaimLink says, at once with using it up.
 	now := s.moment()
-	if old, ok := age(now, row.Made); !ok || !within(old, LinkLife) {
-		return "", ErrLinkRefused
+	if old, ok := age(now, row.Made); ok && within(old, LinkLife) {
+		session, sessionHash := token()
+		err = s.db.ClaimLink(ctx, hash, nonceHash, sessionHash, client, now)
+		if err == nil {
+			s.seen = &lastUse{hash: sessionHash, seen: now.Since, kept: now.Since}
+			return session, false, nil
+		}
+		if !errors.Is(err, store.ErrNotFound) {
+			return "", false, err
+		}
 	}
-	session, sessionHash := token()
-	err = s.db.ClaimLink(ctx, hash, sessionHash, client, now)
+	tok, err = s.claimAgain(ctx, hash, nonceHash, client, now)
+	return tok, err == nil, err
+}
+
+// claimAgain answers a link already claimed, under the lock: the same session, with a new token, if the claim was
+// this tab's (its nonce), from this client, less than ClaimAgainWithin ago in this boot, and its session's token was
+// never used (then the answer wasn't lost). Otherwise it is refused. ClaimAgainWithin is shorter than SessionIdle
+// and SessionMax, so a session within it hasn't ended by either.
+func (s *Setup) claimAgain(ctx context.Context, hash, nonceHash []byte, client string, now store.Moment) (string, error) {
+	c, err := s.db.Claim(ctx, hash)
 	if errors.Is(err, store.ErrNotFound) {
 		return "", ErrLinkRefused
 	}
 	if err != nil {
 		return "", err
 	}
-	s.seen = &lastUse{hash: sessionHash, seen: now.Since, kept: now.Since}
+	claimed, ok := age(now, c.Session.Opened)
+	used := c.Session.Seen.Since != c.Session.Opened.Since || s.seen != nil && bytes.Equal(s.seen.hash, c.SessionHash) && s.seen.used
+	if subtle.ConstantTimeCompare(c.NonceHash, nonceHash) != 1 || c.Session.Client != client || !ok ||
+		!within(claimed, ClaimAgainWithin) || used {
+		return "", ErrLinkRefused
+	}
+	session, sessionHash := token()
+	err = s.db.RenewClaim(ctx, hash, c.SessionHash, sessionHash, now)
+	if errors.Is(err, store.ErrNotFound) {
+		return "", ErrLinkRefused
+	}
+	if err != nil {
+		return "", err
+	}
+	s.seen = &lastUse{hash: sessionHash, seen: now.Since, kept: c.Session.Seen.Since}
 	return session, nil
 }
 
@@ -463,7 +526,7 @@ func (s *Setup) check(ctx context.Context, hash []byte, client string) (store.Mo
 	now := s.moment()
 	use := s.seen
 	if use == nil || !bytes.Equal(use.hash, hash) {
-		use = &lastUse{hash: hash, seen: row.Seen.Since, kept: row.Seen.Since} // opened before a restart
+		use = &lastUse{hash: hash, seen: row.Seen.Since, kept: row.Seen.Since, used: row.Seen.Since != row.Opened.Since} // opened before a restart
 	}
 	opened, ok := age(now, row.Opened)
 	if !ok || row.Client != client || !within(opened, SessionMax) || !within(now.Since-use.seen, SessionIdle) {
@@ -471,7 +534,9 @@ func (s *Setup) check(ctx context.Context, hash []byte, client string) (store.Mo
 	}
 	use.seen = now.Since
 	s.seen = use
-	if now.Since-use.kept < SeenEvery {
+	first := !use.used
+	use.used = true
+	if !first && now.Since-use.kept < SeenEvery {
 		return now, false, nil
 	}
 	use.kept = now.Since
