@@ -4,10 +4,10 @@
 import { inflateSync } from 'node:zlib';
 
 /**
- * Which of a box's background pixels decide its contrast: the worst patch of them that is more than a tenth of the box
- * wide and more than a tenth of it high (the patch's contrast is its best pixel's). A line across the box no thicker
- * than a tenth of it (the glass's rim, a field's border, a focus ring, a 1px rule through 16px words) decides nothing;
- * a light patch under part of a word that size or larger, a few letters wide and a stroke or two high, decides it.
+ * Which of a box's background pixels decide its contrast: the worst square patch of them whose side is more than a
+ * tenth of the box's height, a line's height (the patch's contrast is its best pixel's). A line through the box no
+ * thicker than that, across or down (the glass's rim, a field's border, a focus ring, a 1px rule through 16px words),
+ * decides nothing; anything that size or larger under the words decides it, however long the word.
  */
 export const PATCH = 0.1;
 
@@ -141,7 +141,10 @@ export function textRuns(task: { scrollTo?: string; unfade?: number[] } | null):
       let f = effectCache.get(e);
       if (f === undefined) {
         const s = css(e);
-        f = s.filter !== 'none' ? `under a filter (${where(e)})` : s.mixBlendMode !== 'normal' ? `blended with what is below (${where(e)})` : effect(up(e));
+        const shadowsOnly = s.filter.replace(/drop-shadow\((?:[^()]|\([^()]*\))*\)/g, '').trim() === ''; // a shadow changes no word
+        f = s.filter !== 'none' && !shadowsOnly ? `under a filter (${where(e)})`
+          : s.maskImage !== 'none' || (s.getPropertyValue('-webkit-mask-image') || 'none') !== 'none' ? `under a mask (${where(e)})`
+            : s.mixBlendMode !== 'normal' ? `blended with what is below (${where(e)})` : effect(up(e));
         effectCache.set(e, f);
       }
       return f;
@@ -156,6 +159,41 @@ export function textRuns(task: { scrollTo?: string; unfade?: number[] } | null):
         if (!mine) return where(e);
       }
       return 'nothing it can find';
+    };
+    // ::first-letter and ::first-line paint their own colour on a block's first letter and first line: the block's first
+    // text, and every text on its first line, are not measured when they do
+    const blockOf = (e: Element): Element => {
+      let b: Element = e;
+      for (let u = up(b); u && /^(inline|contents)$/.test(css(b).display); u = up(b)) b = u;
+      return b;
+    };
+    const firstTexts = new Map<Element, Text | null>();
+    const firstText = (block: Element) => {
+      if (!firstTexts.has(block)) {
+        const tw = document.createTreeWalker(block, NodeFilter.SHOW_TEXT, { acceptNode: (n) => (/\S/.test((n as Text).data) ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_SKIP) });
+        firstTexts.set(block, tw.nextNode() as Text | null);
+      }
+      return firstTexts.get(block) ?? null;
+    };
+    const ownColour = (block: Element, pseudo: string) => {
+      const [p, b] = [getComputedStyle(block, pseudo), css(block)];
+      return p.color !== b.color || p.webkitTextFillColor !== b.webkitTextFillColor;
+    };
+    const firstLetter = (node: Text) => {
+      const block = blockOf(node.parentElement ?? document.body);
+      return firstText(block) === node && ownColour(block, '::first-letter');
+    };
+    const firstLine = (node: Text) => {
+      const block = blockOf(node.parentElement ?? document.body);
+      const first = firstText(block);
+      if (!first || !ownColour(block, '::first-line')) return false;
+      const lineOf = (t: Text) => {
+        const r = document.createRange();
+        r.selectNodeContents(t);
+        return r.getClientRects()[0];
+      };
+      const [mine, line] = [lineOf(node), lineOf(first)];
+      return !!mine && !!line && mine.top < line.bottom;
     };
     const fadeCache = new Map<Element, number>();
     const fadeOf = (e: Element | null): number => {
@@ -229,11 +267,11 @@ export function textRuns(task: { scrollTo?: string; unfade?: number[] } | null):
       const ink = rgba(paint);
       const fade = fadeOf(el);
       // what paints these words otherwise than in their ink, over the pixels below: not measured
-      const letter = field ? null : getComputedStyle(el, '::first-letter');
       const unreadable = !ink ? `painted with “${paint}”, not one colour`
         : /text/.test(s.backgroundClip + s.getPropertyValue('-webkit-background-clip')) ? 'painted by its background (background-clip: text)'
-          : letter && (letter.color !== s.color || letter.webkitTextFillColor !== s.webkitTextFillColor) ? 'its first letter has a colour of its own (::first-letter)'
-            : effect(el);
+          : !field && firstLetter(node as Text) ? 'its first letter has a colour of its own (::first-letter)'
+            : !field && firstLine(node as Text) ? 'its first line has a colour of its own (::first-line)'
+              : effect(el);
       if (!unreadable && ink && ink[3] * fade === 0) continue; // nothing painted
 
       // each box (a field's: its content box, as a whole), and how to find it again once its element has scrolled
@@ -305,10 +343,11 @@ export function textRuns(task: { scrollTo?: string; unfade?: number[] } | null):
       if (e.closest(':disabled, [aria-disabled="true"], [inert]') || (modal && !modal.contains(e))) continue;
       for (const pseudo of ['::before', '::after'] as const) {
         const ps = getComputedStyle(e, pseudo);
-        if (ps.display === 'none' || ps.content === 'none' || ps.content === 'normal') continue;
+        if (ps.display === 'none' || ps.content === 'none' || ps.content === 'normal' || ps.visibility !== 'visible' || Number(ps.opacity) === 0) continue;
         const words = [...ps.content.matchAll(/"((?:[^"\\]|\\.)*)"/g)].map((m) => m[1]).join('');
         if (!/\S/.test(words) && !/counter|attr\(|quote/.test(ps.content)) continue;
-        let b = cut(inner(e), { l: -Infinity, t: -Infinity, r: Infinity, b: Infinity });
+        const r = e.getBoundingClientRect(); // an inline box has no client size
+        let b: Edges = { l: r.left, t: r.top, r: r.right, b: r.bottom };
         for (const c of clips(e).hard) b = cut(b, c);
         if (b.r - b.l < 2 || b.b - b.t < 2) continue;
         runs.push({ id: -1 - (2 * i + (pseudo === '::after' ? 1 : 0)), where: `${where(e)}${pseudo}`, text: words || ps.content,
@@ -330,13 +369,16 @@ export function refade(): void {
   delete w.a11yUnfaded;
 }
 
+/** The colour hideWords paints every glyph in for `sentinel`, to see where words show. */
+export const SENTINEL: [number, number, number] = [255, 0, 255];
+
 /**
- * In the page: hides every word (`on`), or shows them again, without moving anything. Only the glyphs go:
- * -webkit-text-fill-color, not `color`, so an icon, border or fill drawn in currentColor stays as it is. Transitions
- * stop, so the words go at once. The sheet is a constructed one (the pages' CSP refuses inline style), adopted by the
- * document and every open shadow root, however deep.
+ * In the page: hides every word (`hide`), paints every word in SENTINEL (`sentinel`), or shows them as they are again
+ * (`show`), without moving anything. Only the glyphs change: -webkit-text-fill-color, not `color`, so an icon, border
+ * or fill drawn in currentColor stays as it is. Transitions stop, so the words change at once. The sheet is a
+ * constructed one (the pages' CSP refuses inline style), adopted by the document and every open shadow root.
  */
-export function hideWords(on: boolean): void {
+export function hideWords(mode: 'hide' | 'sentinel' | 'show'): void {
   const w = window as { a11yHidden?: CSSStyleSheet };
   const roots: (Document | ShadowRoot)[] = [document];
   const walk = (root: Document | ShadowRoot) => {
@@ -348,13 +390,14 @@ export function hideWords(on: boolean): void {
     }
   };
   walk(document);
-  if (on) {
-    const sheet = new CSSStyleSheet();
-    sheet.replaceSync(`*, *::before, *::after, *::placeholder { -webkit-text-fill-color: transparent !important;
+  if (mode !== 'show') {
+    const glyphs = mode === 'hide' ? 'transparent' : 'rgb(255, 0, 255)';
+    const sheet = w.a11yHidden ?? new CSSStyleSheet();
+    sheet.replaceSync(`*, *::before, *::after, *::placeholder { -webkit-text-fill-color: ${glyphs} !important;
       -webkit-text-stroke-color: transparent !important; text-shadow: none !important; text-decoration-color: transparent !important;
       transition: none !important; } *::marker { color: transparent !important; }
-      svg text, svg tspan, svg textPath { fill: transparent !important; stroke: transparent !important; }`);
-    for (const r of roots) r.adoptedStyleSheets = [...r.adoptedStyleSheets, sheet];
+      svg text, svg tspan, svg textPath { fill: ${glyphs} !important; stroke: transparent !important; }`);
+    if (!w.a11yHidden) for (const r of roots) r.adoptedStyleSheets = [...r.adoptedStyleSheets, sheet];
     w.a11yHidden = sheet;
   } else {
     for (const r of roots) r.adoptedStyleSheets = r.adoptedStyleSheets.filter((s) => s !== w.a11yHidden);
@@ -460,11 +503,12 @@ export function boxContrast(shot: Shot, box: Box, ink: TextRun['ink'], fade: num
 }
 
 /**
- * The worst patch of a grid of contrasts that is more than PATCH of its width wide and of its height high: the lowest,
+ * The worst square patch of a grid of contrasts whose side is more than PATCH of its height: the lowest,
  * over every such patch, of the best contrast in it (a sliding maximum along the rows, then down the columns).
  */
 export function worstPatch(contrast: Float64Array, width: number, height: number): number {
-  const [kw, kh] = [Math.min(width, Math.floor(PATCH * width) + 1), Math.min(height, Math.floor(PATCH * height) + 1)];
+  const kh = Math.min(height, Math.floor(PATCH * height) + 1);
+  const kw = Math.min(width, kh); // square: a long word's patch is no wider than a short one's
   const across = new Float64Array((width - kw + 1) * height);
   for (let y = 0; y < height; y++) {
     for (let x = 0; x + kw <= width; x++) {
@@ -482,4 +526,31 @@ export function worstPatch(contrast: Float64Array, width: number, height: number
     }
   }
   return worst;
+}
+
+/**
+ * Whether a word's glyphs show in its box: in `marked` (the area shot with every glyph in SENTINEL) some pixel differs
+ * from `shot` (the glyphs hidden) by at least a third of what the sentinel, faded as the word is, would change it by.
+ * Glyphs under something drawn over them don't show, whatever hit-testing says. null when the background itself is
+ * the sentinel's colour, and nothing can be told.
+ */
+export function glyphsShow(shot: Shot, marked: Shot, box: Box, fade: number, dpr: number): boolean | null {
+  const [x0, y0] = [Math.max(0, Math.round(box.x * dpr)), Math.max(0, Math.round(box.y * dpr))];
+  const [x1, y1] = [Math.min(shot.width, Math.round((box.x + box.w) * dpr)), Math.min(shot.height, Math.round((box.y + box.h) * dpr))];
+  let [most, far, n] = [0, 0, 0];
+  for (let y = y0; y < y1; y++) {
+    for (let x = x0; x < x1; x++) {
+      const o = (y * shot.width + x) * 4;
+      let [moved, away] = [0, 0];
+      for (let c = 0; c < 3; c++) {
+        moved += Math.abs((marked.rgba[o + c] ?? 0) - (shot.rgba[o + c] ?? 0));
+        away += Math.abs((SENTINEL[c] ?? 0) - (shot.rgba[o + c] ?? 0));
+      }
+      most = Math.max(most, moved);
+      far += away;
+      n++;
+    }
+  }
+  if (!n || far / n < 60) return null;
+  return most >= (fade * far) / n / 3;
 }

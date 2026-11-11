@@ -92,6 +92,23 @@ const plants: {
     html: '<div id="planted-filter"><p>Filtered words</p></div>', css: [['#planted-filter', 'filter', 'brightness(1.8)']] },
   { name: 'words that blend', look: { theme: 'light', motion: 'reduce', transparency: 'reduce' },
     html: '<p id="planted-blend">Blended words</p>', css: [['#planted-blend', 'mix-blend-mode', 'difference']] },
+  { name: 'words drawn by CSS content on an inline box', look: { theme: 'light', motion: 'reduce', transparency: 'reduce' },
+    html: '<p>Read <span id="planted-gen-inline"></span></p>', sheet: '#planted-gen-inline::before { content: "the guide"; }' },
+  { name: 'a first line in its own colour', look: { theme: 'light', motion: 'reduce', transparency: 'reduce' },
+    html: '<p id="planted-firstline">First line</p>', sheet: '#planted-firstline::first-line { color: #ddd; }' },
+  { name: 'masked words', look: { theme: 'light', motion: 'reduce', transparency: 'reduce' },
+    html: '<div id="planted-mask"><p>Masked words</p></div>', sheet: '#planted-mask { mask-image: linear-gradient(90deg, #000, transparent); }' },
+  // a dark band 10px wide under a long word: a patch as wide as a tenth of the word would step over it
+  { name: 'a word over a narrow dark band', look: { theme: 'light', motion: 'reduce', transparency: 'reduce' },
+    html: '<p id="planted-band">Configurations</p>',
+    css: [['#planted-band', 'color', '#333'], ['#planted-band', 'font-size', '16px'], ['#planted-band', 'display', 'inline-block'],
+      ['#planted-band', 'background-image', 'linear-gradient(90deg, #fff 60px, #444 60px 70px, #fff 70px)']] },
+  // a word under its own ancestor's ::after: no hit test sees that cover (the ancestor's paint is the background), but
+  // the word's glyphs don't show
+  { name: 'a faint word under its box’s ::after', look: { theme: 'light', motion: 'reduce', transparency: 'reduce' },
+    html: '<div id="planted-box"><p id="planted-boxed">Under a pseudo bar</p></div>',
+    sheet: '#planted-box { position: relative; } #planted-box::after { content: ""; position: absolute; inset: 0; background: #222; pointer-events: none; }',
+    css: [['#planted-boxed', 'color', '#d0d0d0']] },
   // large text needs 3:1, and gets no more slack: 3.2:1 passes at 24px (setup.a11y.spec.ts), and fails at 18px
   { name: 'words at 3.2:1 below large', look: { theme: 'light', motion: 'reduce', transparency: 'reduce' },
     html: '<p id="planted-small">Not quite large</p>', css: [['#planted-small', 'font-size', '18px'], ['#planted-small', 'color', '#909090']] }, // 3.19:1 on white

@@ -112,7 +112,10 @@ test('the pixel check passes words that read well', async ({ page, primary }) =>
     lead.insertAdjacentHTML('afterend', ['<div id="ok-host"></div><p id="ok-lined">Words with a line through</p>',
       '<select id="ok-select" aria-label="A select"><option>A shown option</option></select>',
       '<input id="ok-submit" type="submit" value="A value">',
-      '<p id="ok-large">Large words</p><p id="ok-bold">Bold words</p><p id="ok-edge">Nearly large</p>'].join(''));
+      '<p id="ok-large">Large words</p><p id="ok-bold">Bold words</p><p id="ok-edge">Nearly large</p>',
+      '<div id="ok-shadowed"><p>Words in a shadowed card</p></div>',
+      '<p id="ok-tip">Tip <span id="ok-tipped" data-tip="A hint">here</span></p>',
+      '<p id="ok-letter">Drop <b>bold</b> rest</p>'].join(''));
     document.querySelector('#ok-host')?.attachShadow({ mode: 'open' }).append(Object.assign(document.createElement('button'), { textContent: 'A shadow button' }));
   });
   const css: [string, string, string][] = [
@@ -126,9 +129,20 @@ test('the pixel check passes words that read well', async ({ page, primary }) =>
   for (const [sel, prop, value] of css) {
     await page.locator(sel).evaluate((el, pv) => (el as HTMLElement).style.setProperty(pv.prop, pv.value, 'important'), { prop, value });
   }
-  const { runs } = await legible(page);
+  await page.evaluate(() => {
+    const sheet = new CSSStyleSheet();
+    sheet.replaceSync([
+      '#ok-shadowed { filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.2)); }', // a shadow changes no word's pixels
+      '#ok-tipped::after { content: attr(data-tip); opacity: 0; } #ok-tipped::before { content: "Hidden"; visibility: hidden; }', // not shown
+      '#ok-letter::first-letter { color: #555; }', // the paragraph's first letter only
+    ].join('\n'));
+    document.adoptedStyleSheets = [...document.adoptedStyleSheets, sheet];
+  });
+  const { runs, problems } = await legible(page);
+  expect(problems.level).toBe('glass Solid (reduced transparency)');
   const run = (text: string) => runs.find((r) => r.text === text);
-  for (const text of ['A shadow button', 'Words with a line through', 'A shown option', 'A value', 'Large words', 'Bold words']) {
+  for (const text of ['A shadow button', 'Words with a line through', 'A shown option', 'A value', 'Large words', 'Bold words',
+    'Words in a shadowed card', 'bold', 'rest']) {
     const r = run(text);
     expect(r, text).toBeDefined();
     expect(r?.unmeasured, text).toEqual([]);
@@ -138,4 +152,6 @@ test('the pixel check passes words that read well', async ({ page, primary }) =>
   expect(run('Large words')?.contrast).toBeLessThan(3.5);
   expect(run('Bold words')?.needs).toBe(3);
   expect(run('Nearly large')?.needs).toBe(4.5);
+  expect([...new Set(run('Drop')?.unmeasured)]).toEqual(['its first letter has a colour of its own (::first-letter)']);
+  expect(runs.filter((r) => r.where.startsWith('span#ok-tipped:')).map((r) => r.where)).toEqual([]);
 });

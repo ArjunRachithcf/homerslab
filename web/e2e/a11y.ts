@@ -6,7 +6,7 @@
 // each element; axe's findings and the contrasts measured are attached to the HTML report.
 import AxeBuilder from '@axe-core/playwright';
 import { expect, type Page, test } from '@playwright/test';
-import { boxContrast, decodePng, hideWords, needed, PATCH, refade, type Shot, type TextRun, textRuns } from './pixels';
+import { boxContrast, decodePng, glyphsShow, hideWords, needed, PATCH, refade, type Shot, type TextRun, textRuns } from './pixels';
 
 // axe-core's types, as the AxeBuilder in use has them (axe-core itself is its dependency, not ours)
 type AxeResults = Awaited<ReturnType<AxeBuilder['analyze']>>;
@@ -130,7 +130,7 @@ export async function legible(page: Page, glass?: Glass): Promise<{ runs: Measur
     // reduced transparency makes every material solid, whatever the level
     const levelName = reduced ? 'glass Solid (reduced transparency)' : !level ? 'no glass level'
       : `glass ${preset ? preset[0]?.toUpperCase() + preset.slice(1) : 'of its own'} (--glass: ${level})`;
-    await page.evaluate(hideWords, true);
+    await page.evaluate(hideWords, 'hide' as const);
     let { runs, signature } = await page.evaluate(textRuns, null);
     if (!runs.length) throw new Error('no words found on the page');
     const first = runs;
@@ -162,7 +162,22 @@ export async function legible(page: Page, glass?: Glass): Promise<{ runs: Measur
             await page.evaluate(refade);
           }
         }
+        // the same area with every glyph in the sentinel colour: a word whose glyphs don't show is covered, by whatever
+        await page.evaluate(hideWords, 'sentinel' as const);
+        let marked: Shot;
+        try {
+          marked = await shoot();
+        } finally {
+          await page.evaluate(hideWords, 'hide' as const);
+        }
         for (const [r, b] of now) {
+          const at = { ...b, x: b.x - left, y: b.y - top };
+          const shows = glyphsShow(shot, marked, at, r.fade, shot.width / clip.width);
+          if (shows !== true) {
+            unmeasured.set(b.key, shows === null ? 'on a background of the sentinel’s colour, so nobody can tell whether its glyphs show' : 'its glyphs don’t show: something is drawn over them');
+            pending.delete(b.key);
+            continue;
+          }
           const c = boxContrast(shot, { ...b, x: b.x - left, y: b.y - top }, r.ink, r.fade, shot.width / clip.width, r.fade < 1 ? unfaded : undefined);
           if (Number.isNaN(c)) unmeasured.set(b.key, 'too small to hold a pixel');
           else contrast.set(b.key, c);
@@ -199,7 +214,7 @@ export async function legible(page: Page, glass?: Glass): Promise<{ runs: Measur
     ]);
     return { runs: measured, problems: { level: levelName, text: lines.join('\n') } };
   } finally {
-    await page.evaluate(hideWords, false);
+    await page.evaluate(hideWords, 'show' as const);
     await unscroll(page);
     await page.evaluate((was) => {
       const html = document.documentElement;
