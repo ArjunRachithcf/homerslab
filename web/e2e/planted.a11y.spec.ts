@@ -73,6 +73,14 @@ const plants: {
       ['#planted-sticky', 'background-color', '#222'], ['#planted-sticky', 'color', '#fff'], ['#planted-scrolled', 'margin', '0'],
       ['#planted-scrolled', 'color', '#c4c4c4'], ['#planted-room', 'height', '300px']],
     scroll: ['#planted-scroller', 40] },
+  // a faint word in a strip that snaps (Admin's screenshots): the strip's snap points are its ends, so scrolling a word
+  // to the middle snaps back and leaves it half off the strip's edge; it is measured all the same, snap or not
+  { name: 'a faint word in a strip that snaps', look: { theme: 'light', motion: 'reduce', transparency: 'no-preference' },
+    html: '<div id="planted-strip"><p id="planted-snapped">Alpha beta gamma delta</p><p id="planted-snapped-faint">Alpha beta gamma delta</p></div>',
+    css: [['#planted-strip', 'width', '240px'], ['#planted-strip', 'overflow-x', 'auto'], ['#planted-strip', 'display', 'grid'],
+      ['#planted-strip', 'grid-auto-flow', 'column'], ['#planted-strip', 'grid-auto-columns', '200px'], ['#planted-strip', 'column-gap', '16px'], 
+      ['#planted-strip', 'background-color', '#fff'], ['#planted-snapped', 'color', '#000'], ['#planted-snapped-faint', 'color', '#c4c4c4']],
+    sheet: '#planted-strip { scroll-snap-type: x mandatory; } #planted-strip p { margin: 0; white-space: nowrap; scroll-snap-align: start; }' },
   // what fields show: a select's option, a button's value
   { name: 'a faint option in a select', look: { theme: 'light', motion: 'reduce', transparency: 'reduce' },
     html: '<select id="planted-select" aria-label="Planted"><option>A faint option</option></select>',
