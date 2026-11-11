@@ -34,8 +34,8 @@ sign-in from its server: OIDC's token, userinfo and keys, or LDAP binds. `auth.<
 primary's mesh address, or to the node's own address on the primary, which the rule above drops. The edge can't tell
 apps apart by source address (rootless Podman, apps on other nodes, a desktop primary), so apps get a listener of
 their own:
-- the **sign-in listener** has its own address on each node, on port 443, and carries only the sign-in's route. SNI
-  and `Host` must both equal `auth.<main domain>`;
+- the **sign-in listener** has its own address on each node, on the household's port (ADR 0021), and carries only the sign-in's route.
+  SNI and `Host` must both equal `auth.<main domain>` (`Host` compared without its port);
 - the agent makes `auth.<main domain>` resolve to that address inside app containers;
 - on the primary it serves the sign-in; on other nodes, the node's own edge forwards it to the primary;
 - an app whose sign-in method is LDAP also reaches the same address on port 636 (LDAPS), which leads to the identity

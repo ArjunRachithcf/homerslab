@@ -393,8 +393,8 @@ Stories 120–121 are recommended in #87; the maintainer may overrule.
       from their server (OIDC's token, userinfo and keys; LDAP binds). The edge can't tell apps apart by source
       address (rootless Podman, apps on other nodes, a desktop primary), so apps reach it through a listener of their
       own:
-      - the **sign-in listener** has its own address on each node, on port 443, and carries only the sign-in's route.
-        SNI and `Host` must both equal `auth.<main domain>`;
+      - the **sign-in listener** has its own address on each node, on the household's port (ADR 0021), and carries
+        only the sign-in's route. SNI and `Host` must both equal `auth.<main domain>` (`Host` compared without its port);
       - the agent makes `auth.<main domain>` resolve to that address inside app containers;
       - on the primary it serves the sign-in; on other nodes, the node's own edge forwards it to the primary;
       - an app whose sign-in method is LDAP also reaches the same address on port 636 (LDAPS), which leads to the
@@ -502,7 +502,8 @@ Stories 120–121 are recommended in #87; the maintainer may overrule.
     factor that a stolen session adds can't sign them in;
   - the provider's own password, second-factor and recovery flows refuse admins;
   - before accepting a step-up, HomersLab also asks the provider for the admin's credentials. Anything but passkeys
-    refuses the step-up and raises a security event;
+    refuses the step-up, raises a security event, and says the way out (`homerslab admin recover`, or another
+    admin);
 - optional SSH sign-in on nodes: SSSD with Authentik, kanidm-unixd with Kanidm;
 - a report of what it can do.
 
@@ -666,7 +667,7 @@ Details are in [ADR 0010](adr/0010-backups-restic-and-a-write-only-archive.md), 
       cluster's own domain, points at a probe listener on the primary that serves nothing;
     - it tries the candidate ports in order (443, 8443, 9443), and the first that reaches the probe listener wins;
     - the service is removed at once, and leftovers are swept by name at every run and in drift checks;
-    - when the probe can't run (the household's plan has no reverse proxy), the port is 443, and Admin says that
+    - when the probe can't run (the household's plan has no reverse proxy), or no candidate port works, the port is 443, and Admin says that
       going public later is a guided migration.
   - Tailscale's Funnel serves only `*.ts.net` names. Where it fits a household with a domain (the sign-in's name, and
     so the passkeys' RP ID) is open in #102.
@@ -847,8 +848,14 @@ restore plan also revokes and reissues the certificates, and replaces everything
 - every node's restic key, the backup and archive targets' credentials, and Proton Drive's session;
 - the sign-in: every app's OIDC client secret, the identity provider's keys (for Authentik, its secret key and outpost
   tokens), and every session ended;
-- every API and MCP token;
-- the storage locations' share credentials.
+- every API and MCP token, and the manager's own API token to the identity provider;
+- the guards' cookie secrets (Authentik's per-provider proxy cookie secret; oauth2-proxy's for Kanidm), so no one can
+  forge a guard session;
+- every outstanding invite, enrolment link and recovery link held in the restored sign-in database;
+- the ACME account: deactivated and registered anew, because a valid authorization can outlive the old DNS token for
+  up to 30 days;
+- the storage locations' share credentials, the notification channels' credentials (ntfy, webhooks) and the outside
+  heartbeat's URL, so a thief can't keep the heartbeat green.
 
 The plan also lists the people, credentials and tokens created after a chosen time, and offers an earlier restore
 point. Nothing needs replacing for:
@@ -1312,14 +1319,14 @@ Every answer of the grilling (2026-11-09) and where it lives:
 | 169 | Each catalog acts only on its own apps and signers (recommended) | ADR 0009, ADR 0015 (amended); Catalogs; The install plan (#89) |
 | 170 | Official pin bumps merged by the maintainer; upstream releases wait three days; upstream signers checked (recommended) | ADR 0009 (amended); Updates, removal, eject (#89) |
 | 171 | One restic repository per node (recommended) | ADR 0010 (amended); Backups and the archive (#90) |
-| 172 | Apps reach the sign-in through a sign-in listener of their own, and the LDAP outpost on its port 636; the agent's probes reach apps (decided) | ADR 0020; Modules (Agent); Testing Decisions (#82, reviews of #94) |
+| 172 | Apps reach the sign-in through a sign-in listener of their own on the household's port, and the LDAP outpost on its port 636; the agent's probes reach apps (recommended, #82) | ADR 0020; Modules (Agent); Testing Decisions (#82, reviews of #94) |
 | 173 | The provider's first-admin flow applies to nobody before the sign-in is served, the executor API included | ADR 0004 (amended); Adapter contracts; Testing Decisions (#84, review of #94) |
 | 174 | The recovery command also gives one of the admin's devices a mesh key (recommended) | Getting back in (#87, review of #94) |
 | 175 | Guests in no role, with their own mesh group; never admins; they can't add devices; the invite chooses the kid views (recommended) | People leaving and visiting; glossary (#86, review of #94) |
 | 176 | A new device through the manager's device page, mesh only, never through Home's process (recommended) | People leaving and visiting; ADR 0013 (amended) (#86, reviews of #94) |
 | 177 | Funnel with a household's domain: open | ADR 0021; Names and certificates (#92, #102) |
 | 178 | The cluster's port found by a throwaway service; 443 when it can't run | ADR 0021; Names and certificates; Testing Decisions, claims to test first (#92, review of #94) |
-| 179 | A lost or stolen primary: certificates reissued; the node authority, peers, tokens, targets, the sign-in's secrets and sessions replaced | A lost or stolen node; Names and certificates (#91, reviews of #94) |
+| 179 | A lost or stolen primary: certificates reissued and the ACME account replaced; the node authority, peers, tokens, targets, the sign-in's secrets, guard cookie secrets, outstanding links and sessions replaced | A lost or stolen node; Names and certificates (#91, reviews of #94) |
 | 180 | Catalogs signed again weekly; Admin warns before expiry (recommended) | ADR 0009 (amended); Catalogs (#89, review of #94) |
 | 181 | The primary's public listener carries the sign-in while anything is public | Modules (Edge); Testing Decisions (#81, second review of #94) |
 | 182 | The probe: a recognisable throwaway service, a listener that serves nothing, named ports, leftovers swept | ADR 0021; Names and certificates (#92, #103) |

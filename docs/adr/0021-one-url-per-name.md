@@ -13,7 +13,7 @@ household's port is chosen once, in first-time setup's mesh step:
   shared eu1 cluster (2026-10-17). The mesh step finds it (#103) with a throwaway TLS passthrough service with a
   random, recognisable name (`homerslab-probe-<random>`) under the cluster's own domain. The service points at a
   probe listener that serves nothing, tries the candidate ports in order (443, 8443, 9443), and is removed at once;
-  leftovers are swept by name at every run and in drift checks. When the probe can't run (the household's plan has
+  leftovers are swept by name at every run and in drift checks. When the probe can't run, or no candidate port works (the household's plan has
   no reverse proxy), the port is 443, and Admin says that going public later is a guided migration.
 
 The edge serves every site on the mesh at that port too, and every URL HomersLab writes uses it: base URLs, redirect
