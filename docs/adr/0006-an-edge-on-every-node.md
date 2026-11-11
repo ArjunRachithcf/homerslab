@@ -25,3 +25,10 @@ Transparency logs. Only ts.net names (Tailscale) carry per-node certificates.
   NAS to a phone included), and every node would need a port open for it.
 - **A certificate per app.** Each node would hold only its own apps' keys, but every app's name would be public in the
   Certificate Transparency logs.
+
+## Amended (2026-11-11)
+
+"Apps publish no ports" still means that no app's compose file publishes one. On rootless Podman, whose containers
+the host can't route to, the agent itself publishes one loopback port per app for the edge, and the firewall accepts
+connections to it only from the edge's user ([ADR 0020](0020-only-the-edge-reaches-an-app.md); recommended in #82, the
+maintainer may overrule).

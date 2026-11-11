@@ -352,7 +352,16 @@ such as a NAS or a GPU box. It is private by default and never needs a router po
     Compose SDK, pinned exactly, for status, health, logs and planning, in a project-name namespace reserved for
     HomersLab.
   - **Host apps**: the vendor's repository and package, per distro.
-  - **The firewall table**: no published ports, mesh-only listeners, the LAN kept out, drift corrected.
+  - **The firewall table**: no published ports, mesh-only listeners, the LAN kept out, drift corrected. Also
+    ([ADR 0020](adr/0020-only-the-edge-reaches-an-app.md); recommended in #82; the maintainer may overrule):
+    - **only the edge reaches an app**. The agent, not the compose file, wires each app's one upstream: a bridge
+      address on Docker and rootful Podman, a loopback port on rootless Podman. New connections to it are accepted
+      only from the edge's user;
+    - **apps reach the internet, and nothing else**. New connections from apps to the LAN, the mesh and the node's own
+      addresses (except the engine's DNS resolver) are dropped, unless an extra ("reaches the LAN", "reaches the
+      mesh") says so;
+    - open: how one app uses another household app's API, such as a local AI model. The implementing ticket asks the
+      maintainer before building it.
   - **The mesh clients**: NetBird, and Tailscale's client, which also serves Headscale. Per-app tsnet nodes serve
     Headscale households, Tailscale households without a domain, and Funnel.
     - Router port mapping (UPnP, NAT-PMP, PCP) is switched off in every client: `NB_DISABLE_NAT_MAPPER=true`,
@@ -688,6 +697,8 @@ When the usual way in is what broke, the household admin gets back in from the p
 - TLS ends on the household's machines.
 - HTTPS only once the certificate exists, with HSTS; no secret ever crosses plain HTTP (#64).
 - The LAN sees the machines, not the apps.
+- Only the edge reaches an app, and apps reach only the internet unless an extra says so (recommended in #82; the
+  maintainer may overrule).
 - Admin is reachable over the mesh only.
 - Secrets travel only inward: a front end may send one, and no response carries one.
 - Signed releases, an SBOM, image digests pinned in the catalog, signed catalogs.
@@ -745,7 +756,11 @@ When the usual way in is what broke, the household admin gets back in from the p
   - through the PROXY v2 listener, a public app's SNI with the `Host` of a mesh-only app, of Admin, or of a public app
     on another node → 421; SNI equal to `Host` → served (#81);
   - a cross-app `POST` to Admin → refused; an app's response that sets a cookie on the household domain → stripped
-    (#83).
+    (#83);
+  - a local unprivileged process that connects to an app's upstream with a forged identity header → refused before
+    the app sees anything (#82).
+- **The firewall**: namespace tests in which a container tries the LAN, the mesh and its node's own addresses, and is
+  refused unless its extras allow it (#82).
 - **Golden renders**: what HomersLab writes for an app (compose project, edge configuration, policies) is compared
   byte for byte with a committed baseline. A deliberate change updates the baseline and explains the diff. Prior art:
   classic's golden tests.
@@ -1061,3 +1076,5 @@ Every answer of the grilling (2026-11-09) and where it lives:
 | 145 | The edge strips the guard's cookie and apps' domain cookies; a guard provider per app | ADR 0016 (amended); Modules (Edge); Domains; The app definition (#83) |
 | 146 | Passkeys' RP ID is the sign-in's own name | Adapter contracts (#83) |
 | 147 | One URL per name, its port chosen in first-time setup | ADR 0021; Names and certificates; Adapter contracts; Testing Decisions, claims to test first (#92) |
+| 148 | Only the edge reaches an app, by the edge's user in the firewall (recommended) | ADR 0020; ADR 0006 (amended); Modules (Agent); Security defaults; Testing Decisions (#82) |
+| 149 | Apps reach only the internet; the LAN and the mesh are extras (recommended) | ADR 0020; Modules (Agent); Security defaults; Testing Decisions (#82) |
