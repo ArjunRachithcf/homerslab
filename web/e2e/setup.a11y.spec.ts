@@ -1,6 +1,6 @@
 // First-time setup's screens under axe (WCAG 2.2 AA), in every look a device can ask for, at the projects' phone and
 // desktop widths: one walk through the screens per look, one line per screen.
-import { accessible, audit, looks, lookName, report, WCAG22AA, wear } from './a11y';
+import { accessible, audit, EXPERIMENTAL_WCAG, looks, lookName, report, WCAG22AA, wear } from './a11y';
 import { expect, test } from './primary';
 
 for (const look of looks) {
@@ -68,7 +68,8 @@ test('the check catches too little contrast and a field without a label', async 
   // the rules that ran are WCAG 2.0–2.2 A and AA, WCAG 2.2's own (target size, off in axe by default) and axe's
   // experimental WCAG rules (orientation lock, which phones need, among them) included
   const ran = [...violations, ...passes, ...incomplete, ...inapplicable];
-  expect(ran.map((r) => r.id)).toEqual(expect.arrayContaining(['target-size', 'css-orientation-lock', 'p-as-heading', 'table-fake-caption', 'td-has-header']));
+  expect(ran.map((r) => r.id)).toEqual(expect.arrayContaining(['target-size', ...EXPERIMENTAL_WCAG]));
+  expect(EXPERIMENTAL_WCAG).toContain('css-orientation-lock');
   expect(ran.filter((r) => !r.tags.some((t) => WCAG22AA.includes(t))).map((r) => r.id)).toEqual([]);
   // with every material solid, axe measures the words on the card (the glass's rim doesn't hide them)
   const measured = passes.find((r) => r.id === 'color-contrast')?.nodes.map((n) => n.target.join(' '));
