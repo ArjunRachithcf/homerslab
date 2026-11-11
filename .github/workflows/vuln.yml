@@ -20,7 +20,9 @@ concurrency:
 
 jobs:
   go:
-    name: govulncheck (${{ matrix.ref || github.head_ref || github.ref_name }})
+    # The branch is in the name only for the nightly's matrix: on a PR the name stays the same, so it can be a required
+    # status check.
+    name: govulncheck${{ matrix.ref && format(' ({0})', matrix.ref) || '' }}
     runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
@@ -46,8 +48,9 @@ jobs:
           go -C tools build -o /usr/local/bin/govulncheck golang.org/x/vuln/cmd/govulncheck
       # Each target the packages ship for, as the binary is built (CGO_ENABLED=0). Exit 3 means the code calls a
       # vulnerable symbol, the standard library's included. Findings only in imported packages or required modules
-      # are listed under "Package Results" and "Module Results" and exit 0: GO-2026-5932, for example (x/crypto's
-      # openpgp, with no tagged fix), whenever x/crypto is required and openpgp never imported.
+      # are listed under "Package Results" and "Module Results" and exit 0. A hypothetical example, since x/crypto
+      # isn't in the module graph today: GO-2026-5932 (x/crypto's openpgp, with no tagged fix) would be listed and
+      # pass if x/crypto were required and openpgp never imported (proven on #113's throwaway PR #112).
       - name: govulncheck ./... (linux/amd64)
         env:
           GOOS: linux
@@ -63,7 +66,7 @@ jobs:
         run: govulncheck -show verbose ./...
 
   npm:
-    name: npm audit (${{ matrix.ref || github.head_ref || github.ref_name }})
+    name: npm audit${{ matrix.ref && format(' ({0})', matrix.ref) || '' }}
     runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
@@ -80,9 +83,14 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24
-      # npm audit reads package-lock.json; nothing is installed and no package script runs.
-      - name: Every advisory, development tools included (listed, never fails)
+      # npm audit reads package-lock.json; nothing is installed and no package script runs. The first step lists every
+      # advisory and warns only for one not in audit-baseline.json (the known dev-only ones), or when npm gave no
+      # report; it never fails on an advisory. The second fails on any advisory in a package that ships: the baseline can't excuse it.
+      - name: Every advisory, development tools included (warns on one not in the baseline, never fails)
         run: |
-          npm audit || echo "::warning title=npm audit::npm audit exited non-zero (advisories, or the registry failed: see the log); the next step fails only on an advisory in a package that ships"
+          status=0
+          npm audit --json > "$RUNNER_TEMP/npm-audit.json" || status=$?
+          echo "npm audit exited $status"
+          node scripts/audit-baseline.mjs audit-baseline.json < "$RUNNER_TEMP/npm-audit.json"
       - name: Advisories in the packages that ship (fail the job)
         run: npm audit --omit=dev

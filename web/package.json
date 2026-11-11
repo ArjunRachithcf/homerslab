@@ -11,7 +11,8 @@
     "build": "tsc --noEmit && vite build && node -e \"require('node:fs').writeFileSync('../internal/surfaces/dist/.gitkeep', '')\"",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
-    "test": "playwright test"
+    "test": "playwright test",
+    "test:unit": "node --test 'scripts/*.test.mjs'"
   },
   "dependencies": {
     "react": "19.3.1",
