@@ -59,7 +59,7 @@ test('without a whole token it runs nothing and fails', () => {
 
 // The commands whose output carries text from a registry, a package's author, a mirror, a vulnerability database or
 // a container's logs.
-const THIRD_PARTY = /(npm (audit|ci)|npx playwright install|govulncheck -show|go -C tools (mod|build)|go mod download|sudo apt-get|go test [^']*TestTheMeshContract)/g;
+const THIRD_PARTY = /(npm (audit|ci)|npx playwright install|govulncheck -show|go -C tools (mod|build)|go mod (download|tidy)|sudo apt-get)/g;
 const WRAPPER = /\bsh (\.\.\/)?\.github\/scripts\/stop-commands\.sh (sh -c ')?$/;
 
 for (const name of ['vuln.yml', 'ci.yml']) {
@@ -76,16 +76,36 @@ for (const name of ['vuln.yml', 'ci.yml']) {
   });
 }
 
-test('every Go job fetches its modules under the wrapper first, then runs with the proxy off', () => {
+// ci.yml's jobs, by id.
+const jobs = () => {
   const ci = workflow('ci.yml');
-  for (const job of ['go', 'firewall', 'mesh', 'flow']) {
-    const body = new RegExp(`\\n  ${job}:\\n([\\s\\S]*?)(?=\\n  [a-z]+:\\n|$)`).exec(ci)?.[1] ?? '';
+  const at = [...ci.matchAll(/\n {2}([a-z][a-z0-9-]*):\n/g)];
+  return at.map((m, i) => [m[1], ci.slice(m.index, at[i + 1]?.index ?? ci.length)]);
+};
+
+test('every Go job fetches its modules under the wrapper first, then runs with the proxy off', () => {
+  const goJobs = jobs().filter(([, body]) => /\bgo (vet|test|build)\b/.test(body));
+  assert.ok(goJobs.length >= 5, goJobs.map(([id]) => id).join(' '));
+  for (const [job, body] of goJobs) {
     assert.match(body, /\n {4}env:\n( {6}.*\n)* {6}GOPROXY: "off"\n/, `${job}: GOPROXY off for the job`);
-    assert.match(body, /stop-commands\.sh go mod download/, `${job}: fetches its modules first`);
-    const goSteps = body.split('\n      - ').filter((step) => /\bgo (vet|test|build|mod tidy)\b/.test(step) && !/go mod download/.test(step));
-    assert.ok(goSteps.length > 0, job);
+    assert.match(body, /stop-commands\.sh go mod (download|tidy -diff)\n/, `${job}: fetches its modules first`);
+    // `go mod download all` writes sums into go.sum that go mod tidy -diff then refuses.
+    assert.doesNotMatch(body, /go mod download all/, `${job}: leaves go.sum as it is`);
+    const steps = body.split('\n      - ');
+    const goSteps = steps.filter((step) => /\bgo (vet|test|build)\b/.test(step));
     for (const step of goSteps) assert.doesNotMatch(step, /GOPROXY: (?!"off")/, `${job}: a later step turns the proxy on`);
-    const download = body.split('\n      - ').find((step) => /go mod download/.test(step)) ?? '';
-    assert.ok(body.indexOf(download) < body.indexOf(goSteps[0]), `${job}: fetches before it builds`);
+    const fetch = steps.findIndex((step) => /stop-commands\.sh go mod (download|tidy)/.test(step));
+    assert.ok(fetch >= 0 && fetch < steps.indexOf(goSteps[0]), `${job}: fetches before it builds`);
+  }
+});
+
+// A suite that drives containers prints their logs when it fails.
+test('every suite that drives containers runs under the wrapper', () => {
+  const suites = jobs().filter(([, body]) => body.includes('HOMERSLAB_TEST_DOCKER_HOST'));
+  assert.ok(suites.length >= 2);
+  for (const [job, body] of suites) {
+    const runs = body.split('\n').map((l) => l.trim()).filter((l) => /^run: .*\bgo test\b/.test(l));
+    assert.ok(runs.length > 0, job);
+    for (const run of runs) assert.match(run, /^run: sh \.github\/scripts\/stop-commands\.sh go test /, `${job}: ${run}`);
   }
 });
