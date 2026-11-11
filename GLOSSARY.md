@@ -224,7 +224,8 @@ The frequent, deduplicated, encrypted copy of every app's data.
 _Avoid_: snapshot (that is for updates), sync
 
 **Archive**:
-The weekly copy of the small, sensitive things, which nobody on the household's machines can read.
+The copy of the small, sensitive things, made after every change to them and at least weekly, which nobody on the
+household's machines can read.
 _Avoid_: cold backup, export
 
 **Restore test**:

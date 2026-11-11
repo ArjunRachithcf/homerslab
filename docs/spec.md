@@ -548,10 +548,25 @@ The manager refuses an app definition unless:
 - a sign-in method and a health check are declared;
 - its CI install test passes.
 
+### Catalogs
+
+Recommended in #89; the maintainer may overrule. Details are in the amended
+[ADR 0009](adr/0009-catalog-floor-and-tiers.md).
+- **No rollback, no freeze.** A catalog's signed metadata carries a version that only goes up, and an expiry 30 days
+  out, renewed by every release.
+  - The manager refuses a version lower than the last one it accepted.
+  - After the expiry, Admin says "This catalog hasn't been updated since …". Installed apps keep running, and new
+    installs from that catalog wait.
+- **Each catalog acts only on its own apps.**
+  - App ids are scoped to their catalog.
+  - An installed app updates only from the catalog and publisher key it came from.
+  - A catalog's declared image signers apply to its own apps only.
+
 ### The install plan
 
 - A plan is one object, shown the same way in Admin, the CLI and the MCP server. It holds:
   - what gets created: the names, the sign-in client, the audience, a public service;
+  - the catalog and publisher, beside the tier (recommended in #89; the maintainer may overrule);
   - the placement;
   - each extra, in plain words;
   - what is backed up, and when;
@@ -566,6 +581,11 @@ The manager refuses an app definition unless:
 
 - **Updates.**
   - Each catalog release pins versions; a bot proposes bumps.
+  - **Upstream releases wait, unless they are security releases** (recommended in #89; the maintainer may overrule):
+    - in the official catalog, a pin bump is merged by the maintainer, never by an agent;
+    - a new upstream version is offered three days after its release, unless the catalog marks it a security release;
+    - where an upstream signs its images, the catalog pins the expected signer, and the agent checks it as it does a
+      feedstock's.
   - CI installs, signs in, updates and restores every verified app.
   - The admin applies an update, or opts in per app.
   - An update runs snapshot → update → health check → rollback if unhealthy.
@@ -578,6 +598,27 @@ The manager refuses an app definition unless:
   in front of it again. The app's sign-in client stays while the household keeps its identity provider
   ([ADR 0012](adr/0012-every-app-can-be-ejected.md)).
 - **Restore to an earlier point.** A plan that takes a snapshot first.
+
+### Backups and the archive
+
+Details are in [ADR 0010](adr/0010-backups-restic-and-a-write-only-archive.md), amended for #88 and #90.
+- **The platform's own state is backed up hourly**, with the apps: the identity provider's database and the manager's
+  (#88).
+- **The archive also runs on change** (#88). Every secret created or rotated, every change to the sign-in's people or
+  clients, and every change to the manager's desired state starts an archive run, once things have been quiet for 10
+  minutes, and at most 30 minutes later. The weekly run stays as the floor.
+- **Overlapping rotation**: a rotated token's predecessor is revoked only after an archive that holds its successor
+  has been written (#88).
+- **The restore plan** compares each app's last backup with the archive's secrets. When an app's secrets are older than
+  its data, it says so before anything happens (#88).
+- **A TPM that no longer opens the secrets** (#88): at boot, a credential that fails to decrypt is reported once, as
+  "this machine's TPM no longer opens HomersLab's secrets", on the console and in an alert when one can still be sent,
+  with the restore-from-archive command.
+- **One restic repository per node** (recommended in #90; the maintainer may overrule), at the same target, each with
+  its own key and, where the target allows it, credentials scoped to its own path or bucket.
+  - A node holds only its own repository's key. The primary holds them all, for restore tests and moves.
+  - The recovery kit lists each repository and key, so adding a node asks for a new kit.
+  - Moving an app between nodes restores from the source node's repository, then backs up into the target node's.
 
 ### Names and certificates
 
@@ -1196,3 +1237,10 @@ Every answer of the grilling (2026-11-09) and where it lives:
 | 162 | An admin's recovery link and the sign-in's restore, from the console (recommended) | Getting back in; stories 120–121 (#87) |
 | 163 | The mesh's control plane down: no LAN fallback, alerts that name the cause (recommended) | Getting back in (#87) |
 | 164 | A lost or stolen node: cut off, its certificate and credentials replaced, its apps restored | A lost or stolen node; Adapter contracts; Testing Decisions; story 123 (#91) |
+| 165 | The archive also runs on change; a rotated token's predecessor outlives the next archive | ADR 0010 (amended); Backups and the archive; glossary (#88) |
+| 166 | The platform's own state is backed up hourly | ADR 0010 (amended); Backups and the archive (#88) |
+| 167 | Restore plans compare secrets with data; a TPM that no longer opens the secrets is reported at boot | ADR 0011 (amended); Backups and the archive (#88) |
+| 168 | Catalog versions only go up, and expire (recommended) | ADR 0009 (amended); Catalogs (#89) |
+| 169 | Each catalog acts only on its own apps and signers (recommended) | ADR 0009, ADR 0015 (amended); Catalogs; The install plan (#89) |
+| 170 | Official pin bumps merged by the maintainer; upstream releases wait three days; upstream signers checked (recommended) | ADR 0009 (amended); Updates, removal, eject (#89) |
+| 171 | One restic repository per node (recommended) | ADR 0010 (amended); Backups and the archive (#90) |

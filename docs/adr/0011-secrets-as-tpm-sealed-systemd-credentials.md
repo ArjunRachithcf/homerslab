@@ -39,3 +39,13 @@ without HomersLab. The details come from the
   - sealing as root;
   - relabelling a system unit's credentials;
   - moves between machines.
+
+## Amended (2026-11-11)
+
+"The weekly archive carries the secrets" now means the archive that also runs after every change to a secret
+([ADR 0010](0010-backups-restic-and-a-write-only-archive.md), amended; #88), so a secret made since the last weekly run
+isn't lost with the TPM. A cleared TPM (a firmware update, a dual-boot "Clear TPM", a new motherboard) is a likely
+event, so:
+- at boot, a credential that fails to decrypt is reported once, as "this machine's TPM no longer opens HomersLab's
+  secrets", with the restore-from-archive command, instead of a dozen failing units;
+- a restore plan says when an app's secrets in the archive are older than its data.
