@@ -12,6 +12,7 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/makiuchi-d/gozxing"
 	"github.com/makiuchi-d/gozxing/qrcode"
@@ -20,13 +21,31 @@ import (
 	"github.com/ArjunRachithcf/homerslab/internal/cli"
 	"github.com/ArjunRachithcf/homerslab/internal/lan"
 	"github.com/ArjunRachithcf/homerslab/internal/manager"
+	"github.com/ArjunRachithcf/homerslab/internal/manager/setup"
+	"github.com/ArjunRachithcf/homerslab/internal/manager/store"
 	"github.com/ArjunRachithcf/homerslab/internal/testenv"
 )
 
 // running starts an agent and a manager in the test's own directories, and returns the manager's control socket.
-func running(t *testing.T) string {
+// With setUp, first-time setup's built steps are already answered: the Ferreira household, with Inês as its admin.
+func running(t *testing.T, setUp ...bool) string {
 	t.Helper()
 	dir := t.TempDir()
+	if len(setUp) > 0 && setUp[0] {
+		db, err := store.Open(filepath.Join(dir, "manager.db"), setup.StoreSteps())
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, st := range []struct {
+			id      string
+			answers map[string]string
+		}{{"welcome", nil}, {"you", map[string]string{"name": "Inês Ferreira", "mail": "ines@ferreira.family"}}, {"household", map[string]string{"household": "The Ferreira household"}}} {
+			if err := db.CompleteStep(context.Background(), st.id, st.answers, time.Now()); err != nil {
+				t.Fatal(err)
+			}
+		}
+		db.Close()
+	}
 	m, err := manager.New(manager.Config{
 		DB:          filepath.Join(dir, "manager.db"),
 		AgentSocket: agenttest.Start(t, agenttest.Primary()),

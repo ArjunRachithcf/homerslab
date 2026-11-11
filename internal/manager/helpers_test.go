@@ -62,6 +62,8 @@ type primary struct {
 	hosts []string
 	port  int
 	web   fs.FS
+	// catalog is the Store's catalog; the official one when nil.
+	catalog fs.FS
 	// lanReads counts how often the manager asks for the machine's LAN address.
 	lanReads atomic.Int32
 	steps    map[string]setup.Handler
@@ -133,6 +135,7 @@ func (p *primary) open() {
 		Hosts:      func() []string { return p.hosts },
 		LANAddress: func() netip.Addr { p.lanReads.Add(1); return netip.MustParseAddr("192.168.1.20") },
 		Web:        p.web,
+		Catalog:    p.catalog,
 		Steps:      p.steps,
 		NetBird:    p.netbird,
 		Domains:    p.domains,
@@ -338,6 +341,7 @@ func (b *browser) firstThree() state {
 // builtPages stand in for the web app's build: a page, its assets, and a folder and a file that are no asset.
 var builtPages = fstest.MapFS{
 	"setup.html":      {Data: []byte("<!doctype html><title>setup</title>")},
+	"admin.html":      {Data: []byte("<!doctype html><title>admin</title>")},
 	"secret.txt":      {Data: []byte("not an asset")},
 	"assets/app.js":   {Data: []byte("console.log(1)")},
 	"assets/sub/b.js": {Data: []byte("console.log(2)")},

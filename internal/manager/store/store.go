@@ -132,6 +132,19 @@ var migrations = []string{
 		what        TEXT NOT NULL,
 		resolved_at INTEGER
 	);`,
+	// Install plans: kept as they were made, never changed. A change in the household is a new plan, with a new id.
+	`CREATE TABLE plan (
+		id      TEXT PRIMARY KEY,
+		app     TEXT NOT NULL,
+		body    TEXT NOT NULL,
+		made_at INTEGER NOT NULL
+	);
+	CREATE TRIGGER plan_immutable BEFORE UPDATE ON plan
+	BEGIN SELECT RAISE(ABORT, 'a plan never changes: a change makes a new plan'); END;
+	CREATE TRIGGER plan_kept BEFORE DELETE ON plan
+	BEGIN SELECT RAISE(ABORT, 'a plan is kept: pruning old plans comes through its own path'); END;
+	CREATE TRIGGER plan_once BEFORE INSERT ON plan WHEN EXISTS (SELECT 1 FROM plan WHERE id = NEW.id)
+	BEGIN SELECT RAISE(ABORT, 'a plan is made once: the same id is the same plan'); END;`,
 }
 
 // Open opens or creates the database at path, readable by its owner only, and brings its schema up to date. Steps
@@ -345,4 +358,29 @@ func (s *Store) TouchSession(ctx context.Context, tokenHash []byte, client strin
 		return ErrNotFound
 	}
 	return nil
+}
+
+// SavePlan keeps a plan by its id, unless one with that id is kept already, and returns the one kept and whether it
+// is new: the same id is the same plan, made earlier.
+func (s *Store) SavePlan(ctx context.Context, id, app string, body []byte, madeAt time.Time) (kept []byte, made bool, err error) {
+	err = s.tx(ctx, func(tx *sql.Tx) error {
+		err := tx.QueryRowContext(ctx, `SELECT body FROM plan WHERE id = ?`, id).Scan(&kept)
+		if !errors.Is(err, sql.ErrNoRows) {
+			return err // kept earlier, or a failure
+		}
+		made, kept = true, body
+		_, err = tx.ExecContext(ctx, `INSERT INTO plan (id, app, body, made_at) VALUES (?, ?, ?, ?)`, id, app, string(body), madeAt.UnixMilli())
+		return err
+	})
+	return kept, made, err
+}
+
+// Plan is the plan kept with that id, or ErrNotFound.
+func (s *Store) Plan(ctx context.Context, id string) ([]byte, error) {
+	var body []byte
+	err := s.db.QueryRowContext(ctx, `SELECT body FROM plan WHERE id = ?`, id).Scan(&body)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	return body, err
 }

@@ -20,9 +20,31 @@ type Facts struct {
 	Distro       Distro `json:"distro"`
 	Architecture string `json:"architecture"` // x86_64 or arm64
 	MemoryBytes  uint64 `json:"memoryBytes"`
-	Disks        []Disk `json:"disks"`
-	TPM          TPM    `json:"tpm"`
-	GPUs         []GPU  `json:"gpus"`
+	// MemoryAvailableBytes is what the kernel says new work can have now (MemAvailable); 0 when it doesn't say.
+	MemoryAvailableBytes uint64 `json:"memoryAvailableBytes,omitempty"`
+	Disks                []Disk `json:"disks"`
+	TPM                  TPM    `json:"tpm"`
+	GPUs                 []GPU  `json:"gpus"`
+	// Space is the filesystem that holds apps' data, when the system root can say.
+	Space *Space `json:"space,omitempty"`
+}
+
+// Space is the free and total size of the filesystem that holds HomersLab's folder, /var/lib/homerslab, where apps
+// keep their data until storage locations and disks are chosen.
+type Space struct {
+	Path      string `json:"path"`
+	FreeBytes uint64 `json:"freeBytes"`
+	SizeBytes uint64 `json:"sizeBytes"`
+}
+
+// DataPath is HomersLab's own folder.
+const DataPath = "/var/lib/homerslab"
+
+// StatFS is a system root that can say how much space a filesystem has.
+type StatFS interface {
+	fs.FS
+	// Statfs is the space of the filesystem that holds name, a path relative to the root.
+	Statfs(name string) (Space, error)
 }
 
 // Distro is the Linux distribution, from os-release.
@@ -62,7 +84,7 @@ func Read(root fs.FS) (Facts, error) {
 	if f.Distro, err = distro(root); err != nil {
 		return f, err
 	}
-	if f.MemoryBytes, err = memory(root); err != nil {
+	if f.MemoryBytes, f.MemoryAvailableBytes, err = memory(root); err != nil {
 		return f, err
 	}
 	if f.Disks, err = disks(root); err != nil {
@@ -74,6 +96,13 @@ func Read(root fs.FS) (Facts, error) {
 	f.Hostname = text(root, "proc/sys/kernel/hostname")
 	f.Architecture = architecture(text(root, "proc/sys/kernel/arch"))
 	f.TPM = tpm(root)
+	if s, ok := root.(StatFS); ok {
+		// A filesystem that can't say leaves Space unset: the rest of the facts still stand.
+		if sp, err := s.Statfs(strings.TrimPrefix(DataPath, "/")); err == nil {
+			sp.Path = DataPath
+			f.Space = &sp
+		}
+	}
 	return f, nil
 }
 
@@ -115,21 +144,32 @@ func distro(root fs.FS) (Distro, error) {
 	return Distro{ID: kv["ID"], Name: kv["NAME"], Version: kv["VERSION_ID"], Pretty: kv["PRETTY_NAME"]}, nil
 }
 
-func memory(root fs.FS) (uint64, error) {
+func memory(root fs.FS) (total, available uint64, err error) {
 	b, err := fs.ReadFile(root, "proc/meminfo")
 	if err != nil {
-		return 0, fmt.Errorf("reading meminfo: %w", err)
+		return 0, 0, fmt.Errorf("reading meminfo: %w", err)
+	}
+	kb := func(rest string) (uint64, error) {
+		return strconv.ParseUint(strings.TrimSuffix(strings.TrimSpace(rest), " kB"), 10, 64)
 	}
 	for line := range strings.SplitSeq(string(b), "\n") {
 		if rest, ok := strings.CutPrefix(line, "MemTotal:"); ok {
-			kb, err := strconv.ParseUint(strings.TrimSuffix(strings.TrimSpace(rest), " kB"), 10, 64)
+			n, err := kb(rest)
 			if err != nil {
-				return 0, fmt.Errorf("meminfo's MemTotal: %w", err)
+				return 0, 0, fmt.Errorf("meminfo's MemTotal: %w", err)
 			}
-			return kb * 1024, nil
+			total = n * 1024
+		}
+		if rest, ok := strings.CutPrefix(line, "MemAvailable:"); ok {
+			if n, err := kb(rest); err == nil {
+				available = n * 1024
+			}
 		}
 	}
-	return 0, errors.New("meminfo has no MemTotal")
+	if total == 0 {
+		return 0, 0, errors.New("meminfo has no MemTotal")
+	}
+	return total, available, nil
 }
 
 // architecture names the machine's architecture as HomersLab does: x86_64 or arm64.
