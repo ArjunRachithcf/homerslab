@@ -138,15 +138,17 @@ func readState(dir string) (state, error) {
 }
 
 // SavedSetupPort is the setup listener's port for the first boot's closed table, from the agent's state in dir: the
-// manager's own, as it last gave it to the agent; 0 once the listener closed for good. ok is false when the state
-// doesn't say (no state yet, no port given, or a state that can't be read): the caller's default applies then, since
-// the manager's own listener refuses the LAN by itself once closed, and a machine without a mesh has no other way to
-// reach first-time setup.
+// manager's own, as it last gave it to the agent; 0 once the listener closed for good, and while the state can't be
+// read (it may read again, and say so). ok is false when the state doesn't say (no state yet, no port given, or a file
+// that isn't a state): the caller's default applies then, since the manager's own listener refuses the LAN by itself
+// once closed, and a machine without a mesh has no other way to reach first-time setup.
 func SavedSetupPort(dir string) (port int, ok bool) {
 	s, err := readState(dir)
 	switch {
-	case err != nil:
+	case errors.Is(err, errUnparsable):
 		return 0, false
+	case err != nil: // it may read again, and may say closed for good: no exception until it does
+		return 0, true
 	case s.SetupClosed:
 		return 0, true
 	case s.SetupPort > 0 && s.SetupPort < 65536:
@@ -302,14 +304,13 @@ func (a *Agent) save() error {
 	if a.cfg.StateDir == "" {
 		return errors.New("the agent has no state directory")
 	}
+	path := filepath.Join(a.cfg.StateDir, StateFile)
 	if a.brokenFile {
-		// The first save after the state was lost, a join's too: the broken file is kept aside, as it was.
-		path := filepath.Join(a.cfg.StateDir, StateFile)
-		aside := path + ".unreadable-" + a.cfg.Now().UTC().Format("20060102T150405Z")
-		if err := os.Rename(path, aside); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		// The first save after the state was lost, a join's too: the broken file is kept aside, as it was (a second
+		// name for it, so it stays under its own until the new one replaces it).
+		if err := keepAside(path, a.cfg.Now()); err != nil {
 			return fmt.Errorf("putting the lost state aside: %w", err)
 		}
-		a.brokenFile = false
 	}
 	if a.stateErr != nil {
 		a.state.Lost = true // the loss is kept in the new file, until a join
@@ -318,7 +319,29 @@ func (a *Agent) save() error {
 	if err != nil {
 		return err
 	}
-	return atomicfile.Write(filepath.Join(a.cfg.StateDir, StateFile), b)
+	if err := atomicfile.Write(path, b); err != nil {
+		return err
+	}
+	a.brokenFile = false
+	return nil
+}
+
+// keepAside links path under a name of its own, path.unreadable-<time>, never replacing one already there.
+func keepAside(path string, now time.Time) error {
+	base := path + ".unreadable-" + now.UTC().Format("20060102T150405.000000000Z")
+	for i := 0; ; i++ {
+		aside := base
+		if i > 0 {
+			aside = fmt.Sprintf("%s-%d", base, i)
+		}
+		err := os.Link(path, aside)
+		switch {
+		case err == nil, errors.Is(err, fs.ErrNotExist):
+			return nil
+		case !errors.Is(err, fs.ErrExist) || i >= 100:
+			return err
+		}
+	}
 }
 
 // Handler serves the agent's API.
@@ -406,8 +429,9 @@ func (a *Agent) refreshBridges(ctx context.Context, force bool) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.bridgesAt = a.cfg.Now()
-	// An engine that answered gives its list; one that didn't keeps the one it last confirmed. Both are checked again,
-	// so a kept name that is no longer a bridge goes.
+	// An engine that answered gives its list, of the names the kernel shows are bridges; one that didn't keeps the one
+	// it last confirmed, as it was: at boot its bridges aren't in the kernel yet, and the table (bridges) takes each
+	// as it appears.
 	engines := slices.Collect(maps.Keys(a.state.Bridges))
 	for e := range answered {
 		engines = append(engines, e)
@@ -418,14 +442,16 @@ func (a *Agent) refreshBridges(ctx context.Context, force bool) {
 	for _, e := range slices.Compact(engines) {
 		names, answer := answered[e]
 		if !answer {
-			names = a.state.Bridges[e]
+			if kept := a.state.Bridges[e]; len(kept) > 0 {
+				next[e] = kept
+			}
+			continue
 		}
 		var good []string
 		for _, n := range names {
-			switch {
-			case firewall.ValidName(n) && a.cfg.IsBridge(n):
+			if firewall.ValidName(n) && a.cfg.IsBridge(n) {
 				good = append(good, n)
-			case answer: // a kept name that is no longer a bridge just goes
+			} else {
 				refused = append(refused, n)
 			}
 		}
@@ -449,11 +475,15 @@ func (a *Agent) refreshBridges(ctx context.Context, force bool) {
 	}
 }
 
-// bridges are every engine's bridges, as last confirmed. The caller holds a.mu.
+// bridges are every engine's bridges, as last confirmed, that the kernel shows are bridges now. The caller holds a.mu.
 func (a *Agent) bridges() []string {
 	var out []string
 	for _, names := range a.state.Bridges {
-		out = append(out, names...)
+		for _, n := range names {
+			if firewall.ValidName(n) && a.cfg.IsBridge(n) {
+				out = append(out, n)
+			}
+		}
 	}
 	slices.Sort(out)
 	return slices.Compact(out)

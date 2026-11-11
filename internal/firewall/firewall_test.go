@@ -2,6 +2,7 @@ package firewall_test
 
 import (
 	"context"
+	_ "embed"
 	"net/netip"
 	"os"
 	"path/filepath"
@@ -87,6 +88,11 @@ func TestAMachineWithNoSavedTableBootsClosed(t *testing.T) {
 	}
 }
 
+// savedBefore129 is a table as the agent saved it before #129, rendered by that agent's code.
+//
+//go:embed testdata/saved-before-129.nft
+var savedBefore129 []byte
+
 func TestASavedTableThatCantBeUsedBootsClosed(t *testing.T) {
 	testenv.Isolate(t)
 	table := firewall.Render(firewall.State{Mesh: []string{"wt0"}, LAN: []string{"enp5s0"}, Bridges: []string{"docker0"}})
@@ -99,6 +105,7 @@ func TestASavedTableThatCantBeUsedBootsClosed(t *testing.T) {
 		"not HomersLab's table":                                "flush ruleset\n",
 		"HomersLab's table after something else":               "flush ruleset\n" + table,
 		"HomersLab's table and another after it":               table + "}\n" + "table inet other {\n}\n",
+		"HomersLab's table and a stray brace":                  table + "}\n",
 	} {
 		path := filepath.Join(dir, "firewall.nft")
 		if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
@@ -110,11 +117,12 @@ func TestASavedTableThatCantBeUsedBootsClosed(t *testing.T) {
 		}
 	}
 	// A table an earlier agent saved (before #129) is whole: it is loaded as it is.
-	legacy, err := os.ReadFile(filepath.Join("testdata", "saved-before-129.nft"))
-	if err != nil {
+	// (Embedded: the firewall's test binary also runs on its own, as root in CI.)
+	legacy := filepath.Join(dir, "legacy.nft")
+	if err := os.WriteFile(legacy, savedBefore129, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if got, unusable := firewall.RestoreScript(filepath.Join("testdata", "saved-before-129.nft"), 7444); unusable != nil || got != string(legacy) {
+	if got, unusable := firewall.RestoreScript(legacy, 7444); unusable != nil || got != string(savedBefore129) {
 		t.Errorf("a table an earlier agent saved: %v", unusable)
 	}
 	// Unreadable: a folder where the file should be.

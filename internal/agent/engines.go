@@ -21,11 +21,13 @@ const (
 
 // engineBridges are the names the container engines give their bridges, by engine. They are candidates: the agent
 // keeps only those the kernel shows are bridges, with names nft can take. An engine missing from the map gave no list
-// (it didn't answer, or isn't running), so the agent keeps the list it last confirmed, as far as the kernel still
-// shows those bridges; an engine that isn't installed answers with none.
+// (it didn't answer, or isn't running), so the agent keeps the list it last confirmed, and the table takes those the
+// kernel shows; an engine that isn't installed, or is masked, answers with none.
 //   - Docker: asked only while docker.service is active, so the question never starts it (it is socket-activated).
 //     While it is activating, deactivating or reloading (at every boot and restart), or stopped with its containers
-//     running on (live-restore), its last list stands. Between systemd's answer and the question, a stop of
+//     running on (live-restore), its last list stands. A Docker stopped for good leaves its bridges in the kernel
+//     until the next boot, and they stay app bridges till then, which keep their containers as closed as a local
+//     virtual network would. Between systemd's answer and the question, a stop of
 //     docker.service alone can be undone: the question then reaches docker.socket, which starts Docker again. That
 //     is socket activation as the admin left it: any client of the socket would do the same, and stopping Docker for
 //     good means stopping docker.socket too, after which the question fails (Docker not answering) instead.
@@ -38,7 +40,7 @@ func engineBridges(ctx context.Context, run host.Runner, root fs.FS) map[string]
 		if b, ok := dockerBridges(ctx, run); ok {
 			out[docker] = b
 		}
-	case "not-found": // not installed: none, whatever bridges it left behind
+	case "gone": // not installed, or masked so it can never run: none, whatever bridges it left behind
 		out[docker] = nil
 	}
 	var p []string
@@ -66,7 +68,8 @@ func engineBridges(ctx context.Context, run host.Runner, root fs.FS) map[string]
 }
 
 // unitState is a unit's ActiveState as systemd describes it (active, inactive, failed, activating, deactivating,
-// reloading), "not-found" for a unit systemd doesn't have, or "" when systemd didn't say (an error, a timeout).
+// reloading), "gone" for a unit systemd doesn't have or that is masked, or "" when systemd didn't say (an error, a
+// timeout).
 func unitState(ctx context.Context, run host.Runner, unit string) string {
 	out, err := run(ctx, host.Cmd{Name: "systemctl", Args: []string{"show", "-p", "ActiveState", "-p", "LoadState", unit}})
 	if err != nil {
@@ -78,8 +81,8 @@ func unitState(ctx context.Context, run host.Runner, unit string) string {
 			props[k] = v
 		}
 	}
-	if props["LoadState"] == "not-found" {
-		return "not-found"
+	if l := props["LoadState"]; l == "not-found" || l == "masked" {
+		return "gone"
 	}
 	return props["ActiveState"]
 }

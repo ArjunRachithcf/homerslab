@@ -150,6 +150,13 @@ func (h *Host) NotABridge(name string) {
 	h.notBridges[name] = true
 }
 
+// ABridgeAgain makes a name NotABridge took a bridge again (an engine made it).
+func (h *Host) ABridgeAgain(name string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	delete(h.notBridges, name)
+}
+
 // Block makes Docker and systemd hang until the caller gives up, as a socket-activated engine waiting on the agent
 // would.
 func (h *Host) Block() {

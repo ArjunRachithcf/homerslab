@@ -267,10 +267,10 @@ func TestFirewallRestoreTakesTheManagersSetupPort(t *testing.T) {
 		state string
 		want  int
 	}{
-		"the manager's port": {`{"enforcing":false,"setupPort":7444}`, 7444},
-		"closed for good":    {`{"enforcing":true,"setupClosed":true,"setupPort":7444}`, 0},
-		"no port given yet":  {`{"enforcing":false}`, 7020},
-		"an agent state that can't be read: the default": {``, 7020},
+		"the manager's port":                         {`{"enforcing":false,"setupPort":7444}`, 7444},
+		"closed for good":                            {`{"enforcing":true,"setupClosed":true,"setupPort":7444}`, 0},
+		"no port given yet":                          {`{"enforcing":false}`, 7020},
+		"an agent state that isn't one: the default": {``, 7020},
 	} {
 		state := t.TempDir()
 		if err := os.WriteFile(filepath.Join(state, "agent.json"), []byte(c.state), 0o600); err != nil {
@@ -279,6 +279,14 @@ func TestFirewallRestoreTakesTheManagersSetupPort(t *testing.T) {
 		if code, out, errOut := runWith(t, "", "firewall", "restore", "--print", "--state-dir", state); code != 0 || out != firewall.Closed(c.want) {
 			t.Errorf("%s: exit %d %s, loads:\n%s", name, code, errOut, out)
 		}
+	}
+	// A state that can't be read for now (an I/O error) may say "closed for good": no LAN exception then.
+	state := t.TempDir()
+	if err := os.Mkdir(filepath.Join(state, "agent.json"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if code, out, errOut := runWith(t, "", "firewall", "restore", "--print", "--state-dir", state); code != 0 || out != firewall.Closed(0) {
+		t.Errorf("an agent state that can't be read: exit %d %s, loads:\n%s", code, errOut, out)
 	}
 }
 

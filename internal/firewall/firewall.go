@@ -381,7 +381,8 @@ func RestoreScript(savePath string, setupPort int) (script string, unusable erro
 // its last line. Render writes exactly one brace alone on a line at column 0, that last one (every other line inside
 // the table is indented), so a script cut short anywhere lacks it.
 func whole(script string) bool {
-	return strings.HasPrefix(script, header) && strings.HasSuffix(script, "\n}\n") && strings.Count(script, "\n}\n") == 1
+	body, ok := strings.CutSuffix(script, "\n}\n")
+	return ok && strings.HasPrefix(script, header) && !slices.Contains(strings.Split(body, "\n"), "}")
 }
 
 // Note records something wrong the agent found and couldn't render (an engine's bridge with a refused name).
