@@ -4,9 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"net/mail"
-	"strings"
-	"unicode/utf8"
 )
 
 // Built are the steps this version of HomersLab can take. The rest come with the tickets that build them.
@@ -15,6 +12,21 @@ var Built = map[string]Handler{
 	"you":       you,
 	"household": household,
 }
+
+// The limits of what someone types. A name is counted in code points, so an accent or an emoji can count as more
+// than one; a mail address is RFC 5321's longest, in octets.
+const (
+	NameMax = 64
+	MailMax = 254
+)
+
+// Why a field's answer was refused.
+const (
+	Missing          = "missing"
+	TooLong          = "too-long"
+	HiddenCharacters = "hidden-characters" // an invisible character, or one a name can't use
+	NotAMail         = "not-a-mail"
+)
 
 func welcome(_ context.Context, raw json.RawMessage, _ map[string]string) (map[string]string, error) {
 	var a struct{}
@@ -40,19 +52,15 @@ func you(_ context.Context, raw json.RawMessage, _ map[string]string) (map[strin
 	if !decode(raw, &a) {
 		return nil, &Invalid{Fields: []string{"answer"}}
 	}
-	var bad []string
-	name := strings.TrimSpace(a.Name)
-	if !plain(name) {
-		bad = append(bad, "name")
+	bad := &Invalid{}
+	n, why := name(a.Name)
+	bad.add("name", why)
+	addr, why := mailAddress(a.Mail)
+	bad.add("mail", why)
+	if bad.Fields != nil {
+		return nil, bad
 	}
-	mailAddr := strings.TrimSpace(a.Mail)
-	if p, err := mail.ParseAddress(mailAddr); err != nil || p.Address != mailAddr || p.Name != "" || !strings.Contains(mailAddr[strings.LastIndex(mailAddr, "@"):], ".") {
-		bad = append(bad, "mail")
-	}
-	if bad != nil {
-		return nil, &Invalid{Fields: bad}
-	}
-	return map[string]string{"name": name, "mail": mailAddr}, nil
+	return map[string]string{"name": n, "mail": addr}, nil
 }
 
 // household: the household's name.
@@ -63,14 +71,11 @@ func household(_ context.Context, raw json.RawMessage, _ map[string]string) (map
 	if !decode(raw, &a) {
 		return nil, &Invalid{Fields: []string{"answer"}}
 	}
-	name := strings.TrimSpace(a.Name)
-	if !plain(name) {
-		return nil, &Invalid{Fields: []string{"name"}}
+	n, why := name(a.Name)
+	if why != "" {
+		bad := &Invalid{}
+		bad.add("name", why)
+		return nil, bad
 	}
-	return map[string]string{"household": name}, nil
-}
-
-// plain is a name someone typed: not empty, not huge, one line.
-func plain(s string) bool {
-	return s != "" && utf8.RuneCountInString(s) <= 120 && !strings.ContainsAny(s, "\r\n\x00")
+	return map[string]string{"household": n}, nil
 }

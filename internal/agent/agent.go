@@ -56,8 +56,6 @@ type Config struct {
 	// IsBridge confirms (the kernel's /sys/class/net/<name>/bridge, from Sysroot, when nil) are used.
 	Bridges  func(ctx context.Context) []string
 	IsBridge func(name string) bool
-	// Proc is the machine's /proc, for the mesh client's running environment.
-	Proc string
 	// SetupPort is the setup link's LAN listener, the firewall table's one exception until it closes.
 	SetupPort int
 	// CheckEvery is how often the firewall table is checked for drift: often, so an `nft flush ruleset` is undone
@@ -79,14 +77,15 @@ type Agent struct {
 	log *slog.Logger
 	fw  *firewall.Firewall
 
-	mu        sync.Mutex // the state below, and joins
-	state     state
-	natAt     time.Time        // when the mesh client's NAT mapper was last checked
-	bridgesAt time.Time        // when the engines were last asked for their bridges
-	refused   map[string]bool  // engine bridge names refused, reported once each
-	meshDrift []firewall.Drift // what the agent found changed in the mesh client, and put back
-	reads     *reads           // compose reads, one at a time
-	edgeDown  string           // the edge's last check's error, so a down edge is logged once
+	mu         sync.Mutex // the state below, and joins
+	state      state
+	natUnknown bool             // the unknown NAT mapper state was reported, until systemd can say again
+	natAt      time.Time        // when the mesh client's NAT mapper was last checked
+	bridgesAt  time.Time        // when the engines were last asked for their bridges
+	refused    map[string]bool  // engine bridge names refused, reported once each
+	meshDrift  []firewall.Drift // what the agent found changed in the mesh client, and put back
+	reads      *reads           // compose reads, one at a time
+	edgeDown   string           // the edge's last check's error, so a down edge is logged once
 }
 
 // state is what the agent keeps across restarts, in StateDir/agent.json. None of it is secret.
@@ -150,9 +149,6 @@ func New(ctx context.Context, c Config) (*Agent, error) {
 			fi, err := fs.Stat(root, "sys/class/net/"+name+"/bridge")
 			return err == nil && fi.IsDir()
 		}
-	}
-	if c.Proc == "" {
-		c.Proc = "/proc"
 	}
 	a := &Agent{cfg: c, log: c.Log, fw: &firewall.Firewall{Run: c.Run, Now: c.Now}, refused: map[string]bool{}, reads: newReads(c.Executable)}
 	if c.StateDir != "" {

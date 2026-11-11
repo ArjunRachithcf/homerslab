@@ -4,12 +4,14 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { flushSync } from 'react-dom';
 import { rich, t, type Key } from '../i18n/t';
-import { answer, claim, dropKey, getPrimary, getSetup, heldKey, holdKey, keepSession, Refused, Unreachable, type Facts, type Setup } from './api';
+import { answer, claim, dropKey, getPrimary, getSetup, heldKey, holdKey, keepSession, Refused, Unreachable, type Facts, type Reason, type Setup } from './api';
 import { Assistant, Field, Icon, stepTitle, type Screen } from './Assistant';
 import { diskSize, memory } from './format';
 
-// An error says the manager didn't answer, unless it said why: then `says` holds that.
-type Phase = { kind: 'loading' } | { kind: 'refused' } | { kind: 'error'; says?: Key } | { kind: 'ready'; setup: Setup; facts: Facts | null };
+// An error says the manager didn't answer, unless it said why: then `says` holds that. Full: the disk under the
+// manager's database is full, so nothing can be kept until there is room.
+type Phase = { kind: 'loading' } | { kind: 'refused' } | { kind: 'error'; says?: Key } | { kind: 'full' }
+  | { kind: 'ready'; setup: Setup; facts: Facts | null };
 
 const BUILT = new Set(['welcome', 'you', 'household', 'network', 'domain']);
 const validMail = (m: string) => /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(m.trim());
@@ -82,9 +84,8 @@ export function App() {
   }, [phase, view]);
 
   let screen: React.ReactNode = null;
-  if (phase.kind === 'refused' || phase.kind === 'error') {
-    const refused = phase.kind === 'refused';
-    screen = <Problem refused={refused} says={phase.kind === 'error' ? phase.says : undefined} onRetry={retry} />;
+  if (phase.kind === 'refused' || phase.kind === 'error' || phase.kind === 'full') {
+    screen = <Problem kind={phase.kind} says={phase.kind === 'error' ? phase.says : undefined} onRetry={retry} />;
   } else if (phase.kind === 'ready') {
     screen = <StepScreen phase={phase} view={view} go={go} onAnswered={(setup) => setPhase({ ...phase, setup })} />;
   }
@@ -109,13 +110,14 @@ export function App() {
   );
 }
 
-/** The link was refused, or the manager can't be reached. */
-function Problem({ refused, says, onRetry }: { refused: boolean; says?: Key; onRetry: () => void }) {
-  const title = t(refused ? 'setup.refused.title' : 'setup.error.title');
+/** The link was refused, the manager can't be reached, or the machine's disk is full. */
+function Problem({ kind, says, onRetry }: { kind: 'refused' | 'error' | 'full'; says?: Key; onRetry: () => void }) {
+  const refused = kind === 'refused';
+  const title = t(refused ? 'setup.refused.title' : kind === 'full' ? 'setup.full.title' : 'setup.error.title');
   useTitle(title);
   return (
     <Assistant steps={[]} now="" illoFacts={{}} illo="welcome" title={title}
-      lead={t(refused ? 'setup.refused.lead' : says ?? 'setup.error.lead')}
+      lead={t(refused ? 'setup.refused.lead' : kind === 'full' ? 'setup.full.lead' : says ?? 'setup.error.lead')}
       body={refused ? <div className="cmd"><code>{t('setup.refused.command')}</code></div> : undefined}
       primary={refused ? undefined : { label: t('setup.error.retry') }} onPrimary={onRetry} />
   );
@@ -153,7 +155,11 @@ async function claimed(key: string, superseded: () => boolean): Promise<Claim> {
 /** The manager refused this browser, not its link or answer: it isn't on this machine or its LAN, or not on its page. */
 const fromElsewhere = (e: unknown) => e instanceof Refused && (e.status === 403 || e.status === 421);
 
-const problem = (e: unknown): Phase => ({ kind: 'error', says: fromElsewhere(e) ? 'setup.fail.here' : undefined });
+/** The disk under the manager's database is full (#70). */
+const diskFull = (e: unknown) => e instanceof Refused && e.code === 'disk-full';
+
+const problem = (e: unknown): Phase =>
+  diskFull(e) ? { kind: 'full' } : { kind: 'error', says: fromElsewhere(e) ? 'setup.fail.here' : undefined };
 
 /** A step can be shown when every step before it is done. */
 function reachable(setup: Setup, id: string): boolean {
@@ -192,10 +198,10 @@ function useStep(id: string, setup: Setup, facts: Facts | null, next: () => void
   const surname = name.trim().split(/\s+/).pop() ?? '';
   const [household, setHousehold] = useState(a.household ?? '');
   const [touched, setTouched] = useState(!!a.household);
-  const [bad, setBad] = useState<string[]>([]);
+  const [bad, setBad] = useState<Record<string, Reason>>({});
   const [busy, setBusy] = useState(false);
   const [failed, setFailed] = useState<{ step: string; why: Failure } | null>(null);
-  const householdValue = touched || !surname ? household : t('step.household.default', { surname });
+  const householdValue = touched || !surname ? household : defaultHousehold(surname);
   const [plane, setPlane] = useState<'cloud' | 'self-hosted'>(a.meshControlPlane === 'self-hosted' ? 'self-hosted' : 'cloud');
   const [url, setUrl] = useState(a.meshControlPlane === 'self-hosted' ? (a.meshUrl ?? '') : '');
   const [domain, setDomain] = useState(a.domain ?? (a.mail ?? '').split('@')[1] ?? '');
@@ -229,11 +235,20 @@ function useStep(id: string, setup: Setup, facts: Facts | null, next: () => void
     try {
       const s = await answer(id, body);
       onAnswered(s);
-      setBad([]);
+      // The manager keeps what it was given in its normal form (spaces collapsed, full-width letters made plain, and
+      // so on): show that.
+      if (id === 'you') {
+        setName(s.answers.name ?? name);
+        setMail(s.answers.mail ?? mail);
+      } else if (id === 'household' && s.answers.household !== undefined) {
+        setHousehold(s.answers.household);
+        setTouched(true);
+      }
+      setBad({});
       if (s.steps.find((x) => x.id === id)?.state === 'done') next(); // a step waiting for a secret stays
 
     } catch (e) {
-      if (e instanceof Refused && e.code === 'invalid') setBad(e.fields);
+      if (e instanceof Refused && e.code === 'invalid') setBad(e.reasons);
       else if (e instanceof Refused && e.status === 401) location.reload();
       else setFailed({ step: id, why: failure(e) });
     } finally {
@@ -265,9 +280,10 @@ function useStep(id: string, setup: Setup, facts: Facts | null, next: () => void
         illo: 'you', title: t('step.you.title'), lead: t('step.you.lead'), illoFacts: { name, mail },
         body: <>
           <Field id="name" label={t('step.you.name')} value={name} onChange={setName} autoComplete="name"
-            error={bad.includes('name') ? t('step.you.nameInvalid') : undefined} />
+            error={refusal(bad.name, { 'too-long': 'step.you.nameTooLong', 'hidden-characters': 'step.you.nameHidden' }, 'step.you.nameInvalid')} />
           <Field id="mail" label={t('step.you.mail')} value={mail} onChange={setMail} type="email" autoComplete="email"
-            hint={t('step.you.mailHint')} error={bad.includes('mail') ? t('step.you.mailInvalid') : undefined} />
+            hint={t('step.you.mailHint')}
+            error={refusal(bad.mail, { 'too-long': 'step.you.mailTooLong', 'hidden-characters': 'step.you.mailHidden' }, 'step.you.mailInvalid')} />
         </>,
         notice,
         primary: { label: t('setup.continue'), ok, why: t('step.you.why'), busy },
@@ -279,7 +295,7 @@ function useStep(id: string, setup: Setup, facts: Facts | null, next: () => void
         illo: 'household', title: t('step.household.title'), lead: t('step.household.lead'), illoFacts: { name: householdValue },
         body: <Field id="household" label={t('step.household.name')} value={householdValue}
           onChange={(v) => { setTouched(true); setHousehold(v); }}
-          error={bad.includes('name') ? t('step.household.invalid') : undefined} />,
+          error={refusal(bad.name, { 'too-long': 'step.household.tooLong', 'hidden-characters': 'step.household.hidden' }, 'step.household.invalid')} />,
         notice,
         primary: { label: t('setup.continue'), ok: !!householdValue.trim(), why: t('step.household.why'), busy },
         onPrimary: () => send({ name: householdValue }),
@@ -334,7 +350,7 @@ function useStep(id: string, setup: Setup, facts: Facts | null, next: () => void
             ))}
           </div>
           {own && <Field id="url" label={t('step.network.url')} value={url} onChange={setUrl} type="url" hint={t('step.network.urlHint')}
-            error={bad.includes('url') ? t('step.network.urlInvalid') : undefined} />}
+            error={bad.url ? t('step.network.urlInvalid') : undefined} />}
           {network?.state === 'done' && <div className="as-check"><Icon name="check" /><span>{t('step.network.done')}</span></div>}
         </>,
         more: <p className="hint">{t('step.network.later')}</p>,
@@ -375,7 +391,7 @@ function useStep(id: string, setup: Setup, facts: Facts | null, next: () => void
         illo: 'domain', title: t('step.domain.title'), lead,
         body: <>
           <Field id="domain" label={t('step.domain.domain')} value={domain} onChange={setDomain} hint={t('step.domain.domainHint')}
-            error={bad.includes('domain') ? t('step.domain.domainInvalid') : undefined} />
+            error={bad.domain ? t('step.domain.domainInvalid') : undefined} />
           <div className="group" role="radiogroup" aria-label={t('step.domain.provider')}>
             {choices.map(([v, label, sub]) => (
               <label className="row row-choice" key={v}>
@@ -387,9 +403,9 @@ function useStep(id: string, setup: Setup, facts: Facts | null, next: () => void
           </div>
           {own && <>
             <Field id="server" label={t('step.domain.server')} value={server} onChange={setServer} hint={t('step.domain.serverHint')}
-              error={bad.includes('server') ? t('step.domain.serverInvalid') : undefined} />
+              error={bad.server ? t('step.domain.serverInvalid') : undefined} />
             <Field id="keyName" label={t('step.domain.keyName')} value={keyName} onChange={setKeyName}
-              error={bad.includes('keyName') ? t('step.domain.keyNameInvalid') : undefined} />
+              error={bad.keyName ? t('step.domain.keyNameInvalid') : undefined} />
           </>}
           {step?.state === 'done' && <div className="as-check"><Icon name="check" /><span>
             {t('step.domain.done', { domain: a.domain ?? '', admin: `https://admin.${a.domain ?? ''}${port}` })}</span></div>}
@@ -425,6 +441,7 @@ type Failure = { says: Key; reload?: boolean };
 function failure(e: unknown): Failure {
   if (e instanceof Unreachable) return { says: 'setup.fail.offline' };
   if (!(e instanceof Refused)) return { says: 'setup.fail.server' };
+  if (diskFull(e)) return { says: 'setup.full.answer' };
   if (e.code === 'lan-half-done') return { says: 'setup.fail.lanDone', reload: true };
   if (e.code === 'over-the-mesh') return { says: 'setup.fail.mesh' };
   if (e.status === 409) return { says: 'setup.fail.moved', reload: true }; // earlier-step-open
@@ -432,6 +449,33 @@ function failure(e: unknown): Failure {
   if (fromElsewhere(e)) return { says: 'setup.fail.here' }; // not-from-lan, cross-origin, wrong-host
   if (e.status >= 400 && e.status < 500) return { says: 'setup.fail.refused', reload: true }; // unknown-step, not-json
   return { says: 'setup.fail.server' };
+}
+
+/** The longest name the manager keeps, in code points (internal/manager/setup: NameMax). */
+const NAME_MAX = 64;
+
+/**
+ * The household's name, made from the admin's surname: "The {surname} household", with the surname cut short to fit
+ * when it is long, so the page never offers a name the manager refuses. It is cut between grapheme clusters, so an
+ * accent, an emoji sequence or a flag stays whole or goes whole; and a tatweel, ZWNJ or ZWJ left at the end goes too.
+ */
+function defaultHousehold(surname: string): string {
+  const whole = t('step.household.default', { surname });
+  let room = NAME_MAX - ([...whole].length - [...surname].length);
+  if (room >= [...surname].length) return whole;
+  let kept = '';
+  for (const { segment } of new Intl.Segmenter(undefined, { granularity: 'grapheme' }).segment(surname)) {
+    room -= [...segment].length;
+    if (room < 0) break;
+    kept += segment;
+  }
+  kept = kept.replace(/[\u0640\u200C\u200D]+$/u, '');
+  return kept ? t('step.household.default', { surname: kept }) : '';
+}
+
+/** What a field's refusal says: the words for its reason, or the field's own when it is missing or malformed. */
+function refusal(reason: Reason | undefined, words: Partial<Record<Reason, Key>>, otherwise: Key): string | undefined {
+  return reason && t(words[reason] ?? otherwise);
 }
 
 /** A notice that is read out as it appears. */

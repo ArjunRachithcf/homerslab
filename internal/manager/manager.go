@@ -19,6 +19,7 @@ import (
 	"net/http"
 	"net/netip"
 	"os"
+	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -41,7 +42,12 @@ type Config struct {
 	// Local is the loopback address the setup listener answers on, for the link on this machine itself; the zero
 	// Addr when it doesn't.
 	Local netip.Addr
-	Now   func() time.Time
+	// Now is the wall clock, for what the manager records and shows. Elapsed is the time since the machine booted
+	// (CLOCK_BOOTTIME), which no one sets and which goes on across the manager's restarts, and Boot is that boot's ID:
+	// how old a link or a session is goes by them. Setting the wall clock moves only Now.
+	Now     func() time.Time
+	Elapsed func() time.Duration
+	Boot    func() string
 	// LAN is the home network; LANAddress is this machine's address on it, or the zero Addr when the setup listener
 	// isn't on the LAN.
 	LAN        func() lan.LAN
@@ -86,6 +92,13 @@ type Manager struct {
 func New(c Config) (*Manager, error) {
 	if c.Now == nil {
 		c.Now = time.Now
+	}
+	if c.Elapsed == nil {
+		c.Elapsed = elapsed()
+	}
+	if c.Boot == nil {
+		id := bootID()
+		c.Boot = func() string { return id }
 	}
 	if c.LAN == nil {
 		c.LAN = lan.Cached(lan.Current, 5*time.Second)
@@ -139,7 +152,7 @@ func New(c Config) (*Manager, error) {
 	for id, h := range c.Steps {
 		handlers[id] = h
 	}
-	m.setup = setup.New(db, c.Now, handlers, map[string]setup.SecretHandler{"mesh": m.meshSecret, "dns": m.dnsSecret})
+	m.setup = setup.New(db, setup.Clock{Now: c.Now, Elapsed: c.Elapsed, Boot: c.Boot}, handlers, map[string]setup.SecretHandler{"mesh": m.meshSecret, "dns": m.dnsSecret})
 	answers, err := db.Answers(context.Background())
 	if err != nil {
 		db.Close()
@@ -225,7 +238,8 @@ func (m *Manager) newLink(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		m.internal(w, "making a link", err)
+		// Only root and the manager's user reach the control socket, so its answer may name the database's folder.
+		m.fault(w, "making a link", err, map[string]string{"folder": filepath.Dir(m.cfg.DB)})
 		return
 	}
 	// The key rides in the fragment, which browsers never send: it stays out of logs and Referer headers.
@@ -280,7 +294,7 @@ func (m *Manager) putStep(w http.ResponseWriter, r *http.Request) {
 		m.log.Warn("refused a secret sent over the LAN page", "step", r.PathValue("id"))
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "secret-over-http", "command": overHTTP.Command})
 	case errors.As(err, &invalid):
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid", "fields": invalid.Fields})
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid", "fields": invalid.Fields, "reasons": invalid.Reasons})
 	case errors.Is(err, setup.ErrUnknownStep):
 		fail(w, http.StatusNotFound, err.Error())
 	case errors.Is(err, setup.ErrOverTheMesh):
@@ -294,9 +308,21 @@ func (m *Manager) putStep(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (m *Manager) internal(w http.ResponseWriter, what string, err error) {
+// internal answers an error the request can't help: 507 disk-full when the disk under the database is full, else 500.
+func (m *Manager) internal(w http.ResponseWriter, what string, err error) { m.fault(w, what, err, nil) }
+
+// fault is internal, with more to say when the disk is full.
+func (m *Manager) fault(w http.ResponseWriter, what string, err error, onFullDisk map[string]string) {
 	m.log.Error(what, "err", err)
-	fail(w, http.StatusInternalServerError, "internal")
+	if !errors.Is(err, store.ErrDiskFull) {
+		fail(w, http.StatusInternalServerError, "internal")
+		return
+	}
+	body := map[string]string{"error": "disk-full"}
+	for k, v := range onFullDisk {
+		body[k] = v
+	}
+	writeJSON(w, http.StatusInsufficientStorage, body)
 }
 
 func notFound(w http.ResponseWriter, _ *http.Request) { fail(w, http.StatusNotFound, "not-found") }

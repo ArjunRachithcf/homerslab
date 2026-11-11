@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"io/fs"
 	"log/slog"
@@ -38,17 +39,45 @@ const (
 	linkLocalV6 = "fe80::1234:1" // link-local: only with the zone of an interface that carries the default route
 )
 
-// clock is the test's time, moved by hand.
+// clock is the test's time, moved by hand: the wall clock, which can be set, and the time since the machine booted
+// (CLOCK_BOOTTIME), which only goes on, across restarts of the manager, until the machine boots again.
 type clock struct {
-	mu  sync.Mutex
-	now time.Time
+	mu      sync.Mutex
+	now     time.Time
+	elapsed time.Duration
+	boots   int
 }
 
 func (c *clock) Now() time.Time { c.mu.Lock(); defer c.mu.Unlock(); return c.now }
+
+func (c *clock) Elapsed() time.Duration { c.mu.Lock(); defer c.mu.Unlock(); return c.elapsed }
+
+// Boot is the machine's boot ID.
+func (c *clock) Boot() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return fmt.Sprintf("boot-%d", c.boots)
+}
+
+// Add lets d go by.
 func (c *clock) Add(d time.Duration) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	c.now, c.elapsed = c.now.Add(d), c.elapsed+d
+}
+
+// Set moves the wall clock by d, as NTP stepping it or someone setting it does; no time goes by.
+func (c *clock) Set(d time.Duration) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	c.now = c.now.Add(d)
+}
+
+// reboot boots the machine again: a new boot ID, and the time since boot starts over.
+func (c *clock) reboot() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.elapsed, c.boots = 7*time.Second, c.boots+1
 }
 
 // primary is a manager with its own database and a real agent on the invented primary.
@@ -67,9 +96,13 @@ type primary struct {
 	// lanReads counts how often the manager asks for the machine's LAN address.
 	lanReads atomic.Int32
 	steps    map[string]setup.Handler
-	host     *agenttest.Host // the primary's machine, as its agent sees it
-	netbird  manager.NetBird
-	domains  manager.Domains
+	// lanAddress is this machine's address on the LAN, for the links.
+	lanAddress netip.Addr
+	// claimedBrowser is a browser a test keeps across a restart.
+	claimedBrowser *browser
+	host           *agenttest.Host // the primary's machine, as its agent sees it
+	netbird        manager.NetBird
+	domains        manager.Domains
 	// agentConfig is the agent's, filled in by agenttest.
 	agentConfig agent.Config
 	log         *slog.Logger // the manager's and the agent's, when a test reads them
@@ -105,6 +138,8 @@ func newPrimary(t *testing.T, opts ...option) *primary {
 		local: netip.MustParseAddr("127.0.0.1"),
 		hosts: []string{"192.168.1.20", "fd00:1::20", "study-pc", "127.0.0.1", "::1", "localhost"},
 		port:  7020,
+
+		lanAddress: netip.MustParseAddr("192.168.1.20"),
 	}
 	for _, o := range opts {
 		o(p)
@@ -126,6 +161,8 @@ func (p *primary) open() {
 		SetupPort:   p.port,
 		Local:       p.local,
 		Now:         p.clock.Now,
+		Elapsed:     p.clock.Elapsed,
+		Boot:        p.clock.Boot,
 		LAN: func() lan.LAN {
 			return lan.LAN{
 				Prefixes:   []netip.Prefix{netip.MustParsePrefix("192.168.1.0/24"), netip.MustParsePrefix("fd00:1::/64")},
@@ -133,7 +170,7 @@ func (p *primary) open() {
 			}
 		},
 		Hosts:      func() []string { return p.hosts },
-		LANAddress: func() netip.Addr { p.lanReads.Add(1); return netip.MustParseAddr("192.168.1.20") },
+		LANAddress: func() netip.Addr { p.lanReads.Add(1); return p.lanAddress },
 		Web:        p.web,
 		Catalog:    p.catalog,
 		Steps:      p.steps,
@@ -147,6 +184,19 @@ func (p *primary) open() {
 	p.m = m
 	p.t.Cleanup(func() { _ = m.Close() })
 }
+
+// reboot stops the manager and boots the machine again before starting it.
+func (p *primary) reboot() {
+	p.t.Helper()
+	if err := p.m.Close(); err != nil {
+		p.t.Fatal(err)
+	}
+	p.clock.reboot()
+	p.open()
+}
+
+// dbFolder is the folder that holds the manager's database.
+func (p *primary) dbFolder() string { return filepath.Dir(p.db) }
 
 // restart stops the manager and starts it again on the same database, as after a power cut.
 func (p *primary) restart() {

@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/netip"
+	"net/url"
 	"os"
 	"time"
 
@@ -35,11 +37,21 @@ func setupLink(ctx context.Context, args []string, env Env) error {
 		_, err := env.Stdout.Write(body)
 		return err
 	}
+	until := l.ExpiresAt.Local().Format("15:04")
+	if !onTheLAN(l.URL) {
+		// A phone that opened it would open its own loopback.
+		fmt.Fprintf(env.Stdout, `First-time setup is ready. This machine has no address on a home network, so the link
+works on this machine only. Open it once, within 30 minutes (until %s), in a browser here:
+
+  %s
+`, until, l.URL)
+		fmt.Fprint(env.Stdout, "\nEach new link ends the earlier ones. To make another: sudo homerslab setup link\n")
+		return nil
+	}
 	qr, err := qrterm.Render(l.URL, isTerminal(env.Stdout))
 	if err != nil {
 		return err
 	}
-	until := l.ExpiresAt.Local().Format("15:04")
 	fmt.Fprintf(env.Stdout, `First-time setup is ready. Open this link once, within 30 minutes (until %s),
 on this machine or on another device at home:
 
@@ -53,6 +65,16 @@ Scan the code with a phone's camera to open it there.
 	}
 	fmt.Fprint(env.Stdout, "\nEach new link ends the earlier ones. To make another: sudo homerslab setup link\n")
 	return nil
+}
+
+// onTheLAN says whether a link reaches this machine from another device: its host isn't a loopback address.
+func onTheLAN(link string) bool {
+	u, err := url.Parse(link)
+	if err != nil {
+		return false
+	}
+	a, err := netip.ParseAddr(u.Hostname())
+	return err != nil || !a.IsLoopback() // a name, or an address that isn't loopback
 }
 
 func isTerminal(w any) bool {

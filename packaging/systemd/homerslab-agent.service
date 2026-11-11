@@ -33,21 +33,30 @@ RestartSec=2s
 #   - owns the firewall table, inet homerslab, in the host's own network (nft over netlink, CAP_NET_ADMIN);
 #   - joins the mesh: a drop-in for NetBird's service (NAT mapper off), systemctl, netbird up, and a check that the
 #     machine's resolver still answers (AF_INET, AF_INET6);
-#   - seals the manager's credentials with systemd-creds, in its state directory;
+#   - seals the manager's credentials with systemd-creds, in its state directory, with the TPM where there is one;
 #   - since #16, seals the edge's certificates, writes the edge's drop-in, restarts the edge (systemctl) and configures
 #     it through its admin socket (the edge's group).
+# Every file it reads is world-readable or its own, so it reads no one else's files and no home (#71): no
+# CAP_DAC_READ_SEARCH, ProtectHome=yes. Its devices are closed but for the TPM's resource manager, which sealing uses
+# (ADR 0011), so not PrivateDevices, which would hide it.
 # Since #18 it reads apps' compose files for planning, each in a child of its own (homerslab agent read-project), in
 # an empty folder of its private /tmp that the agent gives to nobody (CAP_CHOWN); the child starts as nobody, its IDs
 # set in the fork (CAP_SETUID, CAP_SETGID).
 # Later tickets loosen this as its contract grows: the engine, app units, disks. To check as root at the first package
 # install (#48).
 NoNewPrivileges=yes
-CapabilityBoundingSet=CAP_CHOWN CAP_DAC_READ_SEARCH CAP_NET_ADMIN CAP_SETUID CAP_SETGID
+CapabilityBoundingSet=CAP_CHOWN CAP_NET_ADMIN CAP_SETUID CAP_SETGID
 ProtectSystem=strict
 # NetBird's and the edge's drop-ins only (agent.RootWrites; the folders come from tmpfiles.d/homerslab.conf).
 ReadWritePaths=/etc/systemd/system/netbird.service.d /etc/systemd/system/homerslab-edge.service.d
-ProtectHome=read-only
+ProtectHome=yes
 PrivateTmp=yes
+DevicePolicy=closed
+DeviceAllow=/dev/tpmrm0 rw
+PrivateIPC=yes
+ProtectProc=invisible
+RestrictNamespaces=yes
+RestrictRealtime=yes
 PrivateNetwork=no
 RestrictAddressFamilies=AF_UNIX AF_NETLINK AF_INET AF_INET6
 ProtectKernelTunables=yes
