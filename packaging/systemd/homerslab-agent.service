@@ -1,0 +1,40 @@
+# The agent owns this node's host, so it runs as root. Its API is a Unix socket for root and the manager's group.
+[Unit]
+Description=HomersLab agent
+Documentation=https://github.com/ArjunRachithcf/homerslab
+Before=homerslab-manager.service
+
+[Service]
+Type=exec
+ExecStart=/usr/bin/homerslab agent
+RuntimeDirectory=homerslab-agent
+RuntimeDirectoryMode=0755
+UMask=0077
+Restart=on-failure
+RestartSec=2s
+
+# So far the agent only reads the machine's facts (/etc, /proc, /sys, pci.ids) and answers on its socket, which it
+# hands to the manager's group (CAP_CHOWN). Later tickets loosen this as its contract grows: the firewall (netlink,
+# CAP_NET_ADMIN), the engine, app units, disks. Checked as a transient user unit with these settings (Fedora 44):
+# the facts, TPM and GPUs included, read in full. To check again as root at the first package install (#48).
+NoNewPrivileges=yes
+CapabilityBoundingSet=CAP_CHOWN CAP_DAC_READ_SEARCH
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=yes
+PrivateNetwork=yes
+RestrictAddressFamilies=AF_UNIX
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+
+[Install]
+WantedBy=multi-user.target

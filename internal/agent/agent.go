@@ -1,0 +1,112 @@
+// Package agent is the agent's API: the process on every node that owns its host and runs as root. So far it reports
+// the node's facts.
+package agent
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io/fs"
+	"log/slog"
+	"net"
+	"net/http"
+	"os"
+	"syscall"
+	"time"
+
+	"github.com/ArjunRachithcf/homerslab/internal/node"
+)
+
+// Sysroot is the system root the agent reads its facts from: "/" on a real machine.
+type Sysroot = fs.FS
+
+// Config is where the agent listens and what it reads.
+type Config struct {
+	// Socket is the Unix socket of the agent's API. Only root and SocketGID may connect to it.
+	Socket string
+	// SocketGID is the manager's group.
+	SocketGID int
+	Sysroot   Sysroot
+	Log       *slog.Logger
+}
+
+// Handler serves the agent's API.
+func Handler(sysroot Sysroot, log *slog.Logger) http.Handler {
+	if log == nil {
+		log = slog.New(slog.DiscardHandler)
+	}
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /v1/node", func(w http.ResponseWriter, _ *http.Request) {
+		facts, err := node.Read(sysroot)
+		if err != nil {
+			log.Error("reading the node's facts", "err", err)
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "facts-unreadable"})
+			return
+		}
+		writeJSON(w, http.StatusOK, facts)
+	})
+	mux.HandleFunc("/", func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "not-found"})
+	})
+	return mux
+}
+
+// Serve runs the agent's API on its socket until ctx ends.
+func Serve(ctx context.Context, c Config) error {
+	ln, err := listenUnix(c.Socket, c.SocketGID, 0o660)
+	if err != nil {
+		return err
+	}
+	srv := &http.Server{Handler: Handler(c.Sysroot, c.Log), ReadHeaderTimeout: 10 * time.Second}
+	return serveUntil(ctx, srv, ln)
+}
+
+// listenUnix listens on a fresh socket at path, owned by this process's user and gid, with mode perm.
+func listenUnix(path string, gid int, perm os.FileMode) (net.Listener, error) {
+	if err := os.Remove(path); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return nil, fmt.Errorf("removing the old socket: %w", err)
+	}
+	// Born owner-only (connecting needs write), so nobody else can connect before it has its group and mode.
+	old := syscall.Umask(0o177)
+	ln, err := net.Listen("unix", path)
+	syscall.Umask(old)
+	if err != nil {
+		return nil, err
+	}
+	if err := os.Chown(path, -1, gid); err != nil {
+		ln.Close()
+		return nil, fmt.Errorf("giving the socket to group %d: %w", gid, err)
+	}
+	if err := os.Chmod(path, perm); err != nil {
+		ln.Close()
+		return nil, err
+	}
+	return ln, nil
+}
+
+func serveUntil(ctx context.Context, srv *http.Server, ln net.Listener) error {
+	errc := make(chan error, 1)
+	go func() { errc <- srv.Serve(ln) }()
+	select {
+	case err := <-errc:
+		return err
+	case <-ctx.Done():
+		shutdown, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := srv.Shutdown(shutdown); err != nil {
+			return err
+		}
+		if err := <-errc; !errors.Is(err, http.ErrServerClosed) {
+			return err
+		}
+		return nil
+	}
+}
+
+func writeJSON(w http.ResponseWriter, status int, v any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(v)
+}
