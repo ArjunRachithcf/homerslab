@@ -52,7 +52,9 @@ for (const look of looks) {
 
     await primary.stopManager();
     await page.evaluate(() => { location.hash = '#k=a-new-link'; }); // a new link arrives, and nothing answers
-    await expect(h1).toContainText('Setup can’t reach HomersLab');
+    // the claim is sent again after 1, 2 and 4 s before setup says so, and offers "Try again"
+    await expect(h1).toContainText('Setup can’t reach HomersLab', { timeout: 15_000 });
+    await expect(page.getByRole('button', { name: 'Try again' })).toBeVisible();
     await accessible(page, 'the manager can’t be reached');
   });
 }

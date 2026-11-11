@@ -83,12 +83,13 @@ export async function accessible(page: Page, screen: string): Promise<void> {
 
 /**
  * Measures again each word whose contrast axe couldn't decide while the viewport's edge cut it, scrolled into the
- * middle of the viewport, then scrolls back. A word in a shadow root or a frame keeps its first answer.
+ * middle of the viewport, then scrolls everything it moved back. A word in a shadow root or a frame keeps its first
+ * answer, and so does a word the second run doesn't mention at all: it stays undecided, never a pass.
  */
 async function inView(page: Page, violations: Result[], incomplete: Result[]): Promise<{ violations: Result[]; incomplete: Result[] }> {
   const contrast = incomplete.find((r) => r.id === 'color-contrast');
   const out = { violations: [...violations], incomplete: incomplete.filter((r) => r !== contrast) };
-  const scrolled = await page.evaluate(() => [scrollX, scrollY] as const);
+  const undecided = (node: Result['nodes'][number]) => out.incomplete.push({ ...(contrast as Result), nodes: [node] });
   try {
     for (const node of contrast?.nodes ?? []) {
       const [selector, ...deeper] = node.target;
@@ -97,18 +98,38 @@ async function inView(page: Page, violations: Result[], incomplete: Result[]): P
         return r.top < 0 || r.left < 0 || r.bottom > innerHeight || r.right > innerWidth;
       });
       if (!cut) {
-        out.incomplete.push({ ...(contrast as Result), nodes: [node] });
+        undecided(node);
         continue;
       }
-      await page.locator(selector).evaluate((el) => el.scrollIntoView({ block: 'center' }));
+      await page.locator(selector).evaluate((el) => {
+        // every box that scrolls, from the word's parent up to the document, with where it was
+        const w = window as { a11yScrolled?: [Element, number, number][] };
+        const was = (w.a11yScrolled ??= []);
+        for (let e = el.parentElement; e; e = e.parentElement) {
+          if (e.scrollHeight > e.clientHeight || e.scrollWidth > e.clientWidth) was.push([e, e.scrollLeft, e.scrollTop]);
+        }
+        const doc = document.scrollingElement;
+        if (doc) was.push([doc, doc.scrollLeft, doc.scrollTop]);
+        el.scrollIntoView({ block: 'center' });
+      });
       expect.soft(await settle(page), `${selector} settles in view`).toEqual([]);
       const again = await new AxeBuilder({ page }).include(selector).options(axeOptions({ type: 'rule', values: ['color-contrast'] })).analyze();
       const same = (r: Result): Result => ({ ...r, nodes: r.nodes.filter((n) => n.target.length === 1 && n.target[0] === selector) });
-      out.violations.push(...again.violations.map(same));
-      out.incomplete.push(...again.incomplete.map(same));
+      const mine = (rs: Result[]) => rs.map(same).filter((r) => r.nodes.length);
+      const [v, i, p] = [mine(again.violations), mine(again.incomplete), mine(again.passes)];
+      if (!v.length && !i.length && !p.length) {
+        undecided(node);
+        continue;
+      }
+      out.violations.push(...v);
+      out.incomplete.push(...i);
     }
   } finally {
-    await page.evaluate(([x, y]) => window.scrollTo(x, y), scrolled);
+    await page.evaluate(() => {
+      const w = window as { a11yScrolled?: [Element, number, number][] };
+      for (const [e, left, top] of (w.a11yScrolled ?? []).reverse()) e.scrollTo(left, top); // the first record of each wins
+      delete w.a11yScrolled;
+    });
   }
   return { violations: merged(out.violations), incomplete: merged(out.incomplete) };
 }
