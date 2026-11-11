@@ -12,6 +12,8 @@ Before=homerslab-manager.service network-pre.target docker.service podman.servic
 Type=notify
 NotifyAccess=main
 ExecStart=/usr/bin/homerslab agent
+# The edge's group: the agent alone opens the edge's admin socket.
+SupplementaryGroups=homerslab-edge
 RuntimeDirectory=homerslab-agent
 RuntimeDirectoryMode=0755
 # The agent's state (agent.json: the firewall table's settings) and the manager's sealed credentials.
@@ -26,7 +28,9 @@ RestartSec=2s
 #   - owns the firewall table, inet homerslab, in the host's own network (nft over netlink, CAP_NET_ADMIN);
 #   - joins the mesh: a drop-in for NetBird's service (NAT mapper off), systemctl, netbird up, and a check that the
 #     machine's resolver still answers (AF_INET, AF_INET6);
-#   - seals the manager's credentials with systemd-creds, in its state directory.
+#   - seals the manager's credentials with systemd-creds, in its state directory;
+#   - since #16, seals the edge's certificates, writes the edge's drop-in, restarts the edge (systemctl) and configures
+#     it through its admin socket (the edge's group).
 # Later tickets loosen this as its contract grows: the engine, app units, disks. To check as root at the first package
 # install (#48).
 NoNewPrivileges=yes

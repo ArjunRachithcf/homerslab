@@ -59,6 +59,11 @@ type State struct {
 	// addresses). A LAN interface is never taken for a container bridge, whatever its name (a bridge named br-lan).
 	LAN         []string       `json:"lan"`
 	LANPrefixes []netip.Prefix `json:"lanPrefixes"`
+	// AppsReachEdge are the edge's listeners that apps on this machine's bridges may open: the hook through which apps
+	// reach the sign-in's address (its token, userinfo and JWKS calls) through the edge only. The agent leaves it empty
+	// until the install plan wires an app's sign-in (#19, #20); then apps_in accepts exactly these, and nothing else of
+	// the node's.
+	AppsReachEdge []netip.AddrPort `json:"appsReachEdge,omitempty"`
 }
 
 // Equal says whether two states make the same table.
@@ -105,9 +110,17 @@ func Render(s State) string {
 	w("\t\tct state established,related accept")
 	inside("apps_out")
 	w("\t}")
-	// Apps to this machine: only the DNS an engine serves on a bridge's gateway.
+	// Apps to this machine: only the DNS an engine serves on a bridge's gateway, and the edge's listeners the hook
+	// names.
 	w("\tchain apps_in {")
 	w("\t\tmeta l4proto { tcp, udp } th dport 53 accept")
+	for _, ap := range s.AppsReachEdge {
+		family := "ip"
+		if ap.Addr().Is6() && !ap.Addr().Is4In6() {
+			family = "ip6"
+		}
+		w("\t\t%s daddr %s tcp dport %d accept", family, ap.Addr().Unmap(), ap.Port())
+	}
 	w("\t\tdrop")
 	w("\t}")
 	// Apps out: their own bridges, and the internet; never the LAN, the mesh or a private range.

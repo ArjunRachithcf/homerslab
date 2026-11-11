@@ -1,0 +1,16 @@
+# Admin's socket, on the primary: the manager serves Admin here, and only the edge may connect (its group), which
+# answers at admin.<main domain> over the mesh only.
+[Unit]
+Description=HomersLab Admin, for the edge
+Documentation=https://github.com/ArjunRachithcf/homerslab
+
+[Socket]
+ListenStream=/run/homerslab-admin.sock
+SocketUser=homerslab
+SocketGroup=homerslab-edge
+SocketMode=0660
+FileDescriptorName=admin
+Service=homerslab-manager.service
+
+[Install]
+WantedBy=sockets.target

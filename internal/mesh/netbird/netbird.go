@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"slices"
 	"strconv"
@@ -27,6 +28,11 @@ import (
 
 // CloudURL is NetBird's cloud.
 const CloudURL = "https://api.netbird.io"
+
+// CloudPort is the household's port on NetBird's cloud (ADR 0021): the TLS port its shared clusters accept for TLS
+// passthrough services. Classic found 443 and 8443 refused and 9443 working on the eu1 cluster (2026-10-17); the
+// manual release checklist tries it again (docs/manual-checks.md).
+const CloudPort = 9443
 
 // ServiceUser is the name of HomersLab's own user on a NetBird account.
 const ServiceUser = "homerslab"
@@ -333,9 +339,9 @@ func (m *Mesh) Revoke(ctx context.Context, t mesh.Token) error {
 // Report says what this NetBird can do.
 func (m *Mesh) Report(ctx context.Context) (mesh.Report, error) {
 	r := mesh.Report{Mesh: "netbird", ControlPlane: "self-hosted", PerAppNames: "wildcard-records",
-		PublicPath: "netbird-reverse-proxy", DomainRequired: true, PortMappingOff: true}
+		PublicPath: "netbird-reverse-proxy", DomainRequired: true, PortMappingOff: true, Port: 443}
 	if m.api.base.Host == "api.netbird.io" {
-		r.ControlPlane = "cloud"
+		r.ControlPlane, r.Port = "cloud", CloudPort
 	}
 	var v struct {
 		Current string `json:"management_current_version"`
@@ -468,9 +474,10 @@ func sortedEqual(a, b []string) bool {
 	return slices.Equal(a, b)
 }
 
-// EnsurePolicies makes HomersLab's groups and policies, puts back any that drifted, and removes NetBird's Default
-// policy ("everyone reaches everything"). The household's own policies and groups stay as they are.
-func (m *Mesh) EnsurePolicies(ctx context.Context) error {
+// EnsurePolicies makes HomersLab's groups and policies for the household's port, puts back any that drifted, and
+// removes NetBird's Default policy ("everyone reaches everything"). The household's own policies and groups stay as
+// they are.
+func (m *Mesh) EnsurePolicies(ctx context.Context, port int) error {
 	ids, err := m.groups(ctx)
 	if err != nil {
 		return err
@@ -483,7 +490,7 @@ func (m *Mesh) EnsurePolicies(ctx context.Context) error {
 	for _, p := range have {
 		byName[p.Name] = p
 	}
-	for _, r := range mesh.Policies() {
+	for _, r := range mesh.Policies(port) {
 		want := desired(r, ids)
 		p, ok := byName[r.Name]
 		switch {
@@ -520,7 +527,7 @@ func (m *Mesh) Conflicts(ctx context.Context) ([]mesh.Policy, error) {
 		}
 	}
 	ours := map[string]bool{}
-	for _, r := range mesh.Policies() {
+	for _, r := range mesh.Policies(443) { // the names are the same at any port
 		ours[r.Name] = true
 	}
 	var have []policy
@@ -593,4 +600,85 @@ func NewPassword() mesh.Secret {
 	b := make([]byte, 24)
 	_, _ = rand.Read(b)
 	return mesh.Secret(base64.RawURLEncoding.EncodeToString(b) + "-Aa1")
+}
+
+// zoneName is the name of HomersLab's DNS zone for a domain, as NetBird's dashboard shows it.
+func zoneName(domain string) string { return "homerslab-" + domain }
+
+type zone struct {
+	ID                 string    `json:"id,omitempty"`
+	Name               string    `json:"name"`
+	Domain             string    `json:"domain"`
+	Enabled            bool      `json:"enabled"`
+	EnableSearchDomain bool      `json:"enable_search_domain"`
+	DistributionGroups groupRefs `json:"distribution_groups"`
+}
+
+type zoneRecord struct {
+	ID      string `json:"id,omitempty"`
+	Name    string `json:"name"`
+	Type    string `json:"type"`
+	Content string `json:"content"`
+	TTL     int    `json:"ttl"`
+}
+
+// EnsureNames makes the household's domain a DNS zone on the mesh, given only to HomersLab's groups, with a wildcard
+// record at the node's address: every app's name reaches it, and a specific record added later beats the wildcard.
+func (m *Mesh) EnsureNames(ctx context.Context, domain string, to netip.Addr) error {
+	if !to.IsValid() {
+		return errors.New("the names need the node's mesh address")
+	}
+	ids, err := m.groups(ctx)
+	if err != nil {
+		return err
+	}
+	var groups groupRefs
+	for _, g := range mesh.NameGroups() {
+		groups = append(groups, ids[g])
+	}
+	want := zone{Name: zoneName(domain), Domain: domain, Enabled: true, EnableSearchDomain: false, DistributionGroups: groups}
+	var zones []zone
+	if err := m.api.call(ctx, http.MethodGet, "/api/dns/zones", nil, &zones); err != nil {
+		return err
+	}
+	var have *zone
+	for i := range zones {
+		if strings.EqualFold(zones[i].Domain, domain) {
+			if zones[i].Name != want.Name {
+				return fmt.Errorf("%w: %s, in the zone %q", mesh.ErrNamesTaken, domain, zones[i].Name)
+			}
+			have = &zones[i]
+		}
+	}
+	switch {
+	case have == nil:
+		var made zone
+		if err := m.api.call(ctx, http.MethodPost, "/api/dns/zones", want, &made); err != nil {
+			return err
+		}
+		have = &made
+	case !have.Enabled || have.EnableSearchDomain || !sortedEqual(have.DistributionGroups, want.DistributionGroups):
+		if err := m.api.call(ctx, http.MethodPut, "/api/dns/zones/"+url.PathEscape(have.ID), want, nil); err != nil {
+			return err
+		}
+	}
+	path := "/api/dns/zones/" + url.PathEscape(have.ID) + "/records"
+	var records []zoneRecord
+	if err := m.api.call(ctx, http.MethodGet, path, nil, &records); err != nil {
+		return err
+	}
+	wild := zoneRecord{Name: "*." + domain, Type: "A", Content: to.String(), TTL: 60}
+	if to.Is6() {
+		wild.Type = "AAAA"
+	}
+	for _, r := range records {
+		if r.Name != wild.Name {
+			continue
+		}
+		if r.Type == wild.Type && r.Content == wild.Content {
+			return nil
+		}
+		return m.api.call(ctx, http.MethodPut, path+"/"+url.PathEscape(r.ID), wild, nil)
+	}
+	return m.api.call(ctx, http.MethodPost, path, wild, nil)
 }

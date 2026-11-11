@@ -108,6 +108,9 @@ func (a *Agent) join(w http.ResponseWriter, r *http.Request) {
 	if !slices.Contains(next.WireGuard, netbird.WireGuardPort) {
 		next.WireGuard = append(slices.Clone(next.WireGuard), netbird.WireGuardPort)
 	}
+	if !slices.Contains(next.MeshIPs, st.IP) {
+		next.MeshIPs = append(slices.Clone(next.MeshIPs), st.IP)
+	}
 	// Kept first, so a restart always brings the table back; undone if the table can't be applied.
 	prev := a.state
 	a.state = next
@@ -272,18 +275,28 @@ func (a *Agent) getCredential(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"value": string(out)})
 }
 
-// seal seals a value with the TPM where the machine has one, and the host key always: explicitly, never "auto"
-// (ADR 0011).
+// seal seals one of the manager's credentials.
 func (a *Agent) seal(ctx context.Context, name string, value []byte) error {
+	path := a.credentialPath(name)
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	return a.sealAt(ctx, path, name, value)
+}
+
+// unsealAt decrypts a credential the agent sealed at path, under its name.
+func (a *Agent) unsealAt(ctx context.Context, path, name string) ([]byte, error) {
+	return a.cfg.Run(ctx, host.Cmd{Name: "systemd-creds", Args: []string{"decrypt", "--name=" + name, path, "-"}})
+}
+
+// sealAt seals a value under its name at path, with the TPM where the machine has one, and the host key always:
+// explicitly, never "auto" (ADR 0011).
+func (a *Agent) sealAt(ctx context.Context, path, name string, value []byte) error {
 	key := "host"
 	if a.cfg.Sysroot != nil {
 		if f, err := node.Read(a.cfg.Sysroot); err == nil && f.TPM.Present {
 			key = "host+tpm2"
 		}
-	}
-	path := a.credentialPath(name)
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return err
 	}
 	if _, err := a.cfg.Run(ctx, host.Cmd{Name: "systemd-creds",
 		Args: []string{"encrypt", "--with-key=" + key, "--name=" + name, "-", path + ".new"}, Stdin: value}); err != nil {

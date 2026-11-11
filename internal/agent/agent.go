@@ -51,8 +51,10 @@ type Config struct {
 	CheckEvery time.Duration
 	// JoinWait is how long a join waits for the mesh's client to connect.
 	JoinWait time.Duration
-	Now      func() time.Time
-	Log      *slog.Logger
+	// Edge is where the node's edge lives; DefaultEdge when its Unit is empty.
+	Edge EdgeConfig
+	Now  func() time.Time
+	Log  *slog.Logger
 }
 
 // Agent is a running agent.
@@ -73,6 +75,10 @@ type state struct {
 	WireGuard []int    `json:"wireGuard"`
 	// SetupClosed: the setup link's LAN listener was closed, for good.
 	SetupClosed bool `json:"setupClosed"`
+	// MeshIPs are the node's addresses on its meshes, where its edge listens.
+	MeshIPs []netip.Addr `json:"meshIps,omitempty"`
+	// Edge is the edge's sites and certificates, once the manager has given them.
+	Edge *edgeState `json:"edge,omitempty"`
 }
 
 // New makes an agent and restores its firewall table, if it had one.
@@ -94,6 +100,9 @@ func New(ctx context.Context, c Config) (*Agent, error) {
 	}
 	if c.JoinWait == 0 {
 		c.JoinWait = 30 * time.Second
+	}
+	if c.Edge.Unit == "" {
+		c.Edge = DefaultEdge
 	}
 	if c.Resolve == nil {
 		c.Resolve = net.DefaultResolver.LookupHost
@@ -171,6 +180,10 @@ func (a *Agent) Handler() http.Handler {
 	mux.HandleFunc("PUT /v1/firewall/setup-listener", a.setupListener)
 	mux.HandleFunc("PUT /v1/credentials/{name}", a.putCredential)
 	mux.HandleFunc("GET /v1/credentials/{name}", a.getCredential)
+	mux.HandleFunc("GET /v1/edge", a.getEdge)
+	mux.HandleFunc("PUT /v1/edge", a.putEdge)
+	mux.HandleFunc("POST /v1/edge/check", a.checkEdge)
+	mux.HandleFunc("PUT /v1/edge/certificates/{domain}", a.putEdgeCertificate)
 	mux.HandleFunc("/", func(w http.ResponseWriter, _ *http.Request) { fail(w, http.StatusNotFound, "not-found") })
 	return mux
 }
@@ -194,6 +207,9 @@ func (a *Agent) check(ctx context.Context) {
 	defer a.mu.Unlock()
 	if err := a.reconcile(ctx); err != nil {
 		a.log.Error("checking the firewall table", "err", err)
+	}
+	if err := a.reconcileEdge(ctx); err != nil {
+		a.log.Error("checking the edge", "err", err)
 	}
 }
 

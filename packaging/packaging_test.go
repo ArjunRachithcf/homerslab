@@ -12,6 +12,12 @@ import (
 // unit reads a systemd unit's [Service] settings.
 func unit(t *testing.T, name string) map[string][]string {
 	t.Helper()
+	return section(t, name, "[Service]")
+}
+
+// section reads one section of a systemd unit.
+func section(t *testing.T, name, want string) map[string][]string {
+	t.Helper()
 	f, err := os.Open("systemd/" + name)
 	if err != nil {
 		t.Fatal(err)
@@ -26,7 +32,7 @@ func unit(t *testing.T, name string) map[string][]string {
 			section = line
 			continue
 		}
-		if k, v, ok := strings.Cut(line, "="); ok && section == "[Service]" && !strings.HasPrefix(line, "#") {
+		if k, v, ok := strings.Cut(line, "="); ok && section == want && !strings.HasPrefix(line, "#") {
 			out[k] = append(out[k], v)
 		}
 	}

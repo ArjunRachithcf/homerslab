@@ -166,9 +166,20 @@ func TestTheMeshContractOnSelfHostedNetBird(t *testing.T) {
 		}
 	})
 
-	w.m = meshtest.Run(t, w, meshtest.Machines{Primary: "primary", Second: "resolved", Device: "phone"}, mesh.Report{
+	w.m = meshtest.Run(t, w, meshtest.Machines{Primary: "primary", Second: "resolved", Device: "phone", Outsider: "guest"}, mesh.Report{
 		Mesh: "netbird", ControlPlane: "self-hosted", Version: "0.82.0", PerAppNames: "wildcard-records",
-		PublicPath: "netbird-reverse-proxy", PublicPathReady: false, DomainRequired: true, PortMappingOff: true,
+		PublicPath: "netbird-reverse-proxy", PublicPathReady: false, DomainRequired: true, PortMappingOff: true, Port: 443,
+	})
+
+	t.Run("claim (#79): the mesh's zone answers the household's names on the primary, with no SOA", func(t *testing.T) {
+		// Reported, not verified (spec: Testing Decisions): what a DNS challenge's zone lookup would meet through the
+		// machine's own resolver on the primary.
+		a, aErr := w.sh(t, "primary", "nslookup -type=a admin."+meshtest.Domain)
+		soa, soaErr := w.sh(t, "primary", "nslookup -type=soa "+meshtest.Domain)
+		t.Logf("from the primary, through NetBird's resolver:\nA admin.%s (%v):\n%s\nSOA %s (%v):\n%s", meshtest.Domain, aErr, a, meshtest.Domain, soaErr, soa)
+		if strings.Contains(soa, "origin =") || strings.Contains(soa, "mail addr =") {
+			t.Errorf("the mesh's zone has an SOA: the claim doesn't hold:\n%s", soa)
+		}
 	})
 
 	t.Run("policies that drifted are put back, and a new Default goes again", func(t *testing.T) {
@@ -191,7 +202,7 @@ func TestTheMeshContractOnSelfHostedNetBird(t *testing.T) {
 					"sources": []string{ids[mesh.RoleGroup(mesh.Kid)]}, "destinations": []string{ids[mesh.NodesGroup]}}}})
 			}
 		}
-		if err := w.m.EnsurePolicies(ctx); err != nil {
+		if err := w.m.EnsurePolicies(ctx, 443); err != nil {
 			t.Fatal(err)
 		}
 		have := w.Policies(t)
@@ -500,6 +511,32 @@ func (w *world) AskedForAPort(t *testing.T, m meshtest.Machine) bool {
 		t.Fatalf("%s's log says neither or both of mapping and not mapping", m)
 	}
 	return asked
+}
+
+func (w *world) Lookup(t *testing.T, m meshtest.Machine, name string) []netip.Addr {
+	t.Helper()
+	var out []netip.Addr
+	text, err := w.sh(t, m, "timeout 6 getent hosts "+name)
+	for _, line := range strings.Split(text, "\n") {
+		if f := strings.Fields(line); err == nil && len(f) >= 2 {
+			if a, err := netip.ParseAddr(f[0]); err == nil {
+				out = append(out, a)
+			}
+		}
+	}
+	return out
+}
+
+func (w *world) JoinOutsider(t *testing.T, m meshtest.Machine) netip.Addr {
+	t.Helper()
+	var k struct{ Key string }
+	decode(t, w.raw(t, w.m.Token().Value, "POST", "/api/setup-keys", map[string]any{"name": "outsider-" + string(m), "type": "one-off",
+		"expires_in": 86400, "auto_groups": []string{}, "usage_limit": 1, "ephemeral": false}), &k)
+	a, err := w.Join(t, m, mesh.JoinKey{Value: mesh.Secret(k.Key)})
+	if err != nil {
+		t.Fatalf("the outsider didn't join: %v", err)
+	}
+	return a
 }
 
 func (w *world) Resolves(t *testing.T, m meshtest.Machine, name string) bool {

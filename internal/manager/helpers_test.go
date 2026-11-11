@@ -65,6 +65,9 @@ type primary struct {
 	steps    map[string]setup.Handler
 	host     *agenttest.Host // the primary's machine, as its agent sees it
 	netbird  manager.NetBird
+	domains  manager.Domains
+	// agentConfig is the agent's, filled in by agenttest.
+	agentConfig agent.Config
 }
 
 type option func(*primary)
@@ -95,7 +98,7 @@ func newPrimary(t *testing.T, opts ...option) *primary {
 		o(p)
 	}
 	if p.agent == "" {
-		p.agent, p.host = agenttest.StartWith(t, agent.Config{})
+		p.agent, p.host = agenttest.StartWith(t, p.agentConfig)
 	}
 	p.open()
 	return p
@@ -120,6 +123,7 @@ func (p *primary) open() {
 		Web:        p.web,
 		Steps:      p.steps,
 		NetBird:    p.netbird,
+		Domains:    p.domains,
 	})
 	if err != nil {
 		p.t.Fatal(err)

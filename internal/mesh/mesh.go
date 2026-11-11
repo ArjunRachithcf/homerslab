@@ -39,17 +39,31 @@ type Rule struct {
 	Ports []int  // TCP
 }
 
-// Policies are the household's mesh policies, one per role and one for the nodes themselves. Everything else is
-// refused: the mesh's own default ("everyone reaches everything") is removed.
-//   - Every role's devices reach the nodes' edges: HTTPS, and plain HTTP that only redirects to it. Which apps a person
-//     may open is the edge's business (audiences), not the mesh's.
+// Policies are the household's mesh policies, one per role and one for the nodes themselves, for the household's port
+// (ADR 0021: 443, or the TLS port NetBird's cloud cluster accepts). Everything else is refused: the mesh's own default
+// ("everyone reaches everything") is removed.
+//   - Every role's devices reach the nodes' edges: HTTPS at the household's port, and plain HTTP that only redirects
+//     to it. Which apps a person may open is the edge's business (audiences), not the mesh's.
 //   - Nodes reach each other's edges.
-func Policies() []Rule {
+func Policies(port int) []Rule {
 	out := make([]Rule, 0, len(Roles)+1)
 	for _, r := range Roles {
-		out = append(out, Rule{Name: "homerslab-" + string(r) + "s-to-nodes", From: RoleGroup(r), To: NodesGroup, Ports: []int{80, 443}})
+		ports := []int{80, port}
+		if port == 80 || port == 0 {
+			ports = []int{80}
+		}
+		out = append(out, Rule{Name: "homerslab-" + string(r) + "s-to-nodes", From: RoleGroup(r), To: NodesGroup, Ports: ports})
 	}
-	return append(out, Rule{Name: "homerslab-nodes-to-nodes", From: NodesGroup, To: NodesGroup, Ports: []int{443}})
+	return append(out, Rule{Name: "homerslab-nodes-to-nodes", From: NodesGroup, To: NodesGroup, Ports: []int{port}})
+}
+
+// NameGroups are the groups whose machines resolve the household's names: every role's devices, and the nodes.
+func NameGroups() []string {
+	out := make([]string, 0, len(Roles)+1)
+	for _, r := range Roles {
+		out = append(out, RoleGroup(r))
+	}
+	return append(out, NodesGroup)
 }
 
 // Policy is one of the mesh's policies, by its ID and name.
@@ -114,15 +128,21 @@ type Report struct {
 	// PortMappingOff says the mesh's clients on HomersLab's nodes never ask the router for a port. The adapter's node
 	// side is where that is enforced; the contract suite checks it in the real client.
 	PortMappingOff bool `json:"portMappingOff"`
+	// Port is the household's port with this mesh, the one URL every name has (ADR 0021): 443, or the TLS port the
+	// public path's cluster accepts.
+	Port int `json:"port"`
 }
 
 // Mesh is one mesh's API, as HomersLab's own service user.
 type Mesh interface {
 	// Report says what the mesh can do.
 	Report(ctx context.Context) (Report, error)
-	// EnsurePolicies makes the groups and Policies, corrects any that drifted, and removes the mesh's own default
-	// policy. It changes nothing that isn't HomersLab's otherwise.
-	EnsurePolicies(ctx context.Context) error
+	// EnsurePolicies makes the groups and Policies for the household's port, corrects any that drifted, and removes
+	// the mesh's own default policy. It changes nothing that isn't HomersLab's otherwise.
+	EnsurePolicies(ctx context.Context, port int) error
+	// EnsureNames makes the household's domain resolve on the mesh, for the NameGroups' machines only: every name
+	// under it (a wildcard) at the node's address to. Records of HomersLab's that drifted are put back.
+	EnsureNames(ctx context.Context, domain string, to netip.Addr) error
 	// Conflicts are the household's own policies that would let devices reach HomersLab's nodes past the policies per
 	// role: enabled, not HomersLab's, and reaching every peer (NetBird's All) or the nodes' group. Disable switches
 	// them off, keeping them for the household to look at; only with the admin's yes.
@@ -147,6 +167,7 @@ var (
 	ErrNotAMesh      = errors.New("no mesh control plane answers at this address")
 	ErrInsecureURL   = errors.New("a control plane is reached over HTTPS only")
 	ErrNeedsNewSetup = errors.New("the control plane needs its first setup")
+	ErrNamesTaken    = errors.New("the mesh already serves this domain in a zone that isn't HomersLab's")
 )
 
 // CheckURL is a control plane's address as HomersLab will use it: HTTPS, or plain HTTP to this machine itself only

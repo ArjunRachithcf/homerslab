@@ -1,6 +1,7 @@
 package firewall_test
 
 import (
+	"net/netip"
 	"strings"
 	"testing"
 
@@ -37,5 +38,29 @@ func TestOnlyAnOpenSetupListenerIsLetIn(t *testing.T) {
 	}
 	if strings.Contains(closed, "tcp dport") {
 		t.Errorf("with the setup listener closed, a TCP port is still open to the LAN:\n%s", closed)
+	}
+}
+
+// Apps reach the sign-in's address through the edge only (#19, #20): a hook that opens exactly the edge's listeners to
+// the bridges. It is empty until an install plan wires a sign-in, and then lets nothing else of the node's in.
+func TestAppsReachOnlyTheEdgesListenersTheHookNames(t *testing.T) {
+	testenv.Isolate(t)
+	closed := firewall.Render(firewall.State{Mesh: []string{"wt0"}})
+	apps := func(r string) string {
+		return r[strings.Index(r, "chain apps_in {"):strings.Index(r, "chain apps_out {")]
+	}
+	if got := apps(closed); strings.Contains(got, "tcp dport") {
+		t.Errorf("apps reach a TCP port of the node with the hook empty:\n%s", got)
+	}
+	open := firewall.Render(firewall.State{Mesh: []string{"wt0"}, AppsReachEdge: []netip.AddrPort{
+		netip.MustParseAddrPort("100.88.7.186:9443"), netip.MustParseAddrPort("[fd7a:115c:a1e0::1]:9443")}})
+	got := apps(open)
+	for _, want := range []string{"ip daddr 100.88.7.186 tcp dport 9443 accept", "ip6 daddr fd7a:115c:a1e0::1 tcp dport 9443 accept"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("apps_in lacks %q:\n%s", want, got)
+		}
+	}
+	if strings.Index(got, "accept\n\t\tdrop") < 0 || strings.Count(got, "accept") != 3 {
+		t.Errorf("apps_in lets more in than the DNS and the edge's listeners:\n%s", got)
 	}
 }

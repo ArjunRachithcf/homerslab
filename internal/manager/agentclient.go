@@ -22,7 +22,9 @@ type agentClient struct{ http *http.Client }
 func newAgentClient(socket string) *agentClient {
 	return &agentClient{http: &http.Client{
 		Timeout: 5 * time.Second,
-		Transport: &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+		// One connection per request: a local socket costs nothing to dial, and no connection is ever left open
+		// unused, which would hold up the agent's shutdown.
+		Transport: &http.Transport{DisableKeepAlives: true, DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
 			return (&net.Dialer{}).DialContext(ctx, "unix", socket)
 		}},
 	}}
@@ -105,4 +107,16 @@ func (a *agentClient) join(ctx context.Context, req agent.JoinRequest) (agent.Jo
 
 func (a *agentClient) closeSetupListener(ctx context.Context) error {
 	return a.call(ctx, http.MethodPut, "/v1/firewall/setup-listener", map[string]bool{"open": false}, nil)
+}
+
+func (a *agentClient) edgeSites(ctx context.Context, s agent.EdgeSites) error {
+	return a.call(ctx, http.MethodPut, "/v1/edge", s, nil)
+}
+
+// edgeCertificate hands a domain's certificate and key to the agent, which seals them for the edge and restarts it.
+func (a *agentClient) edgeCertificate(ctx context.Context, domain string, chain []byte, key mesh.Secret) error {
+	c := *a.http
+	c.Timeout = 60 * time.Second // the edge restarts with its new credentials
+	return (&agentClient{http: &c}).call(ctx, http.MethodPut, "/v1/edge/certificates/"+domain,
+		map[string]string{"chain": string(chain), "key": key.Reveal()}, nil)
 }
