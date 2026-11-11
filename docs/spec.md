@@ -222,8 +222,7 @@ such as a NAS or a GPU box. It is private by default and never needs a router po
 
 67. As a household admin, I want risky changes to ask for my passkey every time, so that a stolen session can't do
     damage. The glossary's **Risky change** lists them. The archive's key, backup targets, domains, DNS tokens, the
-    mail account and API or MCP tokens joined that list, and sign-in settings were defined, as recommended in #85 (the
-    maintainer may overrule).
+    mail account and API or MCP tokens joined that list, and sign-in settings were defined, as decided in #85.
 68. As a household admin, I want Admin reachable only over the mesh, so that it is never on the internet.
 69. As a household admin, I want Home unable to reach anything privileged, so that a flaw in the public-facing part
     can't become control of the household.
@@ -324,7 +323,7 @@ such as a NAS or a GPU box. It is private by default and never needs a router po
 
 ### People leaving and visiting
 
-Stories 115–119 are recommended in #86; the maintainer may overrule.
+Stories 115–119 are decided in #86.
 
 115. As a household admin, I want removing a person to end their sessions in every app that can, and the plan to name
      each app that can't, so that someone who has left can't keep opening a public app.
@@ -339,7 +338,7 @@ Stories 115–119 are recommended in #86; the maintainer may overrule.
 
 ### Getting back in, and losing a node
 
-Stories 120–121 are recommended in #87; the maintainer may overrule.
+Stories 120–121 are decided in #87.
 
 120. As the only household admin, I want two passkeys from the start and a way back in from the machine's terminal,
      so that losing my passkey doesn't lock the household out.
@@ -382,7 +381,7 @@ Stories 120–121 are recommended in #87; the maintainer may overrule.
     HomersLab.
   - **Host apps**: the vendor's repository and package, per distro.
   - **The firewall table**: no published ports, mesh-only listeners, the LAN kept out, drift corrected. Also
-    ([ADR 0020](adr/0020-only-the-edge-reaches-an-app.md); recommended in #82; the maintainer may overrule):
+    ([ADR 0020](adr/0020-only-the-edge-reaches-an-app.md); decided in #82):
     - **only the edge reaches an app**. The agent, not the compose file, wires each app's one upstream: a bridge
       address on Docker and rootful Podman, a loopback port on rootless Podman. New connections to it are accepted
       only from the edge's user, and from the agent's, for its health probes;
@@ -466,7 +465,7 @@ Stories 120–121 are recommended in #87; the maintainer may overrule.
   - MCP tokens are scoped, and their use is audited.
   - No result ever carries a secret.
   - Risky changes need a person's step-up, so no token or assistant can make one.
-  - **No token applies an invite, an audience change or a removal** (recommended in #85; the maintainer may overrule).
+  - **No token applies an invite, an audience change or a removal** (decided in #85).
     They stay one click for an admin signed in to Admin. An MCP token's apply scope covers updates, and installs
     without extras, and nothing else.
 
@@ -504,6 +503,9 @@ Stories 120–121 are recommended in #87; the maintainer may overrule.
   - before accepting a step-up, HomersLab also asks the provider for the admin's credentials. Anything but passkeys
     refuses the step-up, raises a security event, and says the way out (`homerslab admin recover`, or another
     admin);
+  - an admin's app-scoped LDAP credentials (Kanidm's per-app passwords; the LDAP bind's own credentials with
+    Authentik) are exempt from that check. They are never accepted by the sign-in flow, and Admin lists them among
+    the admin's credentials (#104);
 - optional SSH sign-in on nodes: SSSD with Authentik, kanidm-unixd with Kanidm;
 - a report of what it can do.
 
@@ -560,7 +562,7 @@ One folder per app: a manifest, a plain compose file (none for a host app), icon
 - **update notes**;
 - **tier**;
 - **people**, for a Verified app: how to end one person's sessions and disable their account in it, and how they
-  export what they own, where the app can (recommended in #86; the maintainer may overrule).
+  export what they own, where the app can (decided in #86).
 
 ### The floor
 
@@ -576,7 +578,7 @@ The manager refuses an app definition unless:
 
 ### Catalogs
 
-Recommended in #89; the maintainer may overrule. Details are in the amended
+Decided in #89. Details are in the amended
 [ADR 0009](adr/0009-catalog-floor-and-tiers.md).
 - **No rollback, no freeze.** A catalog's signed metadata carries a version that only goes up, and an expiry 30 days
   out.
@@ -595,7 +597,7 @@ Recommended in #89; the maintainer may overrule. Details are in the amended
 
 - A plan is one object, shown the same way in Admin, the CLI and the MCP server. It holds:
   - what gets created: the names, the sign-in client, the audience, a public service;
-  - the catalog and publisher, beside the tier (recommended in #89; the maintainer may overrule);
+  - the catalog and publisher, beside the tier (decided in #89);
   - the placement;
   - each extra, in plain words;
   - what is backed up, and when;
@@ -610,8 +612,9 @@ Recommended in #89; the maintainer may overrule. Details are in the amended
 
 - **Updates.**
   - Each catalog release pins versions; a bot proposes bumps.
-  - **Upstream releases wait, unless they are security releases** (recommended in #89; the maintainer may overrule):
-    - in the official catalog, a pin bump is merged by the maintainer, never by an agent;
+  - **Upstream releases wait, unless they are security releases** (decided in #89):
+    - in the official catalog, a pin bump goes through CI and the independent review like any change, and the loop
+      may merge it (the maintainer, 2026-11-11, #89: pins are not security core);
     - a new upstream version is offered three days after its release, unless the catalog marks it a security release;
     - where an upstream signs its images, the catalog pins the expected signer, and the agent checks it as it does a
       feedstock's.
@@ -643,7 +646,7 @@ Details are in [ADR 0010](adr/0010-backups-restic-and-a-write-only-archive.md), 
 - **A TPM that no longer opens the secrets** (#88): at boot, a credential that fails to decrypt is reported once, as
   "this machine's TPM no longer opens HomersLab's secrets", in the machine's terminal and in an alert when one can
   still be sent, with the restore-from-archive command.
-- **One restic repository per node** (recommended in #90; the maintainer may overrule), at the same target, each with
+- **One restic repository per node** (decided in #90), at the same target, each with
   its own key and, where the target allows it, credentials scoped to its own path or bucket.
   - A node holds only its own repository's key. The primary holds them all, for restore tests and moves.
   - The recovery kit lists each repository and key, so adding a node asks for a new kit.
@@ -669,8 +672,9 @@ Details are in [ADR 0010](adr/0010-backups-restic-and-a-write-only-archive.md), 
     - the service is removed at once, and leftovers are swept by name at every run and in drift checks;
     - when the probe can't run (the household's plan has no reverse proxy), or no candidate port works, the port is 443, and Admin says that
       going public later is a guided migration.
-  - Tailscale's Funnel serves only `*.ts.net` names. Where it fits a household with a domain (the sign-in's name, and
-    so the passkeys' RP ID) is open in #102.
+  - Tailscale's Funnel serves only `*.ts.net` names: it is the public path only for Tailscale households without a
+    domain. A household with a domain goes public through NetBird, so the sign-in and the passkeys' RP ID stay at
+    `auth.<main domain>` (#102).
   - The edge serves every site on the mesh at that port too. Every URL HomersLab writes uses it: base URLs, redirect
     addresses, the sign-in's origin, mails, invites and Home.
   - Changing it later is a guided migration, like renaming the main domain.
@@ -785,14 +789,13 @@ When the usual way in is what broke, the household admin gets back in from the p
   - `homerslab admin recover <person>` prints a one-time link that enrols a new passkey for that admin, at the
     sign-in's own address over the mesh. The admin may have no device left on the mesh, so it also prints a one-off
     mesh key and QR code for one device of theirs, as first-time setup's second half does. Both last 30 minutes and
-    work once, and the command raises a security event (recommended in #87; the maintainer may overrule).
+    work once, and the command raises a security event (decided in #87).
   - `homerslab idp restore --list` and `--to <time>` restore the identity provider from the hourly backups, with no
     browser. The command says whose passkeys, added since that point, are lost (recommended in #87; the maintainer may
     overrule).
 - **Two ways in for the first admin**: first-time setup finishes only when the first admin has two passkeys (say, the
-  phone plus a laptop or a security key), or a second admin has joined with a passkey (recommended in #87; the
-  maintainer may overrule).
-- **The mesh's control plane down** (recommended in #87; the maintainer may overrule):
+  phone plus a laptop or a security key), or a second admin has joined with a passkey (decided in #87).
+- **The mesh's control plane down** (decided in #87):
   - there is no LAN fallback for apps ([ADR 0005](adr/0005-three-meshes-one-contract-tls-ends-at-home.md));
   - alerts name the cause ("NetBird's control plane hasn't answered for 20 minutes"), and a node that loses the
     primary says when the mesh may be the cause, rather than reporting the primary down;
@@ -802,7 +805,7 @@ When the usual way in is what broke, the household admin gets back in from the p
 
 ### People leaving and visiting
 
-Recommended in #86; the maintainer may overrule.
+Decided in #86.
 - **Removing a person ends their sessions in every app.** The app definition says how, for each Verified app, and the
   removal runs it in every app. For an app that can't, the plan says so in plain words: "Their Immich session on
   their phone keeps working until they sign out; Immich can't end it".
@@ -865,6 +868,10 @@ point. Nothing needs replacing for:
 
 ### First-time setup in two halves
 
+- **The installer** prints the command `sudo homerslab setup link`, never the link itself: package managers keep a
+  post-install script's output in readable logs (#74).
+- **The LAN** is the private networks and the on-link global IPv6 prefixes of the interfaces that carry the default
+  route, plus IPv6 link-local on those interfaces; never container bridges, VPNs or the mesh (#14 Q5, #73).
 - **The one-time link** works on the machine or its LAN for 30 minutes. It covers everything up to "mesh connected,
   certificate issued": the household, the identity provider, the mesh and its token, the domain and its DNS token,
   mail, and the recovery kit.
@@ -899,8 +906,7 @@ point. Nothing needs replacing for:
 - TLS ends on the household's machines.
 - HTTPS only once the certificate exists, with HSTS; no secret ever crosses plain HTTP (#64).
 - The LAN sees the machines, not the apps.
-- Only the edge reaches an app, and apps reach only the internet unless an extra says so (recommended in #82; the
-  maintainer may overrule).
+- Only the edge reaches an app, and apps reach only the internet unless an extra says so (decided in #82).
 - Admin is reachable over the mesh only.
 - Secrets travel only inward: a front end may send one, and no response carries one.
 - Signed releases, an SBOM, image digests pinned in the catalog, signed catalogs.
@@ -1295,41 +1301,44 @@ Every answer of the grilling (2026-11-09) and where it lives:
 | 145 | The edge strips the guard's cookie and apps' domain cookies; a guard provider per app | ADR 0016 (amended); Modules (Edge); Domains; The app definition (#83) |
 | 146 | Passkeys' RP ID is the sign-in's own name | Adapter contracts (#83) |
 | 147 | One URL per name, its port chosen in first-time setup | ADR 0021; Names and certificates; Adapter contracts; Testing Decisions, claims to test first (#92) |
-| 148 | Only the edge reaches an app, by the edge's user in the firewall (recommended) | ADR 0020; ADR 0006 (amended); Modules (Agent); Security defaults; Testing Decisions (#82) |
-| 149 | Apps reach only the internet, never the LAN, the mesh, other apps' networks or the node; the LAN and the mesh are extras (recommended) | ADR 0020; Modules (Agent); Security defaults; Testing Decisions (#82) |
+| 148 | Only the edge reaches an app, by the edge's user in the firewall (decided) | ADR 0020; ADR 0006 (amended); Modules (Agent); Security defaults; Testing Decisions (#82) |
+| 149 | Apps reach only the internet, never the LAN, the mesh, other apps' networks or the node; the LAN and the mesh are extras (decided) | ADR 0020; Modules (Agent); Security defaults; Testing Decisions (#82) |
 | 150 | No first-comer admin; the first passkey from a one-time enrolment link | Adapter contracts; First-time setup in two halves; Testing Decisions (#84) |
 | 151 | Admins hold passkeys only with either provider; step-up refused when an admin holds anything else | ADR 0004 (amended); Adapter contracts; Testing Decisions (#84) |
 | 152 | User verification required for every passkey | Adapter contracts; Testing Decisions, claims to test first (#84) |
-| 153 | Six more risky changes; sign-in settings defined (recommended) | Glossary; story 67 (#85) |
-| 154 | No token applies invites, audience changes or removals (recommended) | Modules (CLI and MCP server) (#85) |
+| 153 | Six more risky changes; sign-in settings defined (decided) | Glossary; story 67 (#85) |
+| 154 | No token applies invites, audience changes or removals (decided) | Modules (CLI and MCP server) (#85) |
 | 155 | A plan names who made it; secrets looked for in every encoding | The install plan; Testing Decisions (#85) |
-| 156 | Removing a person ends their sessions in every app, or the plan names the apps that can't (recommended) | People leaving and visiting; The app definition; story 115 (#86) |
-| 157 | A removed person's data kept under their name, offered for download first (recommended) | People leaving and visiting; story 116 (#86) |
-| 158 | Guests: an invite with an end date, named apps only (recommended) | People leaving and visiting; Adapter contracts; story 117; glossary (#86) |
-| 159 | A person adds their own device from Home with their passkey (recommended) | People leaving and visiting; Adapter contracts; story 118 (#86) |
-| 160 | Role changes reach kid views by the next sign-in (recommended) | People leaving and visiting; Testing Decisions; story 119 (#86) |
-| 161 | Two passkeys or two admins before first-time setup finishes (recommended) | Getting back in; story 120 (#87) |
-| 162 | An admin's recovery link and the sign-in's restore, from the machine's terminal (recommended) | Getting back in; stories 120–121 (#87) |
-| 163 | The mesh's control plane down: no LAN fallback, alerts that name the cause (recommended) | Getting back in (#87) |
+| 156 | Removing a person ends their sessions in every app, or the plan names the apps that can't (decided) | People leaving and visiting; The app definition; story 115 (#86) |
+| 157 | A removed person's data kept under their name, offered for download first (decided) | People leaving and visiting; story 116 (#86) |
+| 158 | Guests: an invite with an end date, named apps only (decided) | People leaving and visiting; Adapter contracts; story 117; glossary (#86) |
+| 159 | A person adds their own device from Home with their passkey (decided) | People leaving and visiting; Adapter contracts; story 118 (#86) |
+| 160 | Role changes reach kid views by the next sign-in (decided) | People leaving and visiting; Testing Decisions; story 119 (#86) |
+| 161 | Two passkeys or two admins before first-time setup finishes (decided) | Getting back in; story 120 (#87) |
+| 162 | An admin's recovery link and the sign-in's restore, from the machine's terminal (decided) | Getting back in; stories 120–121 (#87) |
+| 163 | The mesh's control plane down: no LAN fallback, alerts that name the cause (decided) | Getting back in (#87) |
 | 164 | A lost or stolen node: cut off, its certificate and credentials replaced, its apps restored | A lost or stolen node; Adapter contracts; Testing Decisions; story 123 (#91) |
 | 165 | The archive also runs on change; a rotated token's predecessor outlives the next archive | ADR 0010 (amended); Backups and the archive; glossary (#88) |
 | 166 | The platform's own state is backed up hourly | ADR 0010 (amended); Backups and the archive (#88) |
 | 167 | Restore plans compare secrets with data; a TPM that no longer opens the secrets is reported at boot | ADR 0011 (amended); Backups and the archive (#88) |
-| 168 | Catalog versions only go up, and expire (recommended) | ADR 0009 (amended); Catalogs (#89) |
-| 169 | Each catalog acts only on its own apps and signers (recommended) | ADR 0009, ADR 0015 (amended); Catalogs; The install plan (#89) |
-| 170 | Official pin bumps merged by the maintainer; upstream releases wait three days; upstream signers checked (recommended) | ADR 0009 (amended); Updates, removal, eject (#89) |
-| 171 | One restic repository per node (recommended) | ADR 0010 (amended); Backups and the archive (#90) |
-| 172 | Apps reach the sign-in through a sign-in listener of their own on the household's port, and the LDAP outpost on its port 636; the agent's probes reach apps (recommended, #82) | ADR 0020; Modules (Agent); Testing Decisions (#82, reviews of #94) |
+| 168 | Catalog versions only go up, and expire (decided) | ADR 0009 (amended); Catalogs (#89) |
+| 169 | Each catalog acts only on its own apps and signers (decided) | ADR 0009, ADR 0015 (amended); Catalogs; The install plan (#89) |
+| 170 | Official pin bumps through CI and review, not security core (the maintainer, #89); upstream releases wait three days; upstream signers checked (decided) | ADR 0009 (amended); Updates, removal, eject (#89) |
+| 171 | One restic repository per node (decided) | ADR 0010 (amended); Backups and the archive (#90) |
+| 172 | Apps reach the sign-in through a sign-in listener of their own on the household's port, and the LDAP outpost on its port 636; the agent's probes reach apps (decided, #82) | ADR 0020; Modules (Agent); Testing Decisions (#82, reviews of #94) |
 | 173 | The provider's first-admin flow applies to nobody before the sign-in is served, the executor API included | ADR 0004 (amended); Adapter contracts; Testing Decisions (#84, review of #94) |
-| 174 | The recovery command also gives one of the admin's devices a mesh key (recommended) | Getting back in (#87, review of #94) |
-| 175 | Guests in no role, with their own mesh group; never admins; they can't add devices; the invite chooses the kid views (recommended) | People leaving and visiting; glossary (#86, review of #94) |
-| 176 | A new device through the manager's device page, mesh only, never through Home's process (recommended) | People leaving and visiting; ADR 0013 (amended) (#86, reviews of #94) |
-| 177 | Funnel with a household's domain: open | ADR 0021; Names and certificates (#92, #102) |
+| 174 | The recovery command also gives one of the admin's devices a mesh key (decided) | Getting back in (#87, review of #94) |
+| 175 | Guests in no role, with their own mesh group; never admins; they can't add devices; the invite chooses the kid views (decided) | People leaving and visiting; glossary (#86, review of #94) |
+| 176 | A new device through the manager's device page, mesh only, never through Home's process (decided) | People leaving and visiting; ADR 0013 (amended) (#86, reviews of #94) |
+| 177 | Funnel only for households without a domain; with one, the public path is NetBird's (#102) | ADR 0021; Names and certificates (#92, #102) |
 | 178 | The cluster's port found by a throwaway service; 443 when it can't run | ADR 0021; Names and certificates; Testing Decisions, claims to test first (#92, review of #94) |
 | 179 | A lost or stolen primary: certificates reissued and the ACME account replaced; the node authority, peers, tokens, targets, the sign-in's secrets, guard cookie secrets, outstanding links and sessions replaced | A lost or stolen node; Names and certificates (#91, reviews of #94) |
-| 180 | Catalogs signed again weekly; Admin warns before expiry (recommended) | ADR 0009 (amended); Catalogs (#89, review of #94) |
+| 180 | Catalogs signed again weekly; Admin warns before expiry (decided) | ADR 0009 (amended); Catalogs (#89, review of #94) |
 | 181 | The primary's public listener carries the sign-in while anything is public | Modules (Edge); Testing Decisions (#81, second review of #94) |
 | 182 | The probe: a recognisable throwaway service, a listener that serves nothing, named ports, leftovers swept | ADR 0021; Names and certificates (#92, #103) |
-| 183 | Catalogs signed again with a separate timestamp key, limited to version, expiry and hash (recommended) | ADR 0009 (amended); Catalogs (#89, second review of #94) |
+| 183 | Catalogs signed again with a separate timestamp key, limited to version, expiry and hash (decided) | ADR 0009 (amended); Catalogs (#89, second review of #94) |
 | 184 | Admins sign in only through a passkey-only authentication flow | ADR 0004 (amended); Adapter contracts (#84, second review of #94) |
 | 185 | Enrolment and recovery links run HomersLab's own passkey-enrolment flow | Adapter contracts (#84, #87, second review of #94) |
+| 186 | The installer prints the command, not the link | First-time setup in two halves (#74) |
+| 187 | The LAN includes the default-route interfaces' on-link global IPv6 prefixes | First-time setup in two halves (#73) |
+| 188 | Admins' app-scoped LDAP credentials are exempt from the passkey-only check | Adapter contracts (#104) |

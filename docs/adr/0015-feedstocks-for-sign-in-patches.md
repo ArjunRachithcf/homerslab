@@ -52,7 +52,7 @@ with the few patches it needs to fit the household's sign-in. The name comes fro
 
 ## Amended (2026-11-11)
 
-Proposed (needs-decision #89).
+Accepted (#89, the maintainer, 2026-11-11).
 
 A third-party catalog's declared signers apply to **its own apps only**: it can't declare a signer for another
 catalog's app, and an installed app updates only from the catalog it came from

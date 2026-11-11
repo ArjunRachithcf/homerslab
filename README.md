@@ -54,6 +54,8 @@ go test ./...                                   # the two-process test needs roo
 (cd web && npm ci --ignore-scripts && npm run lint && npm run build)
 CGO_ENABLED=0 go build -o bin/homerslab ./cmd/homerslab
 (cd web && npx playwright test)                 # first-time setup in a browser, against bin/homerslab
+go -C tools tool govulncheck -C .. ./...        # known vulnerabilities in called code (Go 1.27.4 or later)
+(cd web && npm audit --omit=dev)                # known vulnerabilities in the web packages that ship
 ```
 
 Tests keep to their own world: each has its own home directory, and any container engine points at nowhere.

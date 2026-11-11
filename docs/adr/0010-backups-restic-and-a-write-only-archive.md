@@ -46,7 +46,7 @@ the machines can. Two things change.
   state starts an archive run, debounced (quiet for 10 minutes, at most 30). The weekly run stays as the floor. A
   rotated token's predecessor is revoked only once an archive holds its successor. The platform's own state (the
   identity provider's database, the manager's) is backed up hourly with the apps.
-- **One restic repository per node**, not one for the household. Proposed (needs-decision #90).
+- **One restic repository per node**, not one for the household. Accepted (#90, the maintainer, 2026-11-11).
   Every key of a restic repository opens all of it, so a stolen node holding the household's key would read every
   app's backups. Each node's repository sits at the same target with its own key and, where the target allows it, its
   own scoped credentials. A node holds only its own key; the primary holds them all, for restore tests and moves; the
