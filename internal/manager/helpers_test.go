@@ -3,6 +3,8 @@ package manager_test
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -239,14 +241,23 @@ func (p *primary) control(method, path string, body any) response {
 }
 
 // browser is someone's browser on the setup listener, at one address, keeping its session's token as the page does
-// (in sessionStorage, sent as a bearer token).
+// (in sessionStorage, sent as a bearer token). Nonce is its tab's: sent with every claim, so a claim whose answer was
+// lost can be sent again.
 type browser struct {
 	p     *primary
 	from  string
 	token string
+	nonce string
 }
 
-func (p *primary) browser(from string) *browser { return &browser{p: p, from: from} }
+func (p *primary) browser(from string) *browser { return &browser{p: p, from: from, nonce: newNonce()} }
+
+// newNonce is a tab's random nonce, as the page makes it: 256 bits, URL-safe.
+func newNonce() string {
+	b := make([]byte, 32)
+	_, _ = rand.Read(b)
+	return base64.RawURLEncoding.EncodeToString(b)
+}
 
 func (b *browser) do(method, path string, body any, edit ...func(*http.Request)) response {
 	req := newRequest(method, path, body, b.from)
@@ -321,7 +332,7 @@ func (p *primary) newLink() link {
 }
 
 func (b *browser) claim(l link) response {
-	r := b.do("POST", "/api/v1/setup/claim", map[string]string{"key": l.key(b.p.t)})
+	r := b.do("POST", "/api/v1/setup/claim", map[string]string{"key": l.key(b.p.t), "nonce": b.nonce})
 	if r.Code == http.StatusOK {
 		var s struct{ Token string }
 		r.json(b.p.t, &s)

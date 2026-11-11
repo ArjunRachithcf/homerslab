@@ -202,6 +202,11 @@ var migrations = []string{
 	ALTER TABLE setup_session ADD COLUMN boot_id TEXT NOT NULL DEFAULT '';
 	ALTER TABLE setup_session ADD COLUMN opened_since_boot INTEGER NOT NULL DEFAULT 0;
 	ALTER TABLE setup_session ADD COLUMN seen_since_boot INTEGER NOT NULL DEFAULT 0;`,
+	// A claimed link's nonce, which the claiming tab sent with the key, kept as its hash, and the session the claim
+	// opened: the same tab sends a claim whose answer was lost again, and gets that session back for a minute (#101).
+	// Links claimed before have neither, and are never answered again.
+	`ALTER TABLE setup_link ADD COLUMN nonce_hash BLOB;
+	ALTER TABLE setup_link ADD COLUMN session_hash BLOB;`,
 }
 
 // Moment is when something happened: by the wall clock, for display and audit, and by the time since the machine
@@ -426,13 +431,13 @@ func (s *Store) Link(ctx context.Context, keyHash []byte) (Link, error) {
 	return l, err
 }
 
-// ClaimLink uses up a link that is neither claimed nor revoked, and opens a session in its place for the client that
-// claimed it. It returns ErrNotFound when the link is unknown, claimed or revoked; whether it is too old is the
-// caller's to say.
-func (s *Store) ClaimLink(ctx context.Context, keyHash, sessionHash []byte, client string, now Moment) error {
+// ClaimLink uses up a link that is neither claimed nor revoked, keeps the hash of the nonce it was claimed with, and
+// opens a session in its place for the client that claimed it. It returns ErrNotFound when the link is unknown,
+// claimed or revoked; whether it is too old is the caller's to say.
+func (s *Store) ClaimLink(ctx context.Context, keyHash, nonceHash, sessionHash []byte, client string, now Moment) error {
 	return s.tx(ctx, func(tx *sql.Tx) error {
-		res, err := tx.ExecContext(ctx, `UPDATE setup_link SET claimed_at = ?
-			WHERE key_hash = ? AND claimed_at IS NULL AND revoked_at IS NULL`, now.Wall.UnixMilli(), keyHash)
+		res, err := tx.ExecContext(ctx, `UPDATE setup_link SET claimed_at = ?, nonce_hash = ?, session_hash = ?
+			WHERE key_hash = ? AND claimed_at IS NULL AND revoked_at IS NULL`, now.Wall.UnixMilli(), nonceHash, sessionHash, keyHash)
 		if err != nil {
 			return err
 		}
@@ -443,6 +448,58 @@ func (s *Store) ClaimLink(ctx context.Context, keyHash, sessionHash []byte, clie
 			opened_since_boot, seen_since_boot) VALUES (?, ?, ?, ?, ?, ?, ?)`,
 			sessionHash, client, now.Wall.UnixMilli(), now.Wall.UnixMilli(), now.Boot, int64(now.Since), int64(now.Since))
 		return err
+	})
+}
+
+// Claim is a claimed link as the database keeps it: the hash of the nonce it was claimed with, and the session the
+// claim opened.
+type Claim struct {
+	NonceHash, SessionHash []byte
+	Session                Session
+}
+
+// Claim reads the claim of a link that was claimed and not revoked, whose session wasn't revoked, by the link's key
+// hash, or returns ErrNotFound. Whether the session is too old or idle is the caller's to say.
+func (s *Store) Claim(ctx context.Context, keyHash []byte) (Claim, error) {
+	var c Claim
+	var created, seen, openedSince, seenSince int64
+	err := s.db.QueryRowContext(ctx, `SELECT l.nonce_hash, l.session_hash, s.client, s.created_at, s.last_seen, s.boot_id,
+			s.opened_since_boot, s.seen_since_boot
+		FROM setup_link l JOIN setup_session s ON s.token_hash = l.session_hash
+		WHERE l.key_hash = ? AND l.claimed_at IS NOT NULL AND l.revoked_at IS NULL AND l.nonce_hash IS NOT NULL
+			AND s.revoked_at IS NULL`, keyHash).
+		Scan(&c.NonceHash, &c.SessionHash, &c.Session.Client, &created, &seen, &c.Session.Opened.Boot, &openedSince, &seenSince)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Claim{}, ErrNotFound
+	}
+	c.Session.Seen.Boot = c.Session.Opened.Boot
+	c.Session.Opened.Wall, c.Session.Opened.Since = time.UnixMilli(created).UTC(), time.Duration(openedSince)
+	c.Session.Seen.Wall, c.Session.Seen.Since = time.UnixMilli(seen).UTC(), time.Duration(seenSince)
+	return c, err
+}
+
+// RenewClaim gives a claim's session a new token in place of the one it had: the same session, opened and last used
+// when it was, which the old token no longer opens. It returns ErrNotFound when the link was revoked, its session
+// revoked or opened in another boot than now's, or its token changed meanwhile.
+func (s *Store) RenewClaim(ctx context.Context, keyHash, oldSession, newSession []byte, now Moment) error {
+	return s.tx(ctx, func(tx *sql.Tx) error {
+		res, err := tx.ExecContext(ctx, `UPDATE setup_link SET session_hash = ?
+			WHERE key_hash = ? AND session_hash = ? AND revoked_at IS NULL`, newSession, keyHash, oldSession)
+		if err != nil {
+			return err
+		}
+		if n, _ := res.RowsAffected(); n != 1 {
+			return ErrNotFound
+		}
+		res, err = tx.ExecContext(ctx, `UPDATE setup_session SET token_hash = ?
+			WHERE token_hash = ? AND revoked_at IS NULL AND boot_id = ?`, newSession, oldSession, now.Boot)
+		if err != nil {
+			return err
+		}
+		if n, _ := res.RowsAffected(); n != 1 {
+			return ErrNotFound
+		}
+		return nil
 	})
 }
 

@@ -138,6 +138,18 @@ export class Primary {
     }
   }
 
+  // How many setup sessions the manager's database keeps open.
+  openSessions(): number {
+    const db = new DatabaseSync(this.at('manager.db'));
+    try {
+      db.exec('PRAGMA busy_timeout = 5000');
+      const row = db.prepare('SELECT count(*) AS n FROM setup_session WHERE revoked_at IS NULL').get() as { n: number };
+      return row.n;
+    } finally {
+      db.close();
+    }
+  }
+
   // First-time setup's built steps, answered through the setup page's API: the Ferreira household, Inês its admin.
   async setUp(): Promise<void> {
     const link = new URL((await this.newLink()).localUrl);
@@ -150,7 +162,7 @@ export class Primary {
       if (!resp.ok) throw new Error(`${method} ${path}: ${resp.status} ${await resp.text()}`);
       return resp.json() as Promise<{ token?: string }>;
     };
-    const { token } = await api('POST', '/api/v1/setup/claim', { key });
+    const { token } = await api('POST', '/api/v1/setup/claim', { key, nonce: 'a-tab-of-its-own-0123456789' });
     await api('PUT', '/api/v1/setup/steps/welcome', {}, token);
     await api('PUT', '/api/v1/setup/steps/you', { name: 'Inês Ferreira', mail: 'ines@ferreira.family' }, token);
     await api('PUT', '/api/v1/setup/steps/household', { name: 'The Ferreira household' }, token);

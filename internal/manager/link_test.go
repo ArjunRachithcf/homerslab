@@ -48,10 +48,12 @@ func TestALinkIsClaimedOnce(t *testing.T) {
 			if s := first.state(); s.Current != "welcome" {
 				t.Errorf("after the claim, setup is at %q, want welcome", s.Current)
 			}
-			for _, again := range []*browser{p.browser(from), first} {
-				if r := again.claim(l); r.Code != http.StatusForbidden || r.errorCode(t) != "link-refused" {
-					t.Errorf("second claim: %d %s, want 403 link-refused", r.Code, r.Body)
-				}
+			if r := p.browser(from).claim(l); r.Code != http.StatusForbidden || r.errorCode(t) != "link-refused" {
+				t.Errorf("another tab's claim: %d %s, want 403 link-refused", r.Code, r.Body)
+			}
+			p.clock.Add(time.Minute) // the same tab may send its claim again for a minute (claim_test.go), no longer
+			if r := first.claim(l); r.Code != http.StatusForbidden || r.errorCode(t) != "link-refused" {
+				t.Errorf("the same tab's claim a minute later: %d %s, want 403 link-refused", r.Code, r.Body)
 			}
 		})
 	}
@@ -91,7 +93,7 @@ func TestAWrongKeyIsRefused(t *testing.T) {
 	testenv.Isolate(t)
 	p := newPrimary(t)
 	p.newLink()
-	for _, body := range []any{map[string]string{"key": "not-the-key"}, map[string]string{}, map[string]int{"key": 1}} {
+	for _, body := range []any{map[string]string{"key": "not-the-key", "nonce": newNonce()}, map[string]string{}, map[string]int{"key": 1}} {
 		if r := p.browser(onTheLAN).do("POST", "/api/v1/setup/claim", body); r.Code != http.StatusForbidden || r.errorCode(t) != "link-refused" {
 			t.Errorf("claim with %v: %d %s, want 403 link-refused", body, r.Code, r.Body)
 		}
@@ -178,7 +180,7 @@ func TestALinkIsClaimedOnceWhenManyTryAtOnce(t *testing.T) {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				codes[i] = serve(p.m.Setup(), newRequest("POST", "/api/v1/setup/claim", map[string]string{"key": key}, onTheLAN)).Code
+				codes[i] = serve(p.m.Setup(), newRequest("POST", "/api/v1/setup/claim", map[string]string{"key": key, "nonce": newNonce()}, onTheLAN)).Code
 			}()
 		}
 		wg.Wait()
@@ -443,7 +445,7 @@ func TestALinkCarriesTheLANsIPv6AddressWhenThereIsNoIPv4(t *testing.T) {
 		}
 		b := p.browser(lanV6)
 		host := func(r *http.Request) { r.Host = "[" + a + "]:7020" }
-		if r := b.do("POST", "/api/v1/setup/claim", map[string]string{"key": l.key(t)}, host); r.Code != http.StatusOK {
+		if r := b.do("POST", "/api/v1/setup/claim", map[string]string{"key": l.key(t), "nonce": b.nonce}, host); r.Code != http.StatusOK {
 			t.Errorf("claiming at the link's own address %s: %d %s", a, r.Code, r.Body)
 		}
 	}
