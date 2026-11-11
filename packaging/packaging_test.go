@@ -74,7 +74,9 @@ func TestTheManagerRunsUnprivilegedAndTheAgentAsRoot(t *testing.T) {
 		"PrivateNetwork": "yes", "SystemCallFilter": "@system-service", "SystemCallErrorNumber": "EPERM",
 		"MemoryDenyWriteExecute": "yes", "LockPersonality": "yes",
 		// It parses compose files as root: a file it is sent can't take the machine with it.
-		"MemoryMax": "512M", "CPUQuota": "100%"} {
+		"MemoryMax": "512M", "CPUQuota": "100%",
+		// A read's child killed for memory is the child's end, not the agent's.
+		"OOMPolicy": "continue"} {
 		if got := agent[k]; len(got) != 1 || got[0] != want {
 			t.Errorf("the agent's %s = %v, want %s", k, got, want)
 		}

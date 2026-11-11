@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 	"syscall"
 
 	"github.com/ArjunRachithcf/homerslab/internal/engine"
@@ -17,10 +18,11 @@ import (
 // nobody is the user a compose read runs as when the agent is root.
 const nobody = 65534
 
-// The child's limits: memory far above what a read of a plain file needs (tens of MB), no core dump, a few files,
-// and nothing written beyond its compose file.
+// The child's limits: an address space of the binary's resting size (about 1.2 GiB, mostly reserved, not used) plus
+// about 256 MB, no core dump, a few files, and nothing written beyond its compose file. A read of the official
+// catalog's largest file works within it; a file that makes Compose build big dies at about 320 MB.
 const (
-	childAddressSpace = 2 << 30
+	childAddressSpace = 3 << 29 // 1.5 GiB
 	childFiles        = 32
 	childFileSize     = 1 << 20
 )
@@ -30,22 +32,33 @@ type readResult struct {
 	Project *engine.Project `json:"project,omitempty"`
 	Error   string          `json:"error,omitempty"` // not-ours, not-plain or invalid-compose
 	Detail  string          `json:"detail,omitempty"`
-	// UID is the user the read ran as, and Limits the limits it ran under, for the tests.
-	UID    int            `json:"uid"`
-	Limits map[string]int `json:"limits"`
+	// Confined is how the read ran, as the child read it back from the kernel: its user and groups, its limits and
+	// its OOM score, for the tests.
+	Confined Confined `json:"confined"`
 }
 
-// ReadProjectMain is the agent's read-project mode (homerslab agent read-project [--cpu-seconds N] PROJECT): the
+// Confined is how a read's child ran.
+type Confined struct {
+	UID, GID    int
+	Groups      string // /proc/self/status's Groups line
+	Limits      map[string]uint64
+	OOMScoreAdj string
+}
+
+// ReadProjectMain is the agent's read-project mode (homerslab agent read-project [--cpu-seconds N] -- PROJECT): the
 // child the agent starts for each compose read, with the file on its standard input and the result, as JSON, on its
 // standard output.
 //
 // What the child can do: read its standard input, and write in its own empty folder (its working directory, HOME
 // and TMPDIR), where the reader puts the compose file it loads. What it can't:
-//   - act as root: when started as root it becomes nobody (65534) first, with no supplementary groups, so it holds no
-//     capability and reads only what everyone may read; it never starts another program;
-//   - use more than its limits: 2 GiB of address space (not under the race detector, whose shadow memory needs
-//     more), --cpu-seconds of CPU, 32 open files, files of at most 1 MiB, no core dump;
-//   - outlive the agent's deadline: the agent kills it then, and when the agent dies it dies too (Pdeathsig);
+//   - act as root: when the agent is root, the child starts as nobody (65534) with no supplementary groups, set in
+//     the fork before it runs any of its own code, so it holds no capability and reads only what everyone may read;
+//     it never starts another program;
+//   - use more than its limits: 1.5 GiB of address space (not under the race detector, whose shadow memory needs
+//     more), --cpu-seconds of CPU, 32 open files, files of at most 1 MiB, no core dump; and it is the first process
+//     the kernel kills when memory runs short (oom_score_adj 1000), with the agent's unit set to carry on (OOMPolicy);
+//   - outlive the agent's deadline: the agent kills it then, and when the agent dies it dies too (Pdeathsig, which
+//     the fork sets after the IDs, so changing them doesn't clear it);
 //   - reach a container engine: the reader points at none.
 //
 // It doesn't apply Landlock or seccomp: in Go both bind only the thread that asks, not the process.
@@ -53,15 +66,15 @@ func ReadProjectMain(args []string, stdin io.Reader, stdout io.Writer) int {
 	fs := flag.NewFlagSet("homerslab agent read-project", flag.ContinueOnError)
 	cpu := fs.Int("cpu-seconds", 10, "the CPU time the read may use")
 	if err := fs.Parse(args); err != nil || fs.NArg() != 1 {
-		fmt.Fprintln(os.Stderr, "usage: homerslab agent read-project [--cpu-seconds N] PROJECT < compose.yaml")
+		fmt.Fprintln(os.Stderr, "usage: homerslab agent read-project [--cpu-seconds N] -- PROJECT < compose.yaml")
 		return 2
 	}
-	res := readResult{Limits: map[string]int{}}
-	if err := confine(*cpu, res.Limits); err != nil {
+	var res readResult
+	var err error
+	if res.Confined, err = confine(*cpu); err != nil {
 		fmt.Fprintln(os.Stderr, "confining the read:", err)
 		return 1
 	}
-	res.UID = os.Getuid()
 	file, err := io.ReadAll(io.LimitReader(stdin, 64<<10+1))
 	if err == nil {
 		var r *compose.Reader
@@ -87,19 +100,10 @@ func ReadProjectMain(args []string, stdin io.Reader, stdout io.Writer) int {
 	return 0
 }
 
-// confine drops root, if the child has it, and sets its limits.
-func confine(cpuSeconds int, limits map[string]int) error {
-	if os.Geteuid() == 0 {
-		// Go applies these to every thread of the process.
-		if err := syscall.Setgroups([]int{}); err != nil {
-			return err
-		}
-		if err := syscall.Setgid(nobody); err != nil {
-			return err
-		}
-		if err := syscall.Setuid(nobody); err != nil {
-			return err
-		}
+// confine sets the child's limits and OOM score, and reads back how it runs.
+func confine(cpuSeconds int) (Confined, error) {
+	if err := os.WriteFile("/proc/self/oom_score_adj", []byte("1000"), 0); err != nil {
+		return Confined{}, fmt.Errorf("oom_score_adj: %w", err)
 	}
 	set := map[string]struct {
 		resource int
@@ -116,11 +120,26 @@ func confine(cpuSeconds int, limits map[string]int) error {
 			value    uint64
 		}{syscall.RLIMIT_AS, childAddressSpace}
 	}
+	c := Confined{UID: os.Getuid(), GID: os.Getgid(), Limits: map[string]uint64{}}
 	for name, l := range set {
 		if err := syscall.Setrlimit(l.resource, &syscall.Rlimit{Cur: l.value, Max: l.value}); err != nil {
-			return fmt.Errorf("%s: %w", name, err)
+			return c, fmt.Errorf("%s: %w", name, err)
 		}
-		limits[name] = int(l.value)
+		var got syscall.Rlimit
+		if err := syscall.Getrlimit(l.resource, &got); err != nil {
+			return c, err
+		}
+		c.Limits[name] = got.Max
 	}
-	return nil
+	if b, err := os.ReadFile("/proc/self/status"); err == nil {
+		for line := range strings.Lines(string(b)) {
+			if v, ok := strings.CutPrefix(line, "Groups:"); ok {
+				c.Groups = strings.TrimSpace(v)
+			}
+		}
+	}
+	if b, err := os.ReadFile("/proc/self/oom_score_adj"); err == nil {
+		c.OOMScoreAdj = strings.TrimSpace(string(b))
+	}
+	return c, nil
 }

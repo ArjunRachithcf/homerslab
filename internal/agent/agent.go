@@ -36,10 +36,17 @@ type Config struct {
 	SocketGID int
 	Sysroot   Sysroot
 	Log       *slog.Logger
+	// Executable is the agent's own program, which it runs as each compose read's child; os.Executable() when "".
+	Executable string
 }
 
 // Handler serves the agent's API.
 func Handler(sysroot Sysroot, log *slog.Logger) http.Handler {
+	return handler(Config{Sysroot: sysroot, Log: log})
+}
+
+func handler(c Config) http.Handler {
+	sysroot, log := c.Sysroot, c.Log
 	if log == nil {
 		log = slog.New(slog.DiscardHandler)
 	}
@@ -53,7 +60,7 @@ func Handler(sysroot Sysroot, log *slog.Logger) http.Handler {
 		}
 		writeJSON(w, http.StatusOK, facts)
 	})
-	reads := newReads()
+	reads := newReads(c.Executable)
 	mux.HandleFunc("POST /v1/projects/read", func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
 			Project string `json:"project"`
@@ -72,6 +79,9 @@ func Handler(sysroot Sysroot, log *slog.Logger) http.Handler {
 		case errors.Is(err, errReadTimeout):
 			log.Warn("a compose read ran out of time", "project", req.Project)
 			writeJSON(w, http.StatusGatewayTimeout, map[string]string{"error": "read-timeout"})
+		case errors.Is(err, errReadTooBig):
+			log.Warn("a compose read ran out of memory", "project", req.Project)
+			writeJSON(w, http.StatusUnprocessableEntity, map[string]string{"error": "read-too-big"})
 		case errors.Is(err, errNoReader):
 			log.Error("starting a compose read", "err", err)
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "no-reader"})
@@ -95,7 +105,7 @@ func Serve(ctx context.Context, c Config) error {
 	if err != nil {
 		return err
 	}
-	srv := &http.Server{Handler: Handler(c.Sysroot, c.Log), ReadHeaderTimeout: 10 * time.Second}
+	srv := &http.Server{Handler: handler(c), ReadHeaderTimeout: 10 * time.Second}
 	return serveUntil(ctx, srv, ln)
 }
 
@@ -154,11 +164,13 @@ const ReadDeadline = 10 * time.Second
 
 var readDeadline = ReadDeadline
 
-// readCommand is how the agent starts a compose read: itself, in its read-project mode.
-var readCommand = func() ([]string, error) {
-	exe, err := os.Executable()
-	if err != nil {
-		return nil, err
+// readCommand is how the agent starts a compose read: its executable, in its read-project mode. Tests replace it.
+var readCommand = func(exe string) ([]string, error) {
+	if exe == "" {
+		var err error
+		if exe, err = os.Executable(); err != nil {
+			return nil, err
+		}
 	}
 	return []string{exe, "agent", "read-project"}, nil
 }
@@ -166,17 +178,54 @@ var readCommand = func() ([]string, error) {
 var (
 	errBusy        = errors.New("another compose read is running")
 	errReadTimeout = errors.New("the compose read ran out of time")
+	errReadTooBig  = errors.New("the compose read ran out of memory")
 	errNoReader    = errors.New("the compose reader didn't start")
 )
 
 // reads runs compose reads one at a time, each in a child process (ReadProjectMain) that the agent kills at the
 // deadline: the deadline really stops the work, and the slot is free again at once. The plain-file rules
 // (engine/compose) bound how long a read can take; the child's own limits and the agent's unit bound the rest.
-type reads struct{ slot chan struct{} }
+type reads struct {
+	slot chan struct{}
+	exe  string
+}
 
-func newReads() *reads { return &reads{slot: make(chan struct{}, 1)} }
+func newReads(exe string) *reads { return &reads{slot: make(chan struct{}, 1), exe: exe} }
+
+// childCommand is the command that runs one compose read in dir, its own empty folder, for project name. When the
+// agent is root, the child starts as nobody (65534) with no groups: the IDs are set in the fork, before the parent-death
+// signal and the exec, so the child never runs as root and still dies with the agent.
+func childCommand(ctx context.Context, argv []string, dir, name string, cpuSeconds int) *exec.Cmd {
+	cmd := exec.CommandContext(ctx, argv[0], append(argv[1:], "--cpu-seconds", strconv.Itoa(cpuSeconds), "--", name)...)
+	cmd.Dir = dir
+	cmd.Env = []string{"HOME=" + dir, "TMPDIR=" + dir, "DOCKER_CONFIG=" + filepath.Join(dir, ".docker"), "PATH=/usr/bin:/bin"}
+	cmd.SysProcAttr = &syscall.SysProcAttr{Pdeathsig: syscall.SIGKILL, Setpgid: true}
+	if os.Geteuid() == 0 {
+		cmd.SysProcAttr.Credential = &syscall.Credential{Uid: nobody, Gid: nobody, Groups: []uint32{}}
+	}
+	cmd.WaitDelay = time.Second
+	return cmd
+}
+
+// childDir is a read's own empty folder, owned by the user its child runs as.
+func childDir() (string, error) {
+	dir, err := os.MkdirTemp("", "homerslab-read-")
+	if err != nil {
+		return "", err
+	}
+	if os.Geteuid() == 0 {
+		if err := os.Chown(dir, nobody, nobody); err != nil {
+			os.RemoveAll(dir)
+			return "", err
+		}
+	}
+	return dir, nil
+}
 
 func (rs *reads) read(ctx context.Context, name string, file []byte) (engine.Project, error) {
+	if !compose.OurName(name) {
+		return engine.Project{}, compose.ErrNotOurs // no child for a name that isn't one of ours
+	}
 	ctx, cancel := context.WithTimeout(ctx, readDeadline)
 	defer cancel()
 	select {
@@ -185,36 +234,34 @@ func (rs *reads) read(ctx context.Context, name string, file []byte) (engine.Pro
 		return engine.Project{}, errBusy
 	}
 	defer func() { <-rs.slot }()
-	argv, err := readCommand()
+	argv, err := readCommand(rs.exe)
 	if err != nil {
 		return engine.Project{}, fmt.Errorf("%w: %w", errNoReader, err)
 	}
-	// The child's own folder: empty, and the only one it may write to.
-	dir, err := os.MkdirTemp("", "homerslab-read-")
+	dir, err := childDir()
 	if err != nil {
 		return engine.Project{}, fmt.Errorf("%w: %w", errNoReader, err)
 	}
 	defer os.RemoveAll(dir)
-	if os.Geteuid() == 0 {
-		if err := os.Chown(dir, nobody, nobody); err != nil {
-			return engine.Project{}, fmt.Errorf("%w: %w", errNoReader, err)
-		}
-	}
-	seconds := int(readDeadline/time.Second) + 1
-	cmd := exec.CommandContext(ctx, argv[0], append(argv[1:], "--cpu-seconds", strconv.Itoa(seconds), name)...)
-	cmd.Dir = dir
-	cmd.Env = []string{"HOME=" + dir, "TMPDIR=" + dir, "DOCKER_CONFIG=" + filepath.Join(dir, ".docker"), "PATH=/usr/bin:/bin"}
+	cmd := childCommand(ctx, argv, dir, name, int(readDeadline/time.Second)+1)
 	cmd.Stdin = bytes.NewReader(file)
 	var out, errOut capped
 	cmd.Stdout, cmd.Stderr = &out, &errOut
-	cmd.SysProcAttr = &syscall.SysProcAttr{Pdeathsig: syscall.SIGKILL, Setpgid: true}
-	cmd.WaitDelay = time.Second
 	runErr := cmd.Run()
 	if ctx.Err() != nil {
 		return engine.Project{}, errReadTimeout
 	}
 	var res readResult
 	if err := json.Unmarshal(out.b.Bytes(), &res); err != nil {
+		// The child ended without an answer: stopped by its CPU limit, or out of memory (Go's own error, or the
+		// kernel's kill), which are the file's doing; anything else is the reader's.
+		var exit *exec.ExitError
+		switch {
+		case errors.As(runErr, &exit) && signalled(exit, syscall.SIGXCPU):
+			return engine.Project{}, errReadTimeout
+		case strings.Contains(errOut.b.String(), "out of memory"), errors.As(runErr, &exit) && signalled(exit, syscall.SIGKILL):
+			return engine.Project{}, errReadTooBig
+		}
 		return engine.Project{}, fmt.Errorf("%w: %v (%v) %s", errNoReader, err, runErr, strings.TrimSpace(errOut.b.String()))
 	}
 	switch res.Error {
@@ -227,6 +274,11 @@ func (rs *reads) read(ctx context.Context, name string, file []byte) (engine.Pro
 	default:
 		return engine.Project{}, errors.New(res.Detail)
 	}
+}
+
+func signalled(e *exec.ExitError, sig syscall.Signal) bool {
+	ws, ok := e.Sys().(syscall.WaitStatus)
+	return ok && ws.Signaled() && ws.Signal() == sig
 }
 
 // capped is a child's output, of which it keeps the first MiB.

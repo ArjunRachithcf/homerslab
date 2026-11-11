@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -13,6 +14,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"testing/fstest"
 	"time"
@@ -248,36 +250,48 @@ func TestAHostileReadIsKilledAtItsDeadline(t *testing.T) {
 	}
 }
 
-// A read's child drops root and runs under its own limits; a file shaped to make Compose work hard is refused quickly.
+// A read's child starts as nobody with no groups when the agent is root, under its own limits and first in line for
+// the OOM killer, all read back from the kernel; a file shaped to make Compose work hard is refused quickly.
 func TestAReadRunsConfinedAndRefusesWorkFast(t *testing.T) {
 	testenv.Isolate(t)
-	cmd := exec.Command(os.Args[0], "agent", "read-project", "--cpu-seconds", "5", "homerslab-web")
-	cmd.Stdin = strings.NewReader("services: {web: {image: x}}\n")
-	cmd.Dir = t.TempDir()
-	if os.Geteuid() == 0 {
-		if err := os.Chown(cmd.Dir, 65534, 65534); err != nil {
-			t.Fatal(err)
-		}
+	dir, err := agent.ChildDir()
+	if err != nil {
+		t.Fatal(err)
 	}
+	defer os.RemoveAll(dir)
+	cmd := agent.ChildCommand(context.Background(), agenttest.Executable(t), dir, "homerslab-web", 5)
+	cmd.Stdin = strings.NewReader("services: {web: {image: x}}\n")
 	out, err := cmd.Output()
 	if err != nil {
 		t.Fatalf("%v: %s", err, out)
 	}
 	var res struct {
-		Project *engine.Project
-		UID     int
-		Limits  map[string]int
+		Project  *engine.Project
+		Confined struct {
+			UID, GID    int
+			Groups      string
+			Limits      map[string]uint64
+			OOMScoreAdj string
+		}
 	}
 	if err := json.Unmarshal(out, &res); err != nil || res.Project == nil {
 		t.Fatalf("%v: %s", err, out)
 	}
-	if os.Geteuid() == 0 && res.UID != 65534 {
-		t.Errorf("the child ran as %d, want nobody (65534)", res.UID)
+	c := res.Confined
+	if os.Geteuid() == 0 && (c.UID != 65534 || c.GID != 65534 || c.Groups != "") {
+		t.Errorf("the child ran as uid %d, gid %d, groups %q; want nobody (65534) and no groups", c.UID, c.GID, c.Groups)
 	}
-	for k, want := range map[string]int{"core": 0, "cpu": 5, "files": 32, "fileSize": 1 << 20} {
-		if got, ok := res.Limits[k]; !ok || got != want {
-			t.Errorf("limit %s = %d, want %d", k, got, want)
+	want := map[string]uint64{"core": 0, "cpu": 5, "files": 32, "fileSize": 1 << 20}
+	if _, ok := c.Limits["addressSpace"]; ok {
+		want["addressSpace"] = 3 << 29
+	}
+	for k, v := range want {
+		if got, ok := c.Limits[k]; !ok || got != v {
+			t.Errorf("limit %s = %d, want %d", k, got, v)
 		}
+	}
+	if c.OOMScoreAdj != "1000" {
+		t.Errorf("oom_score_adj = %q, want 1000", c.OOMScoreAdj)
 	}
 
 	var fan strings.Builder
@@ -295,6 +309,92 @@ func TestAReadRunsConfinedAndRefusesWorkFast(t *testing.T) {
 	if resp.StatusCode != http.StatusUnprocessableEntity || !strings.Contains(string(body), "not-plain") || time.Since(start) > 2*time.Second {
 		t.Errorf("a depends_on fan: %d %s after %s, want it refused fast", resp.StatusCode, body, time.Since(start))
 	}
+}
+
+// A child that ends without answering is said for what ended it: its CPU limit is a read-timeout, running out of
+// memory is the file's doing; neither is a reader that didn't start.
+func TestAReadsEndingIsSaid(t *testing.T) {
+	testenv.Isolate(t)
+	body := map[string]string{"project": "homerslab-web", "compose": "services: {web: {image: x}}\n"}
+	for name, c := range map[string]struct {
+		script string
+		status int
+		code   string
+	}{
+		"its CPU limit":       {"cat >/dev/null; kill -XCPU $$", http.StatusGatewayTimeout, "read-timeout"},
+		"Go's out of memory":  {"cat >/dev/null; echo 'fatal error: runtime: out of memory' >&2; exit 2", http.StatusUnprocessableEntity, "read-too-big"},
+		"the kernel's kill":   {"cat >/dev/null; kill -KILL $$", http.StatusUnprocessableEntity, "read-too-big"},
+		"a reader that broke": {"cat >/dev/null; echo broken >&2; exit 3", http.StatusInternalServerError, "no-reader"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			agent.ShellReads(t, 5*time.Second, c.script)
+			sock := agenttest.Start(t, agenttest.Primary())
+			resp, out := post(t, sock, "/v1/projects/read", body)
+			if resp.StatusCode != c.status || !strings.Contains(string(out), c.code) {
+				t.Errorf("%d %s, want %d %s", resp.StatusCode, out, c.status, c.code)
+			}
+		})
+	}
+}
+
+// A name that isn't one of HomersLab's starts no child at all.
+func TestANameThatIsntOursStartsNoChild(t *testing.T) {
+	testenv.Isolate(t)
+	marker := filepath.Join(t.TempDir(), "started")
+	agent.ShellReads(t, 5*time.Second, "touch "+marker)
+	sock := agenttest.Start(t, agenttest.Primary())
+	for _, name := range []string{"homelab", "--cpu-seconds", "-x", "homerslab-web --help"} {
+		resp, out := post(t, sock, "/v1/projects/read", map[string]string{"project": name, "compose": "services: {}\n"})
+		if resp.StatusCode != http.StatusBadRequest || !strings.Contains(string(out), "not-ours") {
+			t.Errorf("%q: %d %s, want 400 not-ours", name, resp.StatusCode, out)
+		}
+	}
+	if _, err := os.Stat(marker); err == nil {
+		t.Error("a child started for a name that isn't ours")
+	}
+}
+
+// A read's child dies with the agent, also when the agent is root and the child starts as nobody: the IDs are set in
+// the fork before the parent-death signal, so changing them doesn't clear it.
+func TestAReadsChildDiesWithTheAgent(t *testing.T) {
+	testenv.Isolate(t)
+	helper := exec.Command(os.Args[0], "-test.run=^$")
+	helper.Env = append(os.Environ(), "HOMERSLAB_TEST_PARENT=1", "HOMERSLAB_TEST_EXE="+agenttest.Executable(t))
+	// The child's standard input stays open after its parent dies, so only the parent-death signal can end it.
+	in, keep, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer in.Close()
+	defer keep.Close()
+	helper.Stdin = in
+	stdout, err := helper.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := helper.Start(); err != nil {
+		t.Fatal(err)
+	}
+	var pid int
+	if _, err := fmt.Fscan(stdout, &pid); err != nil || pid <= 0 {
+		t.Fatalf("the helper gave no child: %v", err)
+	}
+	if err := helper.Process.Kill(); err != nil {
+		t.Fatal(err)
+	}
+	_ = helper.Wait()
+	for range 100 {
+		if err := syscall.Kill(pid, 0); errors.Is(err, syscall.ESRCH) {
+			return
+		}
+		if b, _ := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid)); strings.Contains(string(b), ") Z ") {
+			return // a zombie whose parent is gone: dead, waiting to be reaped
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	status, _ := os.ReadFile(fmt.Sprintf("/proc/%d/status", pid))
+	_ = syscall.Kill(pid, syscall.SIGKILL)
+	t.Errorf("the child %d outlived the agent:\n%s", pid, status)
 }
 
 // Reading a compose project never reaches a container engine, wherever the environment points.

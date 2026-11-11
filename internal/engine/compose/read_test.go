@@ -230,3 +230,97 @@ func deepBlock(n int) string {
 	}
 	return b.String()
 }
+
+// fib is n services, each depending on the two before it: few references, but a number of dependency paths that grows
+// like the Fibonacci numbers.
+func fib(n int) string {
+	var b strings.Builder
+	b.WriteString("services:\n  s0: {image: x}\n  s1: {image: x, depends_on: [s0]}\n")
+	for i := 2; i < n; i++ {
+		fmt.Fprintf(&b, "  s%d: {image: x, depends_on: [s%d, s%d]}\n", i, i-1, i-2)
+	}
+	return b.String()
+}
+
+// Compose expands a port range into one entry per port, and walks every path of dependencies: both are refused before
+// they cost anything.
+func TestAProjectThatMultipliesItsWorkIsRefusedFast(t *testing.T) {
+	testenv.Isolate(t)
+	r := reader(t)
+	var bomb strings.Builder
+	bomb.WriteString("services:\n  s:\n    image: x\n    ports:\n")
+	for i := range 20 {
+		fmt.Fprintf(&bomb, "      - \"10.0.0.%d:1-65535:1-65535\"\n", i)
+	}
+	for name, file := range map[string]string{
+		"20 port ranges":         bomb.String(),
+		"one port range":         "services: {s: {image: x, ports: ['1-65535:1-65535']}}\n",
+		"a long-form port range": "services: {s: {image: x, ports: [{target: 80, published: '8000-9000'}]}}\n",
+		"a target range":         "services: {s: {image: x, ports: [{target: '1-65535'}]}}\n",
+		"an exposed range":       "services: {s: {image: x, expose: ['1-65535']}}\n",
+		"a Fibonacci depends_on": fib(64),
+		"a Fibonacci with links": strings.ReplaceAll(fib(64), "depends_on", "links"),
+		"a cycle":                "services: {a: {image: x, depends_on: [b]}, b: {image: x, depends_on: [a]}}\n",
+	} {
+		start := time.Now()
+		_, err := r.Read(context.Background(), "homerslab-example", []byte(file))
+		if took := time.Since(start); !errors.Is(err, compose.ErrNotPlain) || took > 100*time.Millisecond {
+			t.Errorf("%s: %v after %s, want ErrNotPlain within 100 ms", name, err, took)
+		}
+	}
+	for name, file := range map[string]string{
+		"one port":      "services: {s: {image: x, expose: ['80'], ports: ['127.0.0.1:8080:80']}}\n",
+		"a short fib":   fib(10),
+		"a shared base": "services: {db: {image: x}, a: {image: x, depends_on: [db]}, b: {image: x, depends_on: [db, a]}}\n",
+	} {
+		if _, err := r.Read(context.Background(), "homerslab-example", []byte(file)); err != nil {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+}
+
+// Every way of writing a merge key that the YAML parser Compose uses understands is refused, and no file a compose
+// file names is ever read into the project (the review's probes).
+func TestEveryMergeKeyAndFileReferenceIsHarmless(t *testing.T) {
+	testenv.Isolate(t)
+	r := reader(t)
+	hidden := "{image: x, profiles: [p]}"
+	for name, f := range map[string]string{
+		"plain":       "services:\n  s:\n    image: x\n    <<: {profiles: [p]}\n",
+		"tagmerge":    "services:\n  s:\n    image: x\n    !!merge foo: {profiles: [p]}\n",
+		"verbatim":    "services:\n  s:\n    image: x\n    !<tag:yaml.org,2002:merge> foo: {profiles: [p]}\n",
+		"handle":      "%TAG !m! tag:yaml.org,2002:\n---\nservices:\n  s:\n    image: x\n    !m!merge foo: {profiles: [p]}\n",
+		"handle2":     "%TAG !! tag:yaml.org,2002:\n---\nservices:\n  s:\n    image: x\n    !!merge foo: {profiles: [p]}\n",
+		"localhandle": "%TAG ! tag:yaml.org,2002:\n---\nservices:\n  s:\n    image: x\n    !merge foo: {profiles: [p]}\n",
+		"complexkey":  "services:\n  s:\n    image: x\n    ? <<\n    : {profiles: [p]}\n",
+		"flow":        "services: {s: {image: x, <<: {profiles: [p]}}}\n",
+		"seq":         "services:\n  s:\n    image: x\n    <<: [{profiles: [p]}]\n",
+		"svclevel":    "services:\n  s: {image: x}\n  <<: {t: " + hidden + "}\n",
+		"root":        "<<: {services: {t: " + hidden + "}}\n",
+		"rootinclude": "!!merge x: {include: [/etc/passwd]}\nservices: {s: {image: x}}\n",
+		"bom":         "\ufeffservices:\n  s:\n    image: x\n    <<: {profiles: [p]}\n",
+		"pct":         "services:\n  s:\n    image: x\n    !<tag:yaml.org,2002:%6Derge> foo: {profiles: [p]}\n",
+		"dq":          "services:\n  s:\n    image: x\n    \"<<\": {profiles: [p]}\n",
+		"sq":          "services:\n  s:\n    image: x\n    '<<': {profiles: [p]}\n",
+		"strtag":      "services:\n  s:\n    image: x\n    !!str <<: {profiles: [p]}\n",
+		"secretfile":  "services: {s: {image: x, secrets: [k]}}\nsecrets: {k: {file: /etc/passwd}}\n",
+		"configfile":  "services: {s: {image: x, configs: [k]}}\nconfigs: {k: {file: /etc/passwd}}\n",
+		"build":       "services: {s: {image: x, build: {context: /etc, dockerfile: passwd}}}\n",
+		"envfilelong": "services: {s: {image: x, env_file: [{path: /etc/passwd, required: true}]}}\n",
+		"x-ext":       "x-a: {include: [/etc/passwd]}\nservices: {s: {image: x}}\n",
+		"includelong": "include:\n  - path: /etc/passwd\n    env_file: /etc/shadow\nservices: {s: {image: x}}\n",
+		"multidoc":    "services: {s: {image: x}}\n---\ninclude: [/etc/passwd]\n",
+		"multidoc2":   "services: {s: {image: x}}\n---\nservices: {s: {extends: {file: /etc/passwd, service: x}}}\n",
+	} {
+		p, err := r.Read(context.Background(), "homerslab-example", []byte(f))
+		if err != nil {
+			if strings.Contains(err.Error(), "root:") {
+				t.Errorf("%s: a file's content reached the error: %v", name, err)
+			}
+			continue
+		}
+		if len(p.Services) != 1 || p.Services[0].Name != "s" || p.Services[0].Image != "x" {
+			t.Errorf("%s: read %+v, want only s, as written", name, p.Services)
+		}
+	}
+}

@@ -15,7 +15,7 @@ import (
 	"github.com/compose-spec/compose-go/v2/cli"
 	"github.com/compose-spec/compose-go/v2/loader"
 	"github.com/docker/compose/v5/pkg/api"
-	"go.yaml.in/yaml/v3"
+	"go.yaml.in/yaml/v4" // the parser Compose itself uses, so that both read merge keys and tags alike
 
 	"github.com/ArjunRachithcf/homerslab/internal/engine"
 )
@@ -27,6 +27,9 @@ var (
 	ErrNotOurs  = errors.New("not one of HomersLab's compose project names (homerslab-<app>)")
 	ErrNotPlain = errors.New("an app's compose file is one plain file: no include, extends, env_file, label_file, profiles, aliases or merge keys; at most 64 KiB, nested at most 64 deep, 64 services and 128 references between them")
 )
+
+// OurName says whether name is one of HomersLab's compose project names, homerslab-<app>.
+func OurName(name string) bool { return projectName.MatchString(name) }
 
 // readerOptions make the reader's service: a dry run with no stream, so nothing it is asked can change an engine.
 var readerOptions = options{dryRun: true}
@@ -51,7 +54,7 @@ func NewReader(host string) (*Reader, error) {
 // services it runs with which images. The file is read as written: no variable is filled in, so nothing of the
 // reader's own environment reaches it, and it may name no other file.
 func (r *Reader) Read(ctx context.Context, name string, file []byte) (engine.Project, error) {
-	if !projectName.MatchString(name) {
+	if !OurName(name) {
 		return engine.Project{}, ErrNotOurs
 	}
 	if err := plain(file); err != nil {
@@ -101,9 +104,10 @@ func (r *Reader) load(ctx context.Context, name string, file []byte) (engine.Pro
 	return out, nil
 }
 
-// The bounds of a plain compose file: the agent parses it as root, so a small file must not make it work hard.
-// Compose's own work grows with the services and the references between them (depends_on, links, volumes_from, and
-// network_mode, ipc and pid set to service:<name>), so those are capped too.
+// The bounds of a plain compose file: the agent parses it as root, so a small file must not make it work hard. Size,
+// nesting, services and references are capped; so are the paths of references (maxPaths) and port ranges, which
+// Compose expands. These bound what was found to make Compose work hard; they don't prove that nothing else can, which
+// is why each read also runs in a child that is killed at its deadline (agent.ReadProjectMain).
 const (
 	maxFileBytes  = 64 << 10
 	maxDepth      = 64
@@ -124,11 +128,12 @@ func plain(file []byte) error {
 	}
 	dec := yaml.NewDecoder(bytes.NewReader(file))
 	count, refs := 0, 0
+	graph := map[string][]string{}
 	for {
 		var doc yaml.Node
 		err := dec.Decode(&doc)
 		if errors.Is(err, io.EOF) {
-			return nil
+			return paths(graph)
 		}
 		if err != nil {
 			return fmt.Errorf("the compose file: %w", err)
@@ -157,7 +162,15 @@ func plain(file []byte) error {
 					return fmt.Errorf("%w: %s", ErrNotPlain, k)
 				}
 			}
-			if refs += references(s); refs > maxReferences {
+			for _, k := range []string{"ports", "expose"} {
+				if v := value(s, k); v != nil && hasRange(v) {
+					return fmt.Errorf("%w: a port range (Compose makes one entry per port)", ErrNotPlain)
+				}
+			}
+			deps := references(s)
+			name := services.Content[i-1].Value
+			graph[name] = append(graph[name], deps...)
+			if refs += len(deps); refs > maxReferences {
 				return fmt.Errorf("%w: more than %d references between services", ErrNotPlain, maxReferences)
 			}
 		}
@@ -192,21 +205,96 @@ func shallow(file []byte) error {
 	return nil
 }
 
-// references counts a service's references to other services.
-func references(s *yaml.Node) int {
-	n := 0
+// references are the services a service refers to: by depends_on, links and volumes_from, and by network_mode, ipc
+// and pid set to service:<name>.
+func references(s *yaml.Node) []string {
+	var out []string
 	for _, k := range []string{"depends_on", "links", "volumes_from"} {
-		if v := value(s, k); v != nil {
-			n += max(len(v.Content), 1) // a list's items, or a mapping's keys and values: an upper bound
+		v := value(s, k)
+		switch {
+		case v == nil:
+		case v.Kind == yaml.MappingNode: // depends_on's long form: its keys
+			for i := 0; i < len(v.Content); i += 2 {
+				out = append(out, v.Content[i].Value)
+			}
+		case v.Kind == yaml.SequenceNode:
+			for _, e := range v.Content {
+				if strings.HasPrefix(e.Value, "container:") {
+					continue
+				}
+				name, _, _ := strings.Cut(e.Value, ":") // links' alias, volumes_from's mode
+				out = append(out, name)
+			}
+		default:
+			out = append(out, v.Value)
 		}
 	}
 	for _, k := range []string{"network_mode", "ipc", "pid"} {
-		if v := value(s, k); v != nil && strings.HasPrefix(v.Value, "service:") {
-			n++
+		if v := value(s, k); v != nil {
+			if name, ok := strings.CutPrefix(v.Value, "service:"); ok {
+				out = append(out, name)
+			}
 		}
 	}
-	return n
+	return out
 }
+
+// maxPaths bounds the paths of references, summed over the services: Compose walks the references of every service
+// again for each service that reaches it, so its work grows with the paths, which few references can multiply (64
+// services, each on the two before it, make Fibonacci-many). A chain of 64 has 2,080.
+const maxPaths = 4096
+
+// paths counts the paths of references from every service, and refuses past maxPaths, or a cycle.
+func paths(graph map[string][]string) error {
+	const visiting = -1
+	memo := map[string]int{}
+	var from func(string) (int, error)
+	from = func(s string) (int, error) {
+		switch n := memo[s]; {
+		case n == visiting:
+			return 0, fmt.Errorf("%w: services that refer to each other in a cycle", ErrNotPlain)
+		case n > 0:
+			return n, nil
+		}
+		memo[s] = visiting
+		n := 1
+		for _, d := range graph[s] {
+			m, err := from(d)
+			if err != nil {
+				return 0, err
+			}
+			n = min(n+m, maxPaths+1)
+		}
+		memo[s] = n
+		return n, nil
+	}
+	total := 0
+	for s := range graph {
+		n, err := from(s)
+		if err != nil {
+			return err
+		}
+		if total = min(total+n, maxPaths+1); total > maxPaths {
+			return fmt.Errorf("%w: more than %d paths of references between services", ErrNotPlain, maxPaths)
+		}
+	}
+	return nil
+}
+
+// hasRange says whether a ports or expose entry, or any value in it, is a range of ports.
+func hasRange(n *yaml.Node) bool {
+	if n.Kind == yaml.ScalarNode {
+		return portRange.MatchString(n.Value)
+	}
+	for _, c := range n.Content {
+		if hasRange(c) {
+			return true
+		}
+	}
+	return false
+}
+
+var portRange = regexp.MustCompile(`[0-9]\s*-\s*[0-9]`)
 
 // walk refuses aliases, merge keys (<< and the !!merge tag, which merge one mapping into another with no alias, so
 // keys plain() refuses could hide behind them) and nesting deeper than maxDepth.
@@ -214,7 +302,7 @@ func walk(n *yaml.Node, depth int) error {
 	if n.Kind == yaml.AliasNode {
 		return fmt.Errorf("%w: an alias (*%s)", ErrNotPlain, n.Value)
 	}
-	if n.Tag == "!!merge" || (n.Kind == yaml.ScalarNode && n.Value == "<<" && n.Style == 0) {
+	if n.ShortTag() == "!!merge" || (n.Kind == yaml.ScalarNode && n.Value == "<<" && n.Style == 0 && n.Tag == "") {
 		return fmt.Errorf("%w: a merge key", ErrNotPlain)
 	}
 	if n.Kind == yaml.MappingNode || n.Kind == yaml.SequenceNode {
