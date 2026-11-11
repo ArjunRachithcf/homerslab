@@ -201,13 +201,23 @@ function useStep(id: string, setup: Setup, facts: Facts | null, next: () => void
   const [bad, setBad] = useState<Record<string, Reason>>({});
   const [busy, setBusy] = useState(false);
   const [failed, setFailed] = useState<{ step: string; why: Failure } | null>(null);
-  const householdValue = touched || !surname ? household : t('step.household.default', { surname });
+  const householdValue = touched || !surname ? household : defaultHousehold(surname);
 
   const send = async (body: Record<string, string>) => {
     setBusy(true);
     setFailed(null); // a failure that happens again is a new notice, read out again
     try {
-      onAnswered(await answer(id, body));
+      const done = await answer(id, body);
+      onAnswered(done);
+      // The manager keeps what it was given in its normal form (spaces collapsed, full-width letters made plain, and
+      // so on): show that.
+      if (id === 'you') {
+        setName(done.answers.name ?? name);
+        setMail(done.answers.mail ?? mail);
+      } else if (id === 'household' && done.answers.household !== undefined) {
+        setHousehold(done.answers.household);
+        setTouched(true);
+      }
       setBad({});
       next();
     } catch (e) {
@@ -296,6 +306,22 @@ function failure(e: unknown): Failure {
   if (fromElsewhere(e)) return { says: 'setup.fail.here' }; // not-from-lan, cross-origin, wrong-host
   if (e.status >= 400 && e.status < 500) return { says: 'setup.fail.refused', reload: true }; // unknown-step, not-json
   return { says: 'setup.fail.server' };
+}
+
+/** The longest name the manager keeps, in code points (internal/manager/setup: NameMax). */
+const NAME_MAX = 64;
+
+/**
+ * The household's name, made from the admin's surname: "The {surname} household", with the surname cut short to fit
+ * when it is long, so the page never offers a name the manager refuses. A cut leaves no accent or joiner hanging.
+ */
+function defaultHousehold(surname: string): string {
+  const whole = t('step.household.default', { surname });
+  const over = [...whole].length - NAME_MAX;
+  if (over <= 0) return whole;
+  const letters = [...surname];
+  const kept = letters.slice(0, Math.max(0, letters.length - over)).join('').replace(/(?:\p{M}|\u200c|\u200d|\ufe0e|\ufe0f)+$/u, '');
+  return kept ? t('step.household.default', { surname: kept }) : '';
 }
 
 /** What a field's refusal says: the words for its reason, or the field's own when it is missing or malformed. */

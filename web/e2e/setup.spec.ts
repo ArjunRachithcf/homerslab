@@ -137,7 +137,7 @@ test('a refused answer says why', async ({ page, primary }) => {
   await name.fill('Inês\u202eevil');
   await mail.fill('ines@ferreira.family');
   await next.click();
-  await expect(page.getByText('Your name has a hidden character')).toBeVisible();
+  await expect(page.getByText('Your name has an invisible character')).toBeVisible();
   await expect(name).toHaveAttribute('aria-invalid', 'true');
 
   await name.fill('I'.repeat(65));
@@ -152,8 +152,34 @@ test('a refused answer says why', async ({ page, primary }) => {
   const household = page.getByLabel('The household’s name', { exact: true });
   await household.fill('The Ferreira\u0007 household');
   await next.click();
-  await expect(page.getByText('The name has a hidden character')).toBeVisible();
+  await expect(page.getByText('The name has an invisible character')).toBeVisible();
   await household.fill('H'.repeat(65));
   await next.click();
   await expect(page.getByText('The household’s name can be 64 characters at most.')).toBeVisible();
+});
+
+// The manager keeps a name in its normal form, and the page shows that form (#69).
+test('a name is shown as the manager keeps it', async ({ page, primary }) => {
+  await page.goto((await primary.newLink()).localUrl);
+  await page.getByRole('button', { name: 'Get started' }).click();
+  await page.getByLabel('Your name', { exact: true }).fill('\uff29\uff4eê\uff53  Ferreira  ');
+  await page.getByLabel('Your mail address', { exact: true }).fill('ines@ferreira.family');
+  await page.getByRole('button', { name: 'Continue' }).click();
+  await expect(page.getByLabel('The household’s name', { exact: true })).toHaveValue('The Ferreira household');
+  await page.getByRole('button', { name: 'Back' }).click();
+  await expect(page.getByLabel('Your name', { exact: true })).toHaveValue('Inês Ferreira');
+});
+
+// A long surname makes a household name the manager would refuse: the page cuts it short to fit, and never offers it.
+test('the household name made from a long surname fits', async ({ page, primary }) => {
+  await page.goto((await primary.newLink()).localUrl);
+  await page.getByRole('button', { name: 'Get started' }).click();
+  const surname = 'Wolfeschlegelsteinhausenbergerdorffwelchevoralternwarengewissenhaft';
+  await page.getByLabel('Your name', { exact: true }).fill(surname.slice(0, 58));
+  await page.getByLabel('Your mail address', { exact: true }).fill('h@example.org');
+  await page.getByRole('button', { name: 'Continue' }).click();
+  const household = page.getByLabel('The household’s name', { exact: true });
+  await expect(household).toHaveValue(`The ${surname.slice(0, 50)} household`);
+  await page.getByRole('button', { name: 'Continue' }).click();
+  await expect(page.getByRole('heading', { level: 1 })).toContainText('How everyone signs in');
 });

@@ -1,6 +1,7 @@
 package manager_test
 
 import (
+	"math/rand"
 	"net/http"
 	"testing"
 	"time"
@@ -252,5 +253,103 @@ func TestASessionSurvivesTwoRestarts(t *testing.T) {
 	p.restart()
 	if r := b.do("GET", "/api/v1/setup", nil); r.Code != http.StatusOK {
 		t.Errorf("26 minutes after the last visit, across two restarts: %d, want 200", r.Code)
+	}
+}
+
+// The second independent review's property test: 300 random walks of time going by, the wall clock stepped either
+// way, restarts, reboots, visits, new links and claims, each checked against the documented bounds. A link can be
+// claimed for 30 minutes; a session lasts 2 hours at most and 30 minutes idle (after a restart, up to SeenEvery
+// sooner); another boot ends both.
+func TestTheClockKeepsItsBoundsOnRandomWalks(t *testing.T) {
+	testenv.Isolate(t)
+	for seed := int64(0); seed < 300; seed++ {
+		rng := rand.New(rand.NewSource(seed))
+		p := newPrimary(t)
+		type sess struct {
+			b              *browser
+			opened, last   time.Duration
+			boot           int
+			restartedSince bool
+			live           bool
+		}
+		var s *sess
+		var pending *link
+		var linkMade time.Duration
+		linkBoot := 0
+		var steps []string
+		for step := 0; step < 40; step++ {
+			switch op := rng.Intn(10); op {
+			case 0, 1, 2:
+				d := time.Duration(rng.Int63n(int64(35 * time.Minute)))
+				p.clock.Add(d)
+				steps = append(steps, "add "+d.String())
+			case 3:
+				d := time.Duration(rng.Int63n(int64(72*time.Hour))) - 36*time.Hour
+				p.clock.Set(d)
+				steps = append(steps, "set "+d.String())
+			case 4:
+				p.restart()
+				if s != nil {
+					s.restartedSince = true
+				}
+				steps = append(steps, "restart")
+			case 5:
+				if rng.Intn(4) == 0 {
+					p.reboot()
+					steps = append(steps, "reboot")
+				}
+			case 6:
+				l := p.newLink()
+				pending, linkMade, linkBoot = &l, p.clock.Elapsed(), p.clock.boots
+				if s != nil {
+					s.live = false
+				}
+				steps = append(steps, "newlink")
+			case 7:
+				if pending == nil {
+					continue
+				}
+				b := p.browser(onTheLAN)
+				r := b.claim(*pending)
+				age := p.clock.Elapsed() - linkMade
+				want := linkBoot == p.clock.boots && age < 30*time.Minute
+				got := r.Code == http.StatusOK
+				steps = append(steps, "claim")
+				if got != want {
+					t.Fatalf("seed %d: claim at link age %s (same boot %v): %d, want ok=%v; steps %v", seed, age,
+						linkBoot == p.clock.boots, r.Code, want, steps)
+				}
+				pending = nil
+				if got {
+					e := p.clock.Elapsed()
+					s = &sess{b: b, opened: e, last: e, boot: p.clock.boots, live: true}
+				}
+			default:
+				if s == nil {
+					continue
+				}
+				e := p.clock.Elapsed()
+				same := s.boot == p.clock.boots
+				idle, open := e-s.last, e-s.opened
+				must := s.live && same && open < 2*time.Hour && idle < 29*time.Minute
+				mustNot := !s.live || !same || open >= 2*time.Hour || idle >= 30*time.Minute
+				if !s.restartedSince {
+					must = s.live && same && open < 2*time.Hour && idle < 30*time.Minute
+				}
+				r := s.b.do("GET", "/api/v1/setup", nil)
+				got := r.Code == http.StatusOK
+				steps = append(steps, "visit")
+				if got && mustNot || !got && must {
+					t.Fatalf("seed %d: visit open %s idle %s same boot %v live %v restarted %v: %d; steps %v", seed, open,
+						idle, same, s.live, s.restartedSince, r.Code, steps)
+				}
+				if got {
+					s.last = e
+					s.restartedSince = false
+				} else {
+					s.live = false
+				}
+			}
+		}
 	}
 }
