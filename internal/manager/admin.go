@@ -9,12 +9,18 @@ import (
 
 // Admin is Admin's surface, on the manager's Admin socket, which only the edge may open (the socket's group): it
 // answers at admin.<main domain> over the mesh, through the edge, and nowhere else. The LAN never reaches it: the
-// edge listens on the mesh only, and the setup listener carries none of it.
+// edge listens on the mesh only, and the setup listener carries none of it. So far it is the Store: the catalog, and
+// install plans, which change nothing until they are applied.
 func (m *Manager) Admin() http.Handler {
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /{$}", m.adminPage)
+	m.catalogRoutes(mux)
+	mux.HandleFunc("/api/", notFound)
+	for _, p := range []string{"GET /{$}", "GET /store", "GET /store/apps/{id}", "GET /plans/{id}"} {
+		mux.HandleFunc(p, m.adminPage)
+	}
+	mux.HandleFunc("GET /assets/{file}", m.asset)
 	mux.HandleFunc("/", notFound)
-	return securityHeaders(m.adminHost(mux))
+	return securityHeaders(m.adminHost(adminOrigin(mux)))
 }
 
 // adminHost answers only Admin's own name, whatever the edge forwards.

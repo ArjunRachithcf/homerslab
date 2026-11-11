@@ -12,22 +12,28 @@ import (
 	"time"
 
 	"github.com/ArjunRachithcf/homerslab/internal/agent"
+	"github.com/ArjunRachithcf/homerslab/internal/engine"
 	"github.com/ArjunRachithcf/homerslab/internal/mesh"
 	"github.com/ArjunRachithcf/homerslab/internal/node"
 )
 
-// agentClient asks the primary's agent, over its socket.
-type agentClient struct{ http *http.Client }
+// agentClient asks the primary's agent, over its socket. Compose reads get longer than the agent's own deadline for
+// them, so the manager hears the agent's read-timeout instead of giving up first.
+type agentClient struct{ http, reads *http.Client }
 
 func newAgentClient(socket string) *agentClient {
-	return &agentClient{http: &http.Client{
-		Timeout: 5 * time.Second,
+	t := &http.Transport{
 		// One connection per request: a local socket costs nothing to dial, and no connection is ever left open
 		// unused, which would hold up the agent's shutdown.
-		Transport: &http.Transport{DisableKeepAlives: true, DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+		DisableKeepAlives: true,
+		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
 			return (&net.Dialer{}).DialContext(ctx, "unix", socket)
-		}},
-	}}
+		},
+	}
+	return &agentClient{
+		http:  &http.Client{Timeout: 5 * time.Second, Transport: t},
+		reads: &http.Client{Timeout: agent.ReadDeadline + 5*time.Second, Transport: t},
+	}
 }
 
 func (a *agentClient) node(ctx context.Context) (node.Facts, error) {
@@ -166,4 +172,43 @@ func (a *agentClient) forget(ctx context.Context, name string) error {
 func (a *agentClient) meshNode(ctx context.Context) (agent.MeshStatus, error) {
 	var s agent.MeshStatus
 	return s, a.call(ctx, http.MethodGet, "/v1/mesh", nil, &s)
+}
+
+// agentRefused is the agent's no, with its reason.
+type agentRefused struct {
+	Status       int
+	Code, Detail string
+}
+
+func (e *agentRefused) Error() string {
+	return fmt.Sprintf("the agent answered %d %s: %s", e.Status, e.Code, e.Detail)
+}
+
+// readProject asks the agent to read an app's compose file as the project name, through the Compose SDK.
+func (a *agentClient) readProject(ctx context.Context, name string, compose []byte) (engine.Project, error) {
+	var p engine.Project
+	body, err := json.Marshal(map[string]string{"project": name, "compose": string(compose)})
+	if err != nil {
+		return p, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://agent/v1/projects/read", bytes.NewReader(body))
+	if err != nil {
+		return p, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := a.reads.Do(req)
+	if err != nil {
+		return p, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		e := &agentRefused{Status: resp.StatusCode}
+		var b struct{ Error, Detail string }
+		if json.NewDecoder(resp.Body).Decode(&b) != nil || resp.StatusCode/100 != 4 {
+			return p, fmt.Errorf("the agent answered %s", resp.Status)
+		}
+		e.Code, e.Detail = b.Error, b.Detail
+		return p, e
+	}
+	return p, json.NewDecoder(resp.Body).Decode(&p)
 }

@@ -8,17 +8,67 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
+	"sync/atomic"
+	"syscall"
 	"time"
 
-	_ "modernc.org/sqlite" // pure Go, so the binary stays static
+	"golang.org/x/sys/unix"
+	"modernc.org/sqlite" // pure Go, so the binary stays static
+	sqlite3 "modernc.org/sqlite/lib"
 )
 
 // ErrNotFound is returned when no row matches.
 var ErrNotFound = errors.New("not found")
 
+// ErrDiskFull is a write refused because the disk under the database is full. Nothing is lost: the write didn't
+// happen, and writes work again once there is room.
+var ErrDiskFull = errors.New("the disk that holds the database is full")
+
+// written says which write errors are a full disk, under the database's folder dir.
+func written(err error, dir string) error {
+	var se *sqlite.Error
+	if err == nil {
+		return nil
+	}
+	if errors.As(err, &se) && full(se.Code(), func() (uint64, bool) { return room(dir) }) || errors.Is(err, syscall.ENOSPC) {
+		return fmt.Errorf("%w: %w", ErrDiskFull, err)
+	}
+	return err
+}
+
+// LittleRoom is how little room left on the database's disk makes an I/O error a full disk.
+const LittleRoom = 64 << 20
+
+// full says whether an SQLite result code is a full disk: SQLITE_FULL, or an I/O error (SQLite reports ENOSPC that
+// way when it meets fsync, ftruncate or the shared-memory file) while the disk has little room left.
+func full(code int, free func() (uint64, bool)) bool {
+	switch code & 0xff {
+	case sqlite3.SQLITE_FULL:
+		return true
+	case sqlite3.SQLITE_IOERR:
+		n, ok := free()
+		return ok && n < LittleRoom
+	}
+	return false
+}
+
+// room is how many bytes an unprivileged process can still write under dir.
+func room(dir string) (uint64, bool) {
+	var st unix.Statfs_t
+	if err := unix.Statfs(dir, &st); err != nil {
+		return 0, false
+	}
+	return st.Bavail * uint64(st.Bsize), true
+}
+
 // Store is the open database.
-type Store struct{ db *sql.DB }
+type Store struct {
+	db   *sql.DB
+	dir  string // the database's folder
+	fill atomic.Bool
+}
 
 // Step is one of first-time setup's steps, as the database keeps it.
 type Step struct {
@@ -132,6 +182,34 @@ var migrations = []string{
 		what        TEXT NOT NULL,
 		resolved_at INTEGER
 	);`,
+	// Install plans: kept as they were made, never changed. A change in the household is a new plan, with a new id.
+	`CREATE TABLE plan (
+		id      TEXT PRIMARY KEY,
+		app     TEXT NOT NULL,
+		body    TEXT NOT NULL,
+		made_at INTEGER NOT NULL
+	);
+	CREATE TRIGGER plan_immutable BEFORE UPDATE ON plan
+	BEGIN SELECT RAISE(ABORT, 'a plan never changes: a change makes a new plan'); END;
+	CREATE TRIGGER plan_kept BEFORE DELETE ON plan
+	BEGIN SELECT RAISE(ABORT, 'a plan is kept: pruning old plans comes through its own path'); END;
+	CREATE TRIGGER plan_once BEFORE INSERT ON plan WHEN EXISTS (SELECT 1 FROM plan WHERE id = NEW.id)
+	BEGIN SELECT RAISE(ABORT, 'a plan is made once: the same id is the same plan'); END;`,
+	// When a link was made and a session opened and last used, by the time since boot (nanoseconds) and that boot's
+	// ID: how old they are, whatever the wall clock does (#65). Rows from before have no boot, and have ended.
+	`ALTER TABLE setup_link ADD COLUMN boot_id TEXT NOT NULL DEFAULT '';
+	ALTER TABLE setup_link ADD COLUMN made_since_boot INTEGER NOT NULL DEFAULT 0;
+	ALTER TABLE setup_session ADD COLUMN boot_id TEXT NOT NULL DEFAULT '';
+	ALTER TABLE setup_session ADD COLUMN opened_since_boot INTEGER NOT NULL DEFAULT 0;
+	ALTER TABLE setup_session ADD COLUMN seen_since_boot INTEGER NOT NULL DEFAULT 0;`,
+}
+
+// Moment is when something happened: by the wall clock, for display and audit, and by the time since the machine
+// booted, with that boot's ID, for how long ago.
+type Moment struct {
+	Wall  time.Time
+	Boot  string
+	Since time.Duration
 }
 
 // Open opens or creates the database at path, readable by its owner only, and brings its schema up to date. Steps
@@ -148,7 +226,7 @@ func Open(path string, steps []Step) (*Store, error) {
 		return nil, err
 	}
 	db.SetMaxOpenConns(1) // one writer: no "database is locked" between our own connections
-	s := &Store{db: db}
+	s := &Store{db: db, dir: filepath.Dir(path)}
 	if err := s.migrate(steps); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("opening %s: %w", path, err)
@@ -192,16 +270,32 @@ func (s *Store) migrate(steps []Step) error {
 	})
 }
 
+// FillDisk makes every later write fail as on a full disk, for tests of what a full disk looks like from outside
+// the manager. SQLite's own SQLITE_FULL is ErrDiskFull just the same (store_test.go).
+func (s *Store) FillDisk() { s.fill.Store(true) }
+
+// noRoom is what a write meets once FillDisk was called: the error the system gives on a full disk.
+func (s *Store) noRoom() error {
+	if s.fill.Load() {
+		return written(&os.PathError{Op: "write", Path: "manager.db-wal", Err: syscall.ENOSPC}, s.dir)
+	}
+	return nil
+}
+
+// tx runs fn in a write transaction.
 func (s *Store) tx(ctx context.Context, fn func(*sql.Tx) error) error {
+	if err := s.noRoom(); err != nil {
+		return err
+	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return err
+		return written(err, s.dir)
 	}
 	if err := fn(tx); err != nil {
 		_ = tx.Rollback()
-		return err
+		return written(err, s.dir)
 	}
-	return tx.Commit()
+	return written(tx.Commit(), s.dir)
 }
 
 // Steps lists setup's steps in order, with their state.
@@ -298,51 +392,113 @@ func (s *Store) Answers(ctx context.Context) (map[string]string, error) {
 }
 
 // NewLink revokes every earlier link and session, and keeps a new link's key hash.
-func (s *Store) NewLink(ctx context.Context, keyHash []byte, created, expires time.Time) error {
+func (s *Store) NewLink(ctx context.Context, keyHash []byte, made Moment, expires time.Time) error {
 	return s.tx(ctx, func(tx *sql.Tx) error {
-		now := created.UnixMilli()
+		now := made.Wall.UnixMilli()
 		if _, err := tx.ExecContext(ctx, `UPDATE setup_link SET revoked_at = ? WHERE revoked_at IS NULL`, now); err != nil {
 			return err
 		}
 		if _, err := tx.ExecContext(ctx, `UPDATE setup_session SET revoked_at = ? WHERE revoked_at IS NULL`, now); err != nil {
 			return err
 		}
-		_, err := tx.ExecContext(ctx, `INSERT INTO setup_link (key_hash, created_at, expires_at) VALUES (?, ?, ?)`,
-			keyHash, now, expires.UnixMilli())
+		_, err := tx.ExecContext(ctx, `INSERT INTO setup_link (key_hash, created_at, expires_at, boot_id, made_since_boot)
+			VALUES (?, ?, ?, ?, ?)`, keyHash, now, expires.UnixMilli(), made.Boot, int64(made.Since))
 		return err
 	})
 }
 
-// ClaimLink uses up a live link and opens a session in its place, for the client that claimed it. It returns
-// ErrNotFound when the link is unknown, already claimed, revoked or expired.
-func (s *Store) ClaimLink(ctx context.Context, keyHash, sessionHash []byte, client string, now time.Time) error {
+// Link is a one-time link as the database keeps it.
+type Link struct {
+	Made      Moment
+	ExpiresAt time.Time
+}
+
+// Link reads a link by its key's hash, or returns ErrNotFound.
+func (s *Store) Link(ctx context.Context, keyHash []byte) (Link, error) {
+	var created, expires, since int64
+	var l Link
+	err := s.db.QueryRowContext(ctx, `SELECT created_at, expires_at, boot_id, made_since_boot FROM setup_link
+		WHERE key_hash = ?`, keyHash).Scan(&created, &expires, &l.Made.Boot, &since)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Link{}, ErrNotFound
+	}
+	l.Made.Wall, l.Made.Since, l.ExpiresAt = time.UnixMilli(created).UTC(), time.Duration(since), time.UnixMilli(expires).UTC()
+	return l, err
+}
+
+// ClaimLink uses up a link that is neither claimed nor revoked, and opens a session in its place for the client that
+// claimed it. It returns ErrNotFound when the link is unknown, claimed or revoked; whether it is too old is the
+// caller's to say.
+func (s *Store) ClaimLink(ctx context.Context, keyHash, sessionHash []byte, client string, now Moment) error {
 	return s.tx(ctx, func(tx *sql.Tx) error {
 		res, err := tx.ExecContext(ctx, `UPDATE setup_link SET claimed_at = ?
-			WHERE key_hash = ? AND claimed_at IS NULL AND revoked_at IS NULL AND expires_at > ?`,
-			now.UnixMilli(), keyHash, now.UnixMilli())
+			WHERE key_hash = ? AND claimed_at IS NULL AND revoked_at IS NULL`, now.Wall.UnixMilli(), keyHash)
 		if err != nil {
 			return err
 		}
 		if n, _ := res.RowsAffected(); n != 1 {
 			return ErrNotFound
 		}
-		_, err = tx.ExecContext(ctx, `INSERT INTO setup_session (token_hash, client, created_at, last_seen) VALUES (?, ?, ?, ?)`,
-			sessionHash, client, now.UnixMilli(), now.UnixMilli())
+		_, err = tx.ExecContext(ctx, `INSERT INTO setup_session (token_hash, client, created_at, last_seen, boot_id,
+			opened_since_boot, seen_since_boot) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+			sessionHash, client, now.Wall.UnixMilli(), now.Wall.UnixMilli(), now.Boot, int64(now.Since), int64(now.Since))
 		return err
 	})
 }
 
-// TouchSession keeps a session open, if it is live, asked for by the client that opened it, last seen less than idle
-// ago and opened less than max ago. Otherwise it returns ErrNotFound.
-func (s *Store) TouchSession(ctx context.Context, tokenHash []byte, client string, now time.Time, idle, max time.Duration) error {
-	res, err := s.db.ExecContext(ctx, `UPDATE setup_session SET last_seen = ?
-		WHERE token_hash = ? AND client = ? AND revoked_at IS NULL AND last_seen > ? AND created_at > ?`,
-		now.UnixMilli(), tokenHash, client, now.Add(-idle).UnixMilli(), now.Add(-max).UnixMilli())
-	if err != nil {
+// Session is a setup session as the database keeps it.
+type Session struct {
+	Client       string
+	Opened, Seen Moment
+}
+
+// Session reads a session that wasn't revoked, by its token's hash, or returns ErrNotFound.
+func (s *Store) Session(ctx context.Context, tokenHash []byte) (Session, error) {
+	var out Session
+	var created, seen, openedSince, seenSince int64
+	err := s.db.QueryRowContext(ctx, `SELECT client, created_at, last_seen, boot_id, opened_since_boot, seen_since_boot
+		FROM setup_session WHERE token_hash = ? AND revoked_at IS NULL`, tokenHash).
+		Scan(&out.Client, &created, &seen, &out.Opened.Boot, &openedSince, &seenSince)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Session{}, ErrNotFound
+	}
+	out.Seen.Boot = out.Opened.Boot
+	out.Opened.Wall, out.Opened.Since = time.UnixMilli(created).UTC(), time.Duration(openedSince)
+	out.Seen.Wall, out.Seen.Since = time.UnixMilli(seen).UTC(), time.Duration(seenSince)
+	return out, err
+}
+
+// SeeSession records when a session was last used, in the boot it was opened in.
+func (s *Store) SeeSession(ctx context.Context, tokenHash []byte, at Moment) error {
+	if err := s.noRoom(); err != nil {
 		return err
 	}
-	if n, _ := res.RowsAffected(); n != 1 {
-		return ErrNotFound
+	_, err := s.db.ExecContext(ctx, `UPDATE setup_session SET last_seen = ?, seen_since_boot = ? WHERE token_hash = ? AND boot_id = ?`,
+		at.Wall.UnixMilli(), int64(at.Since), tokenHash, at.Boot)
+	return written(err, s.dir)
+}
+
+// SavePlan keeps a plan by its id, unless one with that id is kept already, and returns the one kept and whether it
+// is new: the same id is the same plan, made earlier.
+func (s *Store) SavePlan(ctx context.Context, id, app string, body []byte, madeAt time.Time) (kept []byte, made bool, err error) {
+	err = s.tx(ctx, func(tx *sql.Tx) error {
+		err := tx.QueryRowContext(ctx, `SELECT body FROM plan WHERE id = ?`, id).Scan(&kept)
+		if !errors.Is(err, sql.ErrNoRows) {
+			return err // kept earlier, or a failure
+		}
+		made, kept = true, body
+		_, err = tx.ExecContext(ctx, `INSERT INTO plan (id, app, body, made_at) VALUES (?, ?, ?, ?)`, id, app, string(body), madeAt.UnixMilli())
+		return err
+	})
+	return kept, made, err
+}
+
+// Plan is the plan kept with that id, or ErrNotFound.
+func (s *Store) Plan(ctx context.Context, id string) ([]byte, error) {
+	var body []byte
+	err := s.db.QueryRowContext(ctx, `SELECT body FROM plan WHERE id = ?`, id).Scan(&body)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrNotFound
 	}
-	return nil
+	return body, err
 }

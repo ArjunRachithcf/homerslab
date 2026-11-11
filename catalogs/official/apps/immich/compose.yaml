@@ -1,0 +1,60 @@
+# Immich v3.3.5, from its own compose file (docker/docker-compose.yml at v3.3.5), for HomersLab: no published ports
+# (the edge reaches the server on the app's own network), no restart policy (the app's unit restarts it), named
+# volumes, and the database password as a secret file that the unit's credentials hold.
+services:
+  server:
+    image: ghcr.io/immich-app/immich-server:v3.3.5@sha256:485d546a2e31d6a8b4db8423fcba5c109de8c218d93410af115fd1ccfc4352a6
+    environment:
+      DB_HOSTNAME: database
+      DB_USERNAME: postgres
+      DB_DATABASE_NAME: immich
+      DB_PASSWORD_FILE: /run/secrets/db-password
+      REDIS_HOSTNAME: redis
+      IMMICH_MACHINE_LEARNING_URL: http://machine-learning:3003
+    secrets: [db-password]
+    volumes:
+      - library:/data
+    depends_on:
+      database: {condition: service_healthy}
+      redis: {condition: service_healthy}
+    security_opt: [no-new-privileges:true]
+    healthcheck:
+      disable: false
+
+  machine-learning:
+    image: ghcr.io/immich-app/immich-machine-learning:v3.3.5@sha256:5b28c9352c8374b8a1ed96fbdd8d6755fea6e43510ec43fdf6538aa02ea40f56
+    volumes:
+      - model-cache:/cache
+    security_opt: [no-new-privileges:true]
+    healthcheck:
+      disable: false
+
+  redis:
+    image: docker.io/valkey/valkey:9@sha256:c123e3715db63d06d4ad6964884037aa0d5d4d703939b9929954112889708e1d
+    security_opt: [no-new-privileges:true]
+    healthcheck:
+      test: redis-cli ping | grep -q PONG || exit 1
+
+  database:
+    image: ghcr.io/immich-app/postgres:14-vectorchord0.4.3-pgvectors0.2.0@sha256:bcf63357191b76a916ae5eb93464d65c07511da41e3bf7a8416db519b40b1c23
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_DB: immich
+      POSTGRES_PASSWORD_FILE: /run/secrets/db-password
+      POSTGRES_INITDB_ARGS: --data-checksums
+    secrets: [db-password]
+    volumes:
+      - database:/var/lib/postgresql/data
+    shm_size: 128mb
+    security_opt: [no-new-privileges:true]
+    healthcheck:
+      disable: false
+
+secrets:
+  db-password:
+    file: ${CREDENTIALS_DIRECTORY}/db-password
+
+volumes:
+  library:
+  database:
+  model-cache:

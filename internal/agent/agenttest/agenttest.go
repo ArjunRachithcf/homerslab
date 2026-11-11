@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"net"
 	"net/http"
 	"net/netip"
@@ -17,7 +18,6 @@ import (
 	"path/filepath"
 	"runtime"
 	"slices"
-	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -25,13 +25,26 @@ import (
 
 	"github.com/ArjunRachithcf/homerslab/internal/agent"
 	"github.com/ArjunRachithcf/homerslab/internal/host"
+	"github.com/ArjunRachithcf/homerslab/internal/node"
 )
 
-// Primary is the system root of the invented primary in testdata/primary.
+// Primary is the system root of the invented primary in testdata/primary, with 412 GB free of 1 TB for apps' data.
 func Primary() agent.Sysroot {
 	_, self, _, _ := runtime.Caller(0)
-	return os.DirFS(filepath.Join(filepath.Dir(self), "..", "..", "..", "testdata", "primary"))
+	return WithSpace(os.DirFS(filepath.Join(filepath.Dir(self), "..", "..", "..", "testdata", "primary")), 412e9, 1e12)
 }
+
+// WithSpace is a system root whose filesystem for apps' data has that much space.
+func WithSpace(root fs.FS, free, size uint64) agent.Sysroot {
+	return space{root, node.Space{FreeBytes: free, SizeBytes: size}}
+}
+
+type space struct {
+	fs.FS
+	space node.Space
+}
+
+func (s space) Statfs(string) (node.Space, error) { return s.space, nil }
 
 // Start runs an agent reading sysroot until the test ends, and returns its socket.
 func Start(t testing.TB, sysroot agent.Sysroot) string {
@@ -65,9 +78,6 @@ func StartWith(t testing.TB, c agent.Config) (string, *Host) {
 	if c.IsBridge == nil {
 		c.IsBridge = h.IsBridge
 	}
-	if c.Proc == "" {
-		c.Proc = filepath.Join(h.Root, "proc")
-	}
 	if c.Resolve == nil {
 		c.Resolve = func(context.Context, string) ([]string, error) { return []string{"192.0.2.1"}, nil }
 	}
@@ -89,6 +99,9 @@ func StartWith(t testing.TB, c agent.Config) (string, *Host) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
+	if c.Executable == "" {
+		c.Executable = Executable(t)
+	}
 	go func() { done <- agent.Serve(ctx, c) }()
 	t.Cleanup(func() {
 		cancel()
@@ -122,8 +135,16 @@ type Host struct {
 	// Edge is the node's edge: Caddy's admin API, as a stand-in.
 	Edge *Edge
 	pid  int // NetBird's main process, 0 while it doesn't run
-	// restartedWith is NetBird's drop-in as it was when the service last restarted: the running service's environment.
+	// restartedWith is NetBird's drop-in as systemd had it loaded when the service last restarted: the running
+	// service's environment. started is when its main process started; loaded is the drop-in as systemd last loaded
+	// it (daemon-reload), and listed whether systemd lists it among the unit's drop-ins. The agent can't read the
+	// running process's environment (its /proc entry is a root process with every capability), so it asks systemd.
 	restartedWith []byte
+	started       time.Time
+	loaded        []byte
+	listed        bool
+	ignored       bool              // systemd doesn't apply the drop-in to the unit
+	showFails     bool              // systemd is older than 248: `systemctl show --timestamp=us+utc` fails
 	docker        map[string]string // the engine's bridge networks: ID → the bridge's name option ("" for none)
 	notBridges    map[string]bool   // names the engines give that the kernel doesn't show as bridges
 	block         bool              // the engines and systemd never answer
@@ -239,21 +260,18 @@ func (h *Host) Run(ctx context.Context, c host.Cmd) ([]byte, error) {
 	case line == "systemctl restart homerslab-edge.service" && h.Edge != nil:
 		h.Edge.Restart()
 		return nil, nil
+	case line == "systemctl daemon-reload":
+		h.loaded, h.listed = h.dropInAt[line], h.dropInAt[line] != nil && !h.ignored
+		return nil, nil
 	case line == "systemctl restart netbird.service" || line == "systemctl --no-block restart netbird.service":
-		h.restartedWith = h.dropInAt[line]
-		env := ""
-		for _, l := range strings.Split(string(h.restartedWith), "\n") {
-			if v, ok := strings.CutPrefix(l, "Environment="); ok {
-				env += v + "\x00"
-			}
-		}
+		h.restartedWith, h.started = h.loaded, time.Now()
 		h.pid++
-		if err := os.MkdirAll(filepath.Join(h.Root, "proc", strconv.Itoa(h.pid)), 0o755); err != nil {
-			return nil, err
+		return nil, nil
+	case line == "systemctl show netbird.service --timestamp=us+utc --property=DropInPaths,NeedDaemonReload,ExecMainStartTimestamp":
+		if h.showFails {
+			return nil, &host.Error{Cmd: line, Err: errors.New("unrecognized option '--timestamp=us+utc'")}
 		}
-		return nil, os.WriteFile(filepath.Join(h.Root, "proc", strconv.Itoa(h.pid), "environ"), []byte("PATH=/usr/bin\x00"+env), 0o644)
-	case line == "systemctl show netbird.service --property=MainPID --value":
-		return fmt.Appendf(nil, "%d\n", h.pid), nil
+		return h.showNetBird(), nil
 	case line == "systemctl show -p ActiveState -p LoadState docker.service":
 		active, load := h.dockerActive, h.dockerLoad
 		if active == "" {
@@ -298,6 +316,29 @@ func (h *Host) Run(ctx context.Context, c host.Cmd) ([]byte, error) {
 	return nil, &host.Error{Cmd: line, Err: errors.New("not something this test's machine does")}
 }
 
+// showNetBird is `systemctl show netbird.service` for the drop-ins, whether a reload is due, and when the main process
+// started, as systemd writes them.
+func (h *Host) showNetBird() []byte {
+	var b strings.Builder
+	path := "/etc/systemd/system/netbird.service.d/10-homerslab.conf"
+	file, err := os.ReadFile(filepath.Join(h.Root, path))
+	fmt.Fprintf(&b, "ExecMainStartTimestamp=")
+	if h.pid > 0 {
+		b.WriteString(h.started.UTC().Format("Mon 2006-01-02 15:04:05.000000 MST"))
+	}
+	b.WriteString("\nDropInPaths=")
+	if h.listed {
+		b.WriteString(path)
+	}
+	// systemd notices a unit file changed on disk since it loaded it.
+	if !h.ignored && (err == nil) != h.listed || err == nil && string(file) != string(h.loaded) {
+		b.WriteString("\nNeedDaemonReload=yes\n")
+	} else {
+		b.WriteString("\nNeedDaemonReload=no\n")
+	}
+	return []byte(b.String())
+}
+
 // Cmds are the commands the agent ran, in order.
 func (h *Host) Cmds() []host.Cmd {
 	h.mu.Lock()
@@ -334,26 +375,65 @@ func (h *Host) Table() (string, bool) {
 	return h.table, h.hasTable
 }
 
-// RestartNetBirdWithoutItsDropIn stands for someone removing the drop-in and restarting NetBird's service.
+// RestartNetBirdWithoutItsDropIn stands for someone removing the drop-in, reloading systemd and restarting NetBird's
+// service.
 func (h *Host) RestartNetBirdWithoutItsDropIn() {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	_ = os.Remove(filepath.Join(h.Root, "etc/systemd/system/netbird.service.d/10-homerslab.conf"))
-	h.restartedWith = nil
+	h.loaded, h.listed, h.restartedWith, h.started = nil, false, nil, time.Now()
 	h.pid++
-	_ = os.MkdirAll(filepath.Join(h.Root, "proc", strconv.Itoa(h.pid)), 0o755)
-	_ = os.WriteFile(filepath.Join(h.Root, "proc", strconv.Itoa(h.pid), "environ"), []byte("PATH=/usr/bin\x00"), 0o644)
 }
 
-// RestartNetBirdBeforeItsDropIn stands for NetBird's service restarted with an environment of its own: the drop-in is
-// there, but the running service doesn't have it.
+// RestartNetBirdBeforeItsDropIn stands for NetBird's service running without the drop-in's environment, though the
+// drop-in is there: it started before the drop-in's last write (someone wrote it again, but nobody restarted it).
 func (h *Host) RestartNetBirdBeforeItsDropIn() {
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	path := filepath.Join(h.Root, "etc/systemd/system/netbird.service.d/10-homerslab.conf")
 	h.restartedWith = nil
 	h.pid++
-	_ = os.MkdirAll(filepath.Join(h.Root, "proc", strconv.Itoa(h.pid)), 0o755)
-	_ = os.WriteFile(filepath.Join(h.Root, "proc", strconv.Itoa(h.pid), "environ"), []byte("PATH=/usr/bin\x00"), 0o644)
+	h.started = time.Now().Add(-time.Minute)
+	_ = os.Chtimes(path, time.Now(), time.Now())
+}
+
+// NetBirdLoadedAnOlderDropIn stands for systemd running NetBird with a drop-in it loaded before the file on disk was
+// written as it is now, and not reloaded since: the file is right, but the service runs with the old one.
+func (h *Host) NetBirdLoadedAnOlderDropIn() {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.loaded, h.listed = []byte("[Service]\nEnvironment=NB_SOMETHING_ELSE=1\n"), true
+	h.restartedWith, h.started = h.loaded, time.Now().Add(time.Minute)
+	h.pid++
+}
+
+// NetBirdIgnoresItsDropIn stands for systemd not applying the drop-in to the unit NetBird runs as (another unit's
+// name, say): systemd lists no drop-in, though the file is there and nothing waits for a reload.
+func (h *Host) NetBirdIgnoresItsDropIn() {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.loaded, _ = os.ReadFile(filepath.Join(h.Root, "etc/systemd/system/netbird.service.d/10-homerslab.conf"))
+	h.listed, h.ignored = false, true
+	h.restartedWith, h.started = nil, time.Now().Add(time.Minute)
+	h.pid++
+}
+
+// NetBirdSystemdTooOld stands for systemd older than 248, which refuses `systemctl show --timestamp=us+utc`.
+func (h *Host) NetBirdSystemdTooOld() {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.showFails = true
+}
+
+// NetBirdRestarts is how often NetBird's service was restarted.
+func (h *Host) NetBirdRestarts() int {
+	n := 0
+	for _, c := range h.Cmds() {
+		if l := c.String(); l == "systemctl restart netbird.service" || l == "systemctl --no-block restart netbird.service" {
+			n++
+		}
+	}
+	return n
 }
 
 // Tamper changes the firewall table behind the agent's back: "missing" deletes it, anything else edits it.
@@ -365,6 +445,51 @@ func (h *Host) Tamper(how string) {
 		return
 	}
 	h.table = string(bytes.Replace([]byte(h.table), []byte("policy drop"), []byte("policy accept"), 1))
+}
+
+// Main runs a test binary's tests, or, when the agent started it as a compose read's child, that read: the agent
+// starts reads by running its own executable, which in a test is the test binary. Every package whose tests run an
+// agent that reads calls it from TestMain.
+func Main(m *testing.M) {
+	if len(os.Args) > 2 && os.Args[1] == "agent" && os.Args[2] == "read-project" {
+		os.Exit(agent.ReadProjectMain(os.Args[3:], os.Stdin, os.Stdout))
+	}
+	os.Exit(m.Run())
+}
+
+var (
+	copied     sync.Once
+	copiedPath string
+	copiedErr  error
+)
+
+// Executable is the program an agent in a test runs as a compose read's child: this test binary. Run as root, the
+// child starts as nobody, who can't reach a test binary in Go's private build folder, so the binary is copied once
+// to a folder everyone may read.
+func Executable(t testing.TB) string {
+	t.Helper()
+	if os.Geteuid() != 0 {
+		return os.Args[0]
+	}
+	copied.Do(func() {
+		dir, err := os.MkdirTemp("", "homerslab-test-exe-")
+		if err == nil {
+			err = os.Chmod(dir, 0o755)
+		}
+		var b []byte
+		if err == nil {
+			b, err = os.ReadFile(os.Args[0])
+		}
+		if err == nil {
+			copiedPath = filepath.Join(dir, filepath.Base(os.Args[0]))
+			err = os.WriteFile(copiedPath, b, 0o755)
+		}
+		copiedErr = err
+	})
+	if copiedErr != nil {
+		t.Fatal(copiedErr)
+	}
+	return copiedPath
 }
 
 // Edge stands in for Caddy's admin API on the edge's socket: it takes a configuration at /load and gives it back at

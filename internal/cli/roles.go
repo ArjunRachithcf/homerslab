@@ -22,6 +22,7 @@ import (
 	"github.com/ArjunRachithcf/homerslab/internal/certs"
 	"github.com/ArjunRachithcf/homerslab/internal/lan"
 	"github.com/ArjunRachithcf/homerslab/internal/manager"
+	"github.com/ArjunRachithcf/homerslab/internal/node"
 )
 
 func runAgent(ctx context.Context, args []string, env Env) error {
@@ -40,7 +41,7 @@ func runAgent(ctx context.Context, args []string, env Env) error {
 	}
 	log := slog.New(slog.NewTextHandler(env.Stderr, nil))
 	log.Info("agent starting", "socket", *socket, "euid", env.Euid())
-	return agent.Serve(ctx, agent.Config{Socket: *socket, SocketGID: gid, Sysroot: os.DirFS(*sysroot), Root: "/",
+	return agent.Serve(ctx, agent.Config{Socket: *socket, SocketGID: gid, Sysroot: node.Dir(*sysroot), Root: "/",
 		StateDir: *state, SetupPort: *setupPort, Log: log})
 }
 
@@ -86,15 +87,7 @@ func runManager(ctx context.Context, args []string, env Env) error {
 	}
 	defer controlLn.Close()
 	bound := netip.MustParseAddrPort(setupLn.Addr().String())
-	lanAddress := func() netip.Addr { return lan.Current().Address() } // the manager caches it
-	if h := bound.Addr(); !h.IsUnspecified() {
-		lanAddress = func() netip.Addr { // listening on one address: the links use it, unless it's loopback
-			if h.IsLoopback() {
-				return netip.Addr{}
-			}
-			return h
-		}
-	}
+	lanAddress := linkAddress(bound.Addr(), lan.Current) // the manager caches it
 	log := slog.New(slog.NewTextHandler(env.Stderr, nil))
 	adminLn, err := adminListener(*adminSocket)
 	if err != nil {
@@ -111,6 +104,20 @@ func runManager(ctx context.Context, args []string, env Env) error {
 	defer m.Close()
 	log.Info("manager starting", "setup", setupLn.Addr(), "control", *control, "admin", adminLn != nil, "certificateAuthority", authority.Directory)
 	return m.Serve(ctx, setupLn, controlLn, adminLn)
+}
+
+// linkAddress is this machine's address for the links, for a setup listener bound to h: h itself unless it is
+// loopback, or for an unspecified h, the LAN's best address in the families h answers.
+func linkAddress(h netip.Addr, current func() lan.LAN) func() netip.Addr {
+	if h.IsUnspecified() {
+		return func() netip.Addr { return current().AddressFor(h) }
+	}
+	return func() netip.Addr {
+		if h.IsLoopback() {
+			return netip.Addr{}
+		}
+		return h
+	}
 }
 
 // loopbackOf is the loopback address a listener bound to addr answers on, or the zero Addr.

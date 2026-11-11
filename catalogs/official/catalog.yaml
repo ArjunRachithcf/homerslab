@@ -1,0 +1,7 @@
+# HomersLab's official catalog. Signing it, and checking its signature, come with their own slice (#42).
+id: official
+name: The official catalog
+publisher: HomersLab
+categories:
+  - {id: photos, name: Photos and videos}
+  - {id: documents, name: Documents and files}

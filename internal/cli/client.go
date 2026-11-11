@@ -37,9 +37,19 @@ func newControlWaiting(socket string, timeout time.Duration) *control {
 type apiError struct {
 	Status int
 	Code   string `json:"error"`
+	Folder string `json:"folder"` // with disk-full: the folder of the manager's database
 }
 
-func (e *apiError) Error() string { return fmt.Sprintf("the manager answered %d %s", e.Status, e.Code) }
+func (e *apiError) Error() string {
+	if e.Code == "disk-full" {
+		where := e.Folder
+		if where == "" {
+			where = "the manager's database"
+		}
+		return fmt.Sprintf("The disk that holds %s is full: free some space and try again", where)
+	}
+	return fmt.Sprintf("the manager answered %d %s", e.Status, e.Code)
+}
 
 // do sends a request and decodes the JSON answer into v; with wait, it waits that long for the manager to start.
 func (c *control) do(ctx context.Context, method, path string, wait time.Duration, v any) ([]byte, error) {
