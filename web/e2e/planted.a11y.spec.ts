@@ -126,6 +126,18 @@ const plants: {
     html: '<p id="planted-quote">“<span id="planted-quoted">Quoted</span> words”</p>', sheet: '#planted-quote::first-letter { color: #eee; }' },
   { name: 'a first letter in its own colour, set on the block around', look: { theme: 'light', motion: 'reduce', transparency: 'reduce' },
     html: '<div id="planted-outer-letter"><p hidden>Hidden</p><div><p id="planted-inner-letter">First letter inside</p></div></div>', sheet: '#planted-outer-letter::first-letter { color: #eee; }' },
+  // a line under an opaque white ::after, set solid under a line whose descenders reach into its box: they show
+  // there, but they aren't its glyphs
+  { name: 'words under a cover, below descenders', look: { theme: 'light', motion: 'reduce', transparency: 'reduce' },
+    html: '<div id="planted-tight"><p id="planted-descenders">gypsy jiggy query</p><p id="planted-below">Covered below</p></div>',
+    sheet: '#planted-tight p { margin: 0; line-height: 1; color: #000; } #planted-below { position: relative; } ' +
+      '#planted-below::after { content: ""; position: absolute; inset: 0; background: #fff; pointer-events: none; }' },
+  // a badge out of the flow, above the block, comes first in it but starts no line: the words after it do
+  ...(['first-line', 'first-letter'] as const).map((pseudo) => ({
+    name: `a ${pseudo.replace('-', ' ')} in its own colour, after a badge out of the flow`, look: { theme: 'light', motion: 'reduce', transparency: 'reduce' } as Look,
+    html: `<div id="planted-badged-${pseudo}"><span class="badge">Badge</span><p id="planted-after-badge-${pseudo}">Words after a badge</p></div>`,
+    sheet: `#planted-badged-${pseudo} { position: relative; margin-top: 60px; } #planted-badged-${pseudo} .badge { position: absolute; top: -40px; left: 0; } ` +
+      `#planted-badged-${pseudo}::${pseudo} { color: #eee; }` })),
   // large text needs 3:1, and gets no more slack: 3.2:1 passes at 24px (setup.a11y.spec.ts), and fails at 18px
   { name: 'words at 3.2:1 below large', look: { theme: 'light', motion: 'reduce', transparency: 'reduce' },
     html: '<p id="planted-small">Not quite large</p>', css: [['#planted-small', 'font-size', '18px'], ['#planted-small', 'color', '#909090']] }, // 3.19:1 on white

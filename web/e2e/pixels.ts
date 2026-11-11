@@ -178,9 +178,17 @@ export function textRuns(task: { scrollTo?: string; unfade?: number[] } | null):
       r.selectNodeContents(t);
       return r.getClientRects()[0];
     };
-    // the texts in a block that it shows, in order
-    const shownTexts = (block: Element) => document.createTreeWalker(block, NodeFilter.SHOW_TEXT,
-      { acceptNode: (n) => (/\S/.test((n as Text).data) && lineOf(n as Text) ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_SKIP) });
+    // the texts in a block that it shows in its lines, in order: not those in a box out of its flow (positioned
+    // absolutely or fixed, or floated), which starts no line of the block's
+    const inFlow = (t: Text, block: Element) => {
+      for (let e: Element | null = t.parentElement; e && e !== block; e = up(e)) {
+        const s = css(e);
+        if (s.position === 'absolute' || s.position === 'fixed' || s.float !== 'none') return false;
+      }
+      return true;
+    };
+    const shownTexts = (block: Element) => document.createTreeWalker(block, NodeFilter.SHOW_TEXT, { acceptNode: (n) =>
+      (/\S/.test((n as Text).data) && lineOf(n as Text) && inFlow(n as Text, block) ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_SKIP) });
     const firstTexts = new Map<Element, Text | null>();
     const firstText = (block: Element) => {
       if (!firstTexts.has(block)) firstTexts.set(block, shownTexts(block).nextNode() as Text | null);
@@ -558,26 +566,39 @@ export function worstPatch(contrast: Float64Array, width: number, height: number
 /**
  * How much of a glyph's change a word's box must show to count as showing: a cover that lets less through (a veil of
  * white at 60%, a grey that screens) dims the words, by an amount nobody can tell from the shots, so they fail as not
- * measured. 0.9, so that a glyph's antialiased pixels still find one that shows.
+ * measured. 0.98: every word on first-time setup's screens shows at least 0.996 of it (the sentinel is stroked, so a
+ * dot has pixels it covers whole).
  */
-export const SHOWS = 0.9;
+export const SHOWS = 0.98;
+
+/** Whether a box is a box of a text's words (`<run>:<offset>.<line>`), not a field's content box or CSS content's. */
+export const wordBox = (b: Box): boolean => /^\d+:\d+\.\d+$/.test(b.key);
 
 /**
  * Whether a word's glyphs show in its box: in `marked` (the area shot with every glyph in SENTINEL) some pixel differs
  * from `shot` (the glyphs hidden) by at least SHOWS of what the sentinel, faded as the word is, would change it by
  * there, from what the word is painted on: the pixel in `unfaded` (the area shot with the word's faded group opaque),
  * or in `shot`. Glyphs under something drawn over them, opaque or not, don't show, whatever hit-testing says (one
- * pixel decides: a cover over only part of the box isn't seen). null when the background, or the part of it that
- * doesn't show them, is near the sentinel's colour, and nothing can be told.
+ * pixel decides: a cover over only part of the box isn't seen). Pixels in `others` (other words' boxes, in the same
+ * CSS pixels as `box`), or within 1px of them, where the sentinel's 2px stroke reaches, show those words' glyphs, not
+ * this one's: they say nothing. null when the background, or the part of it that doesn't show them, is near the
+ * sentinel's colour, or every pixel is another word's, and nothing can be told.
  */
-export function glyphsShow(shot: Shot, marked: Shot, box: Box, fade: number, dpr: number, unfaded?: Shot): boolean | null {
+export function glyphsShow(shot: Shot, marked: Shot, box: Box, fade: number, dpr: number, unfaded?: Shot, others: readonly Box[] = []): boolean | null {
   const [x0, y0] = [Math.max(0, Math.round(box.x * dpr)), Math.max(0, Math.round(box.y * dpr))];
   const [x1, y1] = [Math.min(shot.width, Math.round((box.x + box.w) * dpr)), Math.min(shot.height, Math.round((box.y + box.h) * dpr))];
   const own = unfaded ?? shot;
-  let [most, far, n, near] = [0, 0, 0, false];
+  const theirs = others.map((b) => [Math.floor((b.x - 1) * dpr), Math.floor((b.y - 1) * dpr),
+    Math.ceil((b.x + b.w + 1) * dpr), Math.ceil((b.y + b.h + 1) * dpr)] as const).filter(([l, t, r, b]) => l < x1 && r > x0 && t < y1 && b > y0);
+  let [most, far, n, mine, near] = [0, 0, 0, 0, false];
   for (let y = y0; y < y1; y++) {
     for (let x = x0; x < x1; x++) {
       const o = (y * shot.width + x) * 4;
+      far += Math.abs((SENTINEL[0] ?? 0) - (own.rgba[o] ?? 0)) + Math.abs((SENTINEL[1] ?? 0) - (own.rgba[o + 1] ?? 0)) +
+        Math.abs((SENTINEL[2] ?? 0) - (own.rgba[o + 2] ?? 0));
+      n++;
+      if (theirs.some(([l, t, r, b]) => x >= l && x < r && y >= t && y < b)) continue;
+      mine++;
       let [moved, away] = [0, 0];
       for (let c = 0; c < 3; c++) {
         moved += Math.abs((marked.rgba[o + c] ?? 0) - (shot.rgba[o + c] ?? 0));
@@ -586,10 +607,8 @@ export function glyphsShow(shot: Shot, marked: Shot, box: Box, fade: number, dpr
       // nearer the sentinel's colour, the change says little
       if (away >= 60) most = Math.max(most, moved / away);
       else near = true;
-      far += away;
-      n++;
     }
   }
-  if (!n || far / n < 60) return null;
+  if (!n || far / n < 60 || !mine) return null;
   return most >= SHOWS * fade ? true : near ? null : false;
 }

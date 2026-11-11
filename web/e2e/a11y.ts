@@ -6,7 +6,7 @@
 // each element; axe's findings and the contrasts measured are attached to the HTML report.
 import AxeBuilder from '@axe-core/playwright';
 import { expect, type Page, test } from '@playwright/test';
-import { boxContrast, COVERED, decodePng, glyphsShow, hideWords, needed, PATCH, refade, type Shot, type TextRun, textRuns } from './pixels';
+import { boxContrast, COVERED, decodePng, glyphsShow, hideWords, needed, PATCH, refade, type Shot, type TextRun, textRuns, wordBox } from './pixels';
 
 // axe-core's types, as the AxeBuilder in use has them (axe-core itself is its dependency, not ours)
 type AxeResults = Awaited<ReturnType<AxeBuilder['analyze']>>;
@@ -170,9 +170,11 @@ export async function legible(page: Page, glass?: Glass): Promise<{ runs: Measur
         } finally {
           await page.evaluate(hideWords, 'hide' as const);
         }
+        // every word's box where it is now, in the shot: their glyphs (stroked in the sentinel) are not each other's
+        const words = runs.flatMap((r) => r.boxes.filter(wordBox).map((b) => ({ ...b, x: b.x - left, y: b.y - top })));
         for (const [r, b] of now) {
           const at = { ...b, x: b.x - left, y: b.y - top };
-          const shows = glyphsShow(shot, marked, at, r.fade, shot.width / clip.width, r.fade < 1 ? unfaded : undefined);
+          const shows = glyphsShow(shot, marked, at, r.fade, shot.width / clip.width, r.fade < 1 ? unfaded : undefined, words.filter((w) => w.key !== b.key));
           if (shows !== true) {
             unmeasured.set(b.key, shows === null ? 'on a background near the sentinel’s colour, so nobody can tell whether its glyphs show' : COVERED);
             pending.delete(b.key);

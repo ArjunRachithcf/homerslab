@@ -42,7 +42,7 @@ const marked = (ground: RGB, through: number): [Shot, Shot] =>
 test('glyphsShow: glyphs show when the sentinel’s change comes through, all of it, faded as the word is', () => {
   const white: RGB = [255, 255, 255];
   expect(glyphsShow(...marked(white, 1), whole, 1, 1)).toBe(true);
-  expect(glyphsShow(...marked(white, 0.95), whole, 1, 1), 'a glyph’s edge, antialiased').toBe(true);
+  expect(glyphsShow(...marked(white, 0.99), whole, 1, 1), 'nearly all of it').toBe(true);
   expect(glyphsShow(...marked(white, 0.35), whole, 0.35, 1), 'faded to 0.35').toBe(true);
   // in a faded group with a colour of its own, the glyph changes from the group's own pixel (the unfaded shot), not
   // from the screen's: a pink group at 0.5 over green
@@ -56,7 +56,7 @@ test('glyphsShow: glyphs under a cover that lets part of them through don’t sh
   const white: RGB = [255, 255, 255];
   // black words under white at 60% (rgba, or opacity), or under #999 that screens: 40% of the sentinel's change
   expect(glyphsShow(...marked(white, 0.4), whole, 1, 1), 'under a cover at 60%').toBe(false);
-  expect(glyphsShow(...marked(white, 0.85), whole, 1, 1), 'under a cover at 15%').toBe(false);
+  expect(glyphsShow(...marked(white, 0.95), whole, 1, 1), 'under a cover at 5%').toBe(false);
   expect(glyphsShow(...marked(white, 0.3), whole, 0.5, 1), 'faded to 0.5, under a cover at 40%').toBe(false);
   expect(glyphsShow(...marked(white, 0), whole, 1, 1), 'under an opaque cover').toBe(false);
   expect(glyphsShow(...marked(SENTINEL, 1), whole, 1, 1), 'on the sentinel’s colour').toBe(null);
@@ -64,4 +64,16 @@ test('glyphsShow: glyphs under a cover that lets part of them through don’t sh
   const pink: RGB = [255, 51, 255];
   const badge = (x: number): RGB => (x < 20 ? pink : white);
   expect(glyphsShow(shot(badge), shot((x) => (glyph(x) && x < 20 ? mix(pink, SENTINEL, 1) : badge(x))), whole, 1, 1), 'on a pink badge').toBe(null);
+});
+
+test('glyphsShow: what shows in another word’s box, or within 1px of it, is that word’s', () => {
+  const white: RGB = [255, 255, 255];
+  // the box's own glyphs covered; the sentinel shows only in its top 3 rows, a line above's descenders
+  const [hidden, descenders] = [shot(() => white), shot((x, y) => (glyph(x) && y < 3 ? SENTINEL : white))];
+  expect(glyphsShow(hidden, descenders, whole, 1, 1), 'nothing says whose they are').toBe(true);
+  const above = { ...whole, key: '1:0.0', y: -10, h: 13 }; // its box down to row 2
+  expect(glyphsShow(hidden, descenders, whole, 1, 1, undefined, [above]), 'the line above’s').toBe(false);
+  expect(glyphsShow(hidden, descenders, whole, 1, 1, undefined, [{ ...above, h: 12 }]), 'within 1px of the line above').toBe(false);
+  expect(glyphsShow(hidden, descenders, whole, 1, 1, undefined, [{ ...above, h: 11 }]), '2px from the line above').toBe(true);
+  expect(glyphsShow(hidden, descenders, whole, 1, 1, undefined, [{ ...whole, key: '1:0.0' }]), 'all of it another word’s').toBe(null);
 });

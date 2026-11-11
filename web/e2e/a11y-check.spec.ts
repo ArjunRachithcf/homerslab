@@ -60,10 +60,10 @@ test('a rule’s paragraph ends with its error', () => {
 });
 
 test('accessible() fails the test, naming the screen and the rule', async () => {
-  test.setTimeout(180_000); // a Playwright inside a Playwright, with 33 planted tests
+  test.setTimeout(180_000); // a Playwright inside a Playwright, with 36 planted tests
   const out = await mkdtemp(path.join(tmpdir(), 'homerslab-planted-'));
   try {
-    // this worker's own Playwright variables stay out of the child's environment; three workers for 33 tests
+    // this worker's own Playwright variables stay out of the child's environment; three workers for 36 tests
     const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => !/^(TEST_|PW_)/.test(k)));
     const child = await playwright(['test', 'e2e/planted.a11y.spec.ts', '--project', test.info().project.name,
       '--reporter', 'json', '--output', out, '--retries', '0', '--workers', '3'], { ...env, HOMERSLAB_PLANTED: '1' },
@@ -123,6 +123,10 @@ test('accessible() fails the test, naming the screen and the rule', async () => 
         { check: pixelCheck, says: new RegExp(`\\n\\s*- p#planted-veiled-${i} “Under a veil”: not measured, \\d+ words?: ${COVERED}`) }]),
       ['planted: a first line in its own colour, set on the block around', { check: pixelCheck,
         says: /\n\s*- p#planted-inner-line “First line inside”: not measured, \d+ words?: its first line has a colour of its own \(::first-line\)/ }],
+      ['planted: words under a cover, below descenders', { check: pixelCheck,
+        says: new RegExp(`\\n\\s*- p#planted-below “Covered below”: not measured, \\d+ words?: ${COVERED}`) }],
+      ...(['first-line', 'first-letter'] as const).map((pseudo): [string, Expected] => [`planted: a ${pseudo.replace('-', ' ')} in its own colour, after a badge out of the flow`,
+        { check: pixelCheck, says: new RegExp(`\\n\\s*- p#planted-after-badge-${pseudo} “Words after a badge”: not measured, \\d+ words?: its ${pseudo.replace('-', ' ')} has a colour of its own \\(::${pseudo}\\)`) }]),
       ['planted: a first letter in its own colour, after a quotation mark', { check: pixelCheck,
         says: /\n\s*- span#planted-quoted “Quoted”: not measured, \d+ words?: its first letter has a colour of its own \(::first-letter\)/ }],
       ['planted: a first letter in its own colour, set on the block around', { check: pixelCheck,
