@@ -252,6 +252,7 @@ func TestAdminTakesChangesOnlyFromItsOwnPage(t *testing.T) {
 	}{
 		"another site's post":    {func(r *http.Request) { r.Header.Set("Origin", "https://evil.example") }, http.StatusForbidden, "cross-origin"},
 		"Admin's name over HTTP": {func(r *http.Request) { r.Header.Set("Origin", "http://admin.ferreira.family") }, http.StatusForbidden, "cross-origin"},
+		"no Origin at all":       {func(r *http.Request) { r.Header.Del("Origin") }, http.StatusForbidden, "cross-origin"},
 		"a cross-site fetch":     {func(r *http.Request) { r.Header.Set("Sec-Fetch-Site", "cross-site") }, http.StatusForbidden, "cross-origin"},
 		"a form, not JSON":       {func(r *http.Request) { r.Header.Set("Content-Type", "text/plain") }, http.StatusUnsupportedMediaType, "not-json"},
 		"another name":           {func(r *http.Request) { r.Host = "photos.ferreira.family" }, http.StatusMisdirectedRequest, "wrong-host"},

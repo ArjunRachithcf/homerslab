@@ -281,9 +281,10 @@ func TestAReadRunsConfinedAndRefusesWorkFast(t *testing.T) {
 	if os.Geteuid() == 0 && (c.UID != 65534 || c.GID != 65534 || c.Groups != "") {
 		t.Errorf("the child ran as uid %d, gid %d, groups %q; want nobody (65534) and no groups", c.UID, c.GID, c.Groups)
 	}
-	want := map[string]uint64{"core": 0, "cpu": 5, "files": 32, "fileSize": 1 << 20}
-	if _, ok := c.Limits["addressSpace"]; ok {
-		want["addressSpace"] = 3 << 29
+	// the CPU limit is soft at 5 s, and the hard one a second later, so the child is told before it is killed
+	want := map[string]uint64{"core": 0, "cpu": 5, "cpuHard": 6, "files": 32, "fileSize": 1 << 20}
+	if _, ok := c.Limits["data"]; ok || !agent.RaceDetector {
+		want["data"] = 384 << 20
 	}
 	for k, v := range want {
 		if got, ok := c.Limits[k]; !ok || got != v {
@@ -321,10 +322,12 @@ func TestAReadsEndingIsSaid(t *testing.T) {
 		status int
 		code   string
 	}{
-		"its CPU limit":       {"cat >/dev/null; kill -XCPU $$", http.StatusGatewayTimeout, "read-timeout"},
-		"Go's out of memory":  {"cat >/dev/null; echo 'fatal error: runtime: out of memory' >&2; exit 2", http.StatusUnprocessableEntity, "read-too-big"},
-		"the kernel's kill":   {"cat >/dev/null; kill -KILL $$", http.StatusUnprocessableEntity, "read-too-big"},
-		"a reader that broke": {"cat >/dev/null; echo broken >&2; exit 3", http.StatusInternalServerError, "no-reader"},
+		"its CPU limit":        {"cat >/dev/null; kill -XCPU $$", http.StatusGatewayTimeout, "read-timeout"},
+		"Go told of its limit": {"cat >/dev/null; echo 'SIGXCPU: CPU time limit exceeded' >&2; exit 2", http.StatusGatewayTimeout, "read-timeout"},
+		"a real CPU limit":     {"cat >/dev/null; ulimit -S -t 1; while :; do :; done", http.StatusGatewayTimeout, "read-timeout"},
+		"Go's out of memory":   {"cat >/dev/null; echo 'fatal error: runtime: out of memory' >&2; exit 2", http.StatusUnprocessableEntity, "read-too-big"},
+		"the kernel's kill":    {"cat >/dev/null; kill -KILL $$", http.StatusUnprocessableEntity, "read-too-big"},
+		"a reader that broke":  {"cat >/dev/null; echo broken >&2; exit 3", http.StatusInternalServerError, "no-reader"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			agent.ShellReads(t, 5*time.Second, c.script)

@@ -30,3 +30,6 @@ func ChildCommand(ctx context.Context, exe, dir, name string, cpuSeconds int) *e
 
 // ChildDir is a read's own folder, as the agent makes it.
 func ChildDir() (string, error) { return childDir() }
+
+// RaceDetector says whether the tests run under the race detector, which the child's memory limit leaves alone.
+const RaceDetector = raceDetector

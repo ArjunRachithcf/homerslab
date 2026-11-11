@@ -231,6 +231,17 @@ func deepBlock(n int) string {
 	return b.String()
 }
 
+// utsWeb is 64 services, each sharing the UTS namespace of the one before it and the network of the one before that:
+// Compose counts both as dependencies.
+func utsWeb() string {
+	var b strings.Builder
+	b.WriteString("services:\n  s0: {image: x}\n  s1: {image: x, uts: 'service:s0'}\n")
+	for i := 2; i < 64; i++ {
+		fmt.Fprintf(&b, "  s%d: {image: x, uts: 'service:s%d', network_mode: 'service:s%d'}\n", i, i-1, i-2)
+	}
+	return b.String()
+}
+
 // fib is n services, each depending on the two before it: few references, but a number of dependency paths that grows
 // like the Fibonacci numbers.
 func fib(n int) string {
@@ -253,14 +264,15 @@ func TestAProjectThatMultipliesItsWorkIsRefusedFast(t *testing.T) {
 		fmt.Fprintf(&bomb, "      - \"10.0.0.%d:1-65535:1-65535\"\n", i)
 	}
 	for name, file := range map[string]string{
-		"20 port ranges":         bomb.String(),
-		"one port range":         "services: {s: {image: x, ports: ['1-65535:1-65535']}}\n",
-		"a long-form port range": "services: {s: {image: x, ports: [{target: 80, published: '8000-9000'}]}}\n",
-		"a target range":         "services: {s: {image: x, ports: [{target: '1-65535'}]}}\n",
-		"an exposed range":       "services: {s: {image: x, expose: ['1-65535']}}\n",
-		"a Fibonacci depends_on": fib(64),
-		"a Fibonacci with links": strings.ReplaceAll(fib(64), "depends_on", "links"),
-		"a cycle":                "services: {a: {image: x, depends_on: [b]}, b: {image: x, depends_on: [a]}}\n",
+		"20 port ranges":             bomb.String(),
+		"one port range":             "services: {s: {image: x, ports: ['1-65535:1-65535']}}\n",
+		"a long-form port range":     "services: {s: {image: x, ports: [{target: 80, published: '8000-9000'}]}}\n",
+		"a target range":             "services: {s: {image: x, ports: [{target: '1-65535'}]}}\n",
+		"an exposed range":           "services: {s: {image: x, expose: ['1-65535']}}\n",
+		"a Fibonacci depends_on":     fib(64),
+		"a Fibonacci with links":     strings.ReplaceAll(fib(64), "depends_on", "links"),
+		"a cycle":                    "services: {a: {image: x, depends_on: [b]}, b: {image: x, depends_on: [a]}}\n",
+		"a uts and network_mode web": utsWeb(),
 	} {
 		start := time.Now()
 		_, err := r.Read(context.Background(), "homerslab-example", []byte(file))

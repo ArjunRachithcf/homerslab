@@ -32,12 +32,11 @@ func adminOrigin(next http.Handler) http.Handler {
 		if h, _, err := net.SplitHostPort(r.Host); err == nil {
 			host = h
 		}
-		if o := r.Header.Get("Origin"); o != "" {
-			u, err := url.Parse(o)
-			if err != nil || u.Scheme != "https" || !strings.EqualFold(u.Hostname(), host) {
-				fail(w, http.StatusForbidden, "cross-origin")
-				return
-			}
+		// Every browser sends Origin with a change; one without it isn't Admin's page.
+		u, err := url.Parse(r.Header.Get("Origin"))
+		if err != nil || u.Scheme != "https" || !strings.EqualFold(u.Hostname(), host) {
+			fail(w, http.StatusForbidden, "cross-origin")
+			return
 		}
 		if s := r.Header.Get("Sec-Fetch-Site"); s != "" && s != "same-origin" && s != "none" {
 			fail(w, http.StatusForbidden, "cross-origin")

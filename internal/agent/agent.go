@@ -606,12 +606,12 @@ func (rs *reads) read(ctx context.Context, name string, file []byte) (engine.Pro
 	}
 	var res readResult
 	if err := json.Unmarshal(out.b.Bytes(), &res); err != nil {
-		// The child ended without an answer: stopped by its CPU limit, or out of memory (Go's own error, or the
-		// kernel's kill), which are the file's doing; anything else is the reader's.
+		// The child ended without an answer: stopped by its CPU limit, or out of memory (Go's own error, or a kill: the
+		// kernel's for memory, or its hard CPU limit), which are the file's doing; anything else is the reader's.
 		var exit *exec.ExitError
 		switch {
-		case errors.As(runErr, &exit) && signalled(exit, syscall.SIGXCPU):
-			return engine.Project{}, errReadTimeout
+		case errors.As(runErr, &exit) && signalled(exit, syscall.SIGXCPU), strings.Contains(errOut.b.String(), "SIGXCPU"):
+			return engine.Project{}, errReadTimeout // its soft CPU limit: the kernel's signal, or Go's report of it
 		case strings.Contains(errOut.b.String(), "out of memory"), errors.As(runErr, &exit) && signalled(exit, syscall.SIGKILL):
 			return engine.Project{}, errReadTooBig
 		}

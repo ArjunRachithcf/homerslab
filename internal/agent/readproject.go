@@ -18,13 +18,14 @@ import (
 // nobody is the user a compose read runs as when the agent is root.
 const nobody = 65534
 
-// The child's limits: an address space of the binary's resting size (about 1.2 GiB, mostly reserved, not used) plus
-// about 256 MB, no core dump, a few files, and nothing written beyond its compose file. A read of the official
-// catalog's largest file works within it; a file that makes Compose build big dies at about 320 MB.
+// The child's limits: 384 MiB of data (RLIMIT_DATA, which counts the memory written to, not the address space Go
+// reserves at rest, so it holds for builds with and without cgo; a read of the official catalog's largest file needs
+// under 128 MiB without cgo and under 256 MiB with it), no core dump, a few files, and nothing written beyond its
+// compose file.
 const (
-	childAddressSpace = 3 << 29 // 1.5 GiB
-	childFiles        = 32
-	childFileSize     = 1 << 20
+	childData     = 384 << 20
+	childFiles    = 32
+	childFileSize = 1 << 20
 )
 
 // readResult is what a read's child answers on its standard output.
@@ -54,8 +55,9 @@ type Confined struct {
 //   - act as root: when the agent is root, the child starts as nobody (65534) with no supplementary groups, set in
 //     the fork before it runs any of its own code, so it holds no capability and reads only what everyone may read;
 //     it never starts another program;
-//   - use more than its limits: 1.5 GiB of address space (not under the race detector, whose shadow memory needs
-//     more), --cpu-seconds of CPU, 32 open files, files of at most 1 MiB, no core dump; and it is the first process
+//   - use more than its limits: 384 MiB of data (not under the race detector, whose shadow memory and thread stacks
+//     need more), --cpu-seconds of CPU (soft; hard a second later), 32 open files, files of at most 1 MiB, no core
+//     dump; and it is the first process
 //     the kernel kills when memory runs short (oom_score_adj 1000), with the agent's unit set to carry on (OOMPolicy);
 //   - outlive the agent's deadline: the agent kills it then, and when the agent dies it dies too (Pdeathsig, which
 //     the fork sets after the IDs, so changing them doesn't clear it);
@@ -110,17 +112,27 @@ func confine(cpuSeconds int) (Confined, error) {
 		value    uint64
 	}{
 		"core":     {syscall.RLIMIT_CORE, 0},
-		"cpu":      {syscall.RLIMIT_CPU, uint64(cpuSeconds)},
 		"files":    {syscall.RLIMIT_NOFILE, childFiles},
 		"fileSize": {syscall.RLIMIT_FSIZE, childFileSize},
 	}
 	if !raceDetector {
-		set["addressSpace"] = struct {
+		set["data"] = struct {
 			resource int
 			value    uint64
-		}{syscall.RLIMIT_AS, childAddressSpace}
+		}{syscall.RLIMIT_DATA, childData}
 	}
 	c := Confined{UID: os.Getuid(), GID: os.Getgid(), Limits: map[string]uint64{}}
+	// The CPU limit is soft at cpuSeconds and hard a second later: the kernel tells the child (SIGXCPU, which Go
+	// reports and exits on) before it kills it.
+	cpu := uint64(cpuSeconds)
+	if err := syscall.Setrlimit(syscall.RLIMIT_CPU, &syscall.Rlimit{Cur: cpu, Max: cpu + 1}); err != nil {
+		return c, fmt.Errorf("cpu: %w", err)
+	}
+	var got syscall.Rlimit
+	if err := syscall.Getrlimit(syscall.RLIMIT_CPU, &got); err != nil {
+		return c, err
+	}
+	c.Limits["cpu"], c.Limits["cpuHard"] = got.Cur, got.Max
 	for name, l := range set {
 		if err := syscall.Setrlimit(l.resource, &syscall.Rlimit{Cur: l.value, Max: l.value}); err != nil {
 			return c, fmt.Errorf("%s: %w", name, err)

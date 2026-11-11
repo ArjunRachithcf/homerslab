@@ -106,8 +106,10 @@ func (r *Reader) load(ctx context.Context, name string, file []byte) (engine.Pro
 
 // The bounds of a plain compose file: the agent parses it as root, so a small file must not make it work hard. Size,
 // nesting, services and references are capped; so are the paths of references (maxPaths) and port ranges, which
-// Compose expands. These bound what was found to make Compose work hard; they don't prove that nothing else can, which
-// is why each read also runs in a child that is killed at its deadline (agent.ReadProjectMain).
+// Compose expands. These bound what was found to make Compose work hard; they don't prove that nothing else can (the
+// resolution of services' pre_start hooks, for one, grows memory with the services, and isn't capped on its own),
+// which is why each read also runs in a child that is killed at its deadline, under its own memory and CPU limits
+// (agent.ReadProjectMain).
 const (
 	maxFileBytes  = 64 << 10
 	maxDepth      = 64
@@ -205,8 +207,8 @@ func shallow(file []byte) error {
 	return nil
 }
 
-// references are the services a service refers to: by depends_on, links and volumes_from, and by network_mode, ipc
-// and pid set to service:<name>.
+// references are the services a service refers to: by depends_on, links and volumes_from, and by network_mode, ipc,
+// pid and uts set to service:<name> (compose-go's normalize makes each of these a dependency).
 func references(s *yaml.Node) []string {
 	var out []string
 	for _, k := range []string{"depends_on", "links", "volumes_from"} {
@@ -229,7 +231,7 @@ func references(s *yaml.Node) []string {
 			out = append(out, v.Value)
 		}
 	}
-	for _, k := range []string{"network_mode", "ipc", "pid"} {
+	for _, k := range []string{"network_mode", "ipc", "pid", "uts"} {
 		if v := value(s, k); v != nil {
 			if name, ok := strings.CutPrefix(v.Value, "service:"); ok {
 				out = append(out, name)
