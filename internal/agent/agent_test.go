@@ -322,12 +322,12 @@ func TestAReadsEndingIsSaid(t *testing.T) {
 		status int
 		code   string
 	}{
-		"its CPU limit":        {"cat >/dev/null; kill -XCPU $$", http.StatusGatewayTimeout, "read-timeout"},
-		"Go told of its limit": {"cat >/dev/null; echo 'SIGXCPU: CPU time limit exceeded' >&2; exit 2", http.StatusGatewayTimeout, "read-timeout"},
-		"a real CPU limit":     {"cat >/dev/null; ulimit -S -t 1; while :; do :; done", http.StatusGatewayTimeout, "read-timeout"},
-		"Go's out of memory":   {"cat >/dev/null; echo 'fatal error: runtime: out of memory' >&2; exit 2", http.StatusUnprocessableEntity, "read-too-big"},
-		"the kernel's kill":    {"cat >/dev/null; kill -KILL $$", http.StatusUnprocessableEntity, "read-too-big"},
-		"a reader that broke":  {"cat >/dev/null; echo broken >&2; exit 3", http.StatusInternalServerError, "no-reader"},
+		"its CPU limit":       {"cat >/dev/null; kill -XCPU $$", http.StatusGatewayTimeout, "read-timeout"},
+		"a real CPU limit":    {"cat >/dev/null; ulimit -S -t 1; while :; do :; done", http.StatusGatewayTimeout, "read-timeout"},
+		"Go's out of memory":  {"cat >/dev/null; echo 'fatal error: runtime: out of memory' >&2; exit 2", http.StatusUnprocessableEntity, "read-too-big"},
+		"Go can't allocate":   {"cat >/dev/null; echo 'fatal error: runtime: cannot allocate memory' >&2; exit 2", http.StatusUnprocessableEntity, "read-too-big"},
+		"the kernel's kill":   {"cat >/dev/null; kill -KILL $$", http.StatusUnprocessableEntity, "read-too-big"},
+		"a reader that broke": {"cat >/dev/null; echo broken >&2; exit 3", http.StatusInternalServerError, "no-reader"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			agent.ShellReads(t, 5*time.Second, c.script)
@@ -426,5 +426,48 @@ func TestAgentReadsWithoutReachingAnEngine(t *testing.T) {
 	time.Sleep(50 * time.Millisecond)
 	if resp.StatusCode != http.StatusOK || reached.Load() != 0 {
 		t.Errorf("%d %s; the engine was reached %d times, want none", resp.StatusCode, out, reached.Load())
+	}
+}
+
+// A real read child stopped by its CPU limit says so, and the agent answers read-timeout: Go ignores SIGXCPU unless
+// asked, so the child asks. A child that doesn't, killed at the hard limit, is told apart by the CPU time it used.
+func TestAReadStoppedByItsCPULimitIsATimeout(t *testing.T) {
+	testenv.Isolate(t)
+	// The child itself says it reached its limit.
+	child := exec.Command(os.Args[0], "agent", "read-project-burn", "--cpu-seconds", "1", "--", "homerslab-web")
+	child.Stdin = strings.NewReader("services: {web: {image: x}}\n")
+	child.Dir = t.TempDir()
+	said, _ := child.Output()
+	if !strings.Contains(string(said), `"error":"cpu-limit"`) {
+		t.Errorf("a Go child past its soft CPU limit said %q, want cpu-limit", said)
+	}
+
+	body := map[string]string{"project": "homerslab-web", "compose": "services: {web: {image: x}}\n"}
+	agent.ChildReads(t, agenttest.Executable(t), "read-project-burn", 20*time.Second, 1)
+	sock := agenttest.Start(t, agenttest.Primary())
+	start := time.Now()
+	if resp, out := post(t, sock, "/v1/projects/read", body); resp.StatusCode != http.StatusGatewayTimeout || !strings.Contains(string(out), "read-timeout") {
+		t.Errorf("a Go child past its CPU limit: %d %s after %s, want 504 read-timeout", resp.StatusCode, out, time.Since(start))
+	}
+
+	agent.ShellReads(t, 20*time.Second, "cat >/dev/null; ulimit -S -t 1; ulimit -H -t 2; trap '' XCPU; while :; do :; done")
+	sock = agenttest.Start(t, agenttest.Primary())
+	if resp, out := post(t, sock, "/v1/projects/read", body); resp.StatusCode != http.StatusGatewayTimeout || !strings.Contains(string(out), "read-timeout") {
+		t.Errorf("a child that ignores SIGXCPU, killed at the hard limit: %d %s, want 504 read-timeout", resp.StatusCode, out)
+	}
+}
+
+// A real read child that runs out of memory under its data limit is the file's doing: read-too-big, whichever way
+// Go says it ("out of memory", or "cannot allocate memory").
+func TestAReadOutOfMemoryIsTooBig(t *testing.T) {
+	testenv.Isolate(t)
+	if agent.RaceDetector {
+		t.Skip("the race detector leaves the data limit off; CI runs this without it")
+	}
+	agent.ChildReads(t, agenttest.Executable(t), "read-project-hog", 20*time.Second, 10)
+	sock := agenttest.Start(t, agenttest.Primary())
+	body := map[string]string{"project": "homerslab-web", "compose": "services: {web: {image: x}}\n"}
+	if resp, out := post(t, sock, "/v1/projects/read", body); resp.StatusCode != http.StatusUnprocessableEntity || !strings.Contains(string(out), "read-too-big") {
+		t.Errorf("a child out of memory: %d %s, want 422 read-too-big", resp.StatusCode, out)
 	}
 }

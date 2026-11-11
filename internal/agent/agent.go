@@ -517,6 +517,9 @@ const ReadDeadline = 10 * time.Second
 
 var readDeadline = ReadDeadline
 
+// readCPUSeconds is a read child's soft CPU limit: a second past the deadline, as a backstop for it.
+var readCPUSeconds = func() int { return int(readDeadline/time.Second) + 1 }
+
 // readCommand is how the agent starts a compose read: its executable, in its read-project mode. Tests replace it.
 var readCommand = func(exe string) ([]string, error) {
 	if exe == "" {
@@ -596,7 +599,7 @@ func (rs *reads) read(ctx context.Context, name string, file []byte) (engine.Pro
 		return engine.Project{}, fmt.Errorf("%w: %w", errNoReader, err)
 	}
 	defer os.RemoveAll(dir)
-	cmd := childCommand(ctx, argv, dir, name, int(readDeadline/time.Second)+1)
+	cmd := childCommand(ctx, argv, dir, name, readCPUSeconds())
 	cmd.Stdin = bytes.NewReader(file)
 	var out, errOut capped
 	cmd.Stdout, cmd.Stderr = &out, &errOut
@@ -606,18 +609,24 @@ func (rs *reads) read(ctx context.Context, name string, file []byte) (engine.Pro
 	}
 	var res readResult
 	if err := json.Unmarshal(out.b.Bytes(), &res); err != nil {
-		// The child ended without an answer: stopped by its CPU limit, or out of memory (Go's own error, or a kill: the
-		// kernel's for memory, or its hard CPU limit), which are the file's doing; anything else is the reader's.
+		// The child ended without an answer: killed at its hard CPU limit (it had used its soft one), or out of memory
+		// (Go's own error, either way it words it, or the kernel's kill), which are the file's doing; anything else is
+		// the reader's.
 		var exit *exec.ExitError
+		ended := errors.As(runErr, &exit)
+		killed := ended && signalled(exit, syscall.SIGKILL)
+		said := errOut.b.String()
 		switch {
-		case errors.As(runErr, &exit) && signalled(exit, syscall.SIGXCPU), strings.Contains(errOut.b.String(), "SIGXCPU"):
-			return engine.Project{}, errReadTimeout // its soft CPU limit: the kernel's signal, or Go's report of it
-		case strings.Contains(errOut.b.String(), "out of memory"), errors.As(runErr, &exit) && signalled(exit, syscall.SIGKILL):
+		case ended && signalled(exit, syscall.SIGXCPU), killed && cpuUsed(exit) >= time.Duration(readCPUSeconds())*time.Second:
+			return engine.Project{}, errReadTimeout
+		case killed, strings.Contains(said, "out of memory"), strings.Contains(said, "cannot allocate memory"):
 			return engine.Project{}, errReadTooBig
 		}
-		return engine.Project{}, fmt.Errorf("%w: %v (%v) %s", errNoReader, err, runErr, strings.TrimSpace(errOut.b.String()))
+		return engine.Project{}, fmt.Errorf("%w: %v (%v) %s", errNoReader, err, runErr, strings.TrimSpace(said))
 	}
 	switch res.Error {
+	case "cpu-limit":
+		return engine.Project{}, errReadTimeout
 	case "":
 		return *res.Project, nil
 	case "not-ours":
@@ -627,6 +636,15 @@ func (rs *reads) read(ctx context.Context, name string, file []byte) (engine.Pro
 	default:
 		return engine.Project{}, errors.New(res.Detail)
 	}
+}
+
+// cpuUsed is the CPU time a child used, user and system.
+func cpuUsed(e *exec.ExitError) time.Duration {
+	ru, ok := e.SysUsage().(*syscall.Rusage)
+	if !ok {
+		return 0
+	}
+	return time.Duration(ru.Utime.Nano() + ru.Stime.Nano())
 }
 
 func signalled(e *exec.ExitError, sig syscall.Signal) bool {

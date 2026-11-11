@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/signal"
 	"strings"
 	"syscall"
 
@@ -31,7 +32,7 @@ const (
 // readResult is what a read's child answers on its standard output.
 type readResult struct {
 	Project *engine.Project `json:"project,omitempty"`
-	Error   string          `json:"error,omitempty"` // not-ours, not-plain or invalid-compose
+	Error   string          `json:"error,omitempty"` // not-ours, not-plain, invalid-compose, or cpu-limit
 	Detail  string          `json:"detail,omitempty"`
 	// Confined is how the read ran, as the child read it back from the kernel: its user and groups, its limits and
 	// its OOM score, for the tests.
@@ -65,6 +66,16 @@ type Confined struct {
 //
 // It doesn't apply Landlock or seccomp: in Go both bind only the thread that asks, not the process.
 func ReadProjectMain(args []string, stdin io.Reader, stdout io.Writer) int {
+	return readProjectMain(args, stdin, stdout, func(ctx context.Context, name string, file []byte) (engine.Project, error) {
+		r, err := compose.NewReader(compose.NoEngine)
+		if err != nil {
+			return engine.Project{}, err
+		}
+		return r.Read(ctx, name, file)
+	})
+}
+
+func readProjectMain(args []string, stdin io.Reader, stdout io.Writer, read func(ctx context.Context, name string, file []byte) (engine.Project, error)) int {
 	fs := flag.NewFlagSet("homerslab agent read-project", flag.ContinueOnError)
 	cpu := fs.Int("cpu-seconds", 10, "the CPU time the read may use")
 	if err := fs.Parse(args); err != nil || fs.NArg() != 1 {
@@ -72,6 +83,15 @@ func ReadProjectMain(args []string, stdin io.Reader, stdout io.Writer) int {
 		return 2
 	}
 	var res readResult
+	// Go ignores SIGXCPU unless asked: asked, the child says it reached its soft CPU limit and ends, before the hard
+	// limit kills it without a word.
+	xcpu := make(chan os.Signal, 1)
+	signal.Notify(xcpu, syscall.SIGXCPU)
+	go func() {
+		<-xcpu
+		_ = json.NewEncoder(stdout).Encode(readResult{Error: "cpu-limit"})
+		os.Exit(1)
+	}()
 	var err error
 	if res.Confined, err = confine(*cpu); err != nil {
 		fmt.Fprintln(os.Stderr, "confining the read:", err)
@@ -79,12 +99,9 @@ func ReadProjectMain(args []string, stdin io.Reader, stdout io.Writer) int {
 	}
 	file, err := io.ReadAll(io.LimitReader(stdin, 64<<10+1))
 	if err == nil {
-		var r *compose.Reader
-		if r, err = compose.NewReader(compose.NoEngine); err == nil {
-			var p engine.Project
-			if p, err = r.Read(context.Background(), fs.Arg(0), file); err == nil {
-				res.Project = &p
-			}
+		var p engine.Project
+		if p, err = read(context.Background(), fs.Arg(0), file); err == nil {
+			res.Project = &p
 		}
 	}
 	switch {

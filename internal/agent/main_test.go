@@ -9,6 +9,7 @@ import (
 
 	"github.com/ArjunRachithcf/homerslab/internal/agent"
 	"github.com/ArjunRachithcf/homerslab/internal/agent/agenttest"
+	"github.com/ArjunRachithcf/homerslab/internal/engine"
 )
 
 // The agent reads compose files in children it starts from its own executable: here, this test binary. As
@@ -18,8 +19,34 @@ func TestMain(m *testing.M) {
 	if os.Getenv("HOMERSLAB_TEST_PARENT") != "" {
 		os.Exit(parent())
 	}
+	// Read children that misbehave, confined as the real one is: one burns CPU, one allocates until it can't.
+	if len(os.Args) > 2 && os.Args[1] == "agent" {
+		switch os.Args[2] {
+		case "read-project-burn":
+			os.Exit(agent.ReadProjectWith(os.Args[3:], os.Stdin, os.Stdout, func(context.Context, string, []byte) (engine.Project, error) {
+				for n := 0; ; n++ {
+					burnt = n
+				}
+			}))
+		case "read-project-hog":
+			os.Exit(agent.ReadProjectWith(os.Args[3:], os.Stdin, os.Stdout, func(context.Context, string, []byte) (engine.Project, error) {
+				for {
+					b := make([]byte, 16<<20)
+					for i := range b {
+						b[i] = 1
+					}
+					hogged = append(hogged, b)
+				}
+			}))
+		}
+	}
 	agenttest.Main(m)
 }
+
+var (
+	burnt  int
+	hogged [][]byte
+)
 
 func parent() int {
 	dir, err := agent.ChildDir()
