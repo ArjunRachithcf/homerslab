@@ -88,7 +88,7 @@ const (
 
 // tunnelKinds are the kinds of link that carry a VPN or a mesh, not a home network.
 var tunnelKinds = []string{"wireguard", "tun", "ipip", "ip6tnl", "sit", "gre", "gretap", "ip6gre", "ip6gretap",
-	"vti", "vti6", "xfrm", "ppp", "vxlan", "geneve", "openvpn"}
+	"vti", "vti6", "xfrm", "ppp", "vxlan", "geneve", "ovpn"}
 
 // meshRanges are the ranges the meshes HomersLab runs give out (#14 Q5, ADR 0005): CGNAT (NetBird, Headscale and
 // Tailscale) and Tailscale's ULA, whichever mesh this machine is on.
