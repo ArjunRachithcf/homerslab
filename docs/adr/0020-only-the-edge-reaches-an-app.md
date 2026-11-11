@@ -23,22 +23,32 @@ from the agent's own, for its health probes. The floor's rule stays as it is: th
 app networks to:
 - the LAN's prefixes;
 - the mesh's ranges;
+- other apps' networks;
 - the node's own addresses, except the DNS resolver the engine provides.
 
 "Reaches the LAN" (for example a home automation app) and "reaches the mesh" are declared extras, approved with the
 passkey like the others.
 
-**The sign-in is the one exception, decided.** An app with native sign-in calls the sign-in from its server: OIDC's
-token, userinfo and keys, or LDAP binds. `auth.<main domain>` resolves to the primary's mesh address, or to the node's
-own address on the primary, which the rule above drops. So:
-- every app reaches the sign-in's address through the edge only: the edge's ports on the node's own address and on
-  the primary's mesh address. From an app, the edge answers only the sign-in's name, so this is no path to other apps;
-- an app whose sign-in method is LDAP also reaches the identity provider's LDAP outpost.
+**The sign-in is the one exception, decided here, unlike app-to-app calls.** An app with native sign-in calls the
+sign-in from its server: OIDC's token, userinfo and keys, or LDAP binds. `auth.<main domain>` resolves to the
+primary's mesh address, or to the node's own address on the primary, which the rule above drops. The edge can't tell
+apps apart by source address (rootless Podman, apps on other nodes, a desktop primary), so apps get a listener of
+their own:
+- the **sign-in listener** has its own address on each node, on port 443, and carries only the sign-in's route. SNI
+  and `Host` must both equal `auth.<main domain>`;
+- the agent makes `auth.<main domain>` resolve to that address inside app containers;
+- on the primary it serves the sign-in; on other nodes, the node's own edge forwards it to the primary;
+- an app whose sign-in method is LDAP also reaches the same address on port 636 (LDAPS), which leads to the identity
+  provider's LDAP outpost: directly on the primary, through the node's own edge on other nodes;
+- the firewall lets app networks reach that listener, and its LDAP port for LDAP apps, and nothing else on the node.
 
 ## Considered options
 
 - **An edge sidecar per app**, inside the app's own network. Simpler to reason about, but a Caddy per app and a second
   path for the edge's configuration.
+- **Letting apps reach the edge's ordinary listeners**, with the edge answering only the sign-in's name to apps. The
+  edge would have to tell apps from people by source address, which it can't under rootless Podman, from other
+  nodes, or on a primary that is also someone's desktop.
 - **Trusting the bridge.** Classic's apps trusted a fixed address; on a node with other users and host apps, any local
   process can use it.
 - **Only filtering what comes in.** "The LAN sees the machines, not the apps" covers incoming traffic only.
@@ -49,4 +59,7 @@ own address on the primary, which the rule above drops. So:
   user.
 - Apps that call another household app (say, a local AI model) need a path that isn't decided yet: the one open
   item.
-- The firewall's namespace tests gain a container trying the LAN, the mesh and the node's own addresses.
+- The firewall's namespace tests gain a container trying the LAN, the mesh, another app's network and the node's own
+  addresses.
+- Whether container DNS resolves `auth.<main domain>` to the sign-in listener on hosts running systemd-resolved is
+  tested first.

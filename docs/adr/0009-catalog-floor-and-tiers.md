@@ -43,7 +43,9 @@ correctly signed commit from being served (rollback), or the same commit forever
 from acting on another's apps. So:
 - **Versions only go up, and expire.** A catalog's signed metadata carries a version number that only goes up and an
   expiry 30 days out. The publisher signs it again on a schedule (weekly) even when nothing changed, as TUF's
-  timestamp role does, so a frozen catalog shows. The manager refuses a lower version than the last it accepted.
+  timestamp role does, so a frozen catalog shows. That signature uses a separate timestamp key, which may only sign
+  the version, the expiry and the hash of content the publisher's key signed, so the key kept online for the
+  schedule can't sign apps. The manager refuses a lower version than the last it accepted.
   Admin warns as the expiry nears; after it, installed apps keep running and new installs from that catalog wait.
 - **Each catalog acts only on its own apps.** App ids are scoped to their catalog; an installed app updates only from
   the catalog and publisher key it came from; the plan names the catalog and publisher beside the tier.

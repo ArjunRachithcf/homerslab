@@ -50,9 +50,13 @@ own flows would otherwise undo it:
 - its out-of-the-box first-admin flow makes whoever reaches it first a superuser. Blocking its page at the edge isn't
   enough, because the flow executor API runs it too, so it can't apply to anyone before the sign-in is served:
   `akadmin` gets a random password and is deactivated. The first admin's passkey comes only from the manager's
-  one-time enrolment link;
+  one-time enrolment link. That link, and every recovery link, runs a flow HomersLab owns, with only a
+  passkey-enrolment stage, never the provider's own recovery flow;
 - from its user settings, a stolen session could give a passkey-only admin a password or a second factor, then pass
-  step-up with it, so its password, second-factor and recovery flows refuse admins;
+  step-up with it. So admins sign in, step-up included, only through a passkey-only authentication flow, and the
+  provider's password, second-factor and recovery flows refuse admins. Binding the flow was chosen over refusing a
+  step-up when the admin's credentials changed shortly before `auth_time`, which would rest on the provider's event
+  log;
 - HomersLab doesn't rely on `amr`, the claim that names how someone signed in: Kanidm sends none, and it describes one
   sign-in, not what an admin holds. So before accepting a step-up HomersLab asks the provider for the admin's
   credentials, and refuses the step-up when anything but passkeys is there;
