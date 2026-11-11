@@ -62,7 +62,7 @@ func TestTheLANInANetworkNamespace(t *testing.T) {
 		ip tuntap add mode tun name tun0
 		ip link set tun0 up
 		ip addr add 10.8.0.2/24 dev tun0
-		ip addr add 10.8.1.1/32 peer 10.8.9.1/32 dev tun0
+		ip addr add 10.8.1.1/32 peer 10.8.9.0/24 dev tun0
 		ip route add default dev tun0 metric 500
 		ip -6 route add default dev tun0 metric 500
 
@@ -88,14 +88,16 @@ func TestTheLANInANetworkNamespace(t *testing.T) {
 		}
 	}
 	tun0 := k.Links[slices.IndexFunc(k.Links, func(l lan.Link) bool { return l.Name == "tun0" })].Index
-	var onTun0 []netip.Prefix
+	var onTun0 []lan.Addr
 	for _, a := range k.Addrs {
 		if a.Index == tun0 && a.Prefix.Addr().Is4() {
-			onTun0 = append(onTun0, a.Prefix)
+			a.Flags = 0
+			onTun0 = append(onTun0, a)
 		}
 	}
-	if want := []netip.Prefix{netip.MustParsePrefix("10.8.0.2/24"), netip.MustParsePrefix("10.8.1.1/32")}; !sameSet(onTun0, want) {
-		t.Errorf("tun0's addresses = %v, want %v: the machine's own end of a point-to-point link, not its peer's", onTun0, want)
+	if want := []lan.Addr{{Index: tun0, Prefix: netip.MustParsePrefix("10.8.0.2/24")},
+		{Index: tun0, Prefix: netip.MustParsePrefix("10.8.1.1/32"), Peer: netip.MustParsePrefix("10.8.9.0/24")}}; !sameSet(onTun0, want) {
+		t.Errorf("tun0's addresses = %v, want %v: the machine's own end of a point-to-point link, and its peer's network", onTun0, want)
 	}
 
 	l := lan.Current()
@@ -126,8 +128,11 @@ func TestTheLANInANetworkNamespace(t *testing.T) {
 	if want := []string{"eth0"}; !slices.Equal(ifaces, want) {
 		t.Errorf("OnLink interfaces = %v, want %v", ifaces, want)
 	}
-	if !sameSet(prefixes, wantPrefixes) {
-		t.Errorf("OnLink prefixes = %v, want %v: not the mesh's /64 a rogue router advertised", prefixes, wantPrefixes)
+	if want := append(slices.Clone(wantPrefixes), netip.MustParsePrefix("fd10:abcd:0:1::/64")); !sameSet(prefixes, want) {
+		t.Errorf("OnLink prefixes = %v, want %v: every network on the LAN's link, which apps never reach", prefixes, want)
+	}
+	if got, want := lan.Uplinks(), []string{"eth0", "wg0", "tun0"}; !sameSet(got, want) || got[0] != "eth0" {
+		t.Errorf("uplinks = %v, want %v, the LAN's first: apps reach the internet through the VPNs too", got, want)
 	}
 }
 
@@ -153,6 +158,9 @@ func TestNoLANWhenOnlyAnotherTableHasADefaultRoute(t *testing.T) {
 	}
 	if ifaces, prefixes := lan.OnLink(); len(ifaces) != 0 || len(prefixes) != 0 {
 		t.Errorf("OnLink = %v %v, want none", ifaces, prefixes)
+	}
+	if got := lan.Uplinks(); !slices.Equal(got, []string{"wg0"}) {
+		t.Errorf("uplinks = %v, want wg0: apps still reach the internet through it", got)
 	}
 }
 

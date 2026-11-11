@@ -18,6 +18,8 @@ type LAN struct {
 	Prefixes   []netip.Prefix
 	Interfaces []string
 	Addresses  []netip.Addr
+	// Excluded are the mesh's and the tunnels' ranges inside the LAN's prefixes: never the LAN (#108).
+	Excluded []netip.Prefix
 }
 
 // FromHere says whether a request from addr comes from this machine or its LAN. A link-local address is the same on
@@ -32,12 +34,10 @@ func FromHere(addr netip.Addr, l LAN) bool {
 		return addr.Is6() && addr.Zone() != "" && slices.Contains(l.Interfaces, addr.Zone())
 	}
 	addr = addr.WithZone("")
-	for _, p := range l.Prefixes {
-		if p.Contains(addr) {
-			return true
-		}
+	if slices.ContainsFunc(l.Excluded, func(p netip.Prefix) bool { return p.Contains(addr) }) {
+		return false
 	}
-	return false
+	return slices.ContainsFunc(l.Prefixes, func(p netip.Prefix) bool { return p.Contains(addr) })
 }
 
 // Kernel is what the kernel says of this machine's network: its links, their addresses, and the routes of every
@@ -62,6 +62,9 @@ type Link struct {
 type Addr struct {
 	Index  int
 	Prefix netip.Prefix
+	// Peer is the network at the other end of a point-to-point address (`ip addr add A peer P/len`), if it has one:
+	// Prefix is then the machine's own end alone.
+	Peer netip.Prefix
 	// Flags are the address's IFA_F_ flags: temporary, tentative, deprecated, failed duplicate address detection.
 	Flags uint32
 }
@@ -113,18 +116,45 @@ func OnLink() (interfaces []string, prefixes []netip.Prefix) {
 	return k.OnLink()
 }
 
+// Uplinks are the interfaces through which this machine reaches the internet, read from the live machine
+// (Kernel.Uplinks); none when the kernel can't be asked.
+func Uplinks() []string {
+	k, err := ReadKernel()
+	if err != nil {
+		return nil
+	}
+	return k.Uplinks()
+}
+
 // Interfaces are the LAN's interfaces: those that carry a default route, IPv4 or IPv6, in the main table (#108). Not
 // loopback, and not a VPN's or the mesh's (a tunnel: point-to-point, or a tunnel's kind of link), even when a
 // full-tunnel VPN puts its default route in the main table; and never through another table, where wg-quick puts a
 // full tunnel's (51820).
 func (k Kernel) Interfaces() []string {
+	links := k.links()
 	var out []string
 	for _, r := range k.Routes {
 		if r.Table != mainTable || r.Type != unicast || r.Dst.Bits() != 0 {
 			continue
 		}
-		l, ok := k.link(r.Index)
+		l, ok := links[r.Index]
 		if ok && !l.Loopback && !l.tunnel() && !slices.Contains(out, l.Name) {
+			out = append(out, l.Name)
+		}
+	}
+	return out
+}
+
+// Uplinks are the interfaces with a unicast default route in any table, the LAN's first: a VPN's tunnel too, which
+// is never the LAN but is the way to the internet while it is up. Not loopback.
+func (k Kernel) Uplinks() []string {
+	links := k.links()
+	out := k.Interfaces()
+	for _, r := range k.Routes {
+		if r.Type != unicast || r.Dst.Bits() != 0 {
+			continue
+		}
+		if l, ok := links[r.Index]; ok && !l.Loopback && !slices.Contains(out, l.Name) {
 			out = append(out, l.Name)
 		}
 	}
@@ -140,8 +170,9 @@ func (k Kernel) Interfaces() []string {
 //     machine's own addresses there, from SLAAC (a /64) or DHCPv6 (a /128). Never a wider prefix, the default route's,
 //     or one reached through a router.
 //
-// Never a prefix that overlaps the mesh's ranges (meshRanges, and every address on a tunnel): a rogue router
-// advertising the mesh's ULA /64 on the LAN doesn't make mesh peers the LAN (#108).
+// Never the mesh's ranges (meshRanges, and every network on a tunnel, #108): a prefix inside one is refused, so a
+// rogue router advertising the mesh's ULA /64 on the LAN doesn't make mesh peers the LAN; a wider one keeps the rest
+// of the network, and LAN.Excluded carves the range out. An address in one is never the LAN's.
 //
 // Its addresses are the machine's own on those networks, the best first: stable before temporary (privacy) ones, and
 // none that is still tentative or failed duplicate address detection.
@@ -149,42 +180,42 @@ func (k Kernel) LAN() LAN {
 	l := LAN{Interfaces: k.Interfaces()}
 	onLink := k.onLinkPrefixes()
 	mesh := k.meshPrefixes()
-	var later []netip.Addr // temporary addresses, after the stable ones
-	addPrefix := func(p netip.Prefix) {
-		if !slices.Contains(l.Prefixes, p) {
-			l.Prefixes = append(l.Prefixes, p)
-		}
+	inMesh := func(p netip.Prefix) bool {
+		return slices.ContainsFunc(mesh, func(m netip.Prefix) bool { return m.Bits() <= p.Bits() && m.Contains(p.Addr()) })
 	}
+	var later []netip.Addr // temporary addresses, after the stable ones
 	for _, name := range l.Interfaces {
-		var v4, ula, global []ipv6Addr
+		var v4, ula, global []lanAddr
 		for _, a := range k.addrsOf(name) {
-			switch {
-			case a.Prefix.Addr().Is4() && a.Prefix.Addr().IsPrivate():
-				v4 = append(v4, ipv6Addr{Addr: a, lan: []netip.Prefix{a.Prefix.Masked()}})
-			case a.Prefix.Addr().Is4():
-			case a.Prefix.Addr().IsPrivate():
-				ula = append(ula, ipv6Addr{Addr: a, lan: []netip.Prefix{a.Prefix.Masked()}})
-			case a.Prefix.Addr().IsGlobalUnicast():
+			switch addr := a.Prefix.Addr(); {
+			case addr.Is4() && addr.IsPrivate():
+				v4 = append(v4, lanAddr{Addr: a, lan: []netip.Prefix{a.Prefix.Masked()}})
+			case addr.Is4():
+			case addr.IsPrivate():
+				ula = append(ula, lanAddr{Addr: a, lan: []netip.Prefix{a.Prefix.Masked()}})
+			case addr.IsGlobalUnicast():
 				var in []netip.Prefix
 				for _, p := range onLink[name] {
-					if p.Contains(a.Prefix.Addr()) {
+					if p.Contains(addr) {
 						in = append(in, p)
 					}
 				}
-				global = append(global, ipv6Addr{Addr: a, lan: in})
+				global = append(global, lanAddr{Addr: a, lan: in})
 			}
 		}
 		for _, a := range slices.Concat(v4, ula, global) {
-			a.lan = slices.DeleteFunc(a.lan, func(p netip.Prefix) bool { return overlapsAny(p, mesh) })
-			if len(a.lan) == 0 {
+			if a.lan = slices.DeleteFunc(a.lan, inMesh); len(a.lan) == 0 {
 				continue
 			}
 			for _, p := range a.lan {
-				addPrefix(p)
+				if !slices.Contains(l.Prefixes, p) {
+					l.Prefixes = append(l.Prefixes, p)
+				}
 			}
 			switch {
+			case inMesh(netip.PrefixFrom(a.Prefix.Addr(), a.Prefix.Addr().BitLen())):
 			case a.Flags&(ifaTentative|ifaDADFailed) != 0:
-			case a.Flags&(ifaTemporary|ifaDeprecated) != 0 && a.Prefix.Addr().Is6():
+			case a.Flags&(ifaTemporary|ifaDeprecated) != 0 && a.Prefix.Addr().Is6(): // IPv4's 0x01 is "secondary"
 				later = append(later, a.Prefix.Addr())
 			default:
 				l.Addresses = append(l.Addresses, a.Prefix.Addr())
@@ -192,19 +223,23 @@ func (k Kernel) LAN() LAN {
 		}
 	}
 	l.Addresses = append(l.Addresses, later...)
+	for _, m := range mesh {
+		if slices.ContainsFunc(l.Prefixes, m.Overlaps) && !slices.Contains(l.Excluded, m) {
+			l.Excluded = append(l.Excluded, m)
+		}
+	}
 	return l
 }
 
 // OnLink is what the firewall table keeps apps away from: the LAN's interfaces, and every prefix on them, private or
-// global (a LAN may use global IPv6 addresses), but link-local, which the table covers whole, and any that overlaps
-// the mesh's ranges.
+// global (a LAN may use global IPv6 addresses), but link-local, which the table covers whole. It is a list of what
+// apps never reach, so nothing is left out of it, the mesh's ranges included.
 func (k Kernel) OnLink() (interfaces []string, prefixes []netip.Prefix) {
 	interfaces = k.Interfaces()
-	mesh := k.meshPrefixes()
 	for _, name := range interfaces {
 		for _, a := range k.addrsOf(name) {
 			p := a.Prefix.Masked()
-			if !p.Addr().IsLinkLocalUnicast() && !p.Addr().IsLoopback() && !overlapsAny(p, mesh) && !slices.Contains(prefixes, p) {
+			if !p.Addr().IsLinkLocalUnicast() && !p.Addr().IsLoopback() && !slices.Contains(prefixes, p) {
 				prefixes = append(prefixes, p)
 			}
 		}
@@ -214,51 +249,55 @@ func (k Kernel) OnLink() (interfaces []string, prefixes []netip.Prefix) {
 
 func (l Link) tunnel() bool { return l.PointToPoint || slices.Contains(tunnelKinds, l.Kind) }
 
-func (k Kernel) link(index int) (Link, bool) {
+// links are the links by their index.
+func (k Kernel) links() map[int]Link {
+	m := make(map[int]Link, len(k.Links))
 	for _, l := range k.Links {
-		if l.Index == index {
-			return l, true
-		}
+		m[l.Index] = l
 	}
-	return Link{}, false
+	return m
 }
 
 func (k Kernel) addrsOf(name string) []Addr {
+	links := k.links()
 	var out []Addr
 	for _, a := range k.Addrs {
-		if l, ok := k.link(a.Index); ok && l.Name == name {
+		if l, ok := links[a.Index]; ok && l.Name == name {
 			out = append(out, a)
 		}
 	}
 	return out
 }
 
-// meshPrefixes are the ranges no LAN prefix may overlap: the meshes' own, and every network on a tunnel (the mesh's
-// interface, a VPN's), but link-local, which every interface has.
+// meshPrefixes are the ranges that are never the LAN: the meshes' own, and every network on a tunnel (the mesh's
+// interface, a VPN's), its own end's and its peer's, but link-local, which every interface has.
 func (k Kernel) meshPrefixes() []netip.Prefix {
+	links := k.links()
 	out := slices.Clone(meshRanges)
 	for _, a := range k.Addrs {
-		if l, ok := k.link(a.Index); ok && l.tunnel() && !a.Prefix.Addr().IsLinkLocalUnicast() {
-			out = append(out, a.Prefix.Masked())
+		if l, ok := links[a.Index]; !ok || !l.tunnel() {
+			continue
+		}
+		for _, p := range []netip.Prefix{a.Prefix, a.Peer} {
+			if p.IsValid() && !p.Addr().IsLinkLocalUnicast() && !slices.Contains(out, p.Masked()) {
+				out = append(out, p.Masked())
+			}
 		}
 	}
 	return out
-}
-
-func overlapsAny(p netip.Prefix, list []netip.Prefix) bool {
-	return slices.ContainsFunc(list, p.Overlaps)
 }
 
 // onLinkPrefixes are the IPv6 prefixes on the link, per interface, from the main table: unicast routes from /64 to
 // /127 with no router in between. Not the default route (::/0) or any route wider than a /64, not the machine's own
 // /128s, which the local table lists, and nothing another table holds.
 func (k Kernel) onLinkPrefixes() map[string][]netip.Prefix {
+	links := k.links()
 	out := map[string][]netip.Prefix{}
 	for _, r := range k.Routes {
 		if r.Table != mainTable || r.Type != unicast || r.Gateway || !r.Dst.Addr().Is6() || r.Dst.Bits() < 64 || r.Dst.Bits() > 127 {
 			continue
 		}
-		if l, ok := k.link(r.Index); ok {
+		if l, ok := links[r.Index]; ok {
 			out[l.Name] = append(out[l.Name], r.Dst.Masked())
 		}
 	}
@@ -308,13 +347,13 @@ func Names(hostname string, l LAN) []string {
 	return names
 }
 
-// ipv6Addr is an address with the LAN's prefixes that hold it.
-type ipv6Addr struct {
+// lanAddr is an address with the LAN's prefixes that hold it.
+type lanAddr struct {
 	Addr
 	lan []netip.Prefix
 }
 
-// Cached remembers what read returns for ttl, so a page's many requests don't each read /proc and the interfaces.
+// Cached remembers what read returns for ttl, so a page's many requests don't each ask the kernel.
 func Cached[T any](read func() T, ttl time.Duration) func() T {
 	var mu sync.Mutex
 	var at time.Time

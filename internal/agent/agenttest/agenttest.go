@@ -89,6 +89,9 @@ func StartWith(t testing.TB, c agent.Config) (string, *Host) {
 			return []string{"enp5s0"}, []netip.Prefix{netip.MustParsePrefix("192.168.1.0/24"), netip.MustParsePrefix("2001:db8:1::/64")}
 		}
 	}
+	if c.Uplinks == nil {
+		c.Uplinks = func() []string { return nil } // the LAN's only: never this machine's own
+	}
 	if c.SetupPort == 0 {
 		c.SetupPort = 7020
 	}

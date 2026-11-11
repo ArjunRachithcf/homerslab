@@ -968,3 +968,19 @@ func TestTheNATMapperSettingIsUnknownWhenSystemdCannotSayAndLeftAlone(t *testing
 		t.Errorf("after the checks: %+v, want the NAT mapper not reported off and one nat-mapper-unknown drift", s)
 	}
 }
+
+// A full-tunnel VPN's interface is a way out for apps, not the LAN (#108).
+func TestTheTableLetsAppsOutThroughTheUplinks(t *testing.T) {
+	testenv.Isolate(t)
+	uplinks := func() []string { return []string{"enp5s0", "wg0"} }
+	sock, h := agenttest.StartWith(t, agent.Config{Uplinks: uplinks})
+	call(t, sock, "POST", "/v1/mesh/join", joinBody())
+	call(t, sock, "POST", "/v1/firewall/check", nil)
+	table, _ := h.Table()
+	if !strings.Contains(table, `oifname != { "enp5s0", "wg0" } drop`) {
+		t.Errorf("apps can't leave through the VPN's tunnel:\n%s", table)
+	}
+	if !strings.Contains(table, `iifname { "enp5s0" } tcp dport 7020 accept`) || strings.Contains(table, `"wg0" } tcp dport`) {
+		t.Errorf("the setup listener isn't the LAN's alone:\n%s", table)
+	}
+}

@@ -10,8 +10,20 @@ import (
 )
 
 // ReadKernel asks the kernel over netlink for this machine's links, addresses and routes: every routing table, with
-// each route's own table, so the LAN can keep to the main one (#108).
+// each route's own table, so the LAN can keep to the main one (#108). A dump that fails (the kernel's buffer full
+// while routes change) is asked again, twice.
 func ReadKernel() (Kernel, error) {
+	var err error
+	for range 3 {
+		var k Kernel
+		if k, err = readKernel(); err == nil {
+			return k, nil
+		}
+	}
+	return Kernel{}, err
+}
+
+func readKernel() (Kernel, error) {
 	var k Kernel
 	var err error
 	if k.Links, err = readLinks(); err != nil {
@@ -102,13 +114,15 @@ func readAddrs() ([]Addr, error) {
 				}
 			}
 		}
-		if local.IsValid() { // the machine's own end; IFA_ADDRESS is the peer's on a point-to-point link
-			address = local
-		}
 		if !address.IsValid() || plen > address.BitLen() {
 			continue
 		}
-		out = append(out, Addr{Index: index, Prefix: netip.PrefixFrom(address, plen), Flags: flags})
+		a := Addr{Index: index, Prefix: netip.PrefixFrom(address, plen), Flags: flags}
+		if local.IsValid() && local != address {
+			// A point-to-point address: IFA_LOCAL is the machine's own end, and the prefix length is the peer's.
+			a.Prefix, a.Peer = netip.PrefixFrom(local, local.BitLen()), a.Prefix
+		}
+		out = append(out, a)
 	}
 	return out, nil
 }

@@ -84,16 +84,18 @@ func TestATunnelIsNeverTheLAN(t *testing.T) {
 	}
 }
 
-// A prefix that overlaps the mesh's ranges is never the LAN, nor kept from the firewall's list as one (#108): a rogue
-// router advertisement of the mesh's ULA /64 on the LAN, a LAN using the mesh's CGNAT range, or Tailscale's ULA.
-func TestThePrefixesThatOverlapTheMeshAreRefused(t *testing.T) {
+// The mesh's ranges are never the LAN (#108): a prefix inside one is refused (a rogue router advertisement of the
+// mesh's ULA /64 on the LAN; Tailscale's ULA), and a wider one keeps the rest of the network with the mesh's range
+// carved out. An address inside one is never a LAN address. The firewall's list keeps them all: apps reach none.
+func TestTheMeshsRangesAreNeverTheLAN(t *testing.T) {
 	testenv.Isolate(t)
 	k := kernel().link("eth0", "", 0).link("wt0", "wireguard", ptp).
 		addr("wt0", "100.70.1.2/16", 0).addr("wt0", "fd10:abcd:0:1::2/64", 0).addr("wt0", "fe80::2/64", 0).
 		addr("eth0", "192.168.1.20/24", 0).
 		addr("eth0", "fd00:1::20/64", 0).
 		addr("eth0", "fd10:abcd:0:1::99/64", 0). // from the rogue advertisement
-		addr("eth0", "fd10:abcd::99/48", 0).     // a wider one holding the mesh's
+		addr("eth0", "fd10:abcd::99/48", 0).     // a wider network holding the mesh's
+		addr("eth0", "fd10:abcd:0:1::77/48", 0). // in that network, but an address inside the mesh's range
 		addr("eth0", "fd7a:115c:a1e0:ab12::5/64", 0).
 		addr("eth0", "2001:db8:1::20/64", 0).
 		addr("eth0", "100.70.9.9/24", 0).
@@ -102,22 +104,65 @@ func TestThePrefixesThatOverlapTheMeshAreRefused(t *testing.T) {
 		route(mainTable, "fd10:abcd:0:1::/64", onLink, "eth0").route(mainTable, "2001:db8:1::/64", onLink, "eth0").
 		route(mainTable, "fd10:abcd:0:1::/64", onLink, "wt0").k
 	want := []netip.Prefix{netip.MustParsePrefix("192.168.1.0/24"), netip.MustParsePrefix("fd00:1::/64"),
-		netip.MustParsePrefix("2001:db8:1::/64")}
+		netip.MustParsePrefix("fd10:abcd::/48"), netip.MustParsePrefix("2001:db8:1::/64")}
 	l := k.LAN()
 	if !sameSet(l.Prefixes, want) {
 		t.Errorf("prefixes = %v, want %v", l.Prefixes, want)
 	}
 	if wantAddrs := []netip.Addr{netip.MustParseAddr("192.168.1.20"), netip.MustParseAddr("fd00:1::20"),
-		netip.MustParseAddr("2001:db8:1::20")}; !reflect.DeepEqual(l.Addresses, wantAddrs) {
+		netip.MustParseAddr("fd10:abcd::99"), netip.MustParseAddr("2001:db8:1::20")}; !reflect.DeepEqual(l.Addresses, wantAddrs) {
 		t.Errorf("addresses = %v, want %v", l.Addresses, wantAddrs)
 	}
-	for _, a := range []string{"fd10:abcd:0:1::3", "fd10:abcd::1", "fd7a:115c:a1e0:ab12::9", "100.70.9.1"} {
-		if lan.FromHere(netip.MustParseAddr(a), l) {
-			t.Errorf("FromHere(%s): a mesh address is the LAN", a)
+	for a, wantHere := range map[string]bool{
+		"fd10:abcd:0:1::3": false, "fd7a:115c:a1e0:ab12::9": false, "100.70.9.1": false, "100.70.1.3": false,
+		"fd10:abcd::1": true, "fd10:abcd:0:2::1": true, "192.168.1.42": true,
+	} {
+		if got := lan.FromHere(netip.MustParseAddr(a), l); got != wantHere {
+			t.Errorf("FromHere(%s) = %v, want %v", a, got, wantHere)
 		}
 	}
-	if _, prefixes := k.OnLink(); !sameSet(prefixes, want) {
-		t.Errorf("OnLink prefixes = %v, want %v", prefixes, want)
+	wantOnLink := append(slices.Clone(want), netip.MustParsePrefix("fd10:abcd:0:1::/64"),
+		netip.MustParsePrefix("fd7a:115c:a1e0:ab12::/64"), netip.MustParsePrefix("100.70.9.0/24"))
+	if _, prefixes := k.OnLink(); !sameSet(prefixes, wantOnLink) {
+		t.Errorf("OnLink prefixes = %v, want %v: apps are kept from every network on the LAN's links", prefixes, wantOnLink)
+	}
+}
+
+// A VPN's address inside a wide home network (Proton VPN's 10.2.0.2/32 in a 10.0.0.0/8 LAN) carves that address
+// out; the rest of the LAN stays the LAN. Its peer's network too.
+func TestATunnelsAddressInsideTheLANIsCarvedOut(t *testing.T) {
+	testenv.Isolate(t)
+	b := kernel().link("eth0", "", 0).link("wg0", "wireguard", ptp).link("tun0", "tun", ptp).
+		addr("eth0", "10.0.0.20/8", 0).addr("wg0", "10.2.0.2/32", 0).
+		route(mainTable, "0.0.0.0/0", gw, "eth0").route(51820, "0.0.0.0/0", onLink, "wg0")
+	b.k.Addrs = append(b.k.Addrs, lan.Addr{Index: b.index("tun0"), Prefix: netip.MustParsePrefix("10.8.1.1/32"),
+		Peer: netip.MustParsePrefix("10.9.0.0/16")})
+	l := b.k.LAN()
+	if want := []netip.Prefix{netip.MustParsePrefix("10.0.0.0/8")}; !reflect.DeepEqual(l.Prefixes, want) {
+		t.Errorf("prefixes = %v, want %v", l.Prefixes, want)
+	}
+	if want := []netip.Addr{netip.MustParseAddr("10.0.0.20")}; !reflect.DeepEqual(l.Addresses, want) {
+		t.Errorf("addresses = %v, want %v", l.Addresses, want)
+	}
+	for a, want := range map[string]bool{"10.0.0.42": true, "10.2.0.2": false, "10.8.1.1": false, "10.9.3.4": false, "10.2.0.3": true} {
+		if got := lan.FromHere(netip.MustParseAddr(a), l); got != want {
+			t.Errorf("FromHere(%s) = %v, want %v", a, got, want)
+		}
+	}
+}
+
+// The uplinks are where apps reach the internet: every interface with a default route in any table, the LAN's first,
+// a VPN's tunnel too; not loopback, and not one whose default route is unreachable or a blackhole.
+func TestTheUplinksAreEveryDefaultRoutesInterface(t *testing.T) {
+	testenv.Isolate(t)
+	k := kernel().link("lo", "", lo).link("wg0", "wireguard", ptp).link("eth0", "", 0).link("eth1", "", 0).link("docker0", "bridge", 0).
+		route(51820, "0.0.0.0/0", onLink, "wg0").route(51820, "::/0", onLink, "wg0").
+		route(mainTable, "0.0.0.0/0", gw, "eth0").
+		routeType(mainTable, "::/0", 7, "eth1").
+		route(mainTable, "172.17.0.0/16", onLink, "docker0").
+		route(mainTable, "::/0", onLink, "lo").k
+	if got, want := k.Uplinks(), []string{"eth0", "wg0"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("uplinks = %v, want %v", got, want)
 	}
 }
 
