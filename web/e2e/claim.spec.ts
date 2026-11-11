@@ -154,3 +154,20 @@ test('a late answer from before a link arrived doesn’t replace setup', async (
   await page.waitForTimeout(500);
   await expect(page.getByRole('heading', { level: 1 })).toContainText(welcome);
 });
+
+// A full disk under the manager's database (#70): the claim is answered 507, the page says the disk is full, the
+// link still works so its key stays, and "Try again" claims it once there is room.
+test('a claim the manager answers "disk full" says so, keeps the key, and "Try again" claims it', async ({ page, primary }) => {
+  const link = await primary.newLink();
+  await page.route(CLAIM, (route) =>
+    route.fulfill({ status: 507, contentType: 'application/json', body: '{"error":"disk-full"}' }));
+  await page.goto(link.localUrl);
+  await expect(page.getByRole('heading', { level: 1 })).toContainText('This machine’s disk is full');
+  await expect(page.getByText('Setup can’t reach HomersLab')).toHaveCount(0);
+  await expect(page).toHaveURL(link.localUrl); // the link still works, so it stays
+
+  await page.unroute(CLAIM);
+  await page.getByRole('button', { name: 'Try again' }).click();
+  await expect(page.getByRole('heading', { level: 1 })).toContainText(welcome);
+  await expect(page).toHaveURL(/\/setup#\/welcome$/);
+});
