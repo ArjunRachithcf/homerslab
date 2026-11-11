@@ -12,7 +12,7 @@
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
     "test": "playwright test",
-    "test:unit": "node --test 'scripts/*.test.mjs'"
+    "test:unit": "node --test \"scripts/*.test.mjs\""
   },
   "dependencies": {
     "react": "19.3.1",

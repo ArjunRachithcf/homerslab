@@ -4,8 +4,8 @@
 // advisory: the next step, `npm audit --omit=dev`, fails on any in a package that ships, baseline or not.
 //
 //   npm audit --json | node scripts/audit-baseline.mjs audit-baseline.json
-import { readFileSync } from 'node:fs';
-import { argv, stdin, stdout } from 'node:process';
+import { readFileSync, realpathSync } from 'node:fs';
+import { argv, exit, stderr, stdin, stdout } from 'node:process';
 import { fileURLToPath } from 'node:url';
 
 // Text from the registry goes into the log. A line break in it could start a workflow command of its own, so
@@ -15,8 +15,9 @@ const oneLine = (s) => s.replace(/[\r\n]+/g, ' ');
 const warning = (s) => `::warning title=npm audit::${escapeData(s)}`;
 const notice = (s) => `::notice title=npm audit::${escapeData(s)}`;
 
-// The advisory's GHSA ID from its URL, or npm's own number when it has none.
-const idOf = (via) => (typeof via.url === 'string' && /GHSA(-[0-9a-z]{4}){3}$/.exec(via.url)?.[0]) || `npm-${via.source}`;
+// The advisory's GHSA ID from its URL, or npm's own number when it has none (its URL, failing that).
+const idOf = (via) =>
+  (typeof via.url === 'string' && /GHSA(-[0-9a-z]{4}){3}$/.exec(via.url)?.[0]) || (via.source !== undefined ? `npm-${via.source}` : String(via.url ?? via.title));
 
 function readBaseline(text) {
   const advisories = JSON.parse(text).advisories;
@@ -67,7 +68,12 @@ export function check(reportText, baselineText) {
   return out;
 }
 
-if (argv[1] === fileURLToPath(import.meta.url)) {
+// Run as a script (argv[1] resolved, since import.meta.url is the real path even when the checkout's path has a symlink).
+if (argv[1] && realpathSync(argv[1]) === fileURLToPath(import.meta.url)) {
+  if (stdin.isTTY) {
+    stderr.write('usage: npm audit --json | node scripts/audit-baseline.mjs [audit-baseline.json]\n');
+    exit(2);
+  }
   const chunks = [];
   for await (const chunk of stdin) chunks.push(chunk);
   const lines = check(Buffer.concat(chunks).toString('utf8'), readFileSync(argv[2] ?? 'audit-baseline.json', 'utf8'));

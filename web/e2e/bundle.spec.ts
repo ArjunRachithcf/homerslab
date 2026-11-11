@@ -5,10 +5,11 @@ import { expect, test } from './primary';
 test('the page loads no code of vite’s own', async ({ page, primary }) => {
   const scripts: Promise<string>[] = [];
   page.on('response', (r) => {
-    if (r.request().resourceType() === 'script') scripts.push(r.text());
+    if (r.request().resourceType() === 'script' && r.status() === 200) scripts.push(r.text());
   });
   await page.goto((await primary.newLink()).localUrl);
   await expect(page.getByRole('heading', { level: 1 })).toContainText('Let’s set up HomersLab');
+  await page.waitForLoadState('networkidle');
 
   const bodies = await Promise.all(scripts);
   expect(bodies).toHaveLength(1); // the one entry: no chunks, nothing loaded later
@@ -16,5 +17,7 @@ test('the page loads no code of vite’s own', async ({ page, primary }) => {
     // React DOM names rel="modulepreload" too (its preloadModule), so this looks for the polyfill's own feature test.
     expect(/supports\(\s*[`'"]modulepreload[`'"]\s*\)/.test(body), 'vite’s modulepreload polyfill is in the bundle').toBe(false);
     expect(body.includes('vite:preloadError'), 'vite’s preload helper (dynamic imports) is in the bundle').toBe(false);
+    // A dynamic import, even one loaded later than this test looks, brings the preload helper back.
+    expect(body.includes('import('), 'the bundle has a dynamic import').toBe(false);
   }
 });

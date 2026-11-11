@@ -91,7 +91,17 @@ test('a broken baseline fails loudly', () => {
   assert.throws(() => check(report(minimatch), JSON.stringify({ advisories: ['GHSA-g3hv-75wg-m249'] })));
 });
 
-test("the repository's baseline holds the dev-only minimatch advisory", () => {
-  const ids = Object.keys(JSON.parse(readFileSync(new URL('../audit-baseline.json', import.meta.url), 'utf8')).advisories);
-  assert.deepEqual(ids, [MINIMATCH]);
+test("the repository's baseline reads, and names each advisory by its GHSA ID with why it's accepted", () => {
+  const text = readFileSync(new URL('../audit-baseline.json', import.meta.url), 'utf8');
+  assert.deepEqual(warnings(check(report(), text)), []);
+  for (const [id, why] of Object.entries(JSON.parse(text).advisories)) {
+    assert.match(id, /^GHSA(-[0-9a-z]{4}){3}$/);
+    assert.ok(typeof why === 'string' && why.length > 0, id);
+  }
+});
+
+test('advisories without a GHSA ID or npm number stay apart', () => {
+  const a = { name: 'x', title: 'one', url: 'https://example.org/a', severity: 'low' };
+  const b = { name: 'x', title: 'two', url: 'https://example.org/b', severity: 'low' };
+  assert.equal(warnings(check(report(['x', [a, b]]), baseline())).length, 2);
 });
