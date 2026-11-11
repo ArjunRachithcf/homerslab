@@ -151,11 +151,14 @@ func TestATunnelsAddressInsideTheLANIsCarvedOut(t *testing.T) {
 	}
 }
 
-// The uplinks are where apps reach the internet: every interface with a default route in any table, the LAN's first,
-// a VPN's tunnel too; not loopback, and not one whose default route is unreachable or a blackhole.
-func TestTheUplinksAreEveryDefaultRoutesInterface(t *testing.T) {
+// The uplinks are where apps reach the internet: the LAN's interfaces first, then a tunnel with a default route in any
+// table; not loopback, not one whose default route is unreachable or a blackhole, and not another link with a default
+// route in another table (a local virtual network's bridge).
+func TestTheUplinksAreTheLANAndTheTunnels(t *testing.T) {
 	testenv.Isolate(t)
 	k := kernel().link("lo", "", lo).link("wg0", "wireguard", ptp).link("eth0", "", 0).link("eth1", "", 0).link("docker0", "bridge", 0).
+		link("virbr0", "bridge", 0).link("eth2", "", 0).
+		route(100, "0.0.0.0/0", gw, "virbr0").route(101, "::/0", gw, "eth2").
 		route(51820, "0.0.0.0/0", onLink, "wg0").route(51820, "::/0", onLink, "wg0").
 		route(mainTable, "0.0.0.0/0", gw, "eth0").
 		routeType(mainTable, "::/0", 7, "eth1").

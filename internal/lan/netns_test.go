@@ -24,6 +24,7 @@ const insideNamespace = "HOMERSLAB_LAN_NETNS"
 //     from the router, and the IPv6 default route through it;
 //   - wg0, a full-tunnel VPN as wg-quick makes one: its default routes in table 51820 (and a rule sending everything
 //     there), never in main. A dummy interface, so only the table tells;
+//   - wg1, a real WireGuard full tunnel in table 51821: not the LAN, but an uplink;
 //   - wt0, the mesh: a real WireGuard interface with its CGNAT address and its ULA /64;
 //   - tun0, a VPN client's tun device that puts a default route in the main table, behind eth0's;
 //   - and a rogue router advertisement on the LAN: the mesh's ULA /64 on eth0, with an address from it.
@@ -53,6 +54,11 @@ func TestTheLANInANetworkNamespace(t *testing.T) {
 		ip -6 route add 2001:db8:5::/64 dev wg0 table 51820
 		ip rule add not fwmark 51820 table 51820
 		ip -6 rule add not fwmark 51820 table 51820
+
+		ip link add wg1 type wireguard
+		ip link set wg1 up
+		ip addr add 10.66.0.2/32 dev wg1
+		ip route add default dev wg1 table 51821
 
 		ip link add wt0 type wireguard
 		ip link set wt0 up
@@ -131,8 +137,9 @@ func TestTheLANInANetworkNamespace(t *testing.T) {
 	if want := append(slices.Clone(wantPrefixes), netip.MustParsePrefix("fd10:abcd:0:1::/64")); !sameSet(prefixes, want) {
 		t.Errorf("OnLink prefixes = %v, want %v: every network on the LAN's link, which apps never reach", prefixes, want)
 	}
-	if got, want := lan.Uplinks(), []string{"eth0", "wg0", "tun0"}; !sameSet(got, want) || got[0] != "eth0" {
-		t.Errorf("uplinks = %v, want %v, the LAN's first: apps reach the internet through the VPNs too", got, want)
+	if got, want := lan.Uplinks(), []string{"eth0", "wg1", "tun0"}; !sameSet(got, want) || got[0] != "eth0" {
+		t.Errorf("uplinks = %v, want %v, the LAN's first: apps reach the internet through the VPNs' tunnels too, "+
+			"not the dummy wg0, which is no tunnel", got, want)
 	}
 }
 
@@ -159,8 +166,39 @@ func TestNoLANWhenOnlyAnotherTableHasADefaultRoute(t *testing.T) {
 	if ifaces, prefixes := lan.OnLink(); len(ifaces) != 0 || len(prefixes) != 0 {
 		t.Errorf("OnLink = %v %v, want none", ifaces, prefixes)
 	}
-	if got := lan.Uplinks(); !slices.Equal(got, []string{"wg0"}) {
-		t.Errorf("uplinks = %v, want wg0: apps still reach the internet through it", got)
+	if got := lan.Uplinks(); len(got) != 0 {
+		t.Errorf("uplinks = %v, want none: wg0 is a dummy, not a tunnel", got)
+	}
+}
+
+// A local virtual network's bridge with a default route in a table of its own (policy routing for its VMs) is
+// neither the LAN nor an uplink: only the LAN's interfaces and tunnels are, or its VMs lose the internet the firewall
+// forwards them (#108's review).
+func TestABridgeWithADefaultRouteInAnotherTableIsNoUplink(t *testing.T) {
+	testenv.Isolate(t)
+	if os.Getenv(insideNamespace) != "1" {
+		reexecInNamespace(t, "^TestABridgeWithADefaultRouteInAnotherTableIsNoUplink$")
+		return
+	}
+	freshNamespace(t)
+	sh(t, `
+		ip link set lo up
+		ip link add eth0 type dummy
+		ip link set eth0 up
+		ip addr add 192.168.1.20/24 dev eth0
+		ip route add default via 192.168.1.1 dev eth0
+		ip link add virbr0 type bridge
+		ip link set virbr0 up
+		ip addr add 192.168.122.1/24 dev virbr0
+		ip route add default via 192.168.122.254 dev virbr0 table 100
+		ip -6 addr add fd00:7a::1/64 dev virbr0 nodad
+		ip -6 route add default via fd00:7a::fe dev virbr0 table 100
+	`)
+	if got := lan.Uplinks(); !slices.Equal(got, []string{"eth0"}) {
+		t.Errorf("uplinks = %v, want eth0 only: the bridge is a local virtual network", got)
+	}
+	if got := lan.Current().Interfaces; !slices.Equal(got, []string{"eth0"}) {
+		t.Errorf("interfaces = %v, want eth0 only", got)
 	}
 }
 

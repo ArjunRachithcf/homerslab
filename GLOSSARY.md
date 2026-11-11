@@ -182,6 +182,11 @@ _Avoid_: primary domain (the primary is a node), root domain
 The way a public app is reached from the internet without opening the household's router.
 _Avoid_: tunnel, port forward
 
+**Uplink**:
+A way a node reaches the internet: its link to the home network, or a private tunnel it sends its traffic through.
+Apps reach the internet only through an uplink, and a tunnel that is an uplink is never the home network.
+_Avoid_: gateway, WAN
+
 ### Sign-in
 
 **Native sign-in**:

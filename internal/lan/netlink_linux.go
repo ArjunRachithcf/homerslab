@@ -2,6 +2,7 @@ package lan
 
 import (
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"net/netip"
 	"syscall"
@@ -10,11 +11,11 @@ import (
 )
 
 // ReadKernel asks the kernel over netlink for this machine's links, addresses and routes: every routing table, with
-// each route's own table, so the LAN can keep to the main one (#108). A dump that fails (the kernel's buffer full
-// while routes change) is asked again, twice.
+// each route's own table, so the LAN can keep to the main one (#108). A dump that fails or that a change interrupted
+// (the kernel's buffer full, or routes changing while they were read) is asked again, up to five times in all.
 func ReadKernel() (Kernel, error) {
 	var err error
-	for range 3 {
+	for range 5 {
 		var k Kernel
 		if k, err = readKernel(); err == nil {
 			return k, nil
@@ -47,7 +48,23 @@ func dump(kind int) ([]syscall.NetlinkMessage, error) {
 	if err != nil {
 		return nil, fmt.Errorf("netlink: %w", err)
 	}
+	if err := complete(msgs); err != nil {
+		return nil, err
+	}
 	return msgs, nil
+}
+
+// errInterrupted: the kernel's table changed while it was dumped, so the dump may miss or double entries.
+var errInterrupted = errors.New("netlink: the dump was interrupted by a change")
+
+// complete refuses a dump the kernel marks interrupted (NLM_F_DUMP_INTR on any of its messages).
+func complete(msgs []syscall.NetlinkMessage) error {
+	for _, m := range msgs {
+		if m.Header.Flags&unix.NLM_F_DUMP_INTR != 0 {
+			return errInterrupted
+		}
+	}
+	return nil
 }
 
 func readLinks() ([]Link, error) {

@@ -145,8 +145,9 @@ func (k Kernel) Interfaces() []string {
 	return out
 }
 
-// Uplinks are the interfaces with a unicast default route in any table, the LAN's first: a VPN's tunnel too, which
-// is never the LAN but is the way to the internet while it is up. Not loopback.
+// Uplinks are the ways to the internet: the LAN's interfaces first, then every tunnel with a unicast default route
+// in any table (a VPN's, which is never the LAN). Never another link: a local virtual network's bridge with a default
+// route in a table of its own is still a local virtual network, whose VMs the firewall forwards.
 func (k Kernel) Uplinks() []string {
 	links := k.links()
 	out := k.Interfaces()
@@ -154,7 +155,7 @@ func (k Kernel) Uplinks() []string {
 		if r.Type != unicast || r.Dst.Bits() != 0 {
 			continue
 		}
-		if l, ok := links[r.Index]; ok && !l.Loopback && !slices.Contains(out, l.Name) {
+		if l, ok := links[r.Index]; ok && l.tunnel() && !l.Loopback && !slices.Contains(out, l.Name) {
 			out = append(out, l.Name)
 		}
 	}
