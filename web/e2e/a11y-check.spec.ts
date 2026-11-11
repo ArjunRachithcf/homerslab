@@ -48,7 +48,7 @@ const finds = (rule: string, element: string) =>
   new RegExp(`${rule}(?:(?!\\n\\s*[a-z][a-z0-9-]* \\(|\\nError:)[^])*\\n\\s*- ${element}\\n`);
 /** The pixel check's report: a line for the element, with the words, the contrast found and the contrast needed. */
 const findsWord = (element: string, needs: string) => new RegExp(`\\n\\s*- ${element} “[^”\\n]+”: \\d+\\.\\d\\d:1, needs ${needs} `);
-type Expected = { check: string; says: RegExp; axePasses?: boolean };
+type Expected = { check: string; says: RegExp; axePasses?: boolean; never?: RegExp };
 
 test('a rule’s paragraph ends with its error', () => {
   const two = ['Error: axe (WCAG 2.2 AA) on “one”', '', 'Expected: ""', 'Received: "label (critical): Form elements must have labels',
@@ -60,10 +60,10 @@ test('a rule’s paragraph ends with its error', () => {
 });
 
 test('accessible() fails the test, naming the screen and the rule', async () => {
-  test.setTimeout(180_000); // a Playwright inside a Playwright, with 36 planted tests
+  test.setTimeout(180_000); // a Playwright inside a Playwright, with 37 planted tests
   const out = await mkdtemp(path.join(tmpdir(), 'homerslab-planted-'));
   try {
-    // this worker's own Playwright variables stay out of the child's environment; three workers for 36 tests
+    // this worker's own Playwright variables stay out of the child's environment; three workers for 37 tests
     const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => !/^(TEST_|PW_)/.test(k)));
     const child = await playwright(['test', 'e2e/planted.a11y.spec.ts', '--project', test.info().project.name,
       '--reporter', 'json', '--output', out, '--retries', '0', '--workers', '3'], { ...env, HOMERSLAB_PLANTED: '1' },
@@ -98,6 +98,8 @@ test('accessible() fails the test, naming the screen and the rule', async () => 
       ['planted: a faint word under an opaque bar in the card', { check: pixelCheck,
         says: /\n\s*- p#planted-under “Hidden under a bar”: not measured, \d+ words?: covered by div#planted-bar/ }],
       ['planted: a faint word in a scrolling box under a sticky header', { check: pixelCheck, says: findsWord('p#planted-scrolled', '4\\.5:1') }],
+      ['planted: a faint word in a strip that snaps', { check: pixelCheck, says: findsWord('p#planted-snapped-faint', '4\\.5:1'),
+        never: /p#planted-snapped-faint “[^”\n]+”: not measured[^\n]*never wholly in view/ }],
       ['planted: a faint option in a select', { check: pixelCheck, says: findsWord('select#planted-select', '4\\.5:1') }],
       ['planted: a faint submit button’s value', { check: pixelCheck, says: findsWord('input#planted-submit', '4\\.5:1') }],
       ['planted: words drawn by CSS content', { check: pixelCheck,
@@ -136,10 +138,11 @@ test('accessible() fails the test, naming the screen and the rule', async () => 
         says: /\n\s*- p#planted-offscreen “Half off the screen”: not measured, \d+ words?: never wholly in view/ }],
     ];
     expect([...seen.keys()].sort()).toEqual(expected.map(([t]) => t).sort());
-    for (const [title, { check, says, axePasses }] of expected) {
+    for (const [title, { check, says, axePasses, never }] of expected) {
       expect(seen.get(title)?.status, title).toBe('failed');
       expect(seen.get(title)?.errors, title).toContain(`${check} on “${title}”`);
       expect(seen.get(title)?.errors, title).toMatch(says);
+      if (never) expect(seen.get(title)?.errors, title).not.toMatch(never);
       // a plant only the pixels catch: axe passed it, so it shows what axe can't measure
       if (axePasses) expect(seen.get(title)?.errors, title).not.toContain('axe (WCAG 2.2 AA) on');
     }

@@ -43,7 +43,7 @@ export type Words = { runs: TextRun[]; signature: string };
  */
 export function textRuns(task: { scrollTo?: string; unfade?: number[] } | null): Words {
   type Edges = { l: number; t: number; r: number; b: number };
-  const w = window as { a11yHidden?: CSSStyleSheet; a11yScrolled?: [Element, number, number][]; a11yUnfaded?: [HTMLElement | SVGElement, string, string][] };
+  const w = window as { a11yHidden?: CSSStyleSheet; a11yScrolled?: [Element, number, number][]; a11ySnap?: CSSStyleSheet; a11yUnfaded?: [HTMLElement | SVGElement, string, string][] };
   // the inks as the page paints them: hideWords' sheet off while they are read; and every element hit-testable, so
   // that a word under pointer-events: none is still found where it is (all in one task, so nothing is painted)
   const hidden = w.a11yHidden;
@@ -342,6 +342,13 @@ export function textRuns(task: { scrollTo?: string; unfade?: number[] } | null):
           }
           const doc = document.scrollingElement;
           if (doc) was.push([doc, doc.scrollLeft, doc.scrollTop]);
+          // a scroller that snaps would pull the word back to its snap points; the check puts it where it measures it
+          // (kept until unscroll() puts the positions back and takes the sheet off)
+          if (!w.a11ySnap) {
+            w.a11ySnap = new CSSStyleSheet();
+            w.a11ySnap.replaceSync('* { scroll-snap-type: none !important; }');
+            for (const r of roots) r.adoptedStyleSheets = [...r.adoptedStyleSheets, w.a11ySnap];
+          }
           el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });
           // then the word itself to the middle: of each scroller, innermost first, then of the viewport (a paragraph
           // taller than either has its middle elsewhere)
