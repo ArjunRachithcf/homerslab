@@ -68,7 +68,7 @@ func TestTheManagerRunsUnprivilegedAndTheAgentAsRoot(t *testing.T) {
 	}
 	// The agent only reads facts so far, all of them world-readable, and never a home; later tickets loosen this as its
 	// contract grows (#71).
-	for k, want := range map[string]string{"ProtectHome": "yes", "PrivateDevices": "yes", "ProtectHostname": "yes",
+	for k, want := range map[string]string{"ProtectHome": "yes", "PrivateDevices": "yes",
 		"RestrictNamespaces": "yes", "RestrictRealtime": "yes", "ProtectProc": "invisible", "PrivateIPC": "yes", "ProtectKernelModules": "yes", "ProtectClock": "yes",
 		"ProtectKernelLogs": "yes", "NoNewPrivileges": "yes", "ProtectSystem": "strict", "PrivateTmp": "yes",
 		"ProtectKernelTunables": "yes", "ProtectControlGroups": "yes", "RestrictSUIDSGID": "yes",
@@ -78,6 +78,11 @@ func TestTheManagerRunsUnprivilegedAndTheAgentAsRoot(t *testing.T) {
 		if got := agent[k]; len(got) != 1 || got[0] != want {
 			t.Errorf("the agent's %s = %v, want %s", k, got, want)
 		}
+	}
+	// Without CAP_SYS_ADMIN it adds nothing, and it would freeze the agent's hostname fact at its start: a
+	// `hostnamectl set-hostname` would go unseen until a restart.
+	if got := agent["ProtectHostname"]; len(got) != 0 {
+		t.Errorf("the agent's ProtectHostname = %v, want it unset", got)
 	}
 	if got := agent["AmbientCapabilities"]; len(got) != 0 {
 		t.Errorf("the agent's AmbientCapabilities = %v, want none", got)

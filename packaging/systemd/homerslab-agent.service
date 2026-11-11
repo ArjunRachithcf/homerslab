@@ -25,7 +25,6 @@ ProtectHome=yes
 PrivateTmp=yes
 PrivateDevices=yes
 PrivateIPC=yes
-ProtectHostname=yes
 ProtectProc=invisible
 RestrictNamespaces=yes
 RestrictRealtime=yes
