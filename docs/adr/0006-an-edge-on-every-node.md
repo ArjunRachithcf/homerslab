@@ -28,7 +28,7 @@ Transparency logs. Only ts.net names (Tailscale) carry per-node certificates.
 
 ## Amended (2026-11-11)
 
-Proposed (needs-decision #82).
+Accepted (#82, the maintainer, 2026-11-11).
 
 "Apps publish no ports" still means that no app's compose file publishes one. On rootless Podman, whose containers
 the host can't route to, the agent itself publishes one loopback port per app for the edge, and the firewall accepts

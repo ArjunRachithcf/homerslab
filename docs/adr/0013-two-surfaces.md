@@ -27,7 +27,7 @@ passkey.
 
 ## Amended (2026-11-11)
 
-Proposed (needs-decision #86).
+Accepted (#86, the maintainer, 2026-11-11).
 
 **A third surface: the manager's device page.** A person adds one of their own devices to the mesh from another
 device of theirs. That needs a mesh key, which is privileged, so it can't come from Home's process. Instead, the

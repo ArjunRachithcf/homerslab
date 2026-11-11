@@ -36,7 +36,7 @@ Runtipi's catalog is GPL-3.0 and umbrel-apps has no licence, so neither seeds ou
 
 ## Amended (2026-11-11)
 
-Proposed (needs-decision #89).
+Accepted (#89, the maintainer, 2026-11-11).
 
 "Signed git repositories, trusted by their publisher's key" stands, but a signature alone doesn't stop an older,
 correctly signed commit from being served (rollback), or the same commit forever (freeze), and doesn't stop one catalog

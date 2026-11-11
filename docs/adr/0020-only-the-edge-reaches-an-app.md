@@ -1,11 +1,11 @@
 ---
-status: proposed
+status: accepted
 date: 2026-11-11
 ---
 
 # Only the edge reaches an app; apps reach only the internet
 
-Proposed (needs-decision #82).
+Accepted (#82, the maintainer, 2026-11-11).
 
 "Apps publish no ports" (ADR 0006, ADR 0009) says nothing about who else on a node can reach an app, or what an app
 can reach. Two holes follow: any local process could connect to an app's container and send a forged identity
