@@ -48,8 +48,12 @@ export class Primary {
 
   // An interruption: the manager stops, as after a power cut, and starts again on the same database.
   async restartManager(): Promise<void> {
-    await stop(this.manager);
+    await this.stopManager();
     await this.startManager();
+  }
+
+  async stopManager(): Promise<void> {
+    await stop(this.manager);
   }
 
   // What the installer does: ask the manager, through the CLI, for a one-time link.
