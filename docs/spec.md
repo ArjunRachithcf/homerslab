@@ -1132,9 +1132,11 @@ From the interactive review of the reworked prototypes:
   - family apps (#120);
   - downloads, opt-in (#121);
   - apps beyond classic (#123);
+  - a second app for every classic purpose (#127);
   - the maintainer's own apps in his private catalog (#122).
-- **Two apps per purpose** for the purposes added beyond classic, so that each household chooses (the maintainer). A
-  household may install either or both, and each person may hide the one they don't use.
+- **Two apps for every purpose**, classic's included, so that each household chooses (the maintainer, 2026-11-11;
+  #127 pairs classic's apps, #123 the purposes beyond classic). A household may install either or both, and each person
+  may hide the one they don't use. Where no credible open-source second app exists, the Store says so instead.
 
 ### Spikes
 
