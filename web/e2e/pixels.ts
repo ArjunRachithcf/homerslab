@@ -14,62 +14,102 @@ export const PERCENTILE = 0.05;
 /** WCAG 2.2's AA minimum (1.4.3): 4.5:1, or 3:1 for large text (24px and up, or 18.66px and up in bold). */
 export const needed = (size: number, weight: number): number => (size >= 24 || (size >= 18.66 && weight >= 700) ? 3 : 4.5);
 
-/** A word's box on the screen, in CSS pixels from the viewport's corner; `inView` once nothing hides any of it. */
-export type Box = { key: string; x: number; y: number; w: number; h: number; inView: boolean; covered: boolean };
-
-/** A run of text: a text node (or a field's value or placeholder), with its ink (sRGB 0-255, alpha 0-1) and boxes. */
-export type TextRun = { id: number; where: string; text: string; size: number; weight: number; ink: [number, number, number, number]; boxes: Box[] };
+/**
+ * A word's box on the screen, in CSS pixels from the viewport's corner. `inView` once the viewport and every scroller
+ * show all of it and nothing covers its middle; `covered` names what does, when something does.
+ */
+export type Box = { key: string; x: number; y: number; w: number; h: number; inView: boolean; covered: string | null };
 
 /**
- * In the page: every run of text it shows, with a box per word (per line, when a word breaks across two). Text that
- * isn't shown (hidden, transparent, clipped away, collapsed) has no boxes, and nor does text in an inactive control,
- * which WCAG exempts. With `scrollTo` (a box's key), it instead scrolls that box to the middle of the viewport, noting
- * every scroll position it changes in `a11yScrolled` for a11y.ts to put back, and returns nothing.
+ * A run of text: a text node (or a field's value or placeholder) with its ink (sRGB 0-255, alpha 0-1), `fade` (its
+ * element's and every ancestor's opacity, multiplied) and its boxes. `unreadable` says why its ink can't be measured.
  */
-export function textRuns(scrollTo: string | null): TextRun[] {
-  // the inks as the page paints them: hideWords' sheet off while they are read (in one task, so nothing is painted)
-  const hidden = (window as { a11yHidden?: CSSStyleSheet }).a11yHidden;
+export type TextRun = {
+  id: number; where: string; text: string; size: number; weight: number; ink: [number, number, number, number]; fade: number;
+  unreadable?: string; boxes: Box[];
+};
+
+/** What the page shows: its runs of text, and a fingerprint of all its text, to tell when the page has changed. */
+export type Words = { runs: TextRun[]; signature: string };
+
+/**
+ * In the page, with no task: every run of text it shows, with a box per word (per line, when a word breaks across
+ * two). Text that isn't shown (hidden, transparent, clipped away, collapsed) has no boxes; nor has text in an inactive
+ * control, which WCAG exempts, or text that a modal dialog has made inert. With a task:
+ * - `scrollTo` (a box's key): scrolls that box to the middle of its scrollers and the viewport, noting every scroll
+ *   position it changes in `a11yScrolled` for a11y.ts to put back;
+ * - `unfade` (run ids): sets every ancestor of those runs that is less than opaque to opacity 1, noting the old values
+ *   in `a11yUnfaded` for refade(), so a shot shows what their words are painted on inside the faded group.
+ */
+export function textRuns(task: { scrollTo?: string; unfade?: number[] } | null): Words {
+  type Edges = { l: number; t: number; r: number; b: number };
+  const w = window as { a11yHidden?: CSSStyleSheet; a11yScrolled?: [Element, number, number][]; a11yUnfaded?: [HTMLElement | SVGElement, string, string][] };
+  // the inks as the page paints them: hideWords' sheet off while they are read; and every element hit-testable, so
+  // that a word under pointer-events: none is still found where it is (all in one task, so nothing is painted)
+  const hidden = w.a11yHidden;
+  const hits = new CSSStyleSheet();
+  hits.replaceSync('*, *::before, *::after { pointer-events: auto !important; }');
+  const roots: (Document | ShadowRoot)[] = [document];
+  const found: (Text | HTMLInputElement | HTMLTextAreaElement)[] = [];
+  const walk = (root: Node) => {
+    const tw = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT);
+    for (let n = tw.nextNode(); n; n = tw.nextNode()) {
+      if (n instanceof Text) {
+        if (/\S/.test(n.data)) found.push(n);
+      } else if (n instanceof HTMLTextAreaElement || (n instanceof HTMLInputElement && /^(text|search|email|url|tel|number|password)$/.test(n.type))) {
+        found.push(n);
+      }
+      if (n instanceof Element && n.shadowRoot) {
+        roots.push(n.shadowRoot);
+        walk(n.shadowRoot);
+      }
+    }
+  };
+  walk(document.body);
   if (hidden) hidden.disabled = true;
+  for (const r of roots) r.adoptedStyleSheets = [...r.adoptedStyleSheets, hits];
   try {
     return collect();
   } finally {
+    for (const r of roots) r.adoptedStyleSheets = r.adoptedStyleSheets.filter((s) => s !== hits);
     if (hidden) hidden.disabled = false;
   }
 
-  function collect(): TextRun[] {
+  function collect(): Words {
     const up = (e: Element): Element | null => e.parentElement ?? ((e.parentNode as ShadowRoot | null)?.host ?? null);
-    type Edges = { l: number; t: number; r: number; b: number };
     const cut = (a: Edges, b: Edges): Edges => ({ l: Math.max(a.l, b.l), t: Math.max(a.t, b.t), r: Math.min(a.r, b.r), b: Math.min(a.b, b.b) });
     const inner = (e: Element): Edges => {
       const r = e.getBoundingClientRect();
       return { l: r.left + e.clientLeft, t: r.top + e.clientTop, r: r.left + e.clientLeft + e.clientWidth, b: r.top + e.clientTop + e.clientHeight };
     };
-
-    // the text, in document order (open shadow roots included), and fields whose words are their value or placeholder
-    const found: (Text | HTMLInputElement | HTMLTextAreaElement)[] = [];
-    const walk = (root: Node) => {
-      const w = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT);
-      for (let n = w.nextNode(); n; n = w.nextNode()) {
-        if (n instanceof Text) {
-          if (/\S/.test(n.data)) found.push(n);
-        } else if (n instanceof HTMLTextAreaElement || (n instanceof HTMLInputElement && /^(text|search|email|url|tel|number|password)$/.test(n.type))) {
-          found.push(n);
-        } else if (n instanceof Element && n.shadowRoot) {
-          walk(n.shadowRoot);
-        }
-      }
+    const style = new Map<Element, CSSStyleDeclaration>();
+    const css = (e: Element) => {
+      let s = style.get(e);
+      if (!s) style.set(e, (s = getComputedStyle(e)));
+      return s;
     };
-    walk(document.body);
 
-    // the boxes that clip an element's words: overflow that hides for good, and scrollers (shown once scrolled to)
+    // what clips an element's words: its own overflow, then its containing block's (a box positioned absolutely or
+    // fixed escapes the overflow of every ancestor in between). Overflow that hides clips for good; a scroller shows
+    // its words once scrolled to.
+    const holdsFixed = (s: CSSStyleDeclaration) => s.transform !== 'none' || s.filter !== 'none' || s.backdropFilter !== 'none' ||
+      s.perspective !== 'none' || /paint|layout|strict|content/.test(s.contain) || /transform|filter|perspective/.test(s.willChange) ||
+      s.containerType !== 'normal';
+    const containingBlock = (el: Element): Element | null => {
+      const position = css(el).position;
+      let e = up(el);
+      if (position === 'fixed') while (e && !holdsFixed(css(e))) e = up(e);
+      if (position === 'absolute') while (e && css(e).position === 'static' && !holdsFixed(css(e))) e = up(e);
+      return e;
+    };
     type Clips = { hard: Edges[]; scrollers: Element[] };
     const clipCache = new Map<Element, Clips>();
     const clips = (el: Element): Clips => {
       let c = clipCache.get(el);
       if (c) return c;
-      const parent = up(el);
-      const above: Clips = parent ? clips(parent) : { hard: [], scrollers: [] };
-      const s = getComputedStyle(el);
+      const block = containingBlock(el);
+      const above: Clips = block ? clips(block) : { hard: [], scrollers: [] };
+      const s = css(el);
       c = above;
       if (s.display !== 'inline' && s.display !== 'contents' && (s.overflowX !== 'visible' || s.overflowY !== 'visible')) {
         const scrolls = /auto|scroll/.test(s.overflowX + s.overflowY);
@@ -78,18 +118,26 @@ export function textRuns(scrollTo: string | null): TextRun[] {
       clipCache.set(el, c);
       return c;
     };
+    const fadeCache = new Map<Element, number>();
+    const fadeOf = (e: Element | null): number => {
+      if (!e) return 1;
+      let f = fadeCache.get(e);
+      if (f === undefined) fadeCache.set(e, (f = Number(css(e).opacity) * fadeOf(up(e))));
+      return f;
+    };
 
     const canvas = new OffscreenCanvas(1, 1).getContext('2d', { willReadFrequently: true });
-    const rgba = (colour: string): [number, number, number, number] => {
+    const rgba = (colour: string): [number, number, number, number] | null => {
       const legacy = /^rgba?\(([\d.]+), ([\d.]+), ([\d.]+)(?:, ([\d.]+))?\)$/.exec(colour);
       if (legacy) return [Number(legacy[1]), Number(legacy[2]), Number(legacy[3]), legacy[4] === undefined ? 1 : Number(legacy[4])];
       const srgb = /^color\(srgb ([\d.e-]+) ([\d.e-]+) ([\d.e-]+)(?: \/ ([\d.]+))?\)$/.exec(colour);
       if (srgb) return [Number(srgb[1]) * 255, Number(srgb[2]) * 255, Number(srgb[3]) * 255, srgb[4] === undefined ? 1 : Number(srgb[4])];
-      // any other colour space: as the browser paints it (a canvas ignores a colour it can't read: the sentinel stays)
+      // any other colour space: as the browser paints it (a canvas ignores what isn't a colour: the sentinel stays)
       const sentinel = '#010203';
-      if (canvas) canvas.fillStyle = sentinel;
-      if (canvas) canvas.fillStyle = colour;
-      if (!canvas || (canvas.fillStyle === sentinel && colour !== sentinel)) throw new Error(`can't read the colour “${colour}”`);
+      if (!canvas) return null;
+      canvas.fillStyle = sentinel;
+      canvas.fillStyle = colour;
+      if (canvas.fillStyle === sentinel && colour !== sentinel) return null;
       canvas.clearRect(0, 0, 1, 1);
       canvas.fillRect(0, 0, 1, 1);
       const d = canvas.getImageData(0, 0, 1, 1).data;
@@ -102,32 +150,47 @@ export function textRuns(scrollTo: string | null): TextRun[] {
     };
     const view: Edges = { l: 0, t: 0, r: innerWidth, b: innerHeight };
     const range = document.createRange();
+    const modal = document.querySelector(':modal');
+    const target = task?.scrollTo ? Number(task.scrollTo.split(':')[0]) : null;
 
+    let signature = `${found.length}`;
     const runs: TextRun[] = [];
-    found.forEach((node, id) => {
+    for (const [id, node] of found.entries()) {
       const field = node instanceof Text ? null : node;
       const el = field ?? (node as Text).parentElement;
-      if (!el) return;
-      if (!field && el.closest('script, style, noscript, template, title, textarea, select, option')) return;
-      if (!el.checkVisibility({ opacityProperty: true, visibilityProperty: true })) return;
-      if (el.closest(':disabled, [aria-disabled="true"]')) return;
+      if (!el) continue;
       const placeholder = !!field && !field.value;
-      if (field ? !/\S/.test(field.value || field.placeholder) : false) return;
       // a field's value is never quoted (it may be a secret someone typed): the report names it instead
       const text = field ? (placeholder ? `placeholder: ${field.placeholder}` : 'what’s typed in the field') : (node as Text).data;
-      const s = getComputedStyle(el, placeholder ? '::placeholder' : null);
-      const ink = rgba(el instanceof SVGElement ? s.fill : s.webkitTextFillColor || s.color); // SVG's words are painted with fill
-      for (let e: Element | null = el; e; e = up(e)) ink[3] *= +getComputedStyle(e).opacity;
-      if (ink[3] === 0) return; // nothing painted (words in a gradient through background-clip: text, too)
+      signature += `\n${text}`;
+      if (target !== null && id !== target) continue;
+      if (task?.unfade && !task.unfade.includes(id)) continue;
+      if (!field && el.closest('script, style, noscript, template, title, textarea, select, option')) continue;
+      if (field && !/\S/.test(field.value || field.placeholder)) continue;
+      if (!el.checkVisibility({ opacityProperty: true, visibilityProperty: true })) continue;
+      if (el.closest(':disabled, [aria-disabled="true"], [inert]') || (modal && !modal.contains(el))) continue;
+      if (task?.unfade) {
+        const was = (w.a11yUnfaded ??= []);
+        for (let e: Element | null = el; e; e = up(e)) {
+          if ((e instanceof HTMLElement || e instanceof SVGElement) && Number(css(e).opacity) < 1 && !was.some(([x]) => x === e)) {
+            was.push([e, e.style.getPropertyValue('opacity'), e.style.getPropertyPriority('opacity')]);
+            e.style.setProperty('opacity', '1', 'important');
+          }
+        }
+        continue;
+      }
+      const s = placeholder ? getComputedStyle(el, '::placeholder') : css(el);
+      const paint = el instanceof SVGElement ? s.fill : s.webkitTextFillColor || s.color; // SVG's words are painted with fill
+      if (paint === 'none') continue;
+      const ink = rgba(paint);
+      const fade = fadeOf(el);
+      if (ink && ink[3] * fade === 0) continue; // nothing painted (words in a gradient through background-clip: text, too)
 
-      // a box per word (a field: its content box, as a whole), clipped; in view once the viewport and every scroller show
-      // all of it and nothing covers its middle
-      const { hard, scrollers } = clips(el);
-      // each box, and how to find it again once its element has scrolled
+      // each box (a field's: its content box, as a whole), and how to find it again once its element has scrolled
       const rects: { k: string; at: () => Edges }[] = [];
       if (field) {
         rects.push({ k: '0', at: () => {
-          const cs = getComputedStyle(field);
+          const cs = css(field);
           const b = inner(field);
           return { l: b.l + parseFloat(cs.paddingLeft), t: b.t + parseFloat(cs.paddingTop), r: b.r - parseFloat(cs.paddingRight), b: b.b - parseFloat(cs.paddingBottom) };
         } });
@@ -146,20 +209,16 @@ export function textRuns(scrollTo: string | null): TextRun[] {
           }
         }
       }
+      const { hard, scrollers } = clips(el);
+      const root = el.getRootNode() as Document | ShadowRoot;
       const boxes: Box[] = [];
       for (const { k, at } of rects) {
+        const key = `${id}:${k}`;
+        if (task?.scrollTo && key !== task.scrollTo) continue;
         let b = at();
         for (const c of hard) b = cut(b, c);
         if (b.r - b.l < 2 || b.b - b.t < 2) continue;
-        let shown = cut(b, view);
-        for (const c of scrollers) shown = cut(shown, inner(c));
-        const whole = shown.l === b.l && shown.t === b.t && shown.r === b.r && shown.b === b.b;
-        const root = el.getRootNode() as Document | ShadowRoot;
-        const hit = whole ? root.elementFromPoint((b.l + b.r) / 2, (b.t + b.b) / 2) : null;
-        const covered = whole && !(hit && (hit === el || el.contains(hit) || hit.contains(el)));
-        const key = `${id}:${k}`;
-        if (key === scrollTo) {
-          const w = window as { a11yScrolled?: [Element, number, number][] };
+        if (task?.scrollTo) {
           const was = (w.a11yScrolled ??= []);
           for (let e = up(el); e; e = up(e)) {
             if (e.scrollHeight > e.clientHeight || e.scrollWidth > e.clientWidth) was.push([e, e.scrollLeft, e.scrollTop]);
@@ -167,31 +226,60 @@ export function textRuns(scrollTo: string | null): TextRun[] {
           const doc = document.scrollingElement;
           if (doc) was.push([doc, doc.scrollLeft, doc.scrollTop]);
           el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });
-          // a word in a paragraph taller than the viewport: the paragraph's middle isn't the word's
-          const now = at();
-          if (now.t < 0 || now.b > innerHeight) doc?.scrollBy({ top: (now.t + now.b) / 2 - innerHeight / 2, behavior: 'instant' });
-          return;
+          // then the word itself to the middle: of each scroller, innermost first, then of the viewport (a paragraph
+          // taller than either has its middle elsewhere)
+          for (const sc of [...scrollers].reverse()) {
+            const [r, c] = [at(), inner(sc)];
+            sc.scrollBy({ left: (r.l + r.r - c.l - c.r) / 2, top: (r.t + r.b - c.t - c.b) / 2, behavior: 'instant' });
+          }
+          const r = at();
+          doc?.scrollBy({ left: (r.l + r.r - innerWidth) / 2, top: (r.t + r.b - innerHeight) / 2, behavior: 'instant' });
+          continue;
         }
+        let shown = cut(b, view);
+        for (const c of scrollers) shown = cut(shown, inner(c));
+        const whole = shown.l === b.l && shown.t === b.t && shown.r === b.r && shown.b === b.b;
+        const hit = whole ? root.elementFromPoint((b.l + b.r) / 2, (b.t + b.b) / 2) : null;
+        const covered = whole && !(hit && (hit === el || el.contains(hit) || hit.contains(el))) ? (hit ? where(hit) : 'nothing it can find') : null;
         boxes.push({ key, x: b.l, y: b.t, w: b.r - b.l, h: b.b - b.t, inView: whole && !covered, covered });
       }
       if (boxes.length) {
-        runs.push({ id, where: where(el), text: text.replace(/\s+/g, ' ').trim(), size: parseFloat(s.fontSize), weight: parseInt(s.fontWeight, 10), ink, boxes });
+        runs.push({ id, where: where(el), text: text.replace(/\s+/g, ' ').trim(), size: parseFloat(s.fontSize), weight: parseInt(s.fontWeight, 10),
+          ink: ink ?? [0, 0, 0, 1], fade, ...(ink ? {} : { unreadable: `painted with “${paint}”, not one colour` }), boxes });
       }
-    });
-    if (scrollTo) return [];
-    return runs;
+    }
+    return task ? { runs: [], signature } : { runs, signature };
   }
+}
+
+/** In the page: puts back every opacity that textRuns' `unfade` changed. */
+export function refade(): void {
+  const w = window as { a11yUnfaded?: [HTMLElement | SVGElement, string, string][] };
+  for (const [e, value, priority] of (w.a11yUnfaded ?? []).reverse()) {
+    if (value) e.style.setProperty('opacity', value, priority);
+    else e.style.removeProperty('opacity');
+  }
+  delete w.a11yUnfaded;
 }
 
 /**
  * In the page: hides every word (`on`), or shows them again, without moving anything. Only the glyphs go:
  * -webkit-text-fill-color, not `color`, so an icon, border or fill drawn in currentColor stays as it is. Transitions
- * stop, so the words go at once. The sheet is a constructed one: the pages' CSP refuses inline style.
+ * stop, so the words go at once. The sheet is a constructed one (the pages' CSP refuses inline style), adopted by the
+ * document and every open shadow root, however deep.
  */
 export function hideWords(on: boolean): void {
   const w = window as { a11yHidden?: CSSStyleSheet };
   const roots: (Document | ShadowRoot)[] = [document];
-  for (const e of document.querySelectorAll('*')) if (e.shadowRoot) roots.push(e.shadowRoot);
+  const walk = (root: Document | ShadowRoot) => {
+    for (const e of root.querySelectorAll('*')) {
+      if (e.shadowRoot) {
+        roots.push(e.shadowRoot);
+        walk(e.shadowRoot);
+      }
+    }
+  };
+  walk(document);
   if (on) {
     const sheet = new CSSStyleSheet();
     sheet.replaceSync(`*, *::before, *::after, *::placeholder { -webkit-text-fill-color: transparent !important;
@@ -275,20 +363,27 @@ const luminance = (r: number, g: number, b: number) => 0.2126 * (linear[r] ?? 0)
 const ratio = (a: number, b: number) => (Math.max(a, b) + 0.05) / (Math.min(a, b) + 0.05);
 
 /**
- * A box's contrast: the ink, alpha-composited over each background pixel in the box as the browser paints it (in
- * sRGB), against that pixel; the box's contrast is the PERCENTILE of them. `dpr` turns CSS pixels into the shot's.
+ * A box's contrast: the ink alpha-composited over each background pixel in the box as the browser paints it (in sRGB),
+ * against that pixel; the box's contrast is the PERCENTILE of them. A word in a faded group (an ancestor's opacity) is
+ * painted inside the group first, over what the group itself paints there (`unfaded`, the same area shot with the group
+ * opaque), and the group then fades over what is below it: on screen, the background plus fade × alpha × (ink − the
+ * group's own pixel). Without `unfaded`, the group paints nothing of its own there. `dpr` turns CSS pixels into the
+ * shot's.
  */
-export function boxContrast(shot: Shot, box: Box, ink: TextRun['ink'], dpr: number): number {
+export function boxContrast(shot: Shot, box: Box, ink: TextRun['ink'], fade: number, dpr: number, unfaded?: Shot): number {
   const [x0, y0] = [Math.max(0, Math.round(box.x * dpr)), Math.max(0, Math.round(box.y * dpr))];
   const [x1, y1] = [Math.min(shot.width, Math.round((box.x + box.w) * dpr)), Math.min(shot.height, Math.round((box.y + box.h) * dpr))];
-  const [r, g, b, a] = ink;
+  const [r, g, b] = ink;
+  const a = ink[3] * fade;
+  const own = unfaded ?? shot;
+  const over = (t: number, u: number, v: number) => Math.min(255, Math.max(0, Math.round(u + a * (t - v))));
   const found: number[] = [];
   for (let y = y0; y < y1; y++) {
     for (let x = x0; x < x1; x++) {
       const o = (y * shot.width + x) * 4;
       const [br, bg, bb] = [shot.rgba[o] ?? 0, shot.rgba[o + 1] ?? 0, shot.rgba[o + 2] ?? 0];
-      const over = (t: number, u: number) => Math.round(t * a + u * (1 - a));
-      found.push(ratio(luminance(over(r, br), over(g, bg), over(b, bb)), luminance(br, bg, bb)));
+      const [gr, gg, gb] = [own.rgba[o] ?? 0, own.rgba[o + 1] ?? 0, own.rgba[o + 2] ?? 0];
+      found.push(ratio(luminance(over(r, br, gr), over(g, bg, gg), over(b, bb, gb)), luminance(br, bg, bb)));
     }
   }
   if (!found.length) return NaN;

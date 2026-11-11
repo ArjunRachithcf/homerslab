@@ -38,6 +38,21 @@ const plants: { name: string; look: Look; css?: [string, string, string][]; html
   { name: 'a word half off the screen', look: { theme: 'light', motion: 'reduce', transparency: 'no-preference' },
     html: '<p id="planted-offscreen">Half off the screen</p>', after: '.as-foot',
     css: [['#planted-offscreen', 'position', 'fixed'], ['#planted-offscreen', 'left', '-40px'], ['#planted-offscreen', 'top', '40%']] },
+  // a faint label floating over a field, which pointer-events: none lets clicks through: still measured, not covered
+  { name: 'a faint label floating over a field', look: { theme: 'light', motion: 'reduce', transparency: 'no-preference' },
+    html: '<div id="planted-field"><input id="planted-input" aria-label="Planted"><span id="planted-float">A floating label</span></div>',
+    css: [['#planted-field', 'position', 'relative'], ['#planted-field', 'text-align', 'left'], ['#planted-float', 'position', 'absolute'], ['#planted-float', 'left', '8px'],
+      ['#planted-float', 'top', '2px'], ['#planted-float', 'pointer-events', 'none'], ['#planted-float', 'color', '#b4b4b4']] },
+  // a fixed toast escapes the overflow of the box it sits in, when that box doesn't hold fixed boxes: still measured
+  { name: 'a faint toast in a box that hides its overflow', look: { theme: 'light', motion: 'reduce', transparency: 'no-preference' },
+    html: '<div id="planted-wrap"><p id="planted-toast">A faint toast</p></div>', after: '.as-foot',
+    css: [['#planted-wrap', 'overflow', 'hidden'], ['#planted-wrap', 'height', '0'], ['#planted-toast', 'position', 'fixed'],
+      ['#planted-toast', 'left', '24px'], ['#planted-toast', 'top', '30%'], ['#planted-toast', 'color', '#a8a8a8']] },
+  // dark words in a faded grey group: inside the group they sit on the grey, which fades with them (3.3:1 on screen;
+  // fading only the ink would give 5.1:1)
+  { name: 'dark words in a faded grey group', look: { theme: 'light', motion: 'reduce', transparency: 'reduce' },
+    html: '<p id="planted-dim">Dark words on a faded grey</p>',
+    css: [['#planted-dim', 'background-color', '#787878'], ['#planted-dim', 'color', '#000'], ['#planted-dim', 'opacity', '0.7']] },
 ];
 
 for (const plant of plants) {

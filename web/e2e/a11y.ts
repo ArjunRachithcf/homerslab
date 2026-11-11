@@ -6,7 +6,7 @@
 // each element; axe's findings and the contrasts measured are attached to the HTML report.
 import AxeBuilder from '@axe-core/playwright';
 import { expect, type Page, test } from '@playwright/test';
-import { boxContrast, decodePng, hideWords, needed, PERCENTILE, type TextRun, textRuns } from './pixels';
+import { boxContrast, decodePng, hideWords, needed, PERCENTILE, refade, type Shot, type TextRun, textRuns } from './pixels';
 
 // axe-core's types, as the AxeBuilder in use has them (axe-core itself is its dependency, not ours)
 type AxeResults = Awaited<ReturnType<AxeBuilder['analyze']>>;
@@ -95,20 +95,24 @@ export async function accessible(page: Page, screen: string, { glass }: { glass?
   }
 }
 
-/** What legible() measured of one run of text: its worst box's contrast (NaN where it couldn't measure one). */
-export type Measured = { where: string; text: string; size: number; weight: number; contrast: number; needs: number; unmeasured: number; covered: number };
+/**
+ * What legible() measured of one run of text: its worst word's contrast (NaN when none could be measured), what it
+ * needs, and why any of its words couldn't be measured.
+ */
+export type Measured = { where: string; text: string; size: number; weight: number; contrast: number; needs: number; unmeasured: string[] };
 
 /**
  * Measures each run of text the page shows against the pixels behind it, at glass level `glass` (or the page's own):
  * - it finds each word's boxes (Range.getClientRects, clipped as the page clips them);
  * - it hides every word's glyphs and takes one screenshot of the area the words in view cover, so the shot holds what
  *   is behind them: glass, its blur, the wallpaper;
- * - each word's contrast is its ink (from its computed style, its opacities included) alpha-composited over each pixel
- *   of its box, against that pixel, at the 5th percentile of the box (pixels.ts says why);
+ * - each word's contrast is its ink (from its computed style) alpha-composited over each pixel of its box, against that
+ *   pixel, at the 5th percentile of the box (pixels.ts says why); a word in a faded group is composited inside the
+ *   group, from a second shot with the group opaque;
  * - a run's contrast is its worst word's, and it fails below 4.5:1 (3:1 for large text).
- * Words outside the viewport, or under a scroller's edge, are scrolled to the middle and shot again there (one shot per
- * scroll, for every word it shows), then everything is scrolled back. A word that can't be brought wholly into view
- * fails, as not measured; a word that something else covers wherever it is scrolled isn't shown, and is only listed.
+ * Words outside the viewport, under a scroller's edge or covered (by a sticky bar, say) are scrolled to the middle and
+ * shot again there (one shot per scroll, for every word it shows), then everything is scrolled back. A word that can't
+ * be brought wholly into view, that something still covers there, or whose ink isn't one colour, fails as not measured.
  */
 export async function legible(page: Page, glass?: Glass): Promise<{ runs: Measured[]; problems: { level: string; text: string } }> {
   const before = await page.evaluate((g) => {
@@ -120,56 +124,75 @@ export async function legible(page: Page, glass?: Glass): Promise<{ runs: Measur
   try {
     if (glass) expect.soft(await settle(page), `the page settles at glass level ${glass}`).toEqual([]);
     const level = await page.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue('--glass').trim());
-    const preset = glass ?? ({ 0: 'clear', 0.5: 'balanced', 1: 'frosted' } as Record<string, Glass | undefined>)[Number(level)];
-    const levelName = `glass ${preset ? preset[0]?.toUpperCase() + preset.slice(1) : 'of its own'} (--glass: ${level})`;
+    const own = glassLevels.find((l) => l === before);
+    const preset = glass ?? own ?? ({ 0: 'clear', 0.5: 'balanced', 1: 'frosted' } as Record<string, Glass | undefined>)[level];
+    const levelName = !level ? 'no glass level' : `glass ${preset ? preset[0]?.toUpperCase() + preset.slice(1) : 'of its own'} (--glass: ${level})`;
     await page.evaluate(hideWords, true);
-    let runs = await page.evaluate(textRuns, null);
+    let { runs, signature } = await page.evaluate(textRuns, null);
     if (!runs.length) throw new Error('no words found on the page');
     const first = runs;
-    const text = new Map(first.map((r) => [r.id, r.text]));
     const contrast = new Map<string, number>();
-    const unmeasured = new Set<string>();
-    const covered = new Set<string>();
+    const unmeasured = new Map<string, string>();
     const pending = new Set(first.flatMap((r) => r.boxes.map((b) => b.key)));
+    for (const r of first) {
+      if (!r.unreadable) continue;
+      for (const b of r.boxes) unmeasured.set(b.key, r.unreadable);
+      for (const b of r.boxes) pending.delete(b.key);
+    }
     let target: string | undefined;
     for (;;) {
-      const changed = runs.find((r) => text.has(r.id) && text.get(r.id) !== r.text);
-      if (changed) throw new Error(`the page changed while its words were measured: ${changed.where} now says “${changed.text}”`);
       const now = runs.flatMap((r) => r.boxes.filter((b) => b.inView && pending.has(b.key)).map((b) => [r, b] as const));
       if (now.length) {
         // one shot of the area these words cover, in CSS pixels: behind hidden words the background is smooth (glass
         // blurs, the wallpaper is gradients), so the device's extra pixels add time and nothing else
         const [left, top] = [Math.floor(Math.min(...now.map(([, b]) => b.x))), Math.floor(Math.min(...now.map(([, b]) => b.y)))];
         const clip = { x: left, y: top, width: Math.ceil(Math.max(...now.map(([, b]) => b.x + b.w))) - left, height: Math.ceil(Math.max(...now.map(([, b]) => b.y + b.h))) - top };
-        const shot = decodePng(await page.screenshot({ scale: 'css', animations: 'allow', clip }));
+        const shoot = async () => decodePng(await page.screenshot({ scale: 'css', animations: 'allow', clip }));
+        const shot = await shoot();
+        const faded = [...new Set(now.filter(([r]) => r.fade < 1).map(([r]) => r.id))];
+        let unfaded: Shot | undefined;
+        if (faded.length) {
+          try {
+            await page.evaluate(textRuns, { unfade: faded });
+            unfaded = await shoot();
+          } finally {
+            await page.evaluate(refade);
+          }
+        }
         for (const [r, b] of now) {
-          contrast.set(b.key, boxContrast(shot, { ...b, x: b.x - left, y: b.y - top }, r.ink, shot.width / clip.width));
+          const c = boxContrast(shot, { ...b, x: b.x - left, y: b.y - top }, r.ink, r.fade, shot.width / clip.width, r.fade < 1 ? unfaded : undefined);
+          if (Number.isNaN(c)) unmeasured.set(b.key, 'too small to hold a pixel');
+          else contrast.set(b.key, c);
           pending.delete(b.key);
         }
       }
       if (target && pending.delete(target)) {
-        // scrolled to the middle, and still not wholly in view: covered there too, or out of reach
+        // scrolled to the middle, and still not wholly in view, or covered there too
         const box = runs.flatMap((r) => r.boxes).find((b) => b.key === target);
-        (box?.covered ? covered : unmeasured).add(target);
+        unmeasured.set(target, box?.covered ? `covered by ${box.covered}` : 'never wholly in view');
       }
       target = first.flatMap((r) => r.boxes).find((b) => pending.has(b.key))?.key;
       if (!target) break;
-      await page.evaluate(textRuns, target);
+      await page.evaluate(textRuns, { scrollTo: target });
       expect.soft(await settle(page), 'the page settles where a word was scrolled to').toEqual([]);
-      runs = await page.evaluate(textRuns, null);
+      const again = await page.evaluate(textRuns, null);
+      if (again.signature !== signature) throw new Error('the page changed while its words were measured');
+      ({ runs, signature } = again);
     }
     const measured = first.map((r: TextRun): Measured => {
-      const shown = r.boxes.filter((b) => !covered.has(b.key));
-      const worst = Math.min(...shown.filter((b) => contrast.has(b.key)).map((b) => contrast.get(b.key) ?? NaN));
-      return { where: r.where, text: r.text, size: r.size, weight: r.weight, contrast: Number.isFinite(worst) ? worst : NaN,
-        needs: needed(r.size, r.weight), unmeasured: shown.filter((b) => unmeasured.has(b.key) || Number.isNaN(contrast.get(b.key) ?? 0)).length,
-        covered: r.boxes.length - shown.length };
+      const found = r.boxes.map((b) => contrast.get(b.key)).filter((c): c is number => c !== undefined);
+      return { where: r.where, text: r.text, size: r.size, weight: r.weight, contrast: found.length ? Math.min(...found) : NaN,
+        needs: needed(r.size, r.weight), unmeasured: r.boxes.flatMap((b) => unmeasured.get(b.key) ?? []) };
     });
     const excerpt = (t: string) => (t.length > 60 ? `${t.slice(0, 59)}…` : t);
     const font = (m: Measured) => `(${m.size}px, weight ${m.weight}; the ${PERCENTILE * 100}th percentile of its worst word’s pixels)`;
+    const why = (m: Measured) => {
+      const n = m.unmeasured.length;
+      return `not measured, ${n} ${n === 1 ? 'word' : 'words'}: ${[...new Set(m.unmeasured)].join('; ')}`;
+    };
     const lines = measured.flatMap((m) => [
       ...(m.contrast < m.needs ? [`  - ${m.where} “${excerpt(m.text)}”: ${m.contrast.toFixed(2)}:1, needs ${m.needs}:1 ${font(m)}`] : []),
-      ...(m.unmeasured ? [`  - ${m.where} “${excerpt(m.text)}”: not measured, ${m.unmeasured} of its ${m.unmeasured === 1 ? 'word' : 'words'} never wholly in view`] : []),
+      ...(m.unmeasured.length ? [`  - ${m.where} “${excerpt(m.text)}”: ${why(m)}`] : []),
     ]);
     return { runs: measured, problems: { level: levelName, text: lines.join('\n') } };
   } finally {

@@ -62,7 +62,7 @@ test('accessible() fails the test, naming the screen and the rule', async () => 
   test.slow(); // a Playwright inside a Playwright
   const out = await mkdtemp(path.join(tmpdir(), 'homerslab-planted-'));
   try {
-    // this worker's own Playwright variables stay out of the child's environment; two workers for nine tests
+    // this worker's own Playwright variables stay out of the child's environment; two workers for twelve tests
     const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => !/^(TEST_|PW_)/.test(k)));
     const child = await playwright(['test', 'e2e/planted.a11y.spec.ts', '--project', test.info().project.name,
       '--reporter', 'json', '--output', out, '--retries', '0', '--workers', '2'], { ...env, HOMERSLAB_PLANTED: '1' },
@@ -80,8 +80,8 @@ test('accessible() fails the test, naming the screen and the rule', async () => 
 
     // which check fails each plant (axe, or the pixels), and what its report must say
     const axe = (rule: string, element: string): Expected => ({ check: 'axe (WCAG 2.2 AA)', says: finds(rule, element) });
-    const pixels = (element: string, needs: string): Expected =>
-      ({ check: 'contrast against the pixels (WCAG 2.2 AA)', says: findsWord(element, needs), axePasses: true });
+    const pixelCheck = 'contrast against the pixels (WCAG 2.2 AA)';
+    const pixels = (element: string, needs: string): Expected => ({ check: pixelCheck, says: findsWord(element, needs), axePasses: true });
     const expected: [string, Expected][] = [
       ['planted: a field without a label, light', axe('label \\(critical\\)', '#planted-unlabelled')],
       ['planted: a field without a label, dark', axe('label \\(critical\\)', '#planted-unlabelled')],
@@ -91,8 +91,11 @@ test('accessible() fails the test, naming the screen and the rule', async () => 
       ['planted: a faint lead on glass', pixels('p\\.as-lead', '4\\.5:1')],
       ['planted: a faint footer on the wallpaper', pixels('footer\\.as-foot', '4\\.5:1')],
       ['planted: a faded lead on glass', pixels('p\\.as-lead', '4\\.5:1')],
-      ['planted: a word half off the screen', { check: 'contrast against the pixels (WCAG 2.2 AA)',
-        says: /\n\s*- p#planted-offscreen “Half off the screen”: not measured, \d+ of its words? never wholly in view/ }],
+      ['planted: a faint label floating over a field', { check: pixelCheck, says: findsWord('span#planted-float', '4\\.5:1') }],
+      ['planted: a faint toast in a box that hides its overflow', { check: pixelCheck, says: findsWord('p#planted-toast', '4\\.5:1') }],
+      ['planted: dark words in a faded grey group', { check: pixelCheck, says: findsWord('p#planted-dim', '4\\.5:1') }],
+      ['planted: a word half off the screen', { check: pixelCheck,
+        says: /\n\s*- p#planted-offscreen “Half off the screen”: not measured, \d+ words?: never wholly in view/ }],
     ];
     expect([...seen.keys()].sort()).toEqual(expected.map(([t]) => t).sort());
     for (const [title, { check, says, axePasses }] of expected) {
