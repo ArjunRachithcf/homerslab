@@ -80,7 +80,7 @@ test('every Go job fetches its modules under the wrapper first, then runs with t
   const ci = workflow('ci.yml');
   for (const job of ['go', 'firewall', 'mesh', 'flow']) {
     const body = new RegExp(`\\n  ${job}:\\n([\\s\\S]*?)(?=\\n  [a-z]+:\\n|$)`).exec(ci)?.[1] ?? '';
-    assert.match(body, /\n    env:\n(      .*\n)*      GOPROXY: "off"\n/, `${job}: GOPROXY off for the job`);
+    assert.match(body, /\n {4}env:\n( {6}.*\n)* {6}GOPROXY: "off"\n/, `${job}: GOPROXY off for the job`);
     assert.match(body, /stop-commands\.sh go mod download/, `${job}: fetches its modules first`);
     const goSteps = body.split('\n      - ').filter((step) => /\bgo (vet|test|build|mod tidy)\b/.test(step) && !/go mod download/.test(step));
     assert.ok(goSteps.length > 0, job);
