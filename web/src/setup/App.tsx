@@ -313,14 +313,15 @@ const NAME_MAX = 64;
 
 /**
  * The household's name, made from the admin's surname: "The {surname} household", with the surname cut short to fit
- * when it is long, so the page never offers a name the manager refuses. A cut leaves no accent or joiner hanging.
+ * when it is long, so the page never offers a name the manager refuses. A cut leaves nothing hanging that needs what
+ * came after it: no mark or selector (variation, ideographic or Mongolian), no joiner, tag or tatweel.
  */
 function defaultHousehold(surname: string): string {
   const whole = t('step.household.default', { surname });
   const over = [...whole].length - NAME_MAX;
   if (over <= 0) return whole;
   const letters = [...surname];
-  const kept = letters.slice(0, Math.max(0, letters.length - over)).join('').replace(/(?:\p{M}|\u200c|\u200d|\ufe0e|\ufe0f)+$/u, '');
+  const kept = letters.slice(0, Math.max(0, letters.length - over)).join('').replace(/(?:\p{M}|\p{Cf}|\u0640)+$/u, '');
   return kept ? t('step.household.default', { surname: kept }) : '';
 }
 

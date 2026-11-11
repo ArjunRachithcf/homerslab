@@ -1,5 +1,7 @@
 package setup
 
+//go:generate go run emoji_gen.go
+
 import (
 	"net/mail"
 	"strings"
@@ -17,16 +19,19 @@ import (
 // default-ignorable characters, unassigned code points, private use and the rest of what FreeformClass disallows.
 //
 // The profile refuses some of what people really type. Exactly these pass, through exceptions, and nothing wider:
-//   - an emoji ZWJ sequence: a ZWJ between two emoji, each perhaps with a skin tone or VS16;
-//   - VS15 or VS16 (U+FE0E, U+FE0F) right after an emoji, or after a keycap's 0–9, # or * before U+20E3;
+//   - an emoji ZWJ sequence: a ZWJ between two emoji, by Unicode's emoji properties (emojiEndsAt, emojiStartsAt);
+//   - VS15 or VS16 (U+FE0E, U+FE0F) right after a base of an emoji variation sequence (emoji-variation-sequences.txt),
+//     or after a keycap's 0–9, # or * before U+20E3;
 //   - the three flags made of tags that Unicode recommends: England's, Scotland's and Wales's;
-//   - an ideographic variation selector (U+E0100–U+E01EF) right after a Han ideograph;
+//   - an ideographic variation selector (U+E0100–U+E01EF) right after a unified ideograph (Unified_Ideograph: not
+//     the iteration mark, the ideographic zero or a radical);
 //   - a Mongolian free variation selector (U+180B–U+180D, U+180F) right after a Mongolian letter, and the Mongolian
 //     vowel separator (U+180E) between two;
 //   - the Arabic tatweel (U+0640) between two Arabic letters.
 //
-// And a name must show: it needs a letter, number or symbol. A few characters draw nothing or stand for broken bytes,
-// though the profile allows them, so they are refused (drawsNothing).
+// And a name must show: it needs a letter, number or symbol, or a keycap (#, * or a digit, VS16, U+20E3). A few
+// characters draw nothing or stand for broken bytes, though the profile allows them, so they are refused
+// (drawsNothing).
 func name(typed string) (string, string) {
 	n := nickname(typed)
 	switch {
@@ -40,7 +45,8 @@ func name(typed string) (string, string) {
 		return "", HiddenCharacters
 	}
 	switch {
-	case !strings.ContainsFunc(n, func(r rune) bool { return unicode.IsLetter(r) || unicode.IsNumber(r) || unicode.IsSymbol(r) }):
+	case !strings.ContainsFunc(n, func(r rune) bool { return unicode.IsLetter(r) || unicode.IsNumber(r) || unicode.IsSymbol(r) }) &&
+		!hasKeycap(n):
 		return "", Missing // marks, joiners and punctuation alone show as blank, or nearly
 	case utf8.RuneCountInString(n) > NameMax:
 		return "", TooLong
@@ -89,12 +95,12 @@ func withoutExceptions(n string) string {
 				i += k
 			}
 		case r == '\u200d':
-			drop[i] = emoji(emojiBefore(rs, i)) && emoji(at(i+1))
+			drop[i] = emojiEndsAt(rs, i-1) && emojiStartsAt(rs, i+1)
 		case r == '\ufe0e' || r == '\ufe0f':
 			p := at(i - 1)
-			drop[i] = emoji(p) || keycapBase(p) && at(i+1) == '\u20e3'
+			drop[i] = !keycapBase(p) && unicode.Is(variationBase, p) || keycapBase(p) && at(i+1) == '\u20e3'
 		case r >= '\U000e0100' && r <= '\U000e01ef':
-			drop[i] = unicode.Is(unicode.Han, at(i-1))
+			drop[i] = unicode.Is(unicode.Unified_Ideograph, at(i-1))
 		case r >= '\u180b' && r <= '\u180d' || r == '\u180f':
 			drop[i] = mongolianLetter(at(i - 1))
 		case r == '\u180e':
@@ -132,27 +138,46 @@ func rgiFlagTags(rs []rune) int {
 	return 0
 }
 
-// emojiBefore is the emoji a ZWJ at i follows, past one skin tone or one VS16.
-func emojiBefore(rs []rune, i int) rune {
-	j := i - 1
-	if j >= 0 && (rs[j] == '\ufe0f' || skinTone(rs[j])) {
-		j--
+// An emoji, for an emoji ZWJ sequence (UTS #51), goes by Unicode's emoji properties (emoji_tables.go): a character
+// drawn as an emoji by default (Emoji_Presentation), or an Emoji character with VS16, either perhaps with a skin tone
+// (Emoji_Modifier). Not a keycap's ASCII base, and not a skin tone on its own.
+
+// emojiEndsAt says whether an emoji ends at rs[j].
+func emojiEndsAt(rs []rune, j int) bool {
+	if j >= 0 && unicode.Is(emojiModifier, rs[j]) {
+		j-- // the skin tone of the emoji before it
+		return j >= 0 && emojiAlone(rs[j])
 	}
-	if j < 0 {
-		return 0
+	if j >= 1 && rs[j] == '\ufe0f' {
+		return unicode.Is(variationBase, rs[j-1]) && !keycapBase(rs[j-1])
 	}
-	return rs[j]
+	return j >= 0 && emojiAlone(rs[j])
 }
 
-// emoji is a pictographic symbol: the emoji blocks, and the symbol blocks emoji are drawn from (arrows, technical,
-// dingbats, miscellaneous symbols). Skin tones and regional indicators are emoji too.
-func emoji(r rune) bool {
-	return unicode.IsSymbol(r) && (r >= 0x2190 && r <= 0x2bff || r >= 0x1f000 && r <= 0x1faff ||
-		r == 0x00a9 || r == 0x00ae || r == 0x203c || r == 0x2049 || r == 0x2122 || r == 0x2139 ||
-		r == 0x3030 || r == 0x303d || r == 0x3297 || r == 0x3299)
+// emojiStartsAt says whether an emoji starts at rs[i].
+func emojiStartsAt(rs []rune, i int) bool {
+	if i >= len(rs) || keycapBase(rs[i]) || unicode.Is(emojiModifier, rs[i]) {
+		return false
+	}
+	return unicode.Is(emojiPresentation, rs[i]) ||
+		i+1 < len(rs) && rs[i+1] == '\ufe0f' && unicode.Is(emojiProperty, rs[i]) && unicode.Is(variationBase, rs[i])
 }
 
-func skinTone(r rune) bool { return r >= 0x1f3fb && r <= 0x1f3ff }
+// emojiAlone is a character drawn as an emoji without a VS16, and not a skin tone.
+func emojiAlone(r rune) bool {
+	return unicode.Is(emojiPresentation, r) && !unicode.Is(emojiModifier, r)
+}
+
+// hasKeycap says whether s holds a keycap: #, * or a digit, VS16 perhaps, and U+20E3.
+func hasKeycap(s string) bool {
+	rs := []rune(s)
+	for i, r := range rs {
+		if r == '\u20e3' && i > 0 && (keycapBase(rs[i-1]) || i > 1 && rs[i-1] == '\ufe0f' && keycapBase(rs[i-2])) {
+			return true
+		}
+	}
+	return false
+}
 
 func keycapBase(r rune) bool { return r >= '0' && r <= '9' || r == '#' || r == '*' }
 
@@ -161,8 +186,8 @@ func mongolianLetter(r rune) bool { return unicode.Is(unicode.Mongolian, r) && u
 func arabicLetter(r rune) bool { return unicode.Is(unicode.Arabic, r) && unicode.IsLetter(r) }
 
 // mailAddress is a mail address as it is kept: a local part in ASCII as typed, or else in PRECIS's UsernameCaseMapped
-// profile; a domain as IDNA's lookup profile has it, in Unicode; nothing invisible, no ZWJ or ZWNJ, and RFC 5321's
-// length at most.
+// profile; a domain as IDNA's lookup profile has it, in Unicode; nothing invisible, no ZWJ or ZWNJ, whether typed or
+// decoded from an A-label; and RFC 5321's lengths at most.
 func mailAddress(typed string) (string, string) {
 	s := strings.TrimSpace(norm.NFC.String(typed))
 	switch {
@@ -184,14 +209,20 @@ func mailAddress(typed string) (string, string) {
 			return "", NotAMail
 		}
 	}
-	a, err := idna.Lookup.ToASCII(domain)
+	a, err := lookup.ToASCII(domain)
 	if err != nil {
 		return "", NotAMail
 	}
-	if domain, err = idna.Lookup.ToUnicode(a); err != nil || !strings.Contains(domain, ".") {
+	if domain, err = lookup.ToUnicode(a); err != nil || !strings.Contains(domain, ".") {
 		return "", NotAMail
 	}
 	addr := local + "@" + domain
+	if strings.ContainsFunc(addr, invisible) { // what an A-label (xn--) decodes to is checked too
+		return "", HiddenCharacters
+	}
+	if len(local) > LocalMax {
+		return "", TooLong
+	}
 	if p, err := mail.ParseAddress(addr); err != nil || p.Address != addr || p.Name != "" {
 		return "", NotAMail
 	}
@@ -200,6 +231,12 @@ func mailAddress(typed string) (string, string) {
 	}
 	return addr, ""
 }
+
+// lookup is IDNA's lookup profile (idna.Lookup), which also checks DNS's lengths: a label of 63 octets at most.
+var lookup = idna.New(idna.MapForLookup(), idna.BidiRule(), idna.Transitional(false), idna.VerifyDNSLength(true))
+
+// LocalMax is the longest local part of a mail address, in octets (RFC 5321).
+const LocalMax = 64
 
 // invisible is a character that doesn't show or changes how the text around it reads: a control, a format character,
 // a line or paragraph separator, or one Unicode says to ignore by default. And the three that draw nothing that names

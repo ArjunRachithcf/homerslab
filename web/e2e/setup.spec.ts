@@ -183,3 +183,17 @@ test('the household name made from a long surname fits', async ({ page, primary 
   await page.getByRole('button', { name: 'Continue' }).click();
   await expect(page.getByRole('heading', { level: 1 })).toContainText('How everyone signs in');
 });
+
+// A cut that ends inside a flag, a variant or a joined word leaves no tag, selector or tatweel hanging (#69).
+test('the household name made from a surname with a flag fits, without the flag’s tags', async ({ page, primary }) => {
+  await page.goto((await primary.newLink()).localUrl);
+  await page.getByRole('button', { name: 'Get started' }).click();
+  const scotland = '\u{1F3F4}\u{E0067}\u{E0062}\u{E0073}\u{E0063}\u{E0074}\u{E007F}';
+  await page.getByLabel('Your name', { exact: true }).fill(`Ana ${'X'.repeat(46)}${scotland}`);
+  await page.getByLabel('Your mail address', { exact: true }).fill('ana@example.org');
+  await page.getByRole('button', { name: 'Continue' }).click();
+  const household = page.getByLabel('The household’s name', { exact: true });
+  await expect(household).toHaveValue(`The ${'X'.repeat(46)}\u{1F3F4} household`);
+  await page.getByRole('button', { name: 'Continue' }).click();
+  await expect(page.getByRole('heading', { level: 1 })).toContainText('How everyone signs in');
+});

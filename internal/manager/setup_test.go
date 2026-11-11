@@ -212,7 +212,11 @@ func TestAnswersAreBounded(t *testing.T) {
 	testenv.Isolate(t)
 	b := newPrimary(t).claimed()
 	b.mustAnswer("welcome", nil)
-	mailOf := func(n int) string { return strings.Repeat("a", n-len("@example.org")) + "@example.org" }
+	// mailOf is a mail address of n octets: a short local part, and a domain of labels of 63 octets at most.
+	mailOf := func(n int) string {
+		d := strings.Repeat("d", 63) + "." + strings.Repeat("d", 63) + "." + strings.Repeat("d", 63) + "."
+		return "ines@" + d + strings.Repeat("d", n-len("ines@")-len(d)-len(".org")) + ".org"
+	}
 	for _, c := range []struct {
 		step   string
 		body   map[string]string
