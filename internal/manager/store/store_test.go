@@ -66,6 +66,46 @@ func TestAnIOErrorOnADiskWithNoRoomIsErrDiskFull(t *testing.T) {
 }
 
 // A database from before the boot clock (#65) opens, and its links and sessions have no boot: they have ended.
+// Migrations run by index, so they only ever grow at the end: a database an integration build made, with the plans
+// and without the boot clock, gets the boot clock and keeps its plans.
+func TestADatabaseWithPlansButNoBootClockOpens(t *testing.T) {
+	testenv.Isolate(t)
+	path := filepath.Join(t.TempDir(), "m.db")
+	old, err := sql.Open("sqlite", "file:"+path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var made int
+	for _, m := range migrations {
+		if strings.Contains(m, "boot_id") {
+			continue
+		}
+		if _, err := old.Exec(m); err != nil {
+			t.Fatal(err)
+		}
+		made++
+	}
+	if _, err := old.Exec(`PRAGMA user_version = ` + strconv.Itoa(made)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := old.Exec(`INSERT INTO plan (id, app, body, made_at) VALUES ('p1', 'photos', '{}', 1)`); err != nil {
+		t.Fatal(err)
+	}
+	old.Close()
+	s, err := Open(path, []Step{{ID: "welcome", Half: "lan"}})
+	if err != nil {
+		t.Fatalf("opening a database with plans and no boot clock: %v", err)
+	}
+	defer s.Close()
+	var plans int
+	if err := s.db.QueryRow(`SELECT count(*) FROM plan`).Scan(&plans); err != nil || plans != 1 {
+		t.Errorf("plans kept: %d %v, want 1", plans, err)
+	}
+	if _, err := s.db.Exec(`SELECT boot_id, made_since_boot FROM setup_link`); err != nil {
+		t.Errorf("the boot clock was not added: %v", err)
+	}
+}
+
 func TestADatabaseFromBeforeTheBootClockOpens(t *testing.T) {
 	testenv.Isolate(t)
 	path := filepath.Join(t.TempDir(), "m.db")

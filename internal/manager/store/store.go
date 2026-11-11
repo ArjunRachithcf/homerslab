@@ -182,13 +182,6 @@ var migrations = []string{
 		what        TEXT NOT NULL,
 		resolved_at INTEGER
 	);`,
-	// When a link was made and a session opened and last used, by the time since boot (nanoseconds) and that boot's
-	// ID: how old they are, whatever the wall clock does (#65). Rows from before have no boot, and have ended.
-	`ALTER TABLE setup_link ADD COLUMN boot_id TEXT NOT NULL DEFAULT '';
-	ALTER TABLE setup_link ADD COLUMN made_since_boot INTEGER NOT NULL DEFAULT 0;
-	ALTER TABLE setup_session ADD COLUMN boot_id TEXT NOT NULL DEFAULT '';
-	ALTER TABLE setup_session ADD COLUMN opened_since_boot INTEGER NOT NULL DEFAULT 0;
-	ALTER TABLE setup_session ADD COLUMN seen_since_boot INTEGER NOT NULL DEFAULT 0;`,
 	// Install plans: kept as they were made, never changed. A change in the household is a new plan, with a new id.
 	`CREATE TABLE plan (
 		id      TEXT PRIMARY KEY,
@@ -202,6 +195,13 @@ var migrations = []string{
 	BEGIN SELECT RAISE(ABORT, 'a plan is kept: pruning old plans comes through its own path'); END;
 	CREATE TRIGGER plan_once BEFORE INSERT ON plan WHEN EXISTS (SELECT 1 FROM plan WHERE id = NEW.id)
 	BEGIN SELECT RAISE(ABORT, 'a plan is made once: the same id is the same plan'); END;`,
+	// When a link was made and a session opened and last used, by the time since boot (nanoseconds) and that boot's
+	// ID: how old they are, whatever the wall clock does (#65). Rows from before have no boot, and have ended.
+	`ALTER TABLE setup_link ADD COLUMN boot_id TEXT NOT NULL DEFAULT '';
+	ALTER TABLE setup_link ADD COLUMN made_since_boot INTEGER NOT NULL DEFAULT 0;
+	ALTER TABLE setup_session ADD COLUMN boot_id TEXT NOT NULL DEFAULT '';
+	ALTER TABLE setup_session ADD COLUMN opened_since_boot INTEGER NOT NULL DEFAULT 0;
+	ALTER TABLE setup_session ADD COLUMN seen_since_boot INTEGER NOT NULL DEFAULT 0;`,
 }
 
 // Moment is when something happened: by the wall clock, for display and audit, and by the time since the machine
