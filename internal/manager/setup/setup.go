@@ -44,8 +44,23 @@ var Steps = []Step{
 // Handler checks a step's answer and returns what to keep of it. Answers kept here are never secret.
 type Handler func(ctx context.Context, answer json.RawMessage) (map[string]string, error)
 
-// Invalid is an answer that didn't pass its checks, naming the fields to fix.
-type Invalid struct{ Fields []string }
+// Invalid is an answer that didn't pass its checks, naming the fields to fix and why each was refused.
+type Invalid struct {
+	Fields  []string
+	Reasons map[string]string
+}
+
+// add refuses field for why, unless why is empty.
+func (e *Invalid) add(field, why string) {
+	if why == "" {
+		return
+	}
+	if e.Reasons == nil {
+		e.Reasons = map[string]string{}
+	}
+	e.Fields = append(e.Fields, field)
+	e.Reasons[field] = why
+}
 
 func (e *Invalid) Error() string { return fmt.Sprintf("invalid answer: %v", e.Fields) }
 

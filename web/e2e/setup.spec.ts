@@ -125,3 +125,35 @@ test('a full disk when the page opens is said as such', async ({ page, primary }
   await expect(page.getByRole('heading', { level: 1 })).toContainText('This machine’s disk is full');
   await expect(page.getByText('Setup can’t reach HomersLab')).toHaveCount(0);
 });
+
+// Each refused answer says why, in plain words (#69).
+test('a refused answer says why', async ({ page, primary }) => {
+  await page.goto((await primary.newLink()).localUrl);
+  await page.getByRole('button', { name: 'Get started' }).click();
+  const name = page.getByLabel('Your name', { exact: true });
+  const mail = page.getByLabel('Your mail address', { exact: true });
+  const next = page.getByRole('button', { name: 'Continue' });
+
+  await name.fill('Inês\u202eevil');
+  await mail.fill('ines@ferreira.family');
+  await next.click();
+  await expect(page.getByText('Your name has a hidden character')).toBeVisible();
+  await expect(name).toHaveAttribute('aria-invalid', 'true');
+
+  await name.fill('I'.repeat(65));
+  await mail.fill(`${'a'.repeat(250)}@ferreira.family`);
+  await next.click();
+  await expect(page.getByText('Your name can be 64 characters at most.')).toBeVisible();
+  await expect(page.getByText('A mail address can be 254 characters at most.')).toBeVisible();
+
+  await name.fill('Inês Ferreira');
+  await mail.fill('ines@ferreira.family');
+  await next.click();
+  const household = page.getByLabel('The household’s name', { exact: true });
+  await household.fill('The Ferreira\u0007 household');
+  await next.click();
+  await expect(page.getByText('The name has a hidden character')).toBeVisible();
+  await household.fill('H'.repeat(65));
+  await next.click();
+  await expect(page.getByText('The household’s name can be 64 characters at most.')).toBeVisible();
+});

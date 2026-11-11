@@ -35,9 +35,12 @@ export type Facts = {
   gpus: { vendor: string; model: string; pciId: string }[];
 };
 
-/** The manager said no, with its reason. */
+/** Why the manager refused a field's answer. */
+export type Reason = 'missing' | 'too-long' | 'hidden-characters' | 'not-a-mail';
+
+/** The manager said no, with its reason: for an invalid answer, each refused field and why. */
 export class Refused extends Error {
-  constructor(readonly status: number, readonly code: string, readonly fields: string[] = []) {
+  constructor(readonly status: number, readonly code: string, readonly reasons: Record<string, Reason> = {}) {
     super(code);
   }
 }
@@ -56,8 +59,9 @@ async function call<T>(method: string, path: string, body?: unknown): Promise<T>
   if (resp.status === 204) return undefined as T;
   const data: unknown = await resp.json().catch(() => ({}));
   if (!resp.ok) {
-    const e = data as { error?: string; fields?: string[] };
-    throw new Refused(resp.status, e.error ?? 'unknown', e.fields ?? []);
+    const e = data as { error?: string; fields?: string[]; reasons?: Record<string, Reason> };
+    const reasons = { ...Object.fromEntries((e.fields ?? []).map((f) => [f, 'missing' as Reason])), ...e.reasons };
+    throw new Refused(resp.status, e.error ?? 'unknown', reasons);
   }
   return data as T;
 }

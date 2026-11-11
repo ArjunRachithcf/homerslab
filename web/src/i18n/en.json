@@ -60,6 +60,10 @@
   "step.you.why": "Your name and a mail address, to continue.",
   "step.you.nameInvalid": "Type your name.",
   "step.you.mailInvalid": "Type a mail address, like name@example.org.",
+  "step.you.nameTooLong": "Your name can be 64 characters at most.",
+  "step.you.nameHidden": "Your name has a hidden character, such as a control or text-direction character, often pasted with it. Type it again.",
+  "step.you.mailTooLong": "A mail address can be 254 characters at most.",
+  "step.you.mailHidden": "This mail address has a hidden character, such as a control or text-direction character, often pasted with it. Type it again.",
 
   "step.household.title": "Name your household",
   "step.household.lead": "Everyone you invite joins it. You can change its name later.",
@@ -67,6 +71,8 @@
   "step.household.default": "The {surname} household",
   "step.household.why": "Give the household a name to continue.",
   "step.household.invalid": "Give the household a name.",
+  "step.household.tooLong": "The household’s name can be 64 characters at most.",
+  "step.household.hidden": "The name has a hidden character, such as a control or text-direction character, often pasted with it. Type it again.",
 
   "step.signin.title": "How everyone signs in",
   "step.signin.lead": "One household account and a passkey for every app, on the TV too.",

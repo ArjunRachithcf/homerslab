@@ -4,7 +4,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { flushSync } from 'react-dom';
 import { rich, t, type Key } from '../i18n/t';
-import { answer, claim, getPrimary, getSetup, Refused, type Facts, type Setup } from './api';
+import { answer, claim, getPrimary, getSetup, Refused, type Facts, type Reason, type Setup } from './api';
 import { Assistant, Field, Icon, stepTitle, type Screen } from './Assistant';
 import { diskSize, memory } from './format';
 
@@ -154,7 +154,7 @@ function useStep(id: string, setup: Setup, facts: Facts | null, next: () => void
   const surname = name.trim().split(/\s+/).pop() ?? '';
   const [household, setHousehold] = useState(a.household ?? '');
   const [touched, setTouched] = useState(!!a.household);
-  const [bad, setBad] = useState<string[]>([]);
+  const [bad, setBad] = useState<Record<string, Reason>>({});
   const [fullAt, setFullAt] = useState<string | null>(null); // the step whose answer met a full disk
   const [busy, setBusy] = useState(false);
   const householdValue = touched || !surname ? household : t('step.household.default', { surname });
@@ -163,12 +163,12 @@ function useStep(id: string, setup: Setup, facts: Facts | null, next: () => void
     setBusy(true);
     try {
       onAnswered(await answer(id, body));
-      setBad([]);
+      setBad({});
       setFullAt(null);
       next();
     } catch (e) {
       setFullAt(diskFull(e) ? id : null);
-      if (e instanceof Refused && e.code === 'invalid') setBad(e.fields);
+      if (e instanceof Refused && e.code === 'invalid') setBad(e.reasons);
       else if (e instanceof Refused && e.status === 401) location.reload();
     } finally {
       setBusy(false);
@@ -198,9 +198,10 @@ function useStep(id: string, setup: Setup, facts: Facts | null, next: () => void
           illo: 'you', title: t('step.you.title'), lead: t('step.you.lead'), illoFacts: { name, mail },
           body: <>
             <Field id="name" label={t('step.you.name')} value={name} onChange={setName} autoComplete="name"
-              error={bad.includes('name') ? t('step.you.nameInvalid') : undefined} />
+              error={refusal(bad.name, { 'too-long': 'step.you.nameTooLong', 'hidden-characters': 'step.you.nameHidden' }, 'step.you.nameInvalid')} />
             <Field id="mail" label={t('step.you.mail')} value={mail} onChange={setMail} type="email" autoComplete="email"
-              hint={t('step.you.mailHint')} error={bad.includes('mail') ? t('step.you.mailInvalid') : undefined} />
+              hint={t('step.you.mailHint')}
+            error={refusal(bad.mail, { 'too-long': 'step.you.mailTooLong', 'hidden-characters': 'step.you.mailHidden' }, 'step.you.mailInvalid')} />
           </>,
           primary: { label: t('setup.continue'), ok, why: t('step.you.why'), busy },
           onPrimary: () => send({ name, mail }),
@@ -211,7 +212,7 @@ function useStep(id: string, setup: Setup, facts: Facts | null, next: () => void
           illo: 'household', title: t('step.household.title'), lead: t('step.household.lead'), illoFacts: { name: householdValue },
           body: <Field id="household" label={t('step.household.name')} value={householdValue}
             onChange={(v) => { setTouched(true); setHousehold(v); }}
-            error={bad.includes('name') ? t('step.household.invalid') : undefined} />,
+            error={refusal(bad.name, { 'too-long': 'step.household.tooLong', 'hidden-characters': 'step.household.hidden' }, 'step.household.invalid')} />,
           primary: { label: t('setup.continue'), ok: !!householdValue.trim(), why: t('step.household.why'), busy },
           onPrimary: () => send({ name: householdValue }),
         };
@@ -234,6 +235,11 @@ function useStep(id: string, setup: Setup, facts: Facts | null, next: () => void
     }
   })();
   return fullAt === id ? { ...v, alert: t('setup.full.answer') } : v;
+}
+
+/** What a field's refusal says: the words for its reason, or the field's own when it is missing or malformed. */
+function refusal(reason: Reason | undefined, words: Partial<Record<Reason, Key>>, otherwise: Key): string | undefined {
+  return reason && t(words[reason] ?? otherwise);
 }
 
 function Left({ steps }: { steps: string[] }) {

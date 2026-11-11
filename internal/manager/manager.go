@@ -217,7 +217,7 @@ func (m *Manager) putStep(w http.ResponseWriter, r *http.Request) {
 	case err == nil:
 		writeJSON(w, http.StatusOK, st)
 	case errors.As(err, &invalid):
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid", "fields": invalid.Fields})
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid", "fields": invalid.Fields, "reasons": invalid.Reasons})
 	case errors.Is(err, setup.ErrUnknownStep):
 		fail(w, http.StatusNotFound, err.Error())
 	case errors.Is(err, setup.ErrOverTheMesh):
