@@ -2,7 +2,8 @@
 # The rule for both: a finding in code we call, or in a package that ships in the binary, fails the job. A finding
 # only in the module graph, or only in a development tool, is listed in the log and doesn't fail.
 # Runs on every PR, and nightly on main and integration (a schedule runs from main's copy of this file).
-# Actions and images are pinned by digest; the comments name the versions. Nothing here holds a secret.
+# Actions and images are pinned by digest; the comments name the versions. Nothing here holds a secret. Every command
+# that prints third-party text runs through .github/scripts/stop-commands.sh, so that text can't be a workflow command.
 name: vuln
 
 on:
@@ -20,7 +21,9 @@ concurrency:
 
 jobs:
   go:
-    name: govulncheck (${{ matrix.ref || github.head_ref || github.ref_name }})
+    # The branch is in the name only for the nightly's matrix: on a PR the name stays the same, so it can be a required
+    # status check.
+    name: govulncheck${{ matrix.ref && format(' ({0})', matrix.ref) || '' }}
     runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
@@ -42,28 +45,29 @@ jobs:
       # scans below can name another target without govulncheck itself being built for it.
       - name: Build govulncheck
         run: |
-          go -C tools mod tidy -diff
-          go -C tools build -o /usr/local/bin/govulncheck golang.org/x/vuln/cmd/govulncheck
+          sh .github/scripts/stop-commands.sh go -C tools mod tidy -diff
+          sh .github/scripts/stop-commands.sh go -C tools build -o /usr/local/bin/govulncheck golang.org/x/vuln/cmd/govulncheck
       # Each target the packages ship for, as the binary is built (CGO_ENABLED=0). Exit 3 means the code calls a
       # vulnerable symbol, the standard library's included. Findings only in imported packages or required modules
-      # are listed under "Package Results" and "Module Results" and exit 0: GO-2026-5932, for example (x/crypto's
-      # openpgp, with no tagged fix), whenever x/crypto is required and openpgp never imported.
+      # are listed under "Package Results" and "Module Results" and exit 0. A hypothetical example, since x/crypto
+      # isn't in the module graph today: GO-2026-5932 (x/crypto's openpgp, with no tagged fix) would be listed and
+      # pass if x/crypto were required and openpgp never imported (proven on #113's throwaway PR #112).
       - name: govulncheck ./... (linux/amd64)
         env:
           GOOS: linux
           GOARCH: amd64
           CGO_ENABLED: "0"
-        run: govulncheck -show verbose ./...
+        run: sh .github/scripts/stop-commands.sh govulncheck -show verbose ./...
       - name: govulncheck ./... (linux/arm64)
         if: ${{ !cancelled() }}
         env:
           GOOS: linux
           GOARCH: arm64
           CGO_ENABLED: "0"
-        run: govulncheck -show verbose ./...
+        run: sh .github/scripts/stop-commands.sh govulncheck -show verbose ./...
 
   npm:
-    name: npm audit (${{ matrix.ref || github.head_ref || github.ref_name }})
+    name: npm audit${{ matrix.ref && format(' ({0})', matrix.ref) || '' }}
     runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
@@ -80,9 +84,17 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24
-      # npm audit reads package-lock.json; nothing is installed and no package script runs.
-      - name: Every advisory, development tools included (listed, never fails)
+      # npm audit reads package-lock.json; nothing is installed and no package script runs. The first step lists every
+      # advisory and warns only for one not in audit-accepted.json (the known dev-only ones), or when npm gave no
+      # report; it never fails on an advisory (a broken audit-accepted.json does fail it). npm's own listing follows,
+      # each advisory's path and fix. The second step fails on any advisory in a package that ships: accepting it in
+      # audit-accepted.json doesn't excuse it.
+      - name: Every advisory, development tools included (warns on one not accepted, never fails on one)
         run: |
-          npm audit || echo "::warning title=npm audit::npm audit exited non-zero (advisories, or the registry failed: see the log); the next step fails only on an advisory in a package that ships"
+          status=0
+          sh ../.github/scripts/stop-commands.sh sh -c 'npm audit --json > "$1"' sh "$RUNNER_TEMP/npm-audit.json" || status=$?
+          echo "npm audit exited $status"
+          node scripts/audit-accepted.mjs audit-accepted.json < "$RUNNER_TEMP/npm-audit.json"
+          sh ../.github/scripts/stop-commands.sh npm audit || true
       - name: Advisories in the packages that ship (fail the job)
-        run: npm audit --omit=dev
+        run: sh ../.github/scripts/stop-commands.sh npm audit --omit=dev
