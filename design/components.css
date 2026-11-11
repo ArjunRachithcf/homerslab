@@ -1071,12 +1071,15 @@ html[data-vt="pop"]::view-transition-new(screen) { animation: vt-in-left var(--d
 /* ---------- reduced motion: screens cross-fade, nothing moves, nothing loops ---------- */
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { transition-duration: 0s !important; transition-delay: 0s !important; animation-duration: 0s !important; animation-iteration-count: 1 !important; }
+  /* ::details-content, which * doesn't reach, in a rule of its own: a browser that doesn't know it drops only this rule */
+  *::details-content { transition-duration: 0s !important; transition-delay: 0s !important; animation-duration: 0s !important; animation-iteration-count: 1 !important; }
   .spinner { border-top-color: var(--fill-strong); border-right-color: var(--accent); }
   ::view-transition-group(*) { animation: none !important; }
   ::view-transition-old(*) { animation: vt-fade-out var(--dur-fade) linear both !important; }
   ::view-transition-new(*) { animation: vt-fade-in var(--dur-fade) linear both !important; }
 }
 :root[data-motion="reduce"] *, :root[data-motion="reduce"] *::before, :root[data-motion="reduce"] *::after { transition-duration: 0s !important; transition-delay: 0s !important; animation-duration: 0s !important; animation-iteration-count: 1 !important; }
+:root[data-motion="reduce"] *::details-content { transition-duration: 0s !important; transition-delay: 0s !important; animation-duration: 0s !important; animation-iteration-count: 1 !important; }
 :root[data-motion="reduce"] .spinner { border-top-color: var(--fill-strong); border-right-color: var(--accent); }
 html[data-motion="reduce"]::view-transition-group(*) { animation: none !important; }
 html[data-motion="reduce"]::view-transition-old(*) { animation: vt-fade-out var(--dur-fade) linear both !important; }

@@ -12,9 +12,8 @@ export type Screen = {
   body?: ReactNode;
   moreLabel?: string;
   more?: ReactNode;
+  notice?: ReactNode; // what went wrong with the last answer, beside the button that sends it
   primary?: { label: string; ok?: boolean; why?: string; busy?: boolean };
-  /** What went wrong with the last answer, said where the question is. */
-  alert?: string;
 };
 
 type Props = Screen & {
@@ -62,9 +61,6 @@ export function Assistant(p: Props) {
         </h1>
         {p.lead && <p className="as-lead">{p.lead}</p>}
       </div>
-      {p.alert && (
-        <div className="notice notice-warn" role="alert"><Html html={icon('alert')} /><span className="notice-body">{p.alert}</span></div>
-      )}
       {p.body && <div className="as-body">{p.body}</div>}
       {p.more && (
         <details className="more">
@@ -75,6 +71,7 @@ export function Assistant(p: Props) {
           <div className="more-body">{p.more}</div>
         </details>
       )}
+      {p.notice}
       {p.primary && (
         <div className="as-actions">
           <button type="submit" className="btn btn-primary" disabled={off} aria-busy={p.primary.busy || undefined}
