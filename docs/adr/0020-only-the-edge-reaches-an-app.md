@@ -1,11 +1,11 @@
 ---
-status: accepted
+status: proposed
 date: 2026-11-11
 ---
 
 # Only the edge reaches an app; apps reach only the internet
 
-Recommended in #82; the maintainer may overrule.
+Proposed (needs-decision #82).
 
 "Apps publish no ports" (ADR 0006, ADR 0009) says nothing about who else on a node can reach an app, or what an app
 can reach. Two holes follow: any local process could connect to an app's container and send a forged identity
@@ -16,8 +16,8 @@ router, printers, the NAS), the mesh as its node, and the host's own listeners.
 - on Docker and rootful Podman, a bridge address;
 - on rootless Podman, whose containers the host can't route to, a loopback port published only for that purpose.
 
-In both cases the agent's firewall table accepts new connections to that upstream only from the edge's user. The
-floor's rule stays as it is: the compose file publishes no ports.
+In both cases the agent's firewall table accepts new connections to that upstream only from the edge's user, and
+from the agent's own, for its health probes. The floor's rule stays as it is: the compose file publishes no ports.
 
 **Apps reach the internet, and nothing else, unless an extra says so.** The firewall table drops new connections from
 app networks to:
@@ -27,6 +27,13 @@ app networks to:
 
 "Reaches the LAN" (for example a home automation app) and "reaches the mesh" are declared extras, approved with the
 passkey like the others.
+
+**The sign-in is the one exception, decided.** An app with native sign-in calls the sign-in from its server: OIDC's
+token, userinfo and keys, or LDAP binds. `auth.<main domain>` resolves to the primary's mesh address, or to the node's
+own address on the primary, which the rule above drops. So:
+- every app reaches the sign-in's address through the edge only: the edge's ports on the node's own address and on
+  the primary's mesh address. From an app, the edge answers only the sign-in's name, so this is no path to other apps;
+- an app whose sign-in method is LDAP also reaches the identity provider's LDAP outpost.
 
 ## Considered options
 
@@ -40,5 +47,6 @@ passkey like the others.
 
 - The firewall matches on the connecting process's user for every app upstream, so the edge always runs as its own
   user.
-- Apps that call another household app (say, a local AI model) need a path that isn't decided yet.
+- Apps that call another household app (say, a local AI model) need a path that isn't decided yet: the one open
+  item.
 - The firewall's namespace tests gain a container trying the LAN, the mesh and the node's own addresses.

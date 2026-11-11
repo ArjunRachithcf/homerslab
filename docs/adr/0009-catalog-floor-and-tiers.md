@@ -36,17 +36,18 @@ Runtipi's catalog is GPL-3.0 and umbrel-apps has no licence, so neither seeds ou
 
 ## Amended (2026-11-11)
 
-Recommended in #89; the maintainer may overrule.
+Proposed (needs-decision #89).
 
 "Signed git repositories, trusted by their publisher's key" stands, but a signature alone doesn't stop an older,
 correctly signed commit from being served (rollback), or the same commit forever (freeze), and doesn't stop one catalog
 from acting on another's apps. So:
 - **Versions only go up, and expire.** A catalog's signed metadata carries a version number that only goes up and an
-  expiry 30 days out, renewed by every release. The manager refuses a lower version than the last it accepted. After
-  the expiry, installed apps keep running and new installs from that catalog wait.
+  expiry 30 days out. The publisher signs it again on a schedule (weekly) even when nothing changed, as TUF's
+  timestamp role does, so a frozen catalog shows. The manager refuses a lower version than the last it accepted.
+  Admin warns as the expiry nears; after it, installed apps keep running and new installs from that catalog wait.
 - **Each catalog acts only on its own apps.** App ids are scoped to their catalog; an installed app updates only from
   the catalog and publisher key it came from; the plan names the catalog and publisher beside the tier.
 - **Upstream releases wait three days**, unless the catalog marks one a security release. In the official catalog, a
-  pin bump is merged by the maintainer, never by an agent; `CLAUDE.md`'s security core gains catalog pins, a change
-  the maintainer makes there. Where an upstream signs its images, the catalog pins the expected signer, and the agent
+  pin bump is merged by the maintainer, never by an agent; adding catalog pins to `CLAUDE.md`'s security core is
+  the maintainer's own change. Where an upstream signs its images, the catalog pins the expected signer, and the agent
   checks it.
