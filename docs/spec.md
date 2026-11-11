@@ -611,6 +611,10 @@ Details are in [ADR 0018](adr/0018-uptime-and-notifications.md).
   - the listener closes for good after the hand-off to the mesh.
 
   A self-signed certificate was considered and refused: browser warnings teach the admin to click through them.
+
+  This is temporary. **HTTPS is enforced eventually** (the maintainer, 2026-11-11; #64):
+  - setup's secrets are typed in the machine's terminal, so plain HTTP carries only non-secret answers;
+  - once the certificate exists, every name answers HTTPS only, with HSTS and `Secure` cookies.
 - **The setup session is a bearer token**, not a cookie:
   - the page keeps it in `sessionStorage`, so one tab holds it;
   - it is bound to the address that claimed the link, ends after 30 minutes idle and 2 hours at most, and is stored
@@ -621,6 +625,7 @@ Details are in [ADR 0018](adr/0018-uptime-and-notifications.md).
 
 - No router ports, ever, and no router port mapping by the mesh clients.
 - TLS ends on the household's machines.
+- HTTPS only once the certificate exists, with HSTS; no secret ever crosses plain HTTP (#64).
 - The LAN sees the machines, not the apps.
 - Admin is reachable over the mesh only.
 - Secrets travel only inward: a front end may send one, and no response carries one.
@@ -966,3 +971,4 @@ Every answer of the grilling (2026-11-09) and where it lives:
 | 132 | Setup's first half over plain HTTP on the LAN, accepted | First-time setup in two halves (#14 Q3) |
 | 133 | The setup session is a per-tab bearer token, not a cookie | First-time setup in two halves (#14 Q12–Q13) |
 | 134 | The manager's database is SQLite | ADR 0019 (#14 Q4) |
+| 135 | HTTPS enforced eventually; no secret over plain HTTP | Security defaults; First-time setup in two halves (#64) |
