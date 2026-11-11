@@ -91,6 +91,7 @@ const (
 	ansDNSKeyName  = "dnsKeyName"
 	ansDNSKeyAlg   = "dnsKeyAlgorithm"
 	ansZone        = "dnsZone"
+	ansAdminURL    = "adminUrl"
 	// ansPort is the household's port, chosen once at the network step (ADR 0021).
 	ansPort = "householdPort"
 )
@@ -165,6 +166,8 @@ func (m *Manager) dnsSecret(ctx context.Context, value string, earlier map[strin
 // takeDNSToken checks a DNS token against the zone, seals it, and makes sure the domain's certificate is issued and on
 // the edge. It returns the answers to keep, and whether a certificate was issued.
 func (m *Manager) takeDNSToken(ctx context.Context, token mesh.Secret, ans map[string]string) (map[string]string, bool, error) {
+	m.certMu.Lock() // one issuance at a time: setup, the console and the scheduler never interleave
+	defer m.certMu.Unlock()
 	domain, s := ans[ansDomain], settingsOf(ans)
 	zone, err := m.domains.Zone(ctx, s, token, domain)
 	if err != nil {
@@ -176,7 +179,7 @@ func (m *Manager) takeDNSToken(ctx context.Context, token mesh.Secret, ans map[s
 	if err := m.agent.seal(ctx, credDNSToken, token); err != nil {
 		return nil, false, err
 	}
-	keep := map[string]string{ansZone: zone}
+	keep := map[string]string{ansZone: zone, ansAdminURL: AdminURL(ans)}
 	if err := m.db.SaveAnswers(ctx, keep); err != nil {
 		return nil, false, err
 	}
@@ -190,7 +193,8 @@ func (m *Manager) takeDNSToken(ctx context.Context, token mesh.Secret, ans map[s
 func (m *Manager) ensureCertificate(ctx context.Context, ans map[string]string, token mesh.Secret, fresh bool) (bool, error) {
 	domain := ans[ansDomain]
 	account, err := m.agent.unseal(ctx, credACME)
-	if err != nil || account == "" {
+	switch {
+	case errors.Is(err, errNotSealed) || (err == nil && account == ""):
 		if account, err = certs.NewKey(); err != nil {
 			return false, err
 		}
@@ -198,8 +202,13 @@ func (m *Manager) ensureCertificate(ctx context.Context, ans map[string]string, 
 		if err := m.agent.seal(ctx, credACME, account); err != nil {
 			return false, err
 		}
+	case err != nil:
+		return false, fmt.Errorf("the ACME account's key: %w", err) // never a new account because the agent didn't answer
 	}
-	have := m.storedCertificate(ctx, domain)
+	have, err := m.storedCertificate(ctx, domain)
+	if err != nil {
+		return false, err // never a new certificate because the agent didn't answer
+	}
 	c, issued, err := m.domains.Ensure(ctx, Issuance{Settings: settingsOf(ans), Token: token, Zone: ans[ansZone], Domain: domain,
 		Account: account, Contact: ans["mail"], Fresh: fresh}, have, m.cfg.Now())
 	if err != nil {
@@ -224,32 +233,40 @@ func (m *Manager) ensureCertificate(ctx context.Context, ans map[string]string, 
 	return issued, nil
 }
 
-// storedCertificate is the domain's certificate as the database and the agent keep it, or nil.
-func (m *Manager) storedCertificate(ctx context.Context, domain string) *certs.Certificate {
+// storedCertificate is the domain's certificate as the database and the agent keep it; nil when there is none, or
+// it doesn't hold together. A failure to read it is an error: it never counts as no certificate.
+func (m *Manager) storedCertificate(ctx context.Context, domain string) (*certs.Certificate, error) {
 	row, err := m.db.Certificate(ctx, domain)
+	if errors.Is(err, store.ErrNotFound) {
+		return nil, nil
+	}
 	if err != nil {
-		return nil
+		return nil, err
 	}
 	key, err := m.agent.unseal(ctx, credTLSKey)
+	if errors.Is(err, errNotSealed) {
+		return nil, nil
+	}
 	if err != nil {
-		return nil
+		return nil, fmt.Errorf("the certificate's key: %w", err)
 	}
 	c, err := certs.Parse(domain, row.Chain, key)
 	if err != nil {
 		m.log.Warn("the stored certificate doesn't hold together; a new one is issued", "domain", domain, "err", err)
-		return nil
+		return nil, nil
 	}
-	return &c
+	return &c, nil
 }
 
 // installCertificate puts the certificate on the primary's edge, with Admin's site at the household's port, and the
 // household's names on the mesh, pointing at the primary.
 func (m *Manager) installCertificate(ctx context.Context, ans map[string]string, c certs.Certificate) error {
 	domain := ans[ansDomain]
-	if err := m.agent.edgeSites(ctx, agent.EdgeSites{Port: householdPort(ans), Admin: AdminName(domain)}); err != nil {
+	// The certificate first: it starts the edge (its credentials come with the start), then the sites load into it.
+	if err := m.agent.edgeCertificate(ctx, domain, c.Chain, c.Key); err != nil {
 		return fmt.Errorf("%w: %v", errEdge, err)
 	}
-	if err := m.agent.edgeCertificate(ctx, domain, c.Chain, c.Key); err != nil {
+	if err := m.agent.edgeSites(ctx, agent.EdgeSites{Port: householdPort(ans), Admin: AdminName(domain)}); err != nil {
 		return fmt.Errorf("%w: %v", errEdge, err)
 	}
 	if err := m.ensureNames(ctx, ans); err != nil {
@@ -275,6 +292,15 @@ func (m *Manager) ensureNames(ctx context.Context, ans map[string]string) error 
 	return nb.EnsureNames(ctx, ans[ansDomain], ip)
 }
 
+// AdminURL is Admin's one URL (ADR 0021): its name, at the household's port.
+func AdminURL(ans map[string]string) string {
+	u := "https://" + AdminName(ans[ansDomain])
+	if p := householdPort(ans); p != 443 {
+		u += ":" + strconv.Itoa(p)
+	}
+	return u
+}
+
 // householdPort is the household's port: chosen at the network step, 443 before.
 func householdPort(ans map[string]string) int {
 	if p, err := strconv.Atoi(ans[ansPort]); err == nil && p > 0 {
@@ -286,6 +312,8 @@ func householdPort(ans map[string]string) int {
 // renew renews the domain's certificate once a third of its lifetime is left. The first renewal that fails raises a
 // warning for the admins, long before the certificate expires (#80). It runs from the scheduler.
 func (m *Manager) renew(ctx context.Context) error {
+	m.certMu.Lock()
+	defer m.certMu.Unlock()
 	ans, err := m.db.Answers(ctx)
 	if err != nil {
 		return err
@@ -300,7 +328,7 @@ func (m *Manager) renew(ctx context.Context) error {
 	}
 	c := certs.Certificate{Domain: domain, NotBefore: row.NotBefore, NotAfter: row.NotAfter, Serial: row.Serial}
 	if !c.Due(m.cfg.Now()) {
-		return nil
+		return m.reinstall(ctx, ans, row)
 	}
 	token, err := m.agent.unseal(ctx, credDNSToken)
 	if err == nil {
@@ -310,6 +338,29 @@ func (m *Manager) renew(ctx context.Context) error {
 		return m.renewalFailed(ctx, row, err)
 	}
 	return m.db.ResolveWarnings(ctx, warnCertificate+domain, m.cfg.Now())
+}
+
+// reinstall puts the stored certificate on the edge again when the edge holds another: a renewal that was issued but
+// didn't reach the edge is never left there.
+func (m *Manager) reinstall(ctx context.Context, ans map[string]string, row store.Certificate) error {
+	st, err := m.agent.edgeStatus(ctx)
+	if err != nil {
+		return err
+	}
+	for _, c := range st.Certificates {
+		if c.Domain == row.Domain && c.Serial == row.Serial {
+			return nil
+		}
+	}
+	have, err := m.storedCertificate(ctx, row.Domain)
+	if err != nil || have == nil {
+		return err
+	}
+	if err := m.installCertificate(ctx, ans, *have); err != nil {
+		return m.renewalFailed(ctx, row, err)
+	}
+	m.log.Info("put the domain's certificate on the edge again", "domain", row.Domain, "serial", row.Serial)
+	return m.db.ResolveWarnings(ctx, warnCertificate+row.Domain, m.cfg.Now())
 }
 
 const warnCertificate = "certificate:"

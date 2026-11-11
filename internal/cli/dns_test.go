@@ -43,7 +43,7 @@ func routedControl(t *testing.T, answers map[string][2]string) (string, *[]strin
 	return sock, &got
 }
 
-const atDomainStep = `{"answers":{"domain":"example.test","dnsProvider":"rfc2136","dnsServer":"192.0.2.53:53","dnsKeyName":"homerslab.","householdPort":"9443"}}`
+const atDomainStep = `{"answers":{"domain":"example.test","dnsProvider":"rfc2136","dnsServer":"192.0.2.53:53","dnsKeyName":"homerslab.","householdPort":"9443","adminUrl":"https://admin.example.test:9443"}}`
 
 // Before the DNS token is read, the terminal says where it will go, from the setup's own answers: a stranger who
 // claimed the link first can't send it to a server of theirs unseen (#64).

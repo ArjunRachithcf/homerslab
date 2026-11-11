@@ -291,9 +291,10 @@ func (h *Host) Tamper(how string) {
 // Edge stands in for Caddy's admin API on the edge's socket: it takes a configuration at /load and gives it back at
 // /config/, re-marshalled as Caddy does. Restart puts it back to its boot configuration, which has no sites.
 type Edge struct {
-	mu     sync.Mutex
-	config []byte
-	loads  int
+	mu      sync.Mutex
+	config  []byte
+	loads   int
+	running bool // the unit has started: until then nothing answers on the socket
 }
 
 // Boot is the edge's configuration as it starts (packaging/edge/boot.json).
@@ -314,6 +315,12 @@ func startEdge(t testing.TB, sock string) *Edge {
 func (e *Edge) serve(w http.ResponseWriter, r *http.Request) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	if !e.running { // as a socket nobody listens on: the connection goes
+		if c, _, err := http.NewResponseController(w).Hijack(); err == nil {
+			_ = c.Close()
+		}
+		return
+	}
 	switch {
 	case r.Method == http.MethodPost && r.URL.Path == "/load":
 		b, _ := io.ReadAll(r.Body)
@@ -346,9 +353,10 @@ func (e *Edge) Loads() int {
 	return e.loads
 }
 
-// Restart is the edge starting again, on its boot configuration.
+// Restart is the edge starting again, on its boot configuration. The edge's unit starts only when the agent starts
+// it.
 func (e *Edge) Restart() {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	e.config = []byte(Boot)
+	e.config, e.running = []byte(Boot), true
 }

@@ -198,3 +198,23 @@ func TestTheEdgeWaitsForTheMesh(t *testing.T) {
 		}
 	}
 }
+
+// A rejoin may bring the node another mesh address: the edge listens on the one it has now, never on one that is gone.
+func TestTheEdgeFollowsTheNodesMeshAddress(t *testing.T) {
+	testenv.Isolate(t)
+	sock, h, _ := joined(t, agent.Config{})
+	chain, key := wildcard(t, "example.test")
+	call(t, sock, "PUT", "/v1/edge/certificates/example.test", map[string]string{"chain": chain, "key": key})
+	call(t, sock, "PUT", "/v1/edge", agent.EdgeSites{Port: 443, Admin: "admin.example.test"})
+	h.NetbirdIP = "100.88.9.9"
+	if code, body := call(t, sock, "POST", "/v1/mesh/join", joinBody()); code != http.StatusOK {
+		t.Fatalf("the rejoin: %d %s", code, body)
+	}
+	_, body := call(t, sock, "POST", "/v1/edge/check", nil)
+	if s := edgeStatus(t, body); len(s.Listen) != 1 || s.Listen[0] != netip.MustParseAddr("100.88.9.9") || !s.Running {
+		t.Errorf("after the rejoin the edge listens on %v (running %v)", s.Listen, s.Running)
+	}
+	if bytes.Contains(h.Edge.Config(), []byte("100.88.7.186")) {
+		t.Error("the edge still listens on the old address")
+	}
+}

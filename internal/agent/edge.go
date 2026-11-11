@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"net/http"
 	"net/netip"
 	"os"
@@ -55,6 +56,8 @@ type edgeState struct {
 	EdgeSites
 	// Domains are the domains whose certificates the edge holds, as sealed credentials.
 	Domains []string `json:"domains"`
+	// Serving are the certificates the edge started with: those it serves.
+	Serving map[string]EdgeCertificate `json:"serving,omitempty"`
 }
 
 // EdgeStatus is the edge as the agent finds it.
@@ -84,7 +87,8 @@ func keyID(domain string) string  { return "tls-" + domain + ".key" }
 // edgeConfig is the edge's whole configuration, from what the agent keeps; ok is false while it can't serve yet.
 func (a *Agent) edgeConfig() (cfg []byte, ok bool, err error) {
 	e := a.state.Edge
-	if e == nil || len(a.state.MeshIPs) == 0 {
+	// Nothing to serve before a certificate and the household's port: the edge's boot configuration is all it needs.
+	if e == nil || len(a.state.MeshIPs) == 0 || len(e.Domains) == 0 || e.Port == 0 {
 		return nil, false, nil
 	}
 	c := edge.Config{AdminSocket: a.cfg.Edge.AdminSocket, Storage: a.cfg.Edge.Storage, Listen: a.state.MeshIPs, Port: e.Port}
@@ -106,13 +110,17 @@ func (a *Agent) pushEdge(ctx context.Context) error {
 		return err
 	}
 	c := edge.NewClient(a.cfg.Edge.AdminSocket)
-	deadline := a.cfg.Now().Add(a.cfg.JoinWait)
+	ctx, cancel := context.WithTimeout(ctx, min(a.cfg.JoinWait, 15*time.Second)) // an edge that is starting
+	defer cancel()
 	for {
-		err = c.Load(ctx, cfg)
-		if err == nil || !a.cfg.Now().Before(deadline) || ctx.Err() != nil {
-			return err
+		if err = c.Load(ctx, cfg); err == nil {
+			return nil
 		}
-		time.Sleep(200 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			return err
+		case <-time.After(200 * time.Millisecond):
+		}
 	}
 }
 
@@ -147,11 +155,12 @@ func (a *Agent) putEdge(w http.ResponseWriter, r *http.Request) {
 	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	next := edgeState{EdgeSites: req}
+	next := edgeState{}
 	if a.state.Edge != nil {
-		next.Domains = a.state.Edge.Domains
+		next = *a.state.Edge
 	}
-	a.saveEdge(w, r, next, false)
+	next.EdgeSites = req
+	a.saveEdge(w, r, next, nil)
 }
 
 // putEdgeCertificate takes a domain's certificate and key from the manager, over this socket only. They become
@@ -200,12 +209,12 @@ func (a *Agent) putEdgeCertificate(w http.ResponseWriter, r *http.Request) {
 		slices.Sort(next.Domains)
 	}
 	a.log.Info("the edge has a new certificate", "domain", domain, "serial", c.Serial, "notAfter", c.NotAfter)
-	a.saveEdge(w, r, next, true)
+	a.saveEdge(w, r, next, &EdgeCertificate{Domain: domain, Serial: c.Serial, NotAfter: c.NotAfter})
 }
 
-// saveEdge keeps the edge's new state, and puts it in place: the unit's credentials when restart is set (systemd
-// hands them over only as the unit starts), then the whole configuration. The caller holds a.mu.
-func (a *Agent) saveEdge(w http.ResponseWriter, r *http.Request, next edgeState, restart bool) {
+// saveEdge keeps the edge's new state, and puts it in place: with a new certificate, the unit's credentials and a
+// restart (systemd hands them over only as the unit starts), then the whole configuration. The caller holds a.mu.
+func (a *Agent) saveEdge(w http.ResponseWriter, r *http.Request, next edgeState, started *EdgeCertificate) {
 	prev := a.state.Edge
 	a.state.Edge = &next
 	if err := a.save(); err != nil {
@@ -215,7 +224,7 @@ func (a *Agent) saveEdge(w http.ResponseWriter, r *http.Request, next edgeState,
 		return
 	}
 	ctx := r.Context()
-	if restart {
+	if started != nil {
 		steps := []func() error{
 			func() error { return writeFile(filepath.Join(a.cfg.Root, a.edgeDropIn()), a.edgeCredentials()) },
 			func() error { return a.run(ctx, "systemctl", "daemon-reload") },
@@ -228,6 +237,15 @@ func (a *Agent) saveEdge(w http.ResponseWriter, r *http.Request, next edgeState,
 				fail(w, http.StatusInternalServerError, "edge-failed")
 				return
 			}
+		}
+		serving := maps.Clone(a.state.Edge.Serving)
+		if serving == nil {
+			serving = map[string]EdgeCertificate{}
+		}
+		serving[started.Domain] = *started
+		a.state.Edge.Serving = serving
+		if err := a.save(); err != nil {
+			a.log.Error("saving the agent's state", "err", err)
 		}
 	}
 	if len(a.state.MeshIPs) == 0 {
@@ -269,12 +287,8 @@ func (a *Agent) edgeStatus(ctx context.Context) EdgeStatus {
 	}
 	s.EdgeSites = a.state.Edge.EdgeSites
 	for _, d := range a.state.Edge.Domains {
-		chain, err := a.unsealAt(ctx, filepath.Join(a.edgeDir(), certID(d)+".cred"), certID(d))
-		if err != nil {
-			continue
-		}
-		if c, err := certs.ParseChain(d, chain); err == nil {
-			s.Certificates = append(s.Certificates, EdgeCertificate{Domain: d, Serial: c.Serial, NotAfter: c.NotAfter})
+		if c, ok := a.state.Edge.Serving[d]; ok {
+			s.Certificates = append(s.Certificates, c)
 		}
 	}
 	if cfg, ok, err := a.edgeConfig(); err == nil && ok {

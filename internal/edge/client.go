@@ -22,7 +22,8 @@ type Client struct {
 func NewClient(socket string) *Client {
 	return &Client{Socket: socket, http: &http.Client{
 		Timeout: 15 * time.Second,
-		Transport: &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+		// One connection per request: the agent makes a client at every check, and leaves no idle connection behind.
+		Transport: &http.Transport{DisableKeepAlives: true, DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
 			return (&net.Dialer{}).DialContext(ctx, "unix", socket)
 		}},
 	}}

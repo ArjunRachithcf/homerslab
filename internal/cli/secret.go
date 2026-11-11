@@ -72,7 +72,7 @@ func setupSecret(ctx context.Context, args []string, env Env) error {
 	}
 	msg := secretDone[name]
 	if name == "dns" {
-		msg = fmt.Sprintf(msg, after.Answers["domain"], adminURL(after.Answers))
+		msg = fmt.Sprintf(msg, after.Answers["domain"], after.Answers["adminUrl"])
 	}
 	fmt.Fprintln(env.Stdout, msg)
 	return nil
@@ -139,15 +139,6 @@ func day(t time.Time) string { return t.UTC().Format("2 January 2006") }
 // where says where the DNS token goes, from setup's answers.
 func where(ans map[string]string) string {
 	return dns.Settings{Provider: ans["dnsProvider"], Server: ans["dnsServer"], KeyName: ans["dnsKeyName"]}.Where()
-}
-
-// adminURL is Admin's one URL (ADR 0021).
-func adminURL(ans map[string]string) string {
-	u := "https://admin." + ans["domain"]
-	if p := ans["householdPort"]; p != "" && p != "443" {
-		u += ":" + p
-	}
-	return u
 }
 
 // refused turns the manager's no into what to do.

@@ -495,3 +495,55 @@ func agentHTTP(sock string) *http.Client {
 		return (&net.Dialer{}).DialContext(ctx, "unix", sock)
 	}}}
 }
+
+// A renewal that was issued but didn't reach the edge is put on the edge again at the next check, not left until the
+// old certificate expires.
+func TestARenewalThatDidntReachTheEdgeIsPutThereAgain(t *testing.T) {
+	testenv.Isolate(t)
+	p, b, _, fd := atDomain(t)
+	throughDomain(t, p, b)
+	ctx := context.Background()
+	old := p.edge(t).Certificates[0].Serial
+	p.clock.Add(61 * 24 * time.Hour)
+	p.host.Fail("systemctl restart homerslab-edge.service")
+	p.m.RunDue(ctx)
+	if fd.count() != 2 || p.edge(t).Certificates[0].Serial != old {
+		t.Fatalf("issued %d; the edge holds %s", fd.count(), p.edge(t).Certificates[0].Serial)
+	}
+	if ws := p.warnings(t); len(ws) != 1 {
+		t.Errorf("a renewal that didn't reach the edge raised %d warnings", len(ws))
+	}
+	p.host.Mend()
+	p.m.RunDue(ctx)
+	if fd.count() != 2 {
+		t.Errorf("the next check issued again: %d", fd.count())
+	}
+	if got := p.edge(t).Certificates[0].Serial; got == old {
+		t.Error("the renewed certificate never reached the edge")
+	}
+	if ws := p.warnings(t); len(ws) != 1 || ws[0].Resolved.IsZero() {
+		t.Errorf("the warning: %+v", ws)
+	}
+}
+
+// An agent that doesn't answer for a moment never costs the household its ACME account or a certificate: a key that
+// can't be read isn't taken for a key that isn't there (#80).
+func TestAnAgentThatDoesntAnswerCostsNoAccountAndNoCertificate(t *testing.T) {
+	testenv.Isolate(t)
+	p, b, _, fd := atDomain(t)
+	throughDomain(t, p, b)
+	account := p.unseal(t, "manager-acme-account")
+	p.clock.Add(61 * 24 * time.Hour)
+	p.host.Fail("systemd-creds decrypt")
+	p.m.RunDue(context.Background())
+	if r := p.control("PUT", "/api/v1/dns/token", map[string]string{"value": dnsToken}); r.Code == http.StatusOK {
+		t.Errorf("the console's token with the agent failing: %d", r.Code)
+	}
+	p.host.Mend()
+	if fd.count() != 1 {
+		t.Errorf("issued %d certificates while the agent couldn't unseal", fd.count()-1)
+	}
+	if got := p.unseal(t, "manager-acme-account"); got != account {
+		t.Error("the ACME account's key was replaced")
+	}
+}

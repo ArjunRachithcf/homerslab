@@ -73,7 +73,7 @@ func (a *agentClient) call(ctx context.Context, method, path string, body, out a
 	if resp.StatusCode/100 != 2 {
 		var e struct{ Error string }
 		_ = json.NewDecoder(io.LimitReader(resp.Body, 4<<10)).Decode(&e)
-		return fmt.Errorf("the agent answered %s %s with %s %s", method, path, resp.Status, e.Error)
+		return &agentError{Method: method, Path: path, Status: resp.StatusCode, Code: e.Error}
 	}
 	if out == nil {
 		return nil
@@ -85,9 +85,27 @@ func (a *agentClient) seal(ctx context.Context, name string, value mesh.Secret) 
 	return a.call(ctx, http.MethodPut, "/v1/credentials/"+name, map[string]string{"value": value.Reveal()}, nil)
 }
 
+// agentError is the agent saying no, with its code.
+type agentError struct {
+	Method, Path string
+	Status       int
+	Code         string
+}
+
+func (e *agentError) Error() string {
+	return fmt.Sprintf("the agent answered %s %s with %d %s", e.Method, e.Path, e.Status, e.Code)
+}
+
+// errNotSealed is a credential the agent doesn't hold: not a failure to reach it.
+var errNotSealed = errors.New("the agent holds no such credential")
+
 func (a *agentClient) unseal(ctx context.Context, name string) (mesh.Secret, error) {
 	var v struct{ Value string }
 	err := a.call(ctx, http.MethodGet, "/v1/credentials/"+name, nil, &v)
+	var ae *agentError
+	if errors.As(err, &ae) && ae.Status == http.StatusNotFound {
+		return "", errNotSealed
+	}
 	return mesh.Secret(v.Value), err
 }
 
@@ -110,7 +128,14 @@ func (a *agentClient) closeSetupListener(ctx context.Context) error {
 }
 
 func (a *agentClient) edgeSites(ctx context.Context, s agent.EdgeSites) error {
-	return a.call(ctx, http.MethodPut, "/v1/edge", s, nil)
+	c := *a.http
+	c.Timeout = 60 * time.Second // the edge may still be starting
+	return (&agentClient{http: &c}).call(ctx, http.MethodPut, "/v1/edge", s, nil)
+}
+
+func (a *agentClient) edgeStatus(ctx context.Context) (agent.EdgeStatus, error) {
+	var s agent.EdgeStatus
+	return s, a.call(ctx, http.MethodGet, "/v1/edge", nil, &s)
 }
 
 // edgeCertificate hands a domain's certificate and key to the agent, which seals them for the edge and restarts it.

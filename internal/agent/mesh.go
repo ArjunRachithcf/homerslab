@@ -118,9 +118,8 @@ func (a *Agent) join(w http.ResponseWriter, r *http.Request) {
 	if !slices.Contains(next.WireGuard, netbird.WireGuardPort) {
 		next.WireGuard = append(slices.Clone(next.WireGuard), netbird.WireGuardPort)
 	}
-	if !slices.Contains(next.MeshIPs, st.IP) {
-		next.MeshIPs = append(slices.Clone(next.MeshIPs), st.IP)
-	}
+	// The node's address on its mesh, as the mesh gives it now: a rejoin may bring another, and the old one is gone.
+	next.MeshIPs = []netip.Addr{st.IP}
 	// Kept first, so a restart always brings the table back; undone if the table can't be applied.
 	prev := a.state
 	a.state = next

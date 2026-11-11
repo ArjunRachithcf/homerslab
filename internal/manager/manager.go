@@ -18,6 +18,7 @@ import (
 	"net/http"
 	"net/netip"
 	"os"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -70,6 +71,7 @@ type Manager struct {
 	web       fs.FS
 	log       *slog.Logger
 	lanClosed atomic.Bool
+	certMu    sync.Mutex // one issuance or renewal at a time
 }
 
 // New opens the manager's database.

@@ -72,6 +72,7 @@ type Agent struct {
 	bridges   []string  // the engines' bridges as last asked, and when
 	bridgesAt time.Time
 	meshDrift []firewall.Drift // what the agent found changed in the mesh client, and put back
+	edgeDown  string           // the edge's last check's error, so a down edge is logged once
 }
 
 // state is what the agent keeps across restarts, in StateDir/agent.json. None of it is secret.
@@ -253,8 +254,15 @@ func (a *Agent) check(ctx context.Context) {
 	if err := a.reconcile(ctx, false); err != nil {
 		a.log.Error("checking the firewall table", "err", err)
 	}
-	if err := a.reconcileEdge(ctx); err != nil {
-		a.log.Error("checking the edge", "err", err)
+	// An edge that is down is said once, and again when it comes back: not at every check.
+	err := a.reconcileEdge(ctx)
+	switch {
+	case err != nil && a.edgeDown != err.Error():
+		a.log.Error("checking the edge; trying again at each check", "err", err)
+		a.edgeDown = err.Error()
+	case err == nil && a.edgeDown != "":
+		a.log.Info("the edge answers again")
+		a.edgeDown = ""
 	}
 }
 
