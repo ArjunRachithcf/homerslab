@@ -651,9 +651,25 @@ func (m *Mesh) Disable(ctx context.Context, ids []string) error {
 
 // NewJoinKey makes a one-off setup key that puts one node in the nodes group, and expires in mesh.JoinKeyLife.
 func (m *Mesh) NewJoinKey(ctx context.Context, node string) (mesh.JoinKey, error) {
+	return m.newKey(ctx, "homerslab-node-"+node, mesh.NodesGroup)
+}
+
+// NewDeviceKey makes a one-off setup key that puts one device in its person's role group, and expires in
+// mesh.JoinKeyLife.
+func (m *Mesh) NewDeviceKey(ctx context.Context, r mesh.Role, device string) (mesh.JoinKey, error) {
+	if !slices.Contains(mesh.Roles, r) {
+		return mesh.JoinKey{}, fmt.Errorf("no such role: %q", r)
+	}
+	return m.newKey(ctx, "homerslab-"+string(r)+"-"+device, mesh.RoleGroup(r))
+}
+
+func (m *Mesh) newKey(ctx context.Context, name, group string) (mesh.JoinKey, error) {
 	ids, err := m.groups(ctx)
 	if err != nil {
 		return mesh.JoinKey{}, err
+	}
+	if ids[group] == "" {
+		return mesh.JoinKey{}, fmt.Errorf("the mesh has no group %s yet", group)
 	}
 	var k struct {
 		ID      string    `json:"id"`
@@ -661,8 +677,8 @@ func (m *Mesh) NewJoinKey(ctx context.Context, node string) (mesh.JoinKey, error
 		Expires time.Time `json:"expires"`
 	}
 	if err := m.api.call(ctx, http.MethodPost, "/api/setup-keys", map[string]any{
-		"name": "homerslab-node-" + node, "type": "one-off", "expires_in": int(mesh.JoinKeyLife / time.Second),
-		"auto_groups": []string{ids[mesh.NodesGroup]}, "usage_limit": 1, "ephemeral": false,
+		"name": name, "type": "one-off", "expires_in": int(mesh.JoinKeyLife / time.Second),
+		"auto_groups": []string{ids[group]}, "usage_limit": 1, "ephemeral": false,
 	}, &k); err != nil {
 		return mesh.JoinKey{}, err
 	}

@@ -38,6 +38,7 @@ func TestTheEdgesConfigurationIsItsGoldenRender(t *testing.T) {
 	twoAddresses.Port = 9443
 	for name, c := range map[string]edge.Config{
 		"primary":        thePrimary(),
+		"with-sign-in":   withSignIn(),
 		"cloud-port-two": twoAddresses,
 		"before-the-cert": {AdminSocket: "/run/homerslab-edge/admin.sock", Storage: "/var/lib/homerslab-edge",
 			Listen: []netip.Addr{netip.MustParseAddr("100.88.7.186")}, Port: 443},
@@ -178,4 +179,79 @@ func TestTheEdgeListensNowhereWithoutACertificate(t *testing.T) {
 	if bytes.Contains(b, []byte(`"listen": [`)) || bytes.Contains(b, []byte("servers")) {
 		t.Errorf("the edge listens without a certificate:\n%s", b)
 	}
+}
+
+// The sign-in, auth.<main domain>, on the primary: proxied to the identity provider at its fixed address on the
+// sign-in network, after Authentik's first-admin flow is refused outright, its page and its executor API alike (#84).
+// The provider makes that flow apply to nobody; the edge never even passes it on.
+func TestTheSignInIsServedWithTheFirstAdminFlowCutOff(t *testing.T) {
+	testenv.Isolate(t)
+	c := thePrimary()
+	c.SignIn = &edge.Site{Name: "auth.example.test", Dial: "172.31.250.10:9000"}
+	b, err := edge.Render(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cfg struct {
+		Apps struct {
+			HTTP struct {
+				Servers map[string]struct {
+					Routes []struct {
+						Match  []map[string][]string
+						Handle []struct {
+							Handler string
+							Routes  []struct {
+								Match  []map[string][]string
+								Handle []map[string]any
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+	if err := json.Unmarshal(b, &cfg); err != nil {
+		t.Fatal(err)
+	}
+	var signIn *struct {
+		Match  []map[string][]string
+		Handle []map[string]any
+	}
+	for _, r := range cfg.Apps.HTTP.Servers["mesh"].Routes {
+		if len(r.Match) == 1 && strings.Join(r.Match[0]["host"], ",") == "auth.example.test" && len(r.Handle) == 1 && r.Handle[0].Handler == "subroute" {
+			subs := r.Handle[0].Routes
+			if len(subs) != 2 {
+				t.Fatalf("the sign-in's subroutes: %+v", subs)
+			}
+			paths := strings.Join(subs[0].Match[0]["path"], " ")
+			for _, p := range []string{"/if/flow/initial-setup/*", "/api/v3/flows/executor/initial-setup/*", "/api/v3/flows/instances/initial-setup/*"} {
+				if !strings.Contains(paths, p) {
+					t.Errorf("the first refused paths %q miss %s", paths, p)
+				}
+			}
+			if subs[0].Handle[0]["handler"] != "static_response" || subs[0].Handle[0]["status_code"] != float64(403) {
+				t.Errorf("the first-admin paths are answered with %v, want 403", subs[0].Handle[0])
+			}
+			signIn = &subs[1]
+		}
+	}
+	if signIn == nil {
+		t.Fatalf("no route for the sign-in:\n%s", b)
+	}
+	if signIn.Handle[0]["handler"] != "reverse_proxy" || !strings.Contains(string(b), `"dial": "172.31.250.10:9000"`) {
+		t.Errorf("the sign-in proxies with %v", signIn.Handle[0])
+	}
+	if bad := c; true {
+		bad.SignIn = &edge.Site{Name: "auth.example.test", Dial: "10.0.0.1"}
+		if _, err := edge.Render(bad); err == nil {
+			t.Error("rendered a sign-in without a port to dial")
+		}
+	}
+}
+
+// withSignIn is the primary once the household account is set up: the sign-in beside Admin.
+func withSignIn() edge.Config {
+	c := thePrimary()
+	c.SignIn = &edge.Site{Name: "auth.example.test", Dial: "172.31.250.10:9000"}
+	return c
 }

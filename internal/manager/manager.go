@@ -54,6 +54,13 @@ type Config struct {
 	// certs packages when nil.
 	Authority certs.Authority
 	Domains   Domains
+	// SignIn reaches the household account's provider (the authentik package when nil); SignInUpstream is where its
+	// server answers on this machine (the agent's sign-in address when empty). SignInWait is how long setting it up
+	// waits for it to start, asking every SignInPoll.
+	SignIn         SignIn
+	SignInUpstream string
+	SignInWait     time.Duration
+	SignInPoll     time.Duration
 	// ScheduleEvery is how often the scheduler looks for due jobs.
 	ScheduleEvery time.Duration
 	Web           fs.FS // the built pages; surfaces.Dist() when nil
@@ -72,6 +79,8 @@ type Manager struct {
 	log       *slog.Logger
 	lanClosed atomic.Bool
 	certMu    sync.Mutex // one issuance or renewal at a time
+	signInMu  sync.Mutex // one setting-up of the household account at a time
+	attempts  attempts   // sign-ins to Admin under way
 }
 
 // New opens the manager's database.
@@ -103,6 +112,15 @@ func New(c Config) (*Manager, error) {
 	if c.Authority.Directory == "" {
 		c.Authority = certs.LetsEncrypt
 	}
+	if c.SignIn == nil {
+		c.SignIn = realSignIn{}
+	}
+	if c.SignInWait == 0 {
+		c.SignInWait = 15 * time.Minute // the first start pulls Authentik's images
+	}
+	if c.SignInPoll == 0 {
+		c.SignInPoll = 3 * time.Second
+	}
 	if c.ScheduleEvery == 0 {
 		c.ScheduleEvery = time.Hour
 	}
@@ -116,7 +134,7 @@ func New(c Config) (*Manager, error) {
 		c.Domains = realDomains{a: a, book: db.Book()}
 	}
 	m := &Manager{cfg: c, db: db, agent: newAgentClient(c.AgentSocket), netbird: c.NetBird, domains: c.Domains, web: c.Web, log: c.Log}
-	handlers := map[string]setup.Handler{"network": m.network, "domain": m.domain}
+	handlers := map[string]setup.Handler{"signin": m.signin, "network": m.network, "domain": m.domain, "done": m.finish}
 	for id, h := range setup.Built {
 		handlers[id] = h
 	}
@@ -178,6 +196,8 @@ func (m *Manager) Control() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /api/v1/setup/links", m.newLink)
 	mux.HandleFunc("PUT /api/v1/setup/secrets/{name}", m.putSecret)
+	mux.HandleFunc("POST /api/v1/setup/join", m.postJoin)
+	mux.HandleFunc("POST /api/v1/setup/passkey", m.postPasskey)
 	mux.HandleFunc("GET /api/v1/drift", m.getDrift)
 	mux.HandleFunc("GET /api/v1/mesh", m.getMesh)
 	mux.HandleFunc("GET /api/v1/mesh/owner-password", m.getOwnerPassword)

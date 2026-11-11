@@ -79,13 +79,33 @@ func TestStepsAreTakenInOrder(t *testing.T) {
 
 func TestAStepNotBuiltYetSaysSo(t *testing.T) {
 	testenv.Isolate(t)
+	b := newPrimary(t, withBuiltSteps("network", "domain")).claimed()
+	b.firstThree()
+	b.mustAnswer("signin", map[string]string{"provider": "authentik"})
+	b.mustAnswer("network", nil)
+	b.mustAnswer("domain", nil)
+	if r := b.answer("mail", map[string]string{"address": "x"}); r.Code != http.StatusNotImplemented || r.errorCode(t) != "not-built" {
+		t.Errorf("mail: %d %s, want 501 not-built", r.Code, r.Body)
+	}
+	if s := b.state(); s.Current != "mail" {
+		t.Errorf("setup moved on to %q", s.Current)
+	}
+}
+
+// The identity provider is chosen in plain words on the LAN page. Authentik is the only one until Kanidm's ticket
+// (#33): the page offers both, and the manager takes Authentik only.
+func TestTheSignInStepTakesAuthentik(t *testing.T) {
+	testenv.Isolate(t)
 	b := newPrimary(t).claimed()
 	b.firstThree()
-	if r := b.answer("signin", map[string]string{"idp": "authentik"}); r.Code != http.StatusNotImplemented || r.errorCode(t) != "not-built" {
-		t.Errorf("signin: %d %s, want 501 not-built", r.Code, r.Body)
+	for _, bad := range []map[string]string{{"provider": "kanidm"}, {"provider": ""}, {"idp": "authentik"}} {
+		if r := b.answer("signin", bad); r.Code != http.StatusBadRequest {
+			t.Errorf("signin %v: %d %s, want 400", bad, r.Code, r.Body)
+		}
 	}
-	if s := b.state(); s.Current != "signin" {
-		t.Errorf("setup moved on to %q", s.Current)
+	s := b.mustAnswer("signin", map[string]string{"provider": "authentik"})
+	if stepState(s, "signin") != "done" || s.Answers["signInProvider"] != "authentik" || s.Current != "network" {
+		t.Errorf("after signin: %+v", s)
 	}
 }
 
@@ -220,5 +240,21 @@ func TestAnAnswerWithAFieldTheStepDoesntHaveIsRefused(t *testing.T) {
 	r.json(t, &e)
 	if r.Code != http.StatusBadRequest || e.Error != "invalid" || !reflect.DeepEqual(e.Fields, []string{"answer"}) {
 		t.Errorf("you with a field it doesn't have: %d %s, want 400 invalid answer", r.Code, r.Body)
+	}
+}
+
+// The setup page's changes refuse cross-site requests too (#83): a change needs Sec-Fetch-Site: same-origin, or the
+// header absent (the CLI, an older browser). "none", a request the person started by hand, never makes a change.
+func TestSetupChangesRefuseCrossSiteRequests(t *testing.T) {
+	testenv.Isolate(t)
+	b := newPrimary(t).claimed()
+	for _, site := range []string{"same-site", "cross-site", "none"} {
+		r := b.do("PUT", "/api/v1/setup/steps/welcome", map[string]string{}, func(r *http.Request) { r.Header.Set("Sec-Fetch-Site", site) })
+		if r.Code != http.StatusForbidden || r.errorCode(t) != "cross-origin" {
+			t.Errorf("Sec-Fetch-Site %s: %d %s, want 403", site, r.Code, r.Body)
+		}
+	}
+	if r := b.do("PUT", "/api/v1/setup/steps/welcome", map[string]string{}, func(r *http.Request) { r.Header.Set("Sec-Fetch-Site", "same-origin") }); r.Code != http.StatusOK {
+		t.Errorf("same-origin: %d %s", r.Code, r.Body)
 	}
 }

@@ -41,8 +41,10 @@ test('setup takes one question per screen, and resumes where it stopped', async 
   await next.click();
 
   await expect(page.getByRole('heading', { level: 1 })).toContainText('How everyone signs in');
+  await expect(page.getByRole('radio', { name: /Authentik/ })).toBeChecked();
+  await expect(page.getByRole('radio', { name: /Kanidm/ })).toBeDisabled(); // Kanidm's own ticket (#33)
   await expect(page.getByText('comes with a later version')).toBeVisible();
-  await expect(next).toBeDisabled();
+  await expect(next).toBeEnabled();
 
   // Interrupted: the browser is closed, the machine restarts, and a new link is made.
   await primary.restartManager();

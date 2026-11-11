@@ -105,7 +105,7 @@ func sameOrigin(next http.Handler) http.Handler {
 			fail(w, http.StatusForbidden, "cross-origin")
 			return
 		}
-		if s := r.Header.Get("Sec-Fetch-Site"); s != "" && s != "same-origin" && s != "none" {
+		if s := r.Header.Get("Sec-Fetch-Site"); s != "" && s != "same-origin" {
 			fail(w, http.StatusForbidden, "cross-origin")
 			return
 		}

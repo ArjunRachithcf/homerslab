@@ -174,6 +174,10 @@ func (m *fakeMesh) NewJoinKey(context.Context, string) (mesh.JoinKey, error) {
 	m.f.keys++
 	return mesh.JoinKey{Value: "JOINKEY-0000-4000-8000-000000000001", ID: "k1", ExpiresAt: m.f.now().Add(mesh.JoinKeyLife)}, nil
 }
+func (m *fakeMesh) NewDeviceKey(_ context.Context, r mesh.Role, device string) (mesh.JoinKey, error) {
+	return mesh.JoinKey{Value: mesh.Secret("device-key-PLACEHOLDER-" + string(r) + "-" + device), ID: "dk-1", ExpiresAt: time.Now().Add(mesh.JoinKeyLife)}, nil
+}
+
 func (m *fakeMesh) Rotate(context.Context) (mesh.Token, error) {
 	m.f.mu.Lock()
 	defer m.f.mu.Unlock()

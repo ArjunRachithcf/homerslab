@@ -3,9 +3,12 @@ package packaging_test
 import (
 	"bufio"
 	"os"
+	"slices"
 	"strings"
 	"testing"
 
+	"github.com/ArjunRachithcf/homerslab/internal/agent"
+	"github.com/ArjunRachithcf/homerslab/internal/idp/authentik"
 	"github.com/ArjunRachithcf/homerslab/internal/testenv"
 )
 
@@ -148,5 +151,66 @@ func TestTheFirewallTableIsRestoredBeforeTheNetwork(t *testing.T) {
 	}
 	if !strings.Contains(unitSection(u, "[Install]"), "WantedBy=sysinit.target") {
 		t.Error("the restore isn't part of the boot")
+	}
+}
+
+// The sign-in is one unit running the standard compose command on the package's own compose file (ADR 0014), its
+// images pinned by digest at the version the adapter is built for. systemd owns the containers: no restart policy in
+// the file, the unit restarts. Its secrets come only from the agent's drop-in, so the unit doesn't start without it.
+// The agent may write that drop-in and nothing else of it (agent.RootWrites).
+func TestTheSignInIsOneUnitRunningTheStandardComposeCommand(t *testing.T) {
+	testenv.Isolate(t)
+	u := unit(t, "homerslab-authentik.service")
+	const file = "--file /usr/share/homerslab/sign-in/authentik.compose.yaml"
+	if s := one(t, u, "ExecStart"); s != "/usr/bin/docker compose --project-name homerslab-authentik "+file+" up --no-log-prefix --quiet-pull" {
+		t.Errorf("ExecStart=%s", s)
+	}
+	if s := one(t, u, "RuntimeDirectory"); s != "homerslab-authentik" || one(t, u, "RuntimeDirectoryMode") != "0700" {
+		t.Errorf("the secrets' folder: %s %s", s, u["RuntimeDirectoryMode"])
+	}
+	if one(t, u, "Restart") != "on-failure" {
+		t.Errorf("Restart=%v", u["Restart"])
+	}
+	for _, k := range []string{"LoadCredentialEncrypted", "Environment", "PrivateMounts", "ProtectSystem"} {
+		if len(u[k]) != 0 {
+			t.Errorf("%s=%v in the packaged unit: secrets come from the agent's drop-in, and Docker must see them (no mount sandboxing)", k, u[k])
+		}
+	}
+	if c := section(t, "homerslab-authentik.service", "[Unit]")["ConditionPathExists"]; len(c) != 1 || c[0] != "/etc/systemd/system/homerslab-authentik.service.d/50-homerslab-credentials.conf" {
+		t.Errorf("ConditionPathExists=%v, want the agent's drop-in", c)
+	}
+	b, err := os.ReadFile("sign-in/authentik.compose.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	compose := string(b)
+	for _, want := range []string{
+		"image: ghcr.io/goauthentik/server@sha256:602227a86455d6772e3d16b7d852713c4f864f40df5df894abd1285bb53979a5",
+		"image: docker.io/library/postgres@sha256:aa6cb33cf4c19c765cefcf48d96176258800870a9a1e930ad126200f9d825139",
+		"# ghcr.io/goauthentik/server:" + authentik.Version,
+		"ipv4_address: " + strings.TrimSuffix(agent.SignInUpstream, ":9000"),
+		"name: homerslab-authentik",
+	} {
+		if !strings.Contains(compose, want) {
+			t.Errorf("the compose file lacks %q", want)
+		}
+	}
+	for _, bad := range []string{"ports:", "restart: unless-stopped", "restart: always", "docker.sock", "privileged", "AUTHENTIK_BOOTSTRAP_TOKEN:", "env_file"} {
+		if strings.Contains(compose, bad) {
+			t.Errorf("the compose file has %q", bad)
+		}
+	}
+	if strings.Count(compose, `restart: "no"`) != 2 { // the anchor, and PostgreSQL
+		t.Errorf("not every service has its engine restart policy off")
+	}
+	tmp, _ := os.ReadFile("tmpfiles.d/homerslab.conf")
+	if !strings.Contains(string(tmp), "d /etc/systemd/system/homerslab-authentik.service.d 0755 root root -") {
+		t.Error("tmpfiles.d doesn't make the folder for the sign-in's drop-in")
+	}
+	if rw := strings.Join(unit(t, "homerslab-agent.service")["ReadWritePaths"], " "); !strings.Contains(rw, "/etc/systemd/system/homerslab-authentik.service.d") {
+		t.Errorf("the agent can't write the sign-in's drop-in: ReadWritePaths=%s", rw)
+	}
+	if !slices.Contains(agent.RootWrites, "etc/systemd/system/homerslab-authentik.service.d") {
+		t.Error("agent.RootWrites lacks the sign-in's drop-in folder")
 	}
 }

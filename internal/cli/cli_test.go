@@ -7,6 +7,7 @@ import (
 	"image"
 	"image/color"
 	"net"
+	"net/http"
 	"net/netip"
 	"path/filepath"
 	"regexp"
@@ -216,5 +217,55 @@ func TestSetupLinkGivesTheLinkAsJSONForScripts(t *testing.T) {
 	}
 	if !linkRe.MatchString(l.URL) || !strings.HasPrefix(l.LocalURL, "http://127.0.0.1:7020/setup#k=") {
 		t.Errorf("link %+v", l)
+	}
+}
+
+// cannedControl is a manager's control socket that answers one path with a body.
+func cannedControl(t *testing.T, path string, status int, body string) string {
+	t.Helper()
+	sock := filepath.Join(t.TempDir(), "manager.sock")
+	ln, err := net.Listen("unix", sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "POST" || r.URL.Path != path {
+			http.NotFound(w, r)
+			return
+		}
+		w.WriteHeader(status)
+		_, _ = w.Write([]byte(body))
+	})}
+	go func() { _ = srv.Serve(ln) }()
+	t.Cleanup(func() { _ = srv.Close() })
+	return sock
+}
+
+// setup join shows the admin's device key and their first passkey's link in this machine's terminal, each with a QR
+// code of itself (#64: never on the LAN page).
+func TestSetupJoinShowsTheDeviceKeyAndThePasskeyLinkAsQRCodes(t *testing.T) {
+	testenv.Isolate(t)
+	const key, link = "DEVICE-KEY-PLACEHOLDER", "https://auth.example.test:9443/if/flow/homerslab-passkey-enrolment/?itoken=PLACEHOLDER"
+	body, _ := json.Marshal(map[string]any{"deviceKey": key, "deviceKeyExpiresAt": "2026-11-12T13:30:00Z", "enrolment": link,
+		"enrolmentExpiresAt": "2026-11-11T14:00:00Z", "signIn": "https://auth.example.test:9443", "admin": "https://admin.example.test:9443",
+		"household": "The Ferreiras", "username": "ines"})
+	sock := cannedControl(t, "/api/v1/setup/join", 200, string(body))
+	code, out, _ := run(t, "setup", "join", "--control-socket", sock)
+	if code != 0 {
+		t.Fatalf("exit %d: %s", code, out)
+	}
+	first, second, ok := strings.Cut(out, "2. Then create your passkey")
+	if !ok || !strings.Contains(first, key) || !strings.Contains(second, link) || !strings.Contains(second, "https://admin.example.test:9443") {
+		t.Fatalf("the output:\n%s", out)
+	}
+	if got := decodeQR(t, first); got != key {
+		t.Errorf("the device key's QR code holds %q", got)
+	}
+	if got := decodeQR(t, second); got != link {
+		t.Errorf("the passkey link's QR code holds %q", got)
+	}
+	sock = cannedControl(t, "/api/v1/setup/join", 409, `{"error":"lan-half-open"}`)
+	if code, _, errOut := run(t, "setup", "join", "--control-socket", sock); code == 0 || !strings.Contains(errOut, "first half") {
+		t.Errorf("before the first half is done: %d %s", code, errOut)
 	}
 }

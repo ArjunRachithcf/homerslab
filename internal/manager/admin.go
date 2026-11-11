@@ -12,9 +12,10 @@ import (
 // edge listens on the mesh only, and the setup listener carries none of it.
 func (m *Manager) Admin() http.Handler {
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /{$}", m.adminPage)
+	mux.Handle("GET /{$}", m.signedIn(http.HandlerFunc(m.adminPage)))
+	m.accountRoutes(mux)
 	mux.HandleFunc("/", notFound)
-	return securityHeaders(m.adminHost(mux))
+	return securityHeaders(m.adminHost(m.noCrossSite(mux)))
 }
 
 // adminHost answers only Admin's own name, whatever the edge forwards.

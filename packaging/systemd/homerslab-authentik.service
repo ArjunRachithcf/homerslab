@@ -1,0 +1,31 @@
+# The household account's sign-in: Authentik, as the standard compose command runs it on the package's own compose
+# file (/usr/share/homerslab/sign-in/authentik.compose.yaml, images pinned by digest). systemd owns the containers:
+# their engine restart policies are off, and this unit restarts them (ADR 0014).
+#
+# Its secrets are systemd credentials the agent sealed (ADR 0011), loaded by the agent's drop-in
+# (homerslab-authentik.service.d/50-homerslab-credentials.conf). The drop-in's ExecStartPre lines copy each into this
+# unit's runtime directory for the one container user that reads it, labelled at the sign-in's own SELinux level, and
+# the containers get them as Compose secrets. The runtime directory goes when the unit stops.
+#
+# No mount sandboxing here: Docker's daemon must see the runtime directory (systemd credentials spike, rule 7).
+[Unit]
+Description=HomersLab sign-in (Authentik)
+Documentation=https://github.com/ArjunRachithcf/homerslab
+Requires=docker.service
+After=docker.service network-online.target homerslab-agent.service
+Wants=network-online.target
+ConditionPathExists=/etc/systemd/system/homerslab-authentik.service.d/50-homerslab-credentials.conf
+
+[Service]
+Type=exec
+RuntimeDirectory=homerslab-authentik
+RuntimeDirectoryMode=0700
+UMask=0077
+ExecStart=/usr/bin/docker compose --project-name homerslab-authentik --file /usr/share/homerslab/sign-in/authentik.compose.yaml up --no-log-prefix --quiet-pull
+ExecStopPost=/usr/bin/docker compose --project-name homerslab-authentik --file /usr/share/homerslab/sign-in/authentik.compose.yaml stop
+Restart=on-failure
+RestartSec=10s
+TimeoutStopSec=90s
+
+[Install]
+WantedBy=multi-user.target

@@ -36,7 +36,7 @@ for (const look of looks) {
     await next.click();
 
     await expect(h1).toContainText('How everyone signs in');
-    await accessible(page, 'how everyone signs in (not built yet)');
+    await accessible(page, 'how everyone signs in');
 
     await primary.restartManager();
     await page.goto((await primary.newLink()).localUrl);

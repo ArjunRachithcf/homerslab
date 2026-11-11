@@ -68,6 +68,9 @@ type primary struct {
 	host     *agenttest.Host // the primary's machine, as its agent sees it
 	netbird  manager.NetBird
 	domains  manager.Domains
+	// signIn stands in for the household account's provider, at signInUpstream.
+	signIn         manager.SignIn
+	signInUpstream string
 	// agentConfig is the agent's, filled in by agenttest.
 	agentConfig agent.Config
 	log         *slog.Logger // the manager's and the agent's, when a test reads them
@@ -136,7 +139,12 @@ func (p *primary) open() {
 		Steps:      p.steps,
 		NetBird:    p.netbird,
 		Domains:    p.domains,
-		Log:        p.log,
+		SignIn:     p.signIn,
+		// The provider's server: the stand-in's issuer. Waits are short, in real time.
+		SignInUpstream: p.signInUpstream,
+		SignInWait:     300 * time.Millisecond,
+		SignInPoll:     10 * time.Millisecond,
+		Log:            p.log,
 	})
 	if err != nil {
 		p.t.Fatal(err)

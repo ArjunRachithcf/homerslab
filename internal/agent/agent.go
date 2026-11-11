@@ -61,8 +61,10 @@ type Config struct {
 	JoinWait time.Duration
 	// Edge is where the node's edge lives; DefaultEdge when its Unit is empty.
 	Edge EdgeConfig
-	Now  func() time.Time
-	Log  *slog.Logger
+	// SignInUpstream is the sign-in's server, host:port; SignInUpstream (the package's address) when empty.
+	SignInUpstream string
+	Now            func() time.Time
+	Log            *slog.Logger
 }
 
 // Agent is a running agent.
@@ -94,6 +96,8 @@ type state struct {
 	// Edge is the edge's sites and certificates, once the manager has given them.
 	Edge      *edgeState `json:"edge,omitempty"`
 	SetupPort int        `json:"setupPort,omitempty"`
+	// SignIn is the household account's provider, once the manager has installed it.
+	SignIn *signInState `json:"signIn,omitempty"`
 	// Bridges are the engines' bridges as last confirmed: what the table uses until the engines answer again, at
 	// boot before any of them runs.
 	Bridges []string `json:"bridges,omitempty"`
@@ -254,6 +258,10 @@ func (a *Agent) Handler() http.Handler {
 	mux.HandleFunc("PUT /v1/edge/certificates/{domain}", a.putEdgeCertificate)
 	mux.HandleFunc("DELETE /v1/credentials/{name}", a.deleteCredential)
 	mux.HandleFunc("GET /v1/mesh", a.getMesh)
+	mux.HandleFunc("PUT /v1/sign-in", a.putSignIn)
+	mux.HandleFunc("GET /v1/sign-in", a.getSignIn)
+	mux.HandleFunc("GET /v1/sign-in/logs", a.getSignInLogs)
+	mux.HandleFunc("DELETE /v1/sign-in/bootstrap-token", a.deleteBootstrapToken)
 	mux.HandleFunc("/", func(w http.ResponseWriter, _ *http.Request) { fail(w, http.StatusNotFound, "not-found") })
 	return mux
 }

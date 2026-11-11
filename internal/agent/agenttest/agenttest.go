@@ -254,6 +254,8 @@ func (h *Host) Run(ctx context.Context, c host.Cmd) ([]byte, error) {
 		return []byte(strings.Join(out, "\n") + "\n"), nil
 	case strings.HasPrefix(line, "netbird up"):
 		return nil, nil
+	case c.Name == "journalctl":
+		return []byte("2026-11-11T10:00:00+0000 primary docker[812]: server-1 | {\"event\": \"Starting authentik server\"}\n"), nil
 	case line == "netbird status --json":
 		return fmt.Appendf(nil, `{"management":{"connected":true},"netbirdIp":"%s/16","fqdn":"study-pc.netbird.selfhosted"}`, h.NetbirdIP), nil
 	case c.Name == "systemd-creds" && len(c.Args) == 5 && c.Args[0] == "encrypt":
@@ -276,6 +278,17 @@ func (h *Host) Cmds() []host.Cmd {
 }
 
 // Ran says whether the agent ran a command line, and at which position (or -1).
+// Times is how many times a command ran.
+func (h *Host) Times(line string) int {
+	n := 0
+	for _, c := range h.Cmds() {
+		if c.String() == line {
+			n++
+		}
+	}
+	return n
+}
+
 func (h *Host) Ran(line string) int {
 	for i, c := range h.Cmds() {
 		if c.String() == line || strings.HasPrefix(c.String(), line+" ") {

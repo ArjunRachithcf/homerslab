@@ -35,14 +35,16 @@ RestartSec=2s
 #     machine's resolver still answers (AF_INET, AF_INET6);
 #   - seals the manager's credentials with systemd-creds, in its state directory;
 #   - since #16, seals the edge's certificates, writes the edge's drop-in, restarts the edge (systemctl) and configures
-#     it through its admin socket (the edge's group).
+#     it through its admin socket (the edge's group);
+#   - since #17, makes and seals the sign-in's secrets, writes its drop-in and restarts it (systemctl), reads its
+#     journal, and asks its readiness check on the sign-in network.
 # Later tickets loosen this as its contract grows: the engine, app units, disks. To check as root at the first package
 # install (#48).
 NoNewPrivileges=yes
 CapabilityBoundingSet=CAP_CHOWN CAP_DAC_READ_SEARCH CAP_NET_ADMIN
 ProtectSystem=strict
-# NetBird's and the edge's drop-ins only (agent.RootWrites; the folders come from tmpfiles.d/homerslab.conf).
-ReadWritePaths=/etc/systemd/system/netbird.service.d /etc/systemd/system/homerslab-edge.service.d
+# NetBird's, the edge's and the sign-in's drop-ins only (agent.RootWrites; the folders come from tmpfiles.d/homerslab.conf).
+ReadWritePaths=/etc/systemd/system/netbird.service.d /etc/systemd/system/homerslab-edge.service.d /etc/systemd/system/homerslab-authentik.service.d
 ProtectHome=read-only
 PrivateTmp=yes
 PrivateNetwork=no

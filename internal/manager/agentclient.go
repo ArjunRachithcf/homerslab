@@ -155,3 +155,23 @@ func (a *agentClient) meshNode(ctx context.Context) (agent.MeshStatus, error) {
 	var s agent.MeshStatus
 	return s, a.call(ctx, http.MethodGet, "/v1/mesh", nil, &s)
 }
+
+// signIn installs the sign-in on the primary, or brings it in line; a bootstrap token, when given, travels inward
+// only. The unit restarts: Authentik takes a while before it answers.
+func (a *agentClient) signIn(ctx context.Context, req agent.SignInRequest) (agent.SignInStatus, error) {
+	var s agent.SignInStatus
+	c := *a.http
+	c.Timeout = 60 * time.Second // systemd restarts the unit
+	return s, (&agentClient{http: &c}).call(ctx, http.MethodPut, "/v1/sign-in", req, &s)
+}
+
+func (a *agentClient) signInStatus(ctx context.Context) (agent.SignInStatus, error) {
+	var s agent.SignInStatus
+	return s, a.call(ctx, http.MethodGet, "/v1/sign-in", nil, &s)
+}
+
+func (a *agentClient) forgetBootstrap(ctx context.Context) error {
+	c := *a.http
+	c.Timeout = 60 * time.Second
+	return (&agentClient{http: &c}).call(ctx, http.MethodDelete, "/v1/sign-in/bootstrap-token", nil, nil)
+}
