@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"path/filepath"
 	"strconv"
@@ -61,5 +62,31 @@ func TestAnIOErrorOnADiskWithNoRoomIsErrDiskFull(t *testing.T) {
 			n, _ := c.free()
 			t.Errorf("code %#x with %d bytes free: full = %v, want %v", c.code, n, got, c.want)
 		}
+	}
+}
+
+// A database from before the boot clock (#65) opens, and its links and sessions have no boot: they have ended.
+func TestADatabaseFromBeforeTheBootClockOpens(t *testing.T) {
+	testenv.Isolate(t)
+	path := filepath.Join(t.TempDir(), "m.db")
+	old, err := sql.Open("sqlite", "file:"+path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, q := range []string{migrations[0], `PRAGMA user_version = 1`,
+		`INSERT INTO setup_link (key_hash, created_at, expires_at) VALUES (x'01', 1, 2)`} {
+		if _, err := old.Exec(q); err != nil {
+			t.Fatal(err)
+		}
+	}
+	old.Close()
+	s, err := Open(path, []Step{{ID: "welcome", Half: "lan"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	l, err := s.Link(context.Background(), []byte{1})
+	if err != nil || l.Made.Boot != "" {
+		t.Errorf("an old link: %+v %v, want one with no boot", l, err)
 	}
 }

@@ -105,6 +105,21 @@ var migrations = []string{
 		last_seen  INTEGER NOT NULL,
 		revoked_at INTEGER
 	);`,
+	// When a link was made and a session opened and last used, by the time since boot (nanoseconds) and that boot's
+	// ID: how old they are, whatever the wall clock does (#65). Rows from before have no boot, and have ended.
+	`ALTER TABLE setup_link ADD COLUMN boot_id TEXT NOT NULL DEFAULT '';
+	ALTER TABLE setup_link ADD COLUMN made_since_boot INTEGER NOT NULL DEFAULT 0;
+	ALTER TABLE setup_session ADD COLUMN boot_id TEXT NOT NULL DEFAULT '';
+	ALTER TABLE setup_session ADD COLUMN opened_since_boot INTEGER NOT NULL DEFAULT 0;
+	ALTER TABLE setup_session ADD COLUMN seen_since_boot INTEGER NOT NULL DEFAULT 0;`,
+}
+
+// Moment is when something happened: by the wall clock, for display and audit, and by the time since the machine
+// booted, with that boot's ID, for how long ago.
+type Moment struct {
+	Wall  time.Time
+	Boot  string
+	Since time.Duration
 }
 
 // Open opens or creates the database at path, readable by its owner only, and brings its schema up to date. Steps
@@ -256,80 +271,88 @@ func (s *Store) Answers(ctx context.Context) (map[string]string, error) {
 }
 
 // NewLink revokes every earlier link and session, and keeps a new link's key hash.
-func (s *Store) NewLink(ctx context.Context, keyHash []byte, created, expires time.Time) error {
+func (s *Store) NewLink(ctx context.Context, keyHash []byte, made Moment, expires time.Time) error {
 	return s.tx(ctx, func(tx *sql.Tx) error {
-		now := created.UnixMilli()
+		now := made.Wall.UnixMilli()
 		if _, err := tx.ExecContext(ctx, `UPDATE setup_link SET revoked_at = ? WHERE revoked_at IS NULL`, now); err != nil {
 			return err
 		}
 		if _, err := tx.ExecContext(ctx, `UPDATE setup_session SET revoked_at = ? WHERE revoked_at IS NULL`, now); err != nil {
 			return err
 		}
-		_, err := tx.ExecContext(ctx, `INSERT INTO setup_link (key_hash, created_at, expires_at) VALUES (?, ?, ?)`,
-			keyHash, now, expires.UnixMilli())
+		_, err := tx.ExecContext(ctx, `INSERT INTO setup_link (key_hash, created_at, expires_at, boot_id, made_since_boot)
+			VALUES (?, ?, ?, ?, ?)`, keyHash, now, expires.UnixMilli(), made.Boot, int64(made.Since))
 		return err
 	})
 }
 
-// Link is a one-time link as the database keeps it. Its times are the wall clock's, for display and audit, and for
-// a manager started after the link was made.
+// Link is a one-time link as the database keeps it.
 type Link struct {
-	CreatedAt, ExpiresAt time.Time
+	Made      Moment
+	ExpiresAt time.Time
 }
 
 // Link reads a link by its key's hash, or returns ErrNotFound.
 func (s *Store) Link(ctx context.Context, keyHash []byte) (Link, error) {
-	var created, expires int64
-	err := s.db.QueryRowContext(ctx, `SELECT created_at, expires_at FROM setup_link WHERE key_hash = ?`, keyHash).Scan(&created, &expires)
+	var created, expires, since int64
+	var l Link
+	err := s.db.QueryRowContext(ctx, `SELECT created_at, expires_at, boot_id, made_since_boot FROM setup_link
+		WHERE key_hash = ?`, keyHash).Scan(&created, &expires, &l.Made.Boot, &since)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Link{}, ErrNotFound
 	}
-	return Link{CreatedAt: time.UnixMilli(created).UTC(), ExpiresAt: time.UnixMilli(expires).UTC()}, err
+	l.Made.Wall, l.Made.Since, l.ExpiresAt = time.UnixMilli(created).UTC(), time.Duration(since), time.UnixMilli(expires).UTC()
+	return l, err
 }
 
 // ClaimLink uses up a link that is neither claimed nor revoked, and opens a session in its place for the client that
 // claimed it. It returns ErrNotFound when the link is unknown, claimed or revoked; whether it is too old is the
-// caller's to say, by a clock the database doesn't have.
-func (s *Store) ClaimLink(ctx context.Context, keyHash, sessionHash []byte, client string, now time.Time) error {
+// caller's to say.
+func (s *Store) ClaimLink(ctx context.Context, keyHash, sessionHash []byte, client string, now Moment) error {
 	return s.tx(ctx, func(tx *sql.Tx) error {
 		res, err := tx.ExecContext(ctx, `UPDATE setup_link SET claimed_at = ?
-			WHERE key_hash = ? AND claimed_at IS NULL AND revoked_at IS NULL`, now.UnixMilli(), keyHash)
+			WHERE key_hash = ? AND claimed_at IS NULL AND revoked_at IS NULL`, now.Wall.UnixMilli(), keyHash)
 		if err != nil {
 			return err
 		}
 		if n, _ := res.RowsAffected(); n != 1 {
 			return ErrNotFound
 		}
-		_, err = tx.ExecContext(ctx, `INSERT INTO setup_session (token_hash, client, created_at, last_seen) VALUES (?, ?, ?, ?)`,
-			sessionHash, client, now.UnixMilli(), now.UnixMilli())
+		_, err = tx.ExecContext(ctx, `INSERT INTO setup_session (token_hash, client, created_at, last_seen, boot_id,
+			opened_since_boot, seen_since_boot) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+			sessionHash, client, now.Wall.UnixMilli(), now.Wall.UnixMilli(), now.Boot, int64(now.Since), int64(now.Since))
 		return err
 	})
 }
 
-// Session is a setup session as the database keeps it, with the wall clock's times.
+// Session is a setup session as the database keeps it.
 type Session struct {
-	Client              string
-	CreatedAt, LastSeen time.Time
+	Client       string
+	Opened, Seen Moment
 }
 
 // Session reads a session that wasn't revoked, by its token's hash, or returns ErrNotFound.
 func (s *Store) Session(ctx context.Context, tokenHash []byte) (Session, error) {
 	var out Session
-	var created, seen int64
-	err := s.db.QueryRowContext(ctx, `SELECT client, created_at, last_seen FROM setup_session
-		WHERE token_hash = ? AND revoked_at IS NULL`, tokenHash).Scan(&out.Client, &created, &seen)
+	var created, seen, openedSince, seenSince int64
+	err := s.db.QueryRowContext(ctx, `SELECT client, created_at, last_seen, boot_id, opened_since_boot, seen_since_boot
+		FROM setup_session WHERE token_hash = ? AND revoked_at IS NULL`, tokenHash).
+		Scan(&out.Client, &created, &seen, &out.Opened.Boot, &openedSince, &seenSince)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Session{}, ErrNotFound
 	}
-	out.CreatedAt, out.LastSeen = time.UnixMilli(created).UTC(), time.UnixMilli(seen).UTC()
+	out.Seen.Boot = out.Opened.Boot
+	out.Opened.Wall, out.Opened.Since = time.UnixMilli(created).UTC(), time.Duration(openedSince)
+	out.Seen.Wall, out.Seen.Since = time.UnixMilli(seen).UTC(), time.Duration(seenSince)
 	return out, err
 }
 
-// SeeSession records when a session was last used.
-func (s *Store) SeeSession(ctx context.Context, tokenHash []byte, at time.Time) error {
+// SeeSession records when a session was last used, in the boot it was opened in.
+func (s *Store) SeeSession(ctx context.Context, tokenHash []byte, at Moment) error {
 	if err := s.noRoom(); err != nil {
 		return err
 	}
-	_, err := s.db.ExecContext(ctx, `UPDATE setup_session SET last_seen = ? WHERE token_hash = ?`, at.UnixMilli(), tokenHash)
+	_, err := s.db.ExecContext(ctx, `UPDATE setup_session SET last_seen = ?, seen_since_boot = ? WHERE token_hash = ? AND boot_id = ?`,
+		at.Wall.UnixMilli(), int64(at.Since), tokenHash, at.Boot)
 	return written(err, s.dir)
 }

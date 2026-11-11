@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io/fs"
 	"net/http"
 	"net/http/httptest"
@@ -35,17 +36,25 @@ const (
 	linkLocalV6 = "fe80::1234:1" // link-local: only with the zone of an interface that carries the default route
 )
 
-// clock is the test's time, moved by hand: the wall clock, which can be set, and the monotonic clock of the manager's
-// process, which only goes on.
+// clock is the test's time, moved by hand: the wall clock, which can be set, and the time since the machine booted
+// (CLOCK_BOOTTIME), which only goes on, across restarts of the manager, until the machine boots again.
 type clock struct {
 	mu      sync.Mutex
 	now     time.Time
 	elapsed time.Duration
+	boots   int
 }
 
 func (c *clock) Now() time.Time { c.mu.Lock(); defer c.mu.Unlock(); return c.now }
 
 func (c *clock) Elapsed() time.Duration { c.mu.Lock(); defer c.mu.Unlock(); return c.elapsed }
+
+// Boot is the machine's boot ID.
+func (c *clock) Boot() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return fmt.Sprintf("boot-%d", c.boots)
+}
 
 // Add lets d go by.
 func (c *clock) Add(d time.Duration) {
@@ -61,11 +70,11 @@ func (c *clock) Set(d time.Duration) {
 	c.now = c.now.Add(d)
 }
 
-// boot starts a new process's monotonic clock, which has nothing to do with the last one's.
-func (c *clock) boot() {
+// reboot boots the machine again: a new boot ID, and the time since boot starts over.
+func (c *clock) reboot() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.elapsed = 7 * time.Second
+	c.elapsed, c.boots = 7*time.Second, c.boots+1
 }
 
 // primary is a manager with its own database and a real agent on the invented primary.
@@ -133,6 +142,7 @@ func (p *primary) open() {
 		Local:       p.local,
 		Now:         p.clock.Now,
 		Elapsed:     p.clock.Elapsed,
+		Boot:        p.clock.Boot,
 		LAN: func() lan.LAN {
 			return lan.LAN{
 				Prefixes:   []netip.Prefix{netip.MustParsePrefix("192.168.1.0/24"), netip.MustParsePrefix("fd00:1::/64")},
@@ -151,6 +161,16 @@ func (p *primary) open() {
 	p.t.Cleanup(func() { _ = m.Close() })
 }
 
+// reboot stops the manager and boots the machine again before starting it.
+func (p *primary) reboot() {
+	p.t.Helper()
+	if err := p.m.Close(); err != nil {
+		p.t.Fatal(err)
+	}
+	p.clock.reboot()
+	p.open()
+}
+
 // dbFolder is the folder that holds the manager's database.
 func (p *primary) dbFolder() string { return filepath.Dir(p.db) }
 
@@ -160,7 +180,6 @@ func (p *primary) restart() {
 	if err := p.m.Close(); err != nil {
 		p.t.Fatal(err)
 	}
-	p.clock.boot()
 	p.open()
 }
 

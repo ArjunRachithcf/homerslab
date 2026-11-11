@@ -68,8 +68,8 @@ func TestALinkAndASessionLastTheirTimeWhenTheClockJumpsForward(t *testing.T) {
 	}
 }
 
-// After a restart the process's monotonic clock is new, so a session carries on only when the wall clock says it is
-// within its limits; an age below zero means the clock went back, and the session's age is unknown.
+// A restart of the manager doesn't restart the machine's clock: the time since boot goes on, so a link's and a
+// session's age are known across any number of restarts, whatever the wall clock does meanwhile.
 func TestASessionSurvivesARestartOnlyWithinItsLimits(t *testing.T) {
 	testenv.Isolate(t)
 	for _, c := range []struct {
@@ -80,7 +80,7 @@ func TestASessionSurvivesARestartOnlyWithinItsLimits(t *testing.T) {
 		{"ten minutes later", func(p *primary) { p.clock.Add(10 * time.Minute) }, http.StatusOK},
 		{"a visit, then 25 minutes", func(p *primary) {
 			p.clock.Add(20 * time.Minute)
-			p.claimedBrowser.state() // what last_seen keeps on disk, at most a minute old
+			p.claimedBrowser.state() // what the database keeps of its last use, at most a minute old
 			p.clock.Add(25 * time.Minute)
 		}, http.StatusOK},
 		{"30 idle minutes", func(p *primary) { p.clock.Add(30 * time.Minute) }, http.StatusUnauthorized},
@@ -91,8 +91,13 @@ func TestASessionSurvivesARestartOnlyWithinItsLimits(t *testing.T) {
 			}
 			p.clock.Add(4 * time.Minute)
 		}, http.StatusUnauthorized},
-		{"the clock went back a minute", func(p *primary) { p.clock.Set(-time.Minute) }, http.StatusUnauthorized},
-		{"the clock went forward three hours", func(p *primary) { p.clock.Set(3 * time.Hour) }, http.StatusUnauthorized},
+		{"the clock went back a day", func(p *primary) { p.clock.Set(-24 * time.Hour) }, http.StatusOK},
+		{"the clock went forward three hours", func(p *primary) { p.clock.Set(3 * time.Hour) }, http.StatusOK},
+		{"the clock went back 20 minutes, after 20 idle", func(p *primary) {
+			p.clock.Add(20 * time.Minute)
+			p.clock.Set(-20 * time.Minute)
+			p.clock.Add(10 * time.Minute)
+		}, http.StatusUnauthorized},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			p := newPrimary(t)
@@ -115,8 +120,8 @@ func TestALinkSurvivesARestartOnlyWithinItsLimits(t *testing.T) {
 	}{
 		{"ten minutes later", func(c *clock) { c.Add(10 * time.Minute) }, http.StatusOK},
 		{"30 minutes later", func(c *clock) { c.Add(30 * time.Minute) }, http.StatusForbidden},
-		{"the clock went back a minute", func(c *clock) { c.Set(-time.Minute) }, http.StatusForbidden},
-		{"the clock went forward an hour", func(c *clock) { c.Set(time.Hour) }, http.StatusForbidden},
+		{"the clock went back a day", func(c *clock) { c.Set(-24 * time.Hour) }, http.StatusOK},
+		{"the clock went forward an hour", func(c *clock) { c.Set(time.Hour) }, http.StatusOK},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			p := newPrimary(t)
@@ -130,7 +135,68 @@ func TestALinkSurvivesARestartOnlyWithinItsLimits(t *testing.T) {
 	}
 }
 
-// Once a restarted manager has taken a session over, its own monotonic clock times it.
+// The independent review's probe: a link 25 minutes old, a restart, the clock stepped back 20 minutes, 20 minutes
+// more. The link is 45 minutes old.
+func TestALinkIsRefusedAfter30MinutesAcrossARestartAndTheClockGoingBack(t *testing.T) {
+	testenv.Isolate(t)
+	p := newPrimary(t)
+	l := p.newLink()
+	p.clock.Add(25 * time.Minute)
+	p.restart()
+	p.clock.Set(-20 * time.Minute)
+	p.clock.Add(20 * time.Minute)
+	if r := p.browser(onTheLAN).claim(l); r.Code != http.StatusForbidden {
+		t.Errorf("claiming a link 45 minutes after it was made, across a restart and the clock going back: %d %s, want 403", r.Code, r.Body)
+	}
+}
+
+// The independent review's probe: a visit, 25 minutes, a restart and the clock stepped back 25 minutes, again and
+// again. The session ends two hours after its claim.
+func TestASessionEndsTwoHoursAfterTheClaimAcrossRestartsAndTheClockGoingBack(t *testing.T) {
+	testenv.Isolate(t)
+	p := newPrimary(t)
+	b := p.claimed()
+	for since := time.Duration(0); since <= 3*time.Hour+36*time.Minute; since += 27 * time.Minute {
+		r := b.do("GET", "/api/v1/setup", nil)
+		if want := http.StatusOK; since >= 2*time.Hour {
+			if r.Code != http.StatusUnauthorized {
+				t.Fatalf("a visit %s after the claim: %d, want 401", since, r.Code)
+			}
+			return
+		} else if r.Code != want {
+			t.Fatalf("a visit %s after the claim: %d, want %d", since, r.Code, want)
+		}
+		p.clock.Add(2 * time.Minute)
+		b.state()
+		p.clock.Add(25 * time.Minute)
+		p.restart()
+		p.clock.Set(-25 * time.Minute)
+	}
+	t.Fatal("the loop ended before two hours")
+}
+
+// After the machine boots again the time since boot starts over, so a link's or a session's age is unknown: they have
+// ended, and a new link continues setup where it stopped (#14 Q1).
+func TestALinkAndASessionEndWhenTheMachineBootsAgain(t *testing.T) {
+	testenv.Isolate(t)
+	p := newPrimary(t)
+	b := p.claimed()
+	p.reboot()
+	if r := b.do("GET", "/api/v1/setup", nil); r.Code != http.StatusUnauthorized {
+		t.Errorf("a session after the machine booted again: %d, want 401", r.Code)
+	}
+	l := p.newLink()
+	p.clock.Add(time.Minute)
+	p.reboot()
+	if r := p.browser(onTheLAN).claim(l); r.Code != http.StatusForbidden {
+		t.Errorf("a link after the machine booted again: %d %s, want 403", r.Code, r.Body)
+	}
+	if s := p.claimed().state(); s.Current != "welcome" {
+		t.Errorf("a new link after the boot: setup at %q, want where it stopped", s.Current)
+	}
+}
+
+// Once a restarted manager has taken a session over, the time since boot times it, whatever the wall clock does.
 func TestASessionTakenOverAfterARestartIsTimedByTheNewProcess(t *testing.T) {
 	testenv.Isolate(t)
 	p := newPrimary(t)

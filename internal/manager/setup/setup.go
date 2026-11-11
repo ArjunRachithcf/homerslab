@@ -88,9 +88,11 @@ const (
 type Clock struct {
 	// Now is the wall clock: the times setup records and shows.
 	Now func() time.Time
-	// Elapsed is a monotonic clock, the time since a fixed moment in this process. How old a link or a session is goes
-	// by it, so setting the wall clock back or forward neither lengthens nor cuts them.
+	// Elapsed is the time since the machine booted, and Boot that boot's ID. How old a link or a session is goes by
+	// them, across any number of the manager's restarts, so setting the wall clock back or forward neither lengthens
+	// nor cuts them. After another boot, their age is unknown: they have ended.
 	Elapsed func() time.Duration
+	Boot    func() string
 }
 
 // Setup is first-time setup on this primary.
@@ -99,25 +101,16 @@ type Setup struct {
 	clock    Clock
 	handlers map[string]Handler
 
-	// mu guards what this process knows of the live link and session, by its monotonic clock. A new link ends every
-	// earlier one and every session, so there is at most one of each.
-	mu      sync.Mutex
-	link    *liveLink
-	session *liveSession
+	// mu guards the session's last use, which this process knows sooner than the database: it is written there at
+	// most every SeenEvery. A new link ends every session, so there is at most one.
+	mu   sync.Mutex
+	seen *lastUse
 }
 
-// liveLink is the link this process made, and when (Elapsed).
-type liveLink struct {
-	hash []byte
-	made time.Duration
-}
-
-// liveSession is the session this process opened or took over: its token's hash, the client it is bound to, when it
-// was opened and last used, and when its last use was written to the database (Elapsed).
-type liveSession struct {
-	hash               []byte
-	client             string
-	opened, seen, kept time.Duration
+// lastUse is when this process last saw a session used, and when it last wrote that to the database (Elapsed).
+type lastUse struct {
+	hash       []byte
+	seen, kept time.Duration
 }
 
 // SeenEvery is how often a session's last use is written to the database, at most: reading setup writes nothing more,
@@ -249,15 +242,28 @@ func (s *Setup) NewLink(ctx context.Context) (Link, error) {
 		return Link{}, ErrLANHalfDone
 	}
 	key, hash := token()
-	now := s.clock.Now()
-	l := Link{Key: key, ExpiresAt: now.Add(LinkLife)}
+	now := s.moment()
+	l := Link{Key: key, ExpiresAt: now.Wall.Add(LinkLife)}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if err := s.db.NewLink(ctx, hash, now, l.ExpiresAt); err != nil {
 		return Link{}, err
 	}
-	s.link, s.session = &liveLink{hash: hash, made: s.clock.Elapsed()}, nil
+	s.seen = nil
 	return l, nil
+}
+
+// moment is now, by every clock setup keeps.
+func (s *Setup) moment() store.Moment {
+	return store.Moment{Wall: s.clock.Now(), Boot: s.clock.Boot(), Since: s.clock.Elapsed()}
+}
+
+// age is how long ago then was, if it is known: in this boot. After another boot, it isn't.
+func age(now, then store.Moment) (time.Duration, bool) {
+	if now.Boot == "" || then.Boot != now.Boot {
+		return 0, false
+	}
+	return now.Since - then.Since, true
 }
 
 // Claim uses up a link and returns the token of the session it opens for client, the claiming device's address.
@@ -272,79 +278,66 @@ func (s *Setup) Claim(ctx context.Context, key, client string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	elapsed := s.clock.Elapsed()
-	age := s.clock.Now().Sub(row.CreatedAt) // a link made before this process started
 	// Whether it was claimed or revoked, ClaimLink says, at once with using it up.
-	if s.link != nil && bytes.Equal(s.link.hash, hash) {
-		age = elapsed - s.link.made
-	}
-	if !within(age, LinkLife) {
+	now := s.moment()
+	if old, ok := age(now, row.Made); !ok || !within(old, LinkLife) {
 		return "", ErrLinkRefused
 	}
 	session, sessionHash := token()
-	err = s.db.ClaimLink(ctx, hash, sessionHash, client, s.clock.Now())
+	err = s.db.ClaimLink(ctx, hash, sessionHash, client, now)
 	if errors.Is(err, store.ErrNotFound) {
 		return "", ErrLinkRefused
 	}
 	if err != nil {
 		return "", err
 	}
-	s.session = &liveSession{hash: sessionHash, client: client, opened: elapsed, seen: elapsed, kept: elapsed}
+	s.seen = &lastUse{hash: sessionHash, seen: now.Since, kept: now.Since}
 	return session, nil
 }
 
 // Session checks a session's token, from client, and keeps the session open. The token travels in clear on the LAN,
 // so it is good only from the device that claimed the link, and for a while. The database says whether the session
-// exists and wasn't ended; this process's monotonic clock says how old it is. Its last use is written at most every
-// SeenEvery, outside the lock, and a write that fails doesn't refuse the session: reading setup must work on a full
-// disk.
+// exists, wasn't ended, and when it was opened; its last use is this process's or, after a restart, the database's.
+// That last use is written at most every SeenEvery, outside the lock, and a write that fails doesn't refuse the
+// session: reading setup must work on a full disk.
 func (s *Setup) Session(ctx context.Context, tok, client string) error {
 	hash := digest(tok)
-	now, ok, err := s.check(ctx, hash, client)
-	if err != nil || !ok {
+	now, write, err := s.check(ctx, hash, client)
+	if err != nil {
 		return err
 	}
-	if !now.IsZero() {
+	if write {
 		_ = s.db.SeeSession(ctx, hash, now) // tried again a minute later
 	}
 	return nil
 }
 
-// check checks a session under the lock, and returns the wall-clock time to record as its last use, if it is time
-// to write it.
-func (s *Setup) check(ctx context.Context, hash []byte, client string) (time.Time, bool, error) {
+// check checks a session under the lock, and says whether it is time to write its last use.
+func (s *Setup) check(ctx context.Context, hash []byte, client string) (store.Moment, bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	row, err := s.db.Session(ctx, hash)
 	if errors.Is(err, store.ErrNotFound) {
-		if s.session != nil && bytes.Equal(s.session.hash, hash) {
-			s.session = nil
-		}
-		return time.Time{}, false, ErrNoSession
+		return store.Moment{}, false, ErrNoSession
 	}
 	if err != nil {
-		return time.Time{}, false, err
+		return store.Moment{}, false, err
 	}
-	elapsed, now := s.clock.Elapsed(), s.clock.Now()
-	live := s.session
-	if live == nil || !bytes.Equal(live.hash, hash) {
-		// Not this process's: a session opened before a restart carries on if the wall clock says it is within its
-		// limits. Its age by the wall clock is all there is, and an age below zero is unknown.
-		opened, idle := now.Sub(row.CreatedAt), now.Sub(row.LastSeen)
-		if !within(opened, SessionMax) || !within(idle, SessionIdle) {
-			return time.Time{}, false, ErrNoSession
-		}
-		live = &liveSession{hash: hash, client: row.Client, opened: elapsed - opened, seen: elapsed - idle, kept: elapsed - idle}
-		s.session = live
+	now := s.moment()
+	use := s.seen
+	if use == nil || !bytes.Equal(use.hash, hash) {
+		use = &lastUse{hash: hash, seen: row.Seen.Since, kept: row.Seen.Since} // opened before a restart
 	}
-	if live.client != client || !within(elapsed-live.opened, SessionMax) || !within(elapsed-live.seen, SessionIdle) {
-		return time.Time{}, false, ErrNoSession
+	opened, ok := age(now, row.Opened)
+	if !ok || row.Client != client || !within(opened, SessionMax) || !within(now.Since-use.seen, SessionIdle) {
+		return store.Moment{}, false, ErrNoSession
 	}
-	live.seen = elapsed
-	if elapsed-live.kept < SeenEvery {
-		return time.Time{}, true, nil
+	use.seen = now.Since
+	s.seen = use
+	if now.Since-use.kept < SeenEvery {
+		return now, false, nil
 	}
-	live.kept = elapsed
+	use.kept = now.Since
 	return now, true, nil
 }
 

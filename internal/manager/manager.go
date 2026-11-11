@@ -35,10 +35,12 @@ type Config struct {
 	// Local is the loopback address the setup listener answers on, for the link on this machine itself; the zero
 	// Addr when it doesn't.
 	Local netip.Addr
-	// Now is the wall clock, for what the manager records and shows; Elapsed is a monotonic clock, the time since a
-	// fixed moment in this process, for how old a link or a session is. Setting the wall clock moves only Now.
+	// Now is the wall clock, for what the manager records and shows. Elapsed is the time since the machine booted
+	// (CLOCK_BOOTTIME), which no one sets and which goes on across the manager's restarts, and Boot is that boot's ID:
+	// how old a link or a session is goes by them. Setting the wall clock moves only Now.
 	Now     func() time.Time
 	Elapsed func() time.Duration
+	Boot    func() string
 	// LAN is the home network; LANAddress is this machine's address on it, or the zero Addr when the setup listener
 	// isn't on the LAN.
 	LAN        func() lan.LAN
@@ -69,6 +71,10 @@ func New(c Config) (*Manager, error) {
 	}
 	if c.Elapsed == nil {
 		c.Elapsed = elapsed()
+	}
+	if c.Boot == nil {
+		id := bootID()
+		c.Boot = func() string { return id }
 	}
 	if c.LAN == nil {
 		c.LAN = lan.Cached(lan.Current, 5*time.Second)
@@ -102,7 +108,7 @@ func New(c Config) (*Manager, error) {
 	return &Manager{
 		cfg:   c,
 		db:    db,
-		setup: setup.New(db, setup.Clock{Now: c.Now, Elapsed: c.Elapsed}, handlers),
+		setup: setup.New(db, setup.Clock{Now: c.Now, Elapsed: c.Elapsed, Boot: c.Boot}, handlers),
 		agent: newAgentClient(c.AgentSocket),
 		web:   c.Web,
 		log:   c.Log,
