@@ -74,14 +74,15 @@ type Agent struct {
 	log *slog.Logger
 	fw  *firewall.Firewall
 
-	mu        sync.Mutex // the state below, and joins
-	state     state
-	natAt     time.Time        // when the mesh client's NAT mapper was last checked
-	bridgesAt time.Time        // when the engines were last asked for their bridges
-	refused   map[string]bool  // engine bridge names refused, reported once each
-	meshDrift []firewall.Drift // what the agent found changed in the mesh client, and put back
-	edgeDown  string           // the edge's last check's error, so a down edge is logged once
-	stateErr  error            // why the saved state couldn't be read at start, if it couldn't
+	mu         sync.Mutex // the state below, and joins
+	state      state
+	natAt      time.Time        // when the mesh client's NAT mapper was last checked
+	bridgesAt  time.Time        // when the engines were last asked for their bridges
+	refused    map[string]bool  // engine bridge names refused, reported once each
+	meshDrift  []firewall.Drift // what the agent found changed in the mesh client, and put back
+	edgeDown   string           // the edge's last check's error, so a down edge is logged once
+	stateErr   error            // why the saved state couldn't be read at start, if it couldn't
+	brokenFile bool             // the state file is that unreadable one, not yet put aside
 }
 
 // state is what the agent keeps across restarts, in StateDir/agent.json. None of it is secret.
@@ -112,6 +113,10 @@ type state struct {
 // StateFile is the agent's state, in its state directory.
 const StateFile = "agent.json"
 
+// errUnparsable is a state file that was read, but isn't a state: cut short by a power cut, say. A file that can't be
+// read at all (an I/O error, a wrong label) is another error: it may read again.
+var errUnparsable = errors.New("not a whole state")
+
 // readState reads the agent's state from dir: missing is the zero state.
 func readState(dir string) (state, error) {
 	var s state
@@ -123,7 +128,7 @@ func readState(dir string) (state, error) {
 		return state{}, err
 	}
 	if err := json.Unmarshal(b, &s); err != nil {
-		return state{}, fmt.Errorf("%s: %w", StateFile, err)
+		return state{}, fmt.Errorf("%s: %w: %w", StateFile, errUnparsable, err)
 	}
 	if len(s.OldBridges) > 0 && s.Bridges == nil {
 		s.Bridges = map[string][]string{docker: s.OldBridges}
@@ -204,12 +209,15 @@ func New(ctx context.Context, c Config) (*Agent, error) {
 		if err := os.MkdirAll(c.StateDir, 0o700); err != nil {
 			return nil, err
 		}
-		s, err := readState(c.StateDir)
-		if err != nil {
+		s, err := a.readStateWaiting(ctx)
+		switch {
+		case errors.Is(err, errUnparsable):
 			// Starting anyway, and saying so, rather than failing again at every restart: the table homerslab-firewall-
-			// restore loaded at boot stays as it is, and the next change the agent saves (a join) replaces the file.
-			a.log.Error("the agent's state can't be read: it starts without it, and leaves the firewall table as boot loaded it", "err", err)
-			a.stateErr = err
+			// restore loaded at boot stays as it is. The file is put aside before anything is saved over it.
+			a.log.Error("the agent's state is lost: it starts without it, and leaves the firewall table as boot loaded it", "err", err)
+			a.stateErr, a.brokenFile = err, true
+		case err != nil:
+			return nil, err
 		}
 		a.state = s
 	}
@@ -223,6 +231,27 @@ func New(ctx context.Context, c Config) (*Agent, error) {
 		}
 	}
 	return a, nil
+}
+
+// readStateWaiting reads the agent's state, trying again while the file can't be read (an I/O error may pass), until
+// ctx ends: the agent never starts without a state it may still read, nor saves over it.
+func (a *Agent) readStateWaiting(ctx context.Context) (state, error) {
+	pause := 100 * time.Millisecond
+	for tries := 0; ; tries++ {
+		s, err := readState(a.cfg.StateDir)
+		if err == nil || errors.Is(err, errUnparsable) {
+			return s, err
+		}
+		if tries%20 == 0 {
+			a.log.Error("the agent's state can't be read; trying again", "err", err)
+		}
+		select {
+		case <-ctx.Done():
+			return state{}, fmt.Errorf("the agent's state can't be read: %w", err)
+		case <-time.After(pause):
+		}
+		pause = min(pause*2, 5*time.Second)
+	}
 }
 
 // waitForTable returns once the firewall table is in place (at once when the node hasn't joined a mesh), trying
@@ -273,8 +302,17 @@ func (a *Agent) save() error {
 	if a.cfg.StateDir == "" {
 		return errors.New("the agent has no state directory")
 	}
+	if a.brokenFile {
+		// The first save after the state was lost, a join's too: the broken file is kept aside, as it was.
+		path := filepath.Join(a.cfg.StateDir, StateFile)
+		aside := path + ".unreadable-" + a.cfg.Now().UTC().Format("20060102T150405Z")
+		if err := os.Rename(path, aside); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			return fmt.Errorf("putting the lost state aside: %w", err)
+		}
+		a.brokenFile = false
+	}
 	if a.stateErr != nil {
-		a.state.Lost = true // the file is replaced: the loss is kept in it
+		a.state.Lost = true // the loss is kept in the new file, until a join
 	}
 	b, err := json.Marshal(a.state)
 	if err != nil {

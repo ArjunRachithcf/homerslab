@@ -98,6 +98,7 @@ func TestASavedTableThatCantBeUsedBootsClosed(t *testing.T) {
 		"cut short by its last newline":                        strings.TrimSuffix(table, "\n"),
 		"not HomersLab's table":                                "flush ruleset\n",
 		"HomersLab's table after something else":               "flush ruleset\n" + table,
+		"HomersLab's table and another after it":               table + "}\n" + "table inet other {\n}\n",
 	} {
 		path := filepath.Join(dir, "firewall.nft")
 		if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
@@ -107,6 +108,14 @@ func TestASavedTableThatCantBeUsedBootsClosed(t *testing.T) {
 		if got != firewall.Closed(7444) || unusable == nil {
 			t.Errorf("%s: the restore loads (%v):\n%s", name, unusable, got)
 		}
+	}
+	// A table an earlier agent saved (before #129) is whole: it is loaded as it is.
+	legacy, err := os.ReadFile(filepath.Join("testdata", "saved-before-129.nft"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, unusable := firewall.RestoreScript(filepath.Join("testdata", "saved-before-129.nft"), 7444); unusable != nil || got != string(legacy) {
+		t.Errorf("a table an earlier agent saved: %v", unusable)
 	}
 	// Unreadable: a folder where the file should be.
 	unreadable := filepath.Join(dir, "folder.nft")

@@ -128,6 +128,8 @@ type Host struct {
 	notBridges    map[string]bool   // names the engines give that the kernel doesn't show as bridges
 	block         bool              // the engines and systemd never answer
 	hang          []string          // commands, by prefix, that never answer
+	dockerActive  string            // docker.service's ActiveState and LoadState, when set; else from Engines
+	dockerLoad    string
 }
 
 // IsBridge says whether the kernel would show a name as a bridge: every name an engine gives, but those NotABridge
@@ -161,6 +163,14 @@ func (h *Host) Hang(prefix string) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.hang = append(h.hang, prefix)
+}
+
+// DockerState makes systemd describe docker.service so (ActiveState, LoadState: "activating", "loaded"), whatever
+// Engines says; "" goes back to Engines' word (active while it lists networks, inactive otherwise).
+func (h *Host) DockerState(active, load string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.dockerActive, h.dockerLoad = active, load
 }
 
 // Engines makes Docker run and list bridge networks (ID → the name it was given, or ""). Without it, Docker isn't
@@ -237,11 +247,15 @@ func (h *Host) Run(ctx context.Context, c host.Cmd) ([]byte, error) {
 		return nil, os.WriteFile(filepath.Join(h.Root, "proc", strconv.Itoa(h.pid), "environ"), []byte("PATH=/usr/bin\x00"+env), 0o644)
 	case line == "systemctl show netbird.service --property=MainPID --value":
 		return fmt.Appendf(nil, "%d\n", h.pid), nil
-	case line == "systemctl is-active --quiet docker.service":
-		if h.docker == nil {
-			return nil, &host.Error{Cmd: line, Err: errors.New("exit status 3"), Exit: 3}
+	case line == "systemctl show -p ActiveState -p LoadState docker.service":
+		active, load := h.dockerActive, h.dockerLoad
+		if active == "" {
+			active, load = "active", "loaded"
+			if h.docker == nil {
+				active = "inactive"
+			}
 		}
-		return nil, nil
+		return fmt.Appendf(nil, "LoadState=%s\nActiveState=%s\n", load, active), nil
 	case c.Name == "systemctl":
 		return nil, nil
 	case c.Name == "docker" && h.docker != nil && len(c.Args) > 1 && c.Args[1] == "ls":

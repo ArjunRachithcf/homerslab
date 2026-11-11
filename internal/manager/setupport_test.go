@@ -5,6 +5,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"os"
 	"path/filepath"
 	"sync"
 	"testing"
@@ -63,5 +64,30 @@ func TestTheManagerGivesItsSetupPortAtEveryRun(t *testing.T) {
 	defer mu.Unlock()
 	if len(given) != 2 || given[1] != `{"open":true,"port":7444}` {
 		t.Errorf("the agent was given %q, want the port at each run", given)
+	}
+}
+
+// An agent that lost its state after the listener closed for good learns it again at the next run.
+func TestALostAgentLearnsTheListenerIsClosedAtTheNextRun(t *testing.T) {
+	testenv.Isolate(t)
+	sock := filepath.Join(t.TempDir(), "agent.sock")
+	agenttest.StartWith(t, agent.Config{Socket: sock, StateDir: t.TempDir()})
+	p := newPrimary(t, withAgent(sock), func(p *primary) { p.port = 7444 })
+	if err := p.m.CloseLANListener(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	// The agent restarts without its state: its new socket takes over the path (the old one gone first, so the
+	// wait below is for the new agent).
+	if err := os.Remove(sock); err != nil {
+		t.Fatal(err)
+	}
+	lost := t.TempDir()
+	agenttest.StartWith(t, agent.Config{Socket: sock, StateDir: lost})
+	if port, ok := agent.SavedSetupPort(lost); ok {
+		t.Fatalf("a fresh agent already says %d", port)
+	}
+	p.m.RunDue(context.Background())
+	if port, ok := agent.SavedSetupPort(lost); !ok || port != 0 {
+		t.Errorf("after the next run the agent keeps %d %v, want the listener closed for good (no port)", port, ok)
 	}
 }

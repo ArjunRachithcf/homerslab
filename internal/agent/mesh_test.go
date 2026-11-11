@@ -405,10 +405,12 @@ func TestTheTableFollowsTheLANAndTheEnginesBridges(t *testing.T) {
 	if _, body := call(t, sock, "GET", "/v1/firewall", nil); strings.Count(string(body), "refused-bridge") != 3 {
 		t.Errorf("a refused name is reported more than once: %s", body)
 	}
-	h.Engines(nil) // Docker stops
+	h.Engines(nil) // Docker stops, and its bridges go with it
+	h.NotABridge("docker0")
+	h.NotABridge("br-abcdef012345")
 	call(t, sock, "POST", "/v1/firewall/check", nil)
 	if table, _ := h.Table(); strings.Contains(table, "docker0") || !strings.Contains(table, "podman1") {
-		t.Errorf("Docker's bridges are still trusted once it stopped:\n%s", table)
+		t.Errorf("Docker's bridges are still trusted once they went:\n%s", table)
 	}
 }
 
@@ -562,7 +564,9 @@ func TestTheSetupKeyNeverReachesTheLogs(t *testing.T) {
 
 func TestAHungDockerKeepsItsBridges(t *testing.T) {
 	testenv.Isolate(t)
-	for _, how := range []string{"errors", "times out", "systemd times out", "systemd errors"} {
+	const show = "systemctl show -p ActiveState -p LoadState docker.service"
+	for _, how := range []string{"errors", "times out", "systemd times out", "systemd errors", "activating", "deactivating",
+		"reloading", "stopped with its containers running (live-restore)"} {
 		t.Run(how, func(t *testing.T) {
 			testenv.Isolate(t)
 			sock, h := agenttest.StartWith(t, agent.Config{})
@@ -572,21 +576,25 @@ func TestAHungDockerKeepsItsBridges(t *testing.T) {
 			if table, _ := h.Table(); !strings.Contains(table, `iifname { "br-abcdef012345", "docker0" } jump apps_in`) {
 				t.Fatalf("Docker's bridges while it answers:\n%s", table)
 			}
-			// Docker is active, but doesn't answer: its bridges are the ones it last listed, not a local virtual
-			// network each.
+			// Docker doesn't answer, or is on its way up or down, or stopped while its containers run on: its bridges
+			// are the ones it last listed, not a local virtual network each.
 			switch how {
 			case "errors":
 				h.Fail("docker network")
 			case "times out":
 				h.Hang("docker network")
 			case "systemd times out": // asked whether Docker runs, systemd doesn't say
-				h.Hang("systemctl is-active --quiet docker.service")
-			default: // nor when it fails without saying "inactive" (no D-Bus, say)
-				h.Fail("systemctl is-active --quiet docker.service")
+				h.Hang(show)
+			case "systemd errors": // nor when it fails (no D-Bus, say)
+				h.Fail(show)
+			case "activating", "deactivating", "reloading": // at every boot and every restart of Docker
+				h.DockerState(how, "loaded")
+			default:
+				h.Engines(nil)
 			}
 			call(t, sock, "POST", "/v1/firewall/check", nil)
 			if table, _ := h.Table(); !strings.Contains(table, `iifname { "br-abcdef012345", "docker0" } jump apps_in`) {
-				t.Errorf("with Docker not answering (%s), its bridges went:\n%s", how, table)
+				t.Errorf("with Docker %s, its bridges went:\n%s", how, table)
 			}
 			// Still only what the kernel shows is a bridge; one that went is dropped, not reported as refused.
 			h.NotABridge("br-abcdef012345")
@@ -597,12 +605,19 @@ func TestAHungDockerKeepsItsBridges(t *testing.T) {
 			if strings.Contains(string(body), "refused-bridge") {
 				t.Errorf("a kept bridge that went is reported as an engine's refused name: %s", body)
 			}
-			// Docker answering again is the list from then on; stopped, it has none.
+			// Docker answering again is the list from then on.
 			h.Mend()
-			h.Engines(nil)
+			h.DockerState("", "")
+			h.Engines(map[string]string{"1111111111111111": "br-compose"})
 			call(t, sock, "POST", "/v1/firewall/check", nil)
-			if table, _ := h.Table(); strings.Contains(table, "docker0") {
-				t.Errorf("Docker's bridges are still trusted once it stopped:\n%s", table)
+			if table, _ := h.Table(); strings.Contains(table, "docker0") || !strings.Contains(table, `"br-compose"`) {
+				t.Errorf("once Docker answers again, its answer isn't the list:\n%s", table)
+			}
+			// Docker removed: none, whatever the kernel still shows.
+			h.DockerState("inactive", "not-found")
+			call(t, sock, "POST", "/v1/firewall/check", nil)
+			if table, _ := h.Table(); strings.Contains(table, "br-compose") {
+				t.Errorf("Docker's bridges are still trusted once it is gone:\n%s", table)
 			}
 		})
 	}
@@ -631,6 +646,14 @@ func TestAnAgentWhoseStateIsBrokenStartsAndSaysSo(t *testing.T) {
 			call(t, sock, "PUT", "/v1/firewall/setup-listener", map[string]any{"open": true, "port": 7444})
 			if s := status(t, sock); !s.StateUnreadable {
 				t.Errorf("after the manager gave its port, the broken state isn't reported: %+v", s)
+			}
+			// The broken file was put aside first, as it was, for whoever looks into it.
+			aside, _ := filepath.Glob(filepath.Join(state, "agent.json.unreadable-*"))
+			if len(aside) != 1 {
+				t.Fatalf("put aside: %v", aside)
+			}
+			if b, err := os.ReadFile(aside[0]); err != nil || string(b) != content {
+				t.Errorf("the file put aside holds %q, %v; want %q", b, err, content)
 			}
 			sock2, _ := agenttest.StartWith(t, agent.Config{StateDir: state})
 			if s := status(t, sock2); !s.StateUnreadable || s.SetupListener.Port != 7444 {
@@ -702,5 +725,82 @@ func TestBridgesSavedByAnEarlierAgentAreKept(t *testing.T) {
 	agenttest.StartWith(t, agent.Config{StateDir: state, Run: h.Run, Root: h.Root})
 	if table, _ := h.Table(); !strings.Contains(table, `iifname { "br-abcdef012345", "docker0" } jump apps_in`) {
 		t.Errorf("the bridges an earlier agent saved were lost:\n%s", table)
+	}
+}
+
+// A state that can't be read for now (an I/O error, a wrong label) isn't a lost one: the agent waits for it, and never
+// starts without it or writes over it.
+func TestAStateThatCantBeReadForNowIsWaitedFor(t *testing.T) {
+	testenv.Isolate(t)
+	state := t.TempDir()
+	good, _ := json.Marshal(map[string]any{"enforcing": true, "mesh": []string{"wt0"}, "wireGuard": []int{51820}})
+	path := filepath.Join(state, "agent.json")
+	if err := os.Mkdir(path, 0o700); err != nil { // reading it fails, as with EIO
+		t.Fatal(err)
+	}
+	mended := make(chan time.Time, 1)
+	go func() {
+		time.Sleep(500 * time.Millisecond)
+		_ = os.Remove(path)
+		_ = os.WriteFile(path, good, 0o600)
+		mended <- time.Now()
+	}()
+	sock, h := agenttest.StartWith(t, agent.Config{StateDir: state})
+	up := time.Now()
+	if at := <-mended; up.Before(at) {
+		t.Errorf("the agent served %v before its state could be read", at.Sub(up))
+	}
+	if s := status(t, sock); !s.Enforcing || s.StateUnreadable {
+		t.Errorf("once the state reads again: %+v", s)
+	}
+	if table, on := h.Table(); !on || !strings.Contains(table, `iifname { "wt0" } accept`) {
+		t.Errorf("the table from the state:\n%s", table)
+	}
+	if aside, _ := filepath.Glob(filepath.Join(state, "agent.json.unreadable-*")); len(aside) != 0 {
+		t.Errorf("a state that couldn't be read for a while was put aside: %v", aside)
+	}
+}
+
+func TestALostStateIsPutAsideBeforeAJoinSavesOverIt(t *testing.T) {
+	testenv.Isolate(t)
+	state := t.TempDir()
+	if err := os.WriteFile(filepath.Join(state, "agent.json"), []byte(`{"enforc`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	sock, _ := agenttest.StartWith(t, agent.Config{StateDir: state})
+	if code, body := call(t, sock, "POST", "/v1/mesh/join", joinBody()); code != http.StatusOK {
+		t.Fatalf("join: %d %s", code, body)
+	}
+	aside, _ := filepath.Glob(filepath.Join(state, "agent.json.unreadable-*"))
+	if len(aside) != 1 {
+		t.Fatalf("put aside: %v", aside)
+	}
+	if b, _ := os.ReadFile(aside[0]); string(b) != `{"enforc` {
+		t.Errorf("put aside: %q", b)
+	}
+	if s := status(t, sock); s.StateUnreadable || !s.Enforcing {
+		t.Errorf("after the join: %+v", s)
+	}
+}
+
+func TestClosingAClosedListenerAgainLeavesTheTableAlone(t *testing.T) {
+	testenv.Isolate(t)
+	sock, h := agenttest.StartWith(t, agent.Config{})
+	call(t, sock, "POST", "/v1/mesh/join", joinBody())
+	call(t, sock, "PUT", "/v1/firewall/setup-listener", map[string]bool{"open": false})
+	applied := func() (n int) {
+		for _, c := range h.Cmds() {
+			if c.String() == "nft -f -" {
+				n++
+			}
+		}
+		return n
+	}
+	before := applied()
+	if code, _ := call(t, sock, "PUT", "/v1/firewall/setup-listener", map[string]bool{"open": false}); code != http.StatusOK {
+		t.Errorf("closing again: %d", code)
+	}
+	if applied() != before {
+		t.Error("closing a closed listener applied the table again")
 	}
 }

@@ -100,9 +100,6 @@ const header = "# HomersLab's agent owns this table, and puts it back when it dr
 	"delete table " + Table + "\n" +
 	"table " + Table + " {\n"
 
-// trailer closes every table Render writes, after the table: a saved script that ends with it is whole.
-const trailer = "# HomersLab's table ends here.\n"
-
 // Render is the nftables script that replaces the table with s, atomically: one transaction, so no packet ever meets
 // a half-made table.
 func Render(s State) string {
@@ -165,6 +162,7 @@ func Render(s State) string {
 	w("\tchain virtual_in {")
 	w("\t\tudp dport { 67, 547 } accept")
 	w("\t\tmeta l4proto { tcp, udp } th dport 53 fib daddr . iif type local accept")
+	// Belt and braces: the input chain's policy drops these too, but port 53 is decided here, whatever is added below.
 	w("\t\tmeta l4proto { tcp, udp } th dport 53 drop")
 	w("\t}")
 	// Apps out: their own bridge, the machine's resolvers through the LAN (the one DHCP gave it, which Docker's default
@@ -211,7 +209,6 @@ func Render(s State) string {
 	w("\t\taccept")
 	w("\t}")
 	w("}")
-	b.WriteString(trailer)
 	return b.String()
 }
 
@@ -380,10 +377,11 @@ func RestoreScript(savePath string, setupPort int) (script string, unusable erro
 	return string(b), nil
 }
 
-// whole says whether a script is one Render wrote, all of it: its opening lines first and its closing comment last. A
-// script cut short anywhere lacks the closing comment.
+// whole says whether a script is one Render wrote, all of it: its opening lines first, and the table's closing brace as
+// its last line. Render writes exactly one brace alone on a line at column 0, that last one (every other line inside
+// the table is indented), so a script cut short anywhere lacks it.
 func whole(script string) bool {
-	return strings.HasPrefix(script, header) && strings.HasSuffix(script, "\n}\n"+trailer)
+	return strings.HasPrefix(script, header) && strings.HasSuffix(script, "\n}\n") && strings.Count(script, "\n}\n") == 1
 }
 
 // Note records something wrong the agent found and couldn't render (an engine's bridge with a refused name).

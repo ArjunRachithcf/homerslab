@@ -262,8 +262,10 @@ func (a *Agent) setupListener(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, a.firewallStatus())
 		return
 	}
-	// Closed for good, saved first; the table follows, and a retry applies it again until it holds.
-	if !a.state.SetupClosed {
+	// Closed for good, saved first; the table follows, and a retry applies it again until it holds. Closing it again
+	// (the manager says so at every run) leaves an applied table alone.
+	wasClosed := a.state.SetupClosed
+	if !wasClosed {
 		a.state.SetupClosed = true
 		if err := a.save(); err != nil {
 			a.state.SetupClosed = false
@@ -273,7 +275,7 @@ func (a *Agent) setupListener(w http.ResponseWriter, r *http.Request) {
 		}
 		a.log.Info("the setup link's LAN listener is closed, for good")
 	}
-	if a.state.Enforcing {
+	if a.state.Enforcing && (!wasClosed || !a.fw.Applied()) {
 		if err := a.fw.Apply(r.Context(), a.firewallState(r.Context())); err != nil {
 			a.fw.Want(a.firewallState(r.Context()))
 			a.log.Error("closing the setup listener in the firewall table", "err", err)

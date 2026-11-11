@@ -23,6 +23,7 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -107,15 +108,17 @@ func TestTheFirewallTableInNetworkNamespaces(t *testing.T) {
 	n := newNet(t)
 
 	// The holes the table closes, so the checks below can tell.
-	n.want(t, "before the table: the LAN reaches a listener on the box", "lan", "192.168.77.1:8022", true)
-	n.want(t, "before the table: the LAN host's route through the box reaches the container", "lan", "172.30.0.2:8444", true)
-	n.want(t, "before the table: the LAN reaches the published port", "lan", "192.168.77.1:8444", true)
-	n.want(t, "before the table: a container reaches the LAN host", "ctr", "192.168.77.50:9000", true)
-	n.want(t, "before the table: a container reaches a mesh peer", "ctr", "100.88.1.2:9002", true)
-	n.want(t, "before the table: a mesh peer is routed to the LAN", "peer", "192.168.77.50:9000", true)
-	n.want(t, "before the table: a VM reaches port 53 at the box's mesh address", "vm", "100.88.1.1:53", true)
-	n.want(t, "before the table: an app reaches port 53 at the box's mesh address", "ctr", "100.88.1.1:53", true)
-	n.want(t, "before the table: an app reaches a resolver at a mesh peer", "ctr", "100.88.1.2:53", true)
+	n.together(func() {
+		n.want(t, "before the table: the LAN reaches a listener on the box", "lan", "192.168.77.1:8022", true)
+		n.want(t, "before the table: the LAN host's route through the box reaches the container", "lan", "172.30.0.2:8444", true)
+		n.want(t, "before the table: the LAN reaches the published port", "lan", "192.168.77.1:8444", true)
+		n.want(t, "before the table: a container reaches the LAN host", "ctr", "192.168.77.50:9000", true)
+		n.want(t, "before the table: a container reaches a mesh peer", "ctr", "100.88.1.2:9002", true)
+		n.want(t, "before the table: a mesh peer is routed to the LAN", "peer", "192.168.77.50:9000", true)
+		n.want(t, "before the table: a VM reaches port 53 at the box's mesh address", "vm", "100.88.1.1:53", true)
+		n.want(t, "before the table: an app reaches port 53 at the box's mesh address", "ctr", "100.88.1.1:53", true)
+		n.want(t, "before the table: an app reaches a resolver at a mesh peer", "ctr", "100.88.1.2:53", true)
+	})
 
 	fw := &firewall.Firewall{Run: host.Exec}
 	ctx := context.Background()
@@ -193,7 +196,9 @@ func TestTheFirewallTableInNetworkNamespaces(t *testing.T) {
 		n.want(t, when+": a VM reaches no mesh peer", "vm", "100.88.1.2:9002", false)
 		n.want(t, when+": a VM reaches no app", "vm", "172.30.0.2:8444", false)
 	}
-	all := func(when string) { lanKeptOut(when); appsKeptIn(when); meshKept(when); vmsKept(when) }
+	all := func(when string) {
+		n.together(func() { lanKeptOut(when); appsKeptIn(when); meshKept(when); vmsKept(when) })
+	}
 	all("with the table")
 	n.want(t, "the setup link's LAN listener is the one exception", "lan", "192.168.77.1:7020", true)
 	n.ping(t, "the LAN still reaches the machine itself (ping)", "192.168.77.1", true)
@@ -202,13 +207,15 @@ func TestTheFirewallTableInNetworkNamespaces(t *testing.T) {
 	confused := open
 	confused.Bridges = []string{"br-test", "br-other", "br-iot"} // an engine naming the LAN as one of its bridges
 	apply(confused)
-	lanKeptOut("with the LAN also listed as a bridge")
+	n.together(func() { lanKeptOut("with the LAN also listed as a bridge") })
 	// Names nft would read as wildcards, or that break its syntax: never rendered, and the table still applies.
 	hostile := open
 	hostile.Bridges = []string{"br-test", "br-other", "docker0", "br-*", "l*", "*", `x"y`, "br-iot-but-far-too-long"}
 	apply(hostile)
-	lanKeptOut("with wildcards and a quote among the engines' names")
-	appsKeptIn("with wildcards and a quote among the engines' names")
+	n.together(func() {
+		lanKeptOut("with wildcards and a quote among the engines' names")
+		appsKeptIn("with wildcards and a quote among the engines' names")
+	})
 
 	closed := open
 	closed.SetupPort = 0
@@ -220,7 +227,7 @@ func TestTheFirewallTableInNetworkNamespaces(t *testing.T) {
 	// At boot, or with the lease lost: no default route, no engine answering. Nothing is trusted.
 	boot := firewall.State{Mesh: []string{"wt0"}, WireGuard: []int{51820}, SetupPort: 7020}
 	apply(boot)
-	lanKeptOut("with no default route and no engine")
+	n.together(func() { lanKeptOut("with no default route and no engine") })
 	n.want(t, "with no default route the setup listener is closed too", "lan", "192.168.77.1:7020", false)
 	n.want(t, "with no engine answering, a container reaches no LAN host", "ctr", "192.168.77.50:9000", false)
 	n.wantUDP(t, "nor the box's DHCP from the LAN", "lan", "192.168.77.1:67", false)
@@ -256,8 +263,10 @@ func TestTheFirewallTableInNetworkNamespaces(t *testing.T) {
 		if d == nil || d.What != tamper.what {
 			t.Errorf("after %q the check found %+v, want %s", tamper.nft, d, tamper.what)
 		}
-		lanKeptOut("after " + tamper.nft + " and the check")
-		appsKeptIn("after " + tamper.nft + " and the check")
+		n.together(func() {
+			lanKeptOut("after " + tamper.nft + " and the check")
+			appsKeptIn("after " + tamper.nft + " and the check")
+		})
 		if d, _ := fw.Check(ctx); d != nil {
 			t.Errorf("a check right after the table was put back found drift: %+v", d)
 		}
@@ -296,6 +305,9 @@ func reexec(t *testing.T) {
 
 type netns struct {
 	pids map[string]int // child namespaces, each held by a sleep
+	// probes, while together runs: want and wantUDP then run at once, each in its own process, and together waits
+	// for them all.
+	probes *sync.WaitGroup
 }
 
 func newNet(t *testing.T) *netns {
@@ -434,12 +446,31 @@ func (n *netns) udpListen(t *testing.T, name, addr string) {
 	}
 }
 
+// together runs the probes fn asks for at once (they don't depend on each other), and returns once all have answered.
+func (n *netns) together(fn func()) {
+	n.probes = &sync.WaitGroup{}
+	fn()
+	n.probes.Wait()
+	n.probes = nil
+}
+
+// probe runs check now, or alongside the others inside together.
+func (n *netns) probe(check func()) {
+	if n.probes == nil {
+		check()
+		return
+	}
+	n.probes.Go(check)
+}
+
 func (n *netns) wantUDP(t *testing.T, what, from, addr string, reach bool) {
 	t.Helper()
-	got := n.helper(from, "udial", addr).Run() == nil
-	if got != reach {
-		t.Errorf("%s: %s → %s/udp answers %v, want %v", what, orBox(from), addr, got, reach)
-	}
+	n.probe(func() {
+		got := n.helper(from, "udial", addr).Run() == nil
+		if got != reach {
+			t.Errorf("%s: %s → %s/udp answers %v, want %v", what, orBox(from), addr, got, reach)
+		}
+	})
 }
 
 func (n *netns) helper(name, mode, addr string) *exec.Cmd {
@@ -470,10 +501,12 @@ func (n *netns) listen(t *testing.T, name, addr string) {
 
 func (n *netns) want(t *testing.T, what, from, addr string, reach bool) {
 	t.Helper()
-	got := n.helper(from, "dial", addr).Run() == nil
-	if got != reach {
-		t.Errorf("%s: %s → %s connects %v, want %v", what, orBox(from), addr, got, reach)
-	}
+	n.probe(func() {
+		got := n.helper(from, "dial", addr).Run() == nil
+		if got != reach {
+			t.Errorf("%s: %s → %s connects %v, want %v", what, orBox(from), addr, got, reach)
+		}
+	})
 }
 
 func (n *netns) ping(t *testing.T, what, addr string, reach bool) {

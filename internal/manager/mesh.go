@@ -572,12 +572,12 @@ func (m *Manager) CloseLANListener(ctx context.Context) error {
 
 const ansLANClosed = "lanClosedAt"
 
-// giveSetupPort gives the primary's agent the setup listener's port, at every run (an agent may have lost what it
-// kept): the agent keeps it for the firewall table, and for the closed one homerslab-firewall-restore loads at the
-// next boot. A refusal because the listener closed for good is an answer too.
+// giveSetupPort gives the primary's agent the setup listener's port, or that it closed for good, at every run (an
+// agent may have lost what it kept): the agent keeps it for the firewall table, and for the closed one
+// homerslab-firewall-restore loads at the next boot. A refusal because the listener closed for good is an answer too.
 func (m *Manager) giveSetupPort(ctx context.Context) error {
 	if m.lanClosed.Load() {
-		return nil
+		return m.agent.closeSetupListener(ctx)
 	}
 	if err := m.agent.setupPort(ctx, m.cfg.SetupPort); err != nil && !errors.Is(err, errClosedForGood) {
 		return err
