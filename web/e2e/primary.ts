@@ -52,6 +52,12 @@ export class Primary {
     await this.startManager();
   }
 
+  // The agent stops: the manager carries on without the machine's facts.
+  async stopAgent(): Promise<void> {
+    await stop(this.agent);
+    this.agent = undefined;
+  }
+
   async stopManager(): Promise<void> {
     await stop(this.manager);
     this.manager = undefined;

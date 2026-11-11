@@ -5,7 +5,7 @@ import { expect, test } from './primary';
 
 for (const look of looks) {
   test(`first-time setup passes axe (WCAG 2.2 AA): ${lookName(look)}`, async ({ page, primary }) => {
-    test.slow(); // nine screens, each settled and audited: about 15 s alone, more beside other tests
+    test.slow(); // ten screens, each settled and audited: about 15 s alone, more beside other tests
     await wear(page, look);
     const h1 = page.getByRole('heading', { level: 1 });
     const next = page.getByRole('button', { name: 'Continue' });
@@ -43,6 +43,13 @@ for (const look of looks) {
     await expect(h1).toContainText('Welcome back');
     await accessible(page, 'welcome back');
 
+    await primary.stopAgent();
+    await page.reload();
+    await expect(h1).toContainText('Welcome back');
+    await page.getByText('About this machine').click();
+    await expect(page.getByRole('status')).toBeVisible(); // the agent doesn't answer
+    await accessible(page, 'welcome, the agent silent, about this machine open');
+
     await primary.stopManager();
     await page.evaluate(() => { location.hash = '#k=a-new-link'; }); // a new link arrives, and nothing answers
     await expect(h1).toContainText('Setup can’t reach HomersLab');
@@ -58,9 +65,10 @@ test('the check catches too little contrast and a field without a label', async 
   await page.locator('.as-lead').evaluate((lead) => lead.insertAdjacentHTML('afterend',
     '<p id="planted-faint" style="background: #fff; color: #ccc">A planted sentence</p><input id="planted-unlabelled" type="text">'));
   const { violations, passes, incomplete, inapplicable } = await audit(page);
-  // the rules that ran are WCAG 2.0–2.2 A and AA, WCAG 2.2's own (target size, off in axe by default) among them
+  // the rules that ran are WCAG 2.0–2.2 A and AA, WCAG 2.2's own (target size, off in axe by default) and axe's
+  // experimental WCAG rules (orientation lock, which phones need, among them) included
   const ran = [...violations, ...passes, ...incomplete, ...inapplicable];
-  expect(ran.map((r) => r.id)).toContain('target-size');
+  expect(ran.map((r) => r.id)).toEqual(expect.arrayContaining(['target-size', 'css-orientation-lock', 'p-as-heading', 'table-fake-caption', 'td-has-header']));
   expect(ran.filter((r) => !r.tags.some((t) => WCAG22AA.includes(t))).map((r) => r.id)).toEqual([]);
   // with every material solid, axe measures the words on the card (the glass's rim doesn't hide them)
   const measured = passes.find((r) => r.id === 'color-contrast')?.nodes.map((n) => n.target.join(' '));
