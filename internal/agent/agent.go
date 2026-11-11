@@ -69,13 +69,14 @@ type Agent struct {
 	log *slog.Logger
 	fw  *firewall.Firewall
 
-	mu        sync.Mutex // the state below, and joins
-	state     state
-	natAt     time.Time        // when the mesh client's NAT mapper was last checked
-	bridgesAt time.Time        // when the engines were last asked for their bridges
-	refused   map[string]bool  // engine bridge names refused, reported once each
-	meshDrift []firewall.Drift // what the agent found changed in the mesh client, and put back
-	edgeDown  string           // the edge's last check's error, so a down edge is logged once
+	mu         sync.Mutex // the state below, and joins
+	state      state
+	natUnknown bool             // the unknown NAT mapper state was reported, until systemd can say again
+	natAt      time.Time        // when the mesh client's NAT mapper was last checked
+	bridgesAt  time.Time        // when the engines were last asked for their bridges
+	refused    map[string]bool  // engine bridge names refused, reported once each
+	meshDrift  []firewall.Drift // what the agent found changed in the mesh client, and put back
+	edgeDown   string           // the edge's last check's error, so a down edge is logged once
 }
 
 // state is what the agent keeps across restarts, in StateDir/agent.json. None of it is secret.

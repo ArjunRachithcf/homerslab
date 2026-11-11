@@ -210,3 +210,16 @@ test('the household name made from a surname with a joined emoji fits, without a
   await page.getByRole('button', { name: 'Continue' }).click();
   await expect(page.getByRole('heading', { level: 1 })).toContainText('How everyone signs in');
 });
+
+// A cut that ends on a ZWNJ or ZWJ (Extend characters that stay with the letter before) leaves them hanging: the
+// manager would refuse the name as hidden characters.
+test('the household name made from a Persian surname cut at a ZWNJ is accepted', async ({ page, primary }) => {
+  await page.goto((await primary.newLink()).localUrl);
+  await page.getByRole('button', { name: 'Get started' }).click();
+  await page.getByLabel('Your name', { exact: true }).fill(`Ali ${'X'.repeat(48)}\u06CC\u200C\u062E\u0648\u0627\u0647\u0645`);
+  await page.getByLabel('Your mail address', { exact: true }).fill('ali@example.org');
+  await page.getByRole('button', { name: 'Continue' }).click();
+  await expect(page.getByLabel('The household’s name', { exact: true })).toHaveValue(`The ${'X'.repeat(48)}\u06CC household`);
+  await page.getByRole('button', { name: 'Continue' }).click();
+  await expect(page.getByRole('heading', { level: 1 })).toContainText('How everyone signs in');
+});

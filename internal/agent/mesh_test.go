@@ -633,3 +633,27 @@ func TestTheNATMapperSettingNeedsSystemdToHaveLoadedIt(t *testing.T) {
 		})
 	}
 }
+
+// On a systemd that can't say when the client started (older than 248), the agent can't tell whether the setting is
+// applied: it restarts nothing, and reports that once.
+func TestTheNATMapperSettingIsUnknownWhenSystemdCannotSayAndLeftAlone(t *testing.T) {
+	testenv.Isolate(t)
+	sock, h := agenttest.StartWith(t, agent.Config{})
+	call(t, sock, "POST", "/v1/mesh/join", joinBody())
+	h.NetBirdSystemdTooOld()
+	after := h.NetBirdRestarts()
+	for range 5 {
+		call(t, sock, "POST", "/v1/firewall/check", nil)
+	}
+	if n := h.NetBirdRestarts() - after; n != 0 {
+		t.Errorf("five checks on an old systemd restarted NetBird %d times, want none", n)
+	}
+	_, body := call(t, sock, "GET", "/v1/mesh", nil)
+	var s agent.MeshStatus
+	if err := json.Unmarshal(body, &s); err != nil {
+		t.Fatal(err)
+	}
+	if s.PortMappingOff || len(s.Drift) != 1 || s.Drift[0].What != "nat-mapper-unknown" {
+		t.Errorf("after the checks: %+v, want the NAT mapper not reported off and one nat-mapper-unknown drift", s)
+	}
+}

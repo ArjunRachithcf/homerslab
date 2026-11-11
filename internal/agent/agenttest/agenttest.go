@@ -127,6 +127,7 @@ type Host struct {
 	loaded        []byte
 	listed        bool
 	ignored       bool              // systemd doesn't apply the drop-in to the unit
+	showFails     bool              // systemd is older than 248: `systemctl show --timestamp=us+utc` fails
 	docker        map[string]string // the engine's bridge networks: ID → the bridge's name option ("" for none)
 	notBridges    map[string]bool   // names the engines give that the kernel doesn't show as bridges
 	block         bool              // the engines and systemd never answer
@@ -224,6 +225,9 @@ func (h *Host) Run(ctx context.Context, c host.Cmd) ([]byte, error) {
 		h.pid++
 		return nil, nil
 	case line == "systemctl show netbird.service --timestamp=us+utc --property=DropInPaths,NeedDaemonReload,ExecMainStartTimestamp":
+		if h.showFails {
+			return nil, &host.Error{Cmd: line, Err: errors.New("unrecognized option '--timestamp=us+utc'")}
+		}
 		return h.showNetBird(), nil
 	case line == "systemctl is-active --quiet docker.service":
 		if h.docker == nil {
@@ -365,6 +369,13 @@ func (h *Host) NetBirdIgnoresItsDropIn() {
 	h.listed, h.ignored = false, true
 	h.restartedWith, h.started = nil, time.Now().Add(time.Minute)
 	h.pid++
+}
+
+// NetBirdSystemdTooOld stands for systemd older than 248, which refuses `systemctl show --timestamp=us+utc`.
+func (h *Host) NetBirdSystemdTooOld() {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.showFails = true
 }
 
 // NetBirdRestarts is how often NetBird's service was restarted.

@@ -457,7 +457,7 @@ const NAME_MAX = 64;
 /**
  * The household's name, made from the admin's surname: "The {surname} household", with the surname cut short to fit
  * when it is long, so the page never offers a name the manager refuses. It is cut between grapheme clusters, so an
- * accent, an emoji sequence or a flag stays whole or goes whole; and a tatweel left at the end goes too.
+ * accent, an emoji sequence or a flag stays whole or goes whole; and a tatweel, ZWNJ or ZWJ left at the end goes too.
  */
 function defaultHousehold(surname: string): string {
   const whole = t('step.household.default', { surname });
@@ -469,7 +469,7 @@ function defaultHousehold(surname: string): string {
     if (room < 0) break;
     kept += segment;
   }
-  kept = kept.replace(/\u0640+$/u, '');
+  kept = kept.replace(/[\u0640\u200C\u200D]+$/u, '');
   return kept ? t('step.household.default', { surname: kept }) : '';
 }
 
