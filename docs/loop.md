@@ -15,6 +15,7 @@ when its ticket is merged, waiting for the maintainer, or parked, and the tracke
 | `parked` | Failed twice, written up |
 | `bug` | Found while working; worked before slices |
 | `digest` | The daily summary issue |
+| `idea` | From standing work: a proposal with a recommendation |
 | `integration` | The standing PR from the integration branch to `main` |
 
 ## Branches
@@ -82,7 +83,32 @@ Once a day, update one issue labelled `digest`, titled `Digest <date>`. It lists
 
 The digest is the maintainer's one place to look.
 
+## Standing work
+
+The loop never idles. Whenever a slot is free (fewer than three tickets running, or nothing on the frontier), it runs
+the next item of this rotation in a fresh subagent:
+
+1. **Bug hunt.** Read and run what's merged on `main` and `integration`. Try the edge cases the tests skip. Write a
+   failing test for each bug found.
+2. **Security review.** Use the `security-review` skill and a threat model of what's merged: the first mile, sign-in,
+   the edge, secrets, the firewall, the supply chain, CI. The reviewer attacks as a stranger on the LAN, a stranger on
+   the internet, a family member, a kid, a malicious app and a compromised catalog.
+3. **Adversarial ideation.** Red-team the spec and the ADRs ahead of the code: how each planned flow fails, is abused,
+   or locks the household out. Look for the edge case a family hits in its first year.
+4. **Design review.** Compare the built surfaces with `design/` and `prototypes/`: fidelity, accessibility, copy
+   against the glossary, and states that are missing (empty, error, slow, offline).
+5. **Spec review.** Find contradictions, gaps, and tickets whose criteria no longer match the spec or the code.
+
+Each round ends in tracker items:
+- **Bugs** become `bug` issues with a failing test or repro. They're worked first.
+- **Design and spec problems** become `idea` issues with a recommendation, or `needs-decision` questions for choices
+  that are the maintainer's.
+- **New work** becomes tickets with blocking links.
+
+Unreported security problems in other projects' software stay out of the tracker; they go to the maintainer
+privately.
+
 ## Stopping
 
-The loop runs while the frontier has work. When only `needs-decision` and `parked` items are left, it updates the
-digest and sleeps until the maintainer answers.
+The loop doesn't stop. With only `needs-decision` and `parked` items left, it keeps the digest current and runs
+standing work.
