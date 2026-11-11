@@ -288,3 +288,49 @@ func TestAnswersAreKeptInNFC(t *testing.T) {
 	// 64 characters once composed, though more when typed decomposed.
 	b.mustAnswer("household", map[string]string{"name": strings.Repeat("e\u0302", 64)})
 }
+
+// Every format character (Unicode's Cf) is hidden, but for the joiners that Persian, Indic scripts and emoji need, and
+// the tag characters of a subdivision flag (U+1F3F4, tags, a cancel tag); so are the Hangul fillers, which look blank.
+func TestHiddenCharactersAreRefused(t *testing.T) {
+	testenv.Isolate(t)
+	b := newPrimary(t).claimed()
+	b.firstThree()
+	for _, c := range []struct {
+		name, text string
+		ok         bool
+	}{
+		{"a soft hyphen", "Ana\u00adlia", false},
+		{"a Mongolian vowel separator", "Ana\u180elia", false},
+		{"an invisible function application", "Ana\u2061lia", false},
+		{"an interlinear annotation", "Ana\ufff9lia", false},
+		{"a Kaithi number sign", "Ana\U000110bdlia", false},
+		{"a musical format character", "Ana\U0001d173lia", false},
+		{"a language tag", "Ana\U000e0001lia", false},
+		{"tag characters without a flag", "Ana\U000e0067\U000e0062\U000e0073\U000e0063\U000e0074\U000e007f", false},
+		{"tag characters after another character", "Ana x\U000e0067\U000e0062\U000e0073\U000e0063\U000e0074\U000e007f", false},
+		{"a flag's tags without the cancel tag", "Ana \U0001f3f4\U000e0067\U000e0062\U000e0073\U000e0063\U000e0074", false},
+		{"a flag's tags, then text and no cancel tag", "The \U0001f3f4\U000e0067\U000e0062\U000e0073\U000e0063\U000e0074 household", false},
+		{"a flag with only the cancel tag", "Ana \U0001f3f4\U000e007f", false},
+		{"a flag with an upper-case tag", "Ana \U0001f3f4\U000e0047\U000e0042\U000e0053\U000e0043\U000e0054\U000e007f", false},
+		{"a flag with two cancel tags", "Ana \U0001f3f4\U000e0067\U000e0062\U000e0073\U000e0063\U000e0074\U000e007f\U000e007f", false},
+		{"the Hangul choseong filler", "Ana\u115f", false},
+		{"the Hangul jungseong filler", "Ana\u1160", false},
+		{"the Hangul filler", "Ana\u3164", false},
+		{"the halfwidth Hangul filler", "Ana\uffa0", false},
+		{"a line separator", "Ana\u2028lia", false},
+		{"the flag of Scotland", "The \U0001f3f4\U000e0067\U000e0062\U000e0073\U000e0063\U000e0074\U000e007f household", true},
+		{"a black flag", "The \U0001f3f4 household", true},
+		{"a zero-width non-joiner", "خانه\u200cی", true},
+		{"a zero-width joiner", "The \U0001f468\u200d\U0001f469 household", true},
+		{"an emoji variation selector", "The \u2764\ufe0f household", true},
+		{"Hangul", "김씨 가족", true},
+	} {
+		r := b.answer("household", map[string]string{"name": c.text})
+		switch {
+		case c.ok && r.Code != http.StatusOK:
+			t.Errorf("%s (%+q): %d %s, want it accepted", c.name, c.text, r.Code, r.Body)
+		case !c.ok && (r.Code != http.StatusBadRequest || !strings.Contains(string(r.Body), `"hidden-characters"`)):
+			t.Errorf("%s (%+q): %d %s, want 400 hidden-characters", c.name, c.text, r.Code, r.Body)
+		}
+	}
+}

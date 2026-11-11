@@ -76,7 +76,7 @@ func text(s string, max int) (string, string) {
 	switch {
 	case s == "":
 		return "", Missing
-	case strings.ContainsFunc(s, hidden):
+	case hidden(s):
 		return "", HiddenCharacters
 	case utf8.RuneCountInString(s) > max:
 		return "", TooLong
@@ -84,23 +84,41 @@ func text(s string, max int) (string, string) {
 	return s, ""
 }
 
-// hidden is a character that changes how the text around it reads or breaks, without being seen:
+// hidden says whether s holds a character that changes how the text around it reads or breaks, or that looks blank:
 //   - a control character (C0, DEL, C1);
-//   - a bidi override or isolate (U+202A–U+202E, U+2066–U+2069), or a bidi mark (U+200E, U+200F, U+061C);
+//   - a format character (Unicode's Cf: the bidi overrides, isolates and marks, zero-width spaces, the BOM, the soft
+//     hyphen, tags and the rest), but for the zero-width non-joiner and joiner (U+200C, U+200D), which Persian,
+//     Indic scripts and emoji need, and the tags of a subdivision flag (U+1F3F4, then tag letters and digits, then
+//     the cancel tag U+E007F), such as Scotland's;
 //   - a line or paragraph separator (U+2028, U+2029);
-//   - a zero-width space, word joiner or byte order mark (U+200B, U+2060, U+FEFF).
-//
-// The zero-width joiner and non-joiner (U+200C, U+200D) stay: Persian, Indic scripts and emoji need them.
-func hidden(r rune) bool {
-	switch {
-	case unicode.IsControl(r), r >= '\u202a' && r <= '\u202e', r >= '\u2066' && r <= '\u2069':
-		return true
-	}
-	switch r {
-	case '\u200e', '\u200f', '\u061c', '\u2028', '\u2029', '\u200b', '\u2060', '\ufeff':
-		return true
+//   - a Hangul filler (U+115F, U+1160, U+3164, U+FFA0), which shows as nothing.
+func hidden(s string) bool {
+	rs := []rune(s)
+	for i := 0; i < len(rs); i++ {
+		r := rs[i]
+		switch {
+		case r == '\U0001f3f4':
+			i += flagTags(rs[i+1:])
+		case r == '\u200c', r == '\u200d':
+		case unicode.IsControl(r), unicode.Is(unicode.Cf, r), unicode.Is(unicode.Zl, r), unicode.Is(unicode.Zp, r),
+			r == '\u115f', r == '\u1160', r == '\u3164', r == '\uffa0':
+			return true
+		}
 	}
 	return false
+}
+
+// flagTags is how many runes at the start of rs are a subdivision flag's tags: tag letters and digits, then the
+// cancel tag. None if they aren't.
+func flagTags(rs []rune) int {
+	n := 0
+	for n < len(rs) && (rs[n] >= '\U000e0061' && rs[n] <= '\U000e007a' || rs[n] >= '\U000e0030' && rs[n] <= '\U000e0039') {
+		n++
+	}
+	if n == 0 || n >= len(rs) || rs[n] != '\U000e007f' {
+		return 0
+	}
+	return n + 1
 }
 
 // isMail is a bare address, name@domain with a dot in the domain.
