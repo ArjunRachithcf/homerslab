@@ -146,6 +146,18 @@ func (a *agentClient) edgeCertificate(ctx context.Context, domain string, chain 
 		map[string]string{"chain": string(chain), "key": key.Reveal()}, nil)
 }
 
+// errClosedForGood is the agent refusing a setup port because the listener closed for good.
+var errClosedForGood = errors.New("the setup listener is closed for good")
+
+// setupPort gives the agent the setup listener's port.
+func (a *agentClient) setupPort(ctx context.Context, port int) error {
+	err := a.call(ctx, http.MethodPut, "/v1/firewall/setup-listener", map[string]any{"open": true, "port": port}, nil)
+	if ae := (*agentError)(nil); errors.As(err, &ae) && ae.Code == "closed-for-good" {
+		return fmt.Errorf("%w: %v", errClosedForGood, err)
+	}
+	return err
+}
+
 func (a *agentClient) forget(ctx context.Context, name string) error {
 	return a.call(ctx, http.MethodDelete, "/v1/credentials/"+name, nil, nil)
 }

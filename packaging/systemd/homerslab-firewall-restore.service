@@ -1,6 +1,7 @@
 # Loads HomersLab's firewall table before the network comes up: the table the agent last applied (written by it after
-# every change, 0600, root), or a closed one on the first boot (loopback, the machine's basics and the setup listener
-# only, nothing forwarded). Docker, Podman and NetBird require it (their drop-ins), so they never start without a
+# every change, 0600, root, synced to the disk), or a closed one on the first boot or when the saved table can't be used
+# (loopback, the machine's basics and the setup listener, on the manager's port as the agent last heard it, only;
+# nothing forwarded). Docker, Podman and NetBird require it (their drop-ins), so they never start without a
 # table, and the agent, which waits for nothing of theirs, takes over once it runs.
 [Unit]
 Description=HomersLab firewall table, before the network

@@ -387,8 +387,8 @@ func TestTheTableFollowsTheLANAndTheEnginesBridges(t *testing.T) {
 	if !strings.Contains(table, "2001:db8:5::/64") {
 		t.Errorf("the table didn't follow the LAN's new prefix:\n%s", table)
 	}
-	if !strings.Contains(table, "ip daddr { 192.168.1.1 } meta l4proto { tcp, udp } th dport 53 accept") ||
-		!strings.Contains(table, "ip6 daddr { 2001:db8:1::1 } meta l4proto { tcp, udp } th dport 53 accept") {
+	if !strings.Contains(table, `oifname { "br-iot" } ip daddr { 192.168.1.1 } meta l4proto { tcp, udp } th dport 53 accept`) ||
+		!strings.Contains(table, `oifname { "br-iot" } ip6 daddr { 2001:db8:1::1 } meta l4proto { tcp, udp } th dport 53 accept`) {
 		t.Errorf("the apps can't ask the machine's resolvers:\n%s", table)
 	}
 	var s agent.FirewallStatus
@@ -557,5 +557,150 @@ func TestTheSetupKeyNeverReachesTheLogs(t *testing.T) {
 		if strings.Contains(logs.String(), setupKey) || strings.Contains(logs.String(), "nbp_SEALME") {
 			t.Errorf("with %q failing, a secret is in the agent's log:\n%s", failing, logs.String())
 		}
+	}
+}
+
+func TestAHungDockerKeepsItsBridges(t *testing.T) {
+	testenv.Isolate(t)
+	for _, how := range []string{"errors", "times out", "systemd times out", "systemd errors"} {
+		t.Run(how, func(t *testing.T) {
+			testenv.Isolate(t)
+			sock, h := agenttest.StartWith(t, agent.Config{})
+			call(t, sock, "POST", "/v1/mesh/join", joinBody())
+			h.Engines(map[string]string{"0123456789abcdef": "docker0", "abcdef0123456789": ""})
+			call(t, sock, "POST", "/v1/firewall/check", nil)
+			if table, _ := h.Table(); !strings.Contains(table, `iifname { "br-abcdef012345", "docker0" } jump apps_in`) {
+				t.Fatalf("Docker's bridges while it answers:\n%s", table)
+			}
+			// Docker is active, but doesn't answer: its bridges are the ones it last listed, not a local virtual
+			// network each.
+			switch how {
+			case "errors":
+				h.Fail("docker network")
+			case "times out":
+				h.Hang("docker network")
+			case "systemd times out": // asked whether Docker runs, systemd doesn't say
+				h.Hang("systemctl is-active --quiet docker.service")
+			default: // nor when it fails without saying "inactive" (no D-Bus, say)
+				h.Fail("systemctl is-active --quiet docker.service")
+			}
+			call(t, sock, "POST", "/v1/firewall/check", nil)
+			if table, _ := h.Table(); !strings.Contains(table, `iifname { "br-abcdef012345", "docker0" } jump apps_in`) {
+				t.Errorf("with Docker not answering (%s), its bridges went:\n%s", how, table)
+			}
+			// Still only what the kernel shows is a bridge; one that went is dropped, not reported as refused.
+			h.NotABridge("br-abcdef012345")
+			_, body := call(t, sock, "POST", "/v1/firewall/check", nil)
+			if table, _ := h.Table(); !strings.Contains(table, `iifname { "docker0" } jump apps_in`) {
+				t.Errorf("a kept name the kernel no longer shows as a bridge is still trusted:\n%s", table)
+			}
+			if strings.Contains(string(body), "refused-bridge") {
+				t.Errorf("a kept bridge that went is reported as an engine's refused name: %s", body)
+			}
+			// Docker answering again is the list from then on; stopped, it has none.
+			h.Mend()
+			h.Engines(nil)
+			call(t, sock, "POST", "/v1/firewall/check", nil)
+			if table, _ := h.Table(); strings.Contains(table, "docker0") {
+				t.Errorf("Docker's bridges are still trusted once it stopped:\n%s", table)
+			}
+		})
+	}
+}
+
+func TestAnAgentWhoseStateIsBrokenStartsAndSaysSo(t *testing.T) {
+	testenv.Isolate(t)
+	for name, content := range map[string]string{"zero-length": "", "cut short": `{"enforcing":tr`} {
+		t.Run(name, func(t *testing.T) {
+			testenv.Isolate(t)
+			state := t.TempDir()
+			if err := os.WriteFile(filepath.Join(state, "agent.json"), []byte(content), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			// A power cut just after the first join: the agent starts (no crash loop), and leaves the table boot loaded.
+			sock, h := agenttest.StartWith(t, agent.Config{StateDir: state})
+			s := status(t, sock)
+			if !s.StateUnreadable || s.Enforcing {
+				t.Errorf("with a broken state: %+v", s)
+			}
+			if _, on := h.Table(); on {
+				t.Error("the agent replaced the table boot loaded, knowing nothing of its own")
+			}
+			// The manager's setup port, given before anything rejoins, is kept, but the state is still lost: said
+			// so, after a restart too.
+			call(t, sock, "PUT", "/v1/firewall/setup-listener", map[string]any{"open": true, "port": 7444})
+			if s := status(t, sock); !s.StateUnreadable {
+				t.Errorf("after the manager gave its port, the broken state isn't reported: %+v", s)
+			}
+			sock2, _ := agenttest.StartWith(t, agent.Config{StateDir: state})
+			if s := status(t, sock2); !s.StateUnreadable || s.SetupListener.Port != 7444 {
+				t.Errorf("after a restart: %+v", s)
+			}
+			// The next join saves a whole state again.
+			if code, body := call(t, sock, "POST", "/v1/mesh/join", joinBody()); code != http.StatusOK {
+				t.Fatalf("join: %d %s", code, body)
+			}
+			if s := status(t, sock); s.StateUnreadable || !s.Enforcing {
+				t.Errorf("after the join: %+v", s)
+			}
+			var saved map[string]any
+			if b, err := os.ReadFile(filepath.Join(state, "agent.json")); err != nil || json.Unmarshal(b, &saved) != nil || saved["enforcing"] != true {
+				t.Errorf("the state after the join: %s, %v", b, err)
+			}
+		})
+	}
+}
+
+func TestTheManagersSetupPortIsKeptForTheNextBoot(t *testing.T) {
+	testenv.Isolate(t)
+	state := t.TempDir()
+	sock, h := agenttest.StartWith(t, agent.Config{StateDir: state})
+	if code, body := call(t, sock, "PUT", "/v1/firewall/setup-listener", map[string]any{"open": true, "port": 7444}); code != http.StatusOK {
+		t.Fatalf("giving the port: %d %s", code, body)
+	}
+	if s := status(t, sock); s.SetupListener.Port != 7444 || !s.SetupListener.Open || s.Enforcing {
+		t.Errorf("after the manager gave its port: %+v", s.SetupListener)
+	}
+	if port, ok := agent.SavedSetupPort(state); !ok || port != 7444 {
+		t.Errorf("saved for the next boot's closed table: %d %v", port, ok)
+	}
+	if _, on := h.Table(); on {
+		t.Error("a port given before the join applied a table")
+	}
+	for _, bad := range []int{-1, 0, 65536} {
+		if code, _ := call(t, sock, "PUT", "/v1/firewall/setup-listener", map[string]any{"open": true, "port": bad}); code != http.StatusBadRequest {
+			t.Errorf("port %d: %d, want 400", bad, code)
+		}
+	}
+	// After the join, the table follows the port the manager gives; once closed, there is no port to give.
+	call(t, sock, "POST", "/v1/mesh/join", joinBody())
+	if table, _ := h.Table(); !strings.Contains(table, "tcp dport 7444 accept") {
+		t.Errorf("the join's table lost the manager's port:\n%s", table)
+	}
+	call(t, sock, "PUT", "/v1/firewall/setup-listener", map[string]any{"open": true, "port": 7445})
+	if table, _ := h.Table(); !strings.Contains(table, "tcp dport 7445 accept") || strings.Contains(table, "7444") {
+		t.Errorf("the table didn't follow the manager's new port:\n%s", table)
+	}
+	call(t, sock, "PUT", "/v1/firewall/setup-listener", map[string]bool{"open": false})
+	if code, _ := call(t, sock, "PUT", "/v1/firewall/setup-listener", map[string]any{"open": true, "port": 7446}); code != http.StatusConflict {
+		t.Errorf("a port given after closing: %d, want 409", code)
+	}
+	if port, ok := agent.SavedSetupPort(state); !ok || port != 0 {
+		t.Errorf("closed for good, the next boot's closed table takes %d %v, want none", port, ok)
+	}
+}
+
+func TestBridgesSavedByAnEarlierAgentAreKept(t *testing.T) {
+	testenv.Isolate(t)
+	state := t.TempDir()
+	if err := os.WriteFile(filepath.Join(state, "agent.json"),
+		[]byte(`{"enforcing":true,"mesh":["wt0"],"wireGuard":[51820],"bridges":["br-abcdef012345","docker0"]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	h := agenttest.NewHost(t.TempDir())
+	h.Block() // at boot Docker hangs, waiting for the agent
+	agenttest.StartWith(t, agent.Config{StateDir: state, Run: h.Run, Root: h.Root})
+	if table, _ := h.Table(); !strings.Contains(table, `iifname { "br-abcdef012345", "docker0" } jump apps_in`) {
+		t.Errorf("the bridges an earlier agent saved were lost:\n%s", table)
 	}
 }

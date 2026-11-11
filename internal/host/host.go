@@ -5,6 +5,7 @@ package host
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os/exec"
 	"strings"
@@ -37,7 +38,11 @@ func Exec(ctx context.Context, c Cmd) ([]byte, error) {
 	out, err := cmd.Output()
 	if err != nil {
 		first, _, _ := strings.Cut(strings.TrimSpace(stderr.String()), "\n")
-		return out, &Error{Cmd: c.String(), Err: err, Stderr: first}
+		e := &Error{Cmd: c.String(), Err: err, Stderr: first}
+		if ee := (*exec.ExitError)(nil); errors.As(err, &ee) && ee.Exited() {
+			e.Exit = ee.ExitCode()
+		}
+		return out, e
 	}
 	return out, nil
 }
@@ -47,6 +52,8 @@ type Error struct {
 	Cmd    string
 	Err    error
 	Stderr string
+	// Exit is the command's exit status when it ran and exited with one; 0 when it never ran, or was killed.
+	Exit int
 }
 
 func (e *Error) Error() string {

@@ -528,6 +528,9 @@ func (m *Manager) currentToken(ctx context.Context, ans map[string]string) (mesh
 // RunDue runs the scheduler's jobs that are due: so far, the mesh token's rotation, the mesh's drift check, and the
 // certificate's renewal.
 func (m *Manager) RunDue(ctx context.Context) {
+	if err := m.giveSetupPort(ctx); err != nil {
+		m.log.Error("giving the agent the setup listener's port", "err", err)
+	}
 	if err := m.rotate(ctx); err != nil {
 		m.log.Error("the mesh token's rotation", "err", err)
 	}
@@ -568,3 +571,16 @@ func (m *Manager) CloseLANListener(ctx context.Context) error {
 }
 
 const ansLANClosed = "lanClosedAt"
+
+// giveSetupPort gives the primary's agent the setup listener's port, at every run (an agent may have lost what it
+// kept): the agent keeps it for the firewall table, and for the closed one homerslab-firewall-restore loads at the
+// next boot. A refusal because the listener closed for good is an answer too.
+func (m *Manager) giveSetupPort(ctx context.Context) error {
+	if m.lanClosed.Load() {
+		return nil
+	}
+	if err := m.agent.setupPort(ctx, m.cfg.SetupPort); err != nil && !errors.Is(err, errClosedForGood) {
+		return err
+	}
+	return nil
+}

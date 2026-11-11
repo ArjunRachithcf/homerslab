@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io/fs"
 	"log/slog"
+	"maps"
 	"net"
 	"net/http"
 	"net/netip"
@@ -20,6 +21,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/ArjunRachithcf/homerslab/internal/atomicfile"
 	"github.com/ArjunRachithcf/homerslab/internal/firewall"
 	"github.com/ArjunRachithcf/homerslab/internal/host"
 	"github.com/ArjunRachithcf/homerslab/internal/lan"
@@ -46,9 +48,10 @@ type Config struct {
 	Resolve func(ctx context.Context, name string) ([]string, error)
 	// LAN is the machine's LAN: the interfaces with the default route and their prefixes; lan.OnLink when nil.
 	LAN func() ([]string, []netip.Prefix)
-	// Bridges are the container engines' bridges, by name; asked of Docker and Podman when nil. Only names that
-	// IsBridge confirms (the kernel's /sys/class/net/<name>/bridge, from Sysroot, when nil) are used.
-	Bridges  func(ctx context.Context) []string
+	// Bridges are the container engines' bridges, by engine and name; asked of Docker and Podman when nil. An engine
+	// missing from the answer didn't answer (an error, a timeout): its last confirmed list is kept. Only names that
+	// IsBridge confirms (the kernel's /sys/class/net/<name>/bridge, from Sysroot, when nil) are used, kept ones too.
+	Bridges  func(ctx context.Context) map[string][]string
 	IsBridge func(name string) bool
 	// Proc is the machine's /proc, for the mesh client's running environment.
 	Proc string
@@ -78,6 +81,7 @@ type Agent struct {
 	refused   map[string]bool  // engine bridge names refused, reported once each
 	meshDrift []firewall.Drift // what the agent found changed in the mesh client, and put back
 	edgeDown  string           // the edge's last check's error, so a down edge is logged once
+	stateErr  error            // why the saved state couldn't be read at start, if it couldn't
 }
 
 // state is what the agent keeps across restarts, in StateDir/agent.json. None of it is secret.
@@ -94,9 +98,56 @@ type state struct {
 	// Edge is the edge's sites and certificates, once the manager has given them.
 	Edge      *edgeState `json:"edge,omitempty"`
 	SetupPort int        `json:"setupPort,omitempty"`
-	// Bridges are the engines' bridges as last confirmed: what the table uses until the engines answer again, at
-	// boot before any of them runs.
-	Bridges []string `json:"bridges,omitempty"`
+	// Bridges are the engines' bridges as each engine last confirmed them: what the table uses until an engine
+	// answers again (at boot, before any of them runs; while one hangs).
+	Bridges map[string][]string `json:"engineBridges,omitempty"`
+	// OldBridges are the bridges an agent before #129 saved, all engines together: taken as Docker's until it
+	// answers.
+	OldBridges []string `json:"bridges,omitempty"`
+	// Lost: the state couldn't be read once, and no join has rebuilt it since; what was saved after (the manager's
+	// port, the listener closed) is kept, and the loss still reported.
+	Lost bool `json:"lost,omitempty"`
+}
+
+// StateFile is the agent's state, in its state directory.
+const StateFile = "agent.json"
+
+// readState reads the agent's state from dir: missing is the zero state.
+func readState(dir string) (state, error) {
+	var s state
+	b, err := os.ReadFile(filepath.Join(dir, StateFile))
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		return s, nil
+	case err != nil:
+		return state{}, err
+	}
+	if err := json.Unmarshal(b, &s); err != nil {
+		return state{}, fmt.Errorf("%s: %w", StateFile, err)
+	}
+	if len(s.OldBridges) > 0 && s.Bridges == nil {
+		s.Bridges = map[string][]string{docker: s.OldBridges}
+	}
+	s.OldBridges = nil
+	return s, nil
+}
+
+// SavedSetupPort is the setup listener's port for the first boot's closed table, from the agent's state in dir: the
+// manager's own, as it last gave it to the agent; 0 once the listener closed for good. ok is false when the state
+// doesn't say (no state yet, no port given, or a state that can't be read): the caller's default applies then, since
+// the manager's own listener refuses the LAN by itself once closed, and a machine without a mesh has no other way to
+// reach first-time setup.
+func SavedSetupPort(dir string) (port int, ok bool) {
+	s, err := readState(dir)
+	switch {
+	case err != nil:
+		return 0, false
+	case s.SetupClosed:
+		return 0, true
+	case s.SetupPort > 0 && s.SetupPort < 65536:
+		return s.SetupPort, true
+	}
+	return 0, false
 }
 
 // New makes an agent and restores its firewall table, if it had one.
@@ -130,7 +181,7 @@ func New(ctx context.Context, c Config) (*Agent, error) {
 	}
 	if c.Bridges == nil {
 		run, root := c.Run, c.Sysroot
-		c.Bridges = func(ctx context.Context) []string { return engineBridges(ctx, run, root) }
+		c.Bridges = func(ctx context.Context) map[string][]string { return engineBridges(ctx, run, root) }
 	}
 	if c.IsBridge == nil {
 		root := c.Sysroot
@@ -153,16 +204,14 @@ func New(ctx context.Context, c Config) (*Agent, error) {
 		if err := os.MkdirAll(c.StateDir, 0o700); err != nil {
 			return nil, err
 		}
-		b, err := os.ReadFile(filepath.Join(c.StateDir, "agent.json"))
-		switch {
-		case errors.Is(err, fs.ErrNotExist):
-		case err != nil:
-			return nil, err
-		default:
-			if err := json.Unmarshal(b, &a.state); err != nil {
-				return nil, fmt.Errorf("the agent's state: %w", err)
-			}
+		s, err := readState(c.StateDir)
+		if err != nil {
+			// Starting anyway, and saying so, rather than failing again at every restart: the table homerslab-firewall-
+			// restore loaded at boot stays as it is, and the next change the agent saves (a join) replaces the file.
+			a.log.Error("the agent's state can't be read: it starts without it, and leaves the firewall table as boot loaded it", "err", err)
+			a.stateErr = err
 		}
+		a.state = s
 	}
 	if a.state.Enforcing {
 		// An agent that can't apply its table now keeps serving and tries again (Serve: before it says it's ready).
@@ -205,29 +254,33 @@ func (a *Agent) waitForTable(ctx context.Context) error {
 func (a *Agent) firewallState(context.Context) firewall.State {
 	ifaces, prefixes := a.cfg.LAN()
 	s := firewall.State{Mesh: a.state.Mesh, WireGuard: a.state.WireGuard, LAN: ifaces, LANPrefixes: prefixes,
-		Bridges: a.state.Bridges, Resolvers: resolvers(a.cfg.Sysroot)}
+		Bridges: a.bridges(), Resolvers: resolvers(a.cfg.Sysroot)}
 	if !a.state.SetupClosed {
-		s.SetupPort = a.state.SetupPort
-		if s.SetupPort == 0 {
-			s.SetupPort = a.cfg.SetupPort
-		}
+		s.SetupPort = a.setupPort()
 	}
 	return s
+}
+
+// setupPort is the setup listener's port: the manager's, once it gave it, or the agent's configured one.
+func (a *Agent) setupPort() int {
+	if a.state.SetupPort != 0 {
+		return a.state.SetupPort
+	}
+	return a.cfg.SetupPort
 }
 
 func (a *Agent) save() error {
 	if a.cfg.StateDir == "" {
 		return errors.New("the agent has no state directory")
 	}
+	if a.stateErr != nil {
+		a.state.Lost = true // the file is replaced: the loss is kept in it
+	}
 	b, err := json.Marshal(a.state)
 	if err != nil {
 		return err
 	}
-	path := filepath.Join(a.cfg.StateDir, "agent.json")
-	if err := os.WriteFile(path+".new", b, 0o600); err != nil {
-		return err
-	}
-	return os.Rename(path+".new", path)
+	return atomicfile.Write(filepath.Join(a.cfg.StateDir, StateFile), b)
 }
 
 // Handler serves the agent's API.
@@ -311,19 +364,38 @@ func (a *Agent) refreshBridges(ctx context.Context, force bool) {
 	}
 	ctx, cancel := context.WithTimeout(ctx, hostWait)
 	defer cancel()
-	var ok, refused []string
-	for _, n := range a.cfg.Bridges(ctx) {
-		if firewall.ValidName(n) && a.cfg.IsBridge(n) {
-			ok = append(ok, n)
-		} else {
-			refused = append(refused, n)
-		}
-	}
-	slices.Sort(ok)
-	ok = slices.Compact(ok)
+	answered := a.cfg.Bridges(ctx)
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.bridgesAt = a.cfg.Now()
+	// An engine that answered gives its list; one that didn't keeps the one it last confirmed. Both are checked again,
+	// so a kept name that is no longer a bridge goes.
+	engines := slices.Collect(maps.Keys(a.state.Bridges))
+	for e := range answered {
+		engines = append(engines, e)
+	}
+	slices.Sort(engines)
+	next := map[string][]string{}
+	var refused []string
+	for _, e := range slices.Compact(engines) {
+		names, answer := answered[e]
+		if !answer {
+			names = a.state.Bridges[e]
+		}
+		var good []string
+		for _, n := range names {
+			switch {
+			case firewall.ValidName(n) && a.cfg.IsBridge(n):
+				good = append(good, n)
+			case answer: // a kept name that is no longer a bridge just goes
+				refused = append(refused, n)
+			}
+		}
+		slices.Sort(good)
+		if good = slices.Compact(good); len(good) > 0 {
+			next[e] = good
+		}
+	}
 	for _, n := range refused {
 		if !a.refused[n] {
 			a.refused[n] = true
@@ -331,12 +403,22 @@ func (a *Agent) refreshBridges(ctx context.Context, force bool) {
 			a.fw.Note(fmt.Sprintf("refused-bridge %q", n))
 		}
 	}
-	if !slices.Equal(ok, a.state.Bridges) {
-		a.state.Bridges = ok
+	if !maps.EqualFunc(next, a.state.Bridges, slices.Equal) {
+		a.state.Bridges = next
 		if err := a.save(); err != nil {
 			a.log.Error("saving the engines' bridges", "err", err)
 		}
 	}
+}
+
+// bridges are every engine's bridges, as last confirmed. The caller holds a.mu.
+func (a *Agent) bridges() []string {
+	var out []string
+	for _, names := range a.state.Bridges {
+		out = append(out, names...)
+	}
+	slices.Sort(out)
+	return slices.Compact(out)
 }
 
 // bridgesEvery is how long the engines' list of bridges is taken as it was, between checks; a forced check asks again.

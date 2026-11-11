@@ -127,6 +127,7 @@ type Host struct {
 	docker        map[string]string // the engine's bridge networks: ID → the bridge's name option ("" for none)
 	notBridges    map[string]bool   // names the engines give that the kernel doesn't show as bridges
 	block         bool              // the engines and systemd never answer
+	hang          []string          // commands, by prefix, that never answer
 }
 
 // IsBridge says whether the kernel would show a name as a bridge: every name an engine gives, but those NotABridge
@@ -155,6 +156,13 @@ func (h *Host) Block() {
 	h.block = true
 }
 
+// Hang makes every command starting with prefix (e.g. "docker network") hang until the caller gives up, until Mend.
+func (h *Host) Hang(prefix string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.hang = append(h.hang, prefix)
+}
+
 // Engines makes Docker run and list bridge networks (ID → the name it was given, or ""). Without it, Docker isn't
 // running.
 func (h *Host) Engines(docker map[string]string) {
@@ -180,12 +188,13 @@ func (h *Host) Mend() {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	clear(h.fail)
+	h.hang = nil
 }
 
 // Run is the agent's host.Runner.
 func (h *Host) Run(ctx context.Context, c host.Cmd) ([]byte, error) {
 	h.mu.Lock()
-	if h.block && (c.Name == "docker" || c.Name == "systemctl") {
+	if h.block && (c.Name == "docker" || c.Name == "systemctl") || slices.ContainsFunc(h.hang, func(p string) bool { return strings.HasPrefix(c.String(), p) }) {
 		h.mu.Unlock()
 		<-ctx.Done()
 		return nil, ctx.Err()
@@ -230,7 +239,7 @@ func (h *Host) Run(ctx context.Context, c host.Cmd) ([]byte, error) {
 		return fmt.Appendf(nil, "%d\n", h.pid), nil
 	case line == "systemctl is-active --quiet docker.service":
 		if h.docker == nil {
-			return nil, &host.Error{Cmd: line, Err: errors.New("exit status 3")}
+			return nil, &host.Error{Cmd: line, Err: errors.New("exit status 3"), Exit: 3}
 		}
 		return nil, nil
 	case c.Name == "systemctl":
