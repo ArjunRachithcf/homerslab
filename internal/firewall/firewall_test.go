@@ -334,11 +334,23 @@ func TestEachFamilyLeavesOnlyThroughItsOwnUplinks(t *testing.T) {
 	if !strings.Contains(chain(r, "forward"), `iifname { "eth0", "v4only", "v6only" } drop`) {
 		t.Errorf("forward, want nothing forwarded from any uplink:\n%s", chain(r, "forward"))
 	}
+	// With no IPv6 default route (an ISP without IPv6, a router announcing a ULA and its resolver): no way out over
+	// IPv6, but the machine's IPv6 resolver stays reachable on the LAN, as it was (#169's review). Never through a
+	// tunnel that is no IPv6 uplink.
 	v4only := s
 	v4only.Uplinks6 = nil
-	if got := chain(firewall.Render(v4only), "outbound"); !strings.HasPrefix(got, "\t\tmeta nfproto ipv4 oifname != { \"eth0\", \"v4only\" } drop\n"+
-		"\t\tmeta nfproto ipv6 drop\n") || strings.Contains(firewall.Render(v4only), "ip6 daddr { 2001:db8:53::53 }") {
-		t.Errorf("with no IPv6 uplink, want no way out over IPv6, nor to an IPv6 resolver:\n%s", got)
+	r = firewall.Render(v4only)
+	if got := chain(r, "outbound"); !strings.HasPrefix(got, "\t\tmeta nfproto ipv4 oifname != { \"eth0\", \"v4only\" } drop\n"+
+		"\t\tmeta nfproto ipv6 drop\n") {
+		t.Errorf("with no IPv6 uplink, want no way out over IPv6:\n%s", got)
+	}
+	if got := chain(r, "apps_out"); !strings.Contains(got, `oifname { "eth0" } ip6 daddr { 2001:db8:53::53 } meta l4proto { tcp, udp } th dport 53 accept`) {
+		t.Errorf("with no IPv6 uplink, want the IPv6 resolver on the LAN only:\n%s", got)
+	}
+	v6only := s
+	v6only.Uplinks4 = nil
+	if got := chain(firewall.Render(v6only), "apps_out"); !strings.Contains(got, `oifname { "eth0" } ip daddr { 192.0.2.53 } meta l4proto { tcp, udp } th dport 53 accept`) {
+		t.Errorf("with no IPv4 uplink, want the IPv4 resolver on the LAN only:\n%s", got)
 	}
 	none := s
 	none.Uplinks4, none.Uplinks6 = nil, nil

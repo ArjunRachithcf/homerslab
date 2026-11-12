@@ -137,8 +137,14 @@ func Render(s State) string {
 	out := uniqStrings(slices.Concat(lan, out4, out6))
 	// The bridges that may be an app network or a local virtual network: guests' ports only (#169).
 	guests := valid(s.Virtual)
-	apps := slices.DeleteFunc(slices.Clone(bridges), func(n string) bool { return !slices.Contains(guests, n) })
-	notApps := slices.DeleteFunc(slices.Clone(bridges), func(n string) bool { return slices.Contains(apps, n) })
+	var apps, notApps []string
+	for _, br := range bridges {
+		if slices.Contains(guests, br) {
+			apps = append(apps, br)
+		} else {
+			notApps = append(notApps, br)
+		}
+	}
 	virtual := slices.DeleteFunc(guests, func(n string) bool {
 		return slices.Contains(out, n) || slices.Contains(mesh, n) || slices.Contains(bridges, n)
 	})
@@ -234,11 +240,13 @@ func Render(s State) string {
 			r6 = append(r6, r.String())
 		}
 	}
-	if len(r4) > 0 && len(out4) > 0 {
-		w("\t\toifname %s ip daddr %s meta l4proto { tcp, udp } th dport 53 accept", set(quoted(out4)), set(uniqStrings(r4)))
+	// A resolver is reached through the LAN, where DHCP or a router's advertisement found it even with no default route
+	// of its family (#169's review), or through an uplink of its family; never through a tunnel that isn't one.
+	if to4 := uniqStrings(slices.Concat(lan, out4)); len(r4) > 0 && len(to4) > 0 {
+		w("\t\toifname %s ip daddr %s meta l4proto { tcp, udp } th dport 53 accept", set(quoted(to4)), set(uniqStrings(r4)))
 	}
-	if len(r6) > 0 && len(out6) > 0 {
-		w("\t\toifname %s ip6 daddr %s meta l4proto { tcp, udp } th dport 53 accept", set(quoted(out6)), set(uniqStrings(r6)))
+	if to6 := uniqStrings(slices.Concat(lan, out6)); len(r6) > 0 && len(to6) > 0 {
+		w("\t\toifname %s ip6 daddr %s meta l4proto { tcp, udp } th dport 53 accept", set(quoted(to6)), set(uniqStrings(r6)))
 	}
 	w("\t\tjump outbound")
 	w("\t}")

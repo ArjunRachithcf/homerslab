@@ -159,8 +159,10 @@ func TestTheLANInANetworkNamespace(t *testing.T) {
 	if want := []string{"eth0"}; !slices.Equal(n.LAN, want) {
 		t.Errorf("the network's LAN = %v, want %v", n.LAN, want)
 	}
-	if want := append(slices.Clone(wantPrefixes), netip.MustParsePrefix("fd10:abcd:0:1::/64")); !sameSet(n.Prefixes, want) {
-		t.Errorf("the network's prefixes = %v, want %v: every network on the LAN's link, which apps never reach", n.Prefixes, want)
+	if want := append(slices.Clone(wantPrefixes), netip.MustParsePrefix("fd10:abcd:0:1::/64"), netip.MustParsePrefix("10.8.0.0/24"),
+		netip.MustParsePrefix("10.8.1.1/32")); !sameSet(n.Prefixes, want) {
+		t.Errorf("the network's prefixes = %v, want %v: every network on the LAN's link and on tun0, which carries a "+
+			"default route of the main table, which apps never reach", n.Prefixes, want)
 	}
 	if got, want := n.Uplinks4, []string{"eth0", "wg1", "tun0", "tun1"}; !sameSet(got, want) || got[0] != "eth0" {
 		t.Errorf("IPv4 uplinks = %v, want %v, the LAN's first: apps reach the internet through the VPNs' tunnels too "+
@@ -317,10 +319,13 @@ func TestOnlyAHomeNetworkIsTheLANInANetworkNamespace(t *testing.T) {
 	t.Cleanup(func() { _ = other.Process.Kill(); _ = other.Wait() })
 	time.Sleep(100 * time.Millisecond)
 	eth0 := slices.IndexFunc(asNICs(t).Links, func(l lan.Link) bool { return l.Name == "eth0" })
-	sh(t, fmt.Sprintf(`nsenter -t %d -n sh -ec "ip link add far index %d type dummy; ip link set far up
-			ip link add link far name v30 type vlan id 30; ip link set v30 netns %d"
+	sh(t, fmt.Sprintf(`nsenter -t %[1]d -n sh -ec "ip link add far index %[2]d type dummy; ip link set far up
+			ip link add link far name v30 type vlan id 30; ip link set v30 netns %[3]d"
 		ip link set v30 up
-		ip route add default dev v30 metric 30`, other.Process.Pid, asNICs(t).Links[eth0].Index, os.Getpid()))
+		ip route add default dev v30 metric 30
+		ip link add br5 type bridge
+		ip link add veth-e type veth peer name eth0 netns %[1]d
+		ip link set veth-e master br5`, other.Process.Pid, asNICs(t).Links[eth0].Index, os.Getpid()))
 	// Tunnels, each of a kind whose module this kernel may lack (bareudp and AMT are newer): those it can make.
 	var tunnels []string
 	for i, c := range []string{
@@ -364,6 +369,12 @@ func TestOnlyAHomeNetworkIsTheLANInANetworkNamespace(t *testing.T) {
 	if got := link("eth0").Lower; got != 0 {
 		t.Errorf("eth0 sits on %d, want nothing", got)
 	}
+	if got, want := link("veth-a").Lower, link("veth-b").Index; got != want {
+		t.Errorf("veth-a's other end = %d, want veth-b's %d", got, want)
+	}
+	if got := link("veth-e").Lower; got != 0 {
+		t.Errorf("veth-e's other end = %d here, want none: it is in another namespace", got)
+	}
 	if got := link("v30").Lower; got != 0 {
 		t.Errorf("v30 sits on %d here, want nothing: its link is in another namespace", got)
 	}
@@ -375,9 +386,9 @@ func TestOnlyAHomeNetworkIsTheLANInANetworkNamespace(t *testing.T) {
 	if n := k.Network(); !slices.Equal(n.LAN, want) {
 		t.Errorf("the network's LAN = %v, want %v", n.LAN, want)
 	}
-	// The local virtual networks: br2 (a container's veth), br3 (a VM's tap) and br4 (no port yet); not br0 or br1,
-	// which have a NIC among their ports.
-	if got, want := k.Network().Virtual, []string{"br2", "br3", "br4"}; !slices.Equal(got, want) {
+	// The local virtual networks: br3 (a VM's tap), br4 (no port yet) and br5 (a container's veth, its other end in
+	// another namespace); not br0 or br1, which have a NIC among their ports, nor br2, whose veth's other end is here.
+	if got, want := k.Network().Virtual, []string{"br3", "br4", "br5"}; !slices.Equal(got, want) {
 		t.Errorf("local virtual networks = %v, want %v", got, want)
 	}
 }

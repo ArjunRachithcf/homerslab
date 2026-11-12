@@ -115,6 +115,10 @@ func TestOnlyANICOrABridgeVLANOrBondOnOneMayBeTheLAN(t *testing.T) {
 			return b.link("x", "bridge", 0).link("eth0", "", 0).port("eth0", "x").link("veth1", "veth", 0).port("veth1", "x").
 				link("vnet0", "tun", 0).port("vnet0", "x")
 		}},
+		{"a VM host's bridge with Proxmox's firewall veth (its other end here, on the VM's fwbr0)", true, func(b *builder) *builder {
+			return b.link("x", "bridge", 0).link("eth0", "", 0).port("eth0", "x").link("fwpr0", "veth", 0).port("fwpr0", "x").
+				link("fwln0", "veth", 0).on("fwpr0", "fwln0").on("fwln0", "fwpr0")
+		}},
 		{"a bridge on a bond of NICs", true, func(b *builder) *builder {
 			return b.link("x", "bridge", 0).link("bond0", "bond", 0).port("bond0", "x").link("eth0", "", 0).port("eth0", "bond0")
 		}},
@@ -180,10 +184,35 @@ func TestOnlyANICOrABridgeVLANOrBondOnOneMayBeTheLAN(t *testing.T) {
 	}
 }
 
+// A default route in the main table through a link that may not be the LAN (#169's review): Open vSwitch's bridge, a
+// kind this code doesn't know, or the veth of a system container (LXC, systemd-nspawn). It is no LAN, so no setup
+// listener; but it is the machine's way to the internet, so apps leave through it for that family, and every network
+// on it is one apps never reach (Network.Prefixes), as the LAN's are.
+func TestADefaultRouteThroughALinkThatIsNoLANIsAWayOutAndKeptFromApps(t *testing.T) {
+	testenv.Isolate(t)
+	for _, kind := range []string{"openvswitch", "veth", "macvlan"} {
+		k := kernel().link("lo", "", lo).link("x", kind, 0).
+			addr("x", "192.168.40.2/24", 0).addr("x", "2001:db8:40::2/64", 0).addr("x", "fe80::2/64", 0).
+			route(mainTable, "0.0.0.0/0", gw, "x").route(mainTable, "::/0", gw, "x").k
+		n := k.Network()
+		if len(n.LAN) != 0 {
+			t.Errorf("a %s link: the LAN = %v, want none", kind, n.LAN)
+		}
+		if !reflect.DeepEqual(n.Uplinks4, []string{"x"}) || !reflect.DeepEqual(n.Uplinks6, []string{"x"}) {
+			t.Errorf("a %s link: uplinks = %v and %v, want x for both families", kind, n.Uplinks4, n.Uplinks6)
+		}
+		if want := []netip.Prefix{netip.MustParsePrefix("192.168.40.0/24"), netip.MustParsePrefix("2001:db8:40::/64")}; !sameSet(n.Prefixes, want) {
+			t.Errorf("a %s link: the networks apps never reach = %v, want %v", kind, n.Prefixes, want)
+		}
+	}
+}
+
 // A bridge is a local virtual network (or an app network) only when every port of it is a container's veth or a VM's
 // tap, or it has none yet (#169). A bridge with a NIC among its ports (a second NIC enslaved to it, a bond of NICs,
-// a VLAN on one), an L2 tunnel or a link of a kind nobody knows is none: it is treated as that NIC is. A VM host's
-// br0, the LAN, has its NIC too. A link of another kind is never one, whatever its name.
+// a VLAN on one), an L2 tunnel or a link of a kind nobody knows is none: it is treated as that NIC is. So is one with a
+// veth whose other end is in this namespace, which may lead to the LAN's bridge (Proxmox's fwbr0, its fwln0 and fwpr0
+// on the LAN's br0): a container's veth has its other end in the container's. A VM host's br0, the LAN, has its NIC
+// too, and stays the LAN with that veth. A link of another kind is never one, whatever its name.
 func TestABridgeIsALocalVirtualNetworkOnlyWithGuestsPorts(t *testing.T) {
 	testenv.Isolate(t)
 	k := kernel().link("lo", "", lo).link("eth0", "", 0).link("eth1", "", 0).link("eth2", "", 0).
@@ -198,6 +227,8 @@ func TestABridgeIsALocalVirtualNetworkOnlyWithGuestsPorts(t *testing.T) {
 		link("br-new", "bridge", 0).link("n0", "newfangled", 0).port("n0", "br-new").
 		link("br-dummy", "bridge", 0).link("d0", "dummy", 0).port("d0", "br-dummy").
 		link("br-tun", "bridge", 0).link("tun0", "tun", ptp).port("tun0", "br-tun").
+		link("fwbr0", "bridge", 0).link("tap2", "tun", 0).port("tap2", "fwbr0").link("fwln0", "veth", 0).port("fwln0", "fwbr0").
+		link("fwpr0", "veth", 0).on("fwln0", "fwpr0").on("fwpr0", "fwln0").port("fwpr0", "br0").
 		link("virbr9", "tun", 0).link("br-wg", "wireguard", ptp).
 		route(mainTable, "0.0.0.0/0", gw, "br0").k
 	want := []string{"docker0", "virbr0", "lxdbr0"}
