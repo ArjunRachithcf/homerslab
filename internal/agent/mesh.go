@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ArjunRachithcf/homerslab/internal/atomicfile"
 	"github.com/ArjunRachithcf/homerslab/internal/firewall"
 	"github.com/ArjunRachithcf/homerslab/internal/host"
 	"github.com/ArjunRachithcf/homerslab/internal/mesh"
@@ -159,14 +160,9 @@ func (a *Agent) writeAt(rel string, b []byte) error {
 	return writeFile(filepath.Join(a.cfg.Root, rel), b)
 }
 
+// writeFile replaces path whole, on the disk before it returns, readable by NetBird's service (0644).
 func writeFile(path string, b []byte) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return err
-	}
-	if err := os.WriteFile(path+".new", b, 0o644); err != nil {
-		return err
-	}
-	return os.Rename(path+".new", path)
+	return atomicfile.WriteMode(path, b, 0o644, 0o755)
 }
 
 // FirewallStatus is the firewall table and the setup link's LAN listener.
@@ -378,7 +374,7 @@ func (a *Agent) sealAt(ctx context.Context, path, name string, value []byte) err
 		Args: []string{"encrypt", "--with-key=" + key, "--name=" + name, "-", path + ".new"}, Stdin: value}); err != nil {
 		return err
 	}
-	return os.Rename(path+".new", path)
+	return atomicfile.Commit(path + ".new")
 }
 
 // MeshStatus is the node's mesh client, as the agent finds it right now.

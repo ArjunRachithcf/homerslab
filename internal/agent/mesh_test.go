@@ -20,6 +20,7 @@ import (
 
 	"github.com/ArjunRachithcf/homerslab/internal/agent"
 	"github.com/ArjunRachithcf/homerslab/internal/agent/agenttest"
+	"github.com/ArjunRachithcf/homerslab/internal/atomicfile"
 	"github.com/ArjunRachithcf/homerslab/internal/firewall"
 	"github.com/ArjunRachithcf/homerslab/internal/testenv"
 )
@@ -982,5 +983,47 @@ func TestTheTableLetsAppsOutThroughTheUplinks(t *testing.T) {
 	}
 	if !strings.Contains(table, `iifname { "enp5s0" } tcp dport 7020 accept`) || strings.Contains(table, `"wg0" } tcp dport`) {
 		t.Errorf("the setup listener isn't the LAN's alone:\n%s", table)
+	}
+}
+
+// NetBird's drop-in and a sealed credential are on the disk before they count, as the agent's state is: the file's
+// data, then the folder's entry. After a power cut neither is empty (#133).
+func TestTheDropInAndASealedCredentialAreSyncedBeforeTheyCount(t *testing.T) {
+	testenv.Isolate(t)
+	state := t.TempDir()
+	var mu sync.Mutex
+	var synced []string
+	defer atomicfile.SetSync(func(f *os.File) error {
+		fi, err := f.Stat()
+		if err != nil {
+			return err
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		kind := "file"
+		if fi.IsDir() {
+			kind = "folder"
+		}
+		synced = append(synced, kind+" "+f.Name())
+		return nil
+	})()
+	sock, h := agenttest.StartWith(t, agent.Config{StateDir: state})
+	call(t, sock, "POST", "/v1/mesh/join", joinBody())
+	dropIn := filepath.Join(h.Root, "etc/systemd/system/netbird.service.d", "10-homerslab.conf")
+	if fi, err := os.Stat(dropIn); err != nil || fi.Mode().Perm() != 0o644 {
+		t.Fatalf("the drop-in: %v, %v; want mode 644", fi, err)
+	}
+	if !slices.Contains(synced, "file "+dropIn+".new") || !slices.Contains(synced, "folder "+filepath.Dir(dropIn)) {
+		t.Errorf("the drop-in's file and folder weren't both synced: %v", synced)
+	}
+
+	synced = nil
+	code, body := call(t, sock, "PUT", "/v1/credentials/manager-mesh-token", map[string]string{"value": "nbp_0123456789abcdefghijklmnopqrstuvwxyzAB"})
+	if code != http.StatusNoContent {
+		t.Fatalf("sealing: %d %s", code, body)
+	}
+	cred := filepath.Join(state, "credentials", "manager-mesh-token.cred")
+	if !slices.Contains(synced, "file "+cred+".new") || !slices.Contains(synced, "folder "+filepath.Dir(cred)) {
+		t.Errorf("the sealed credential's file and folder weren't both synced: %v", synced)
 	}
 }
