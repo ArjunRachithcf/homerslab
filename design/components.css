@@ -1003,7 +1003,7 @@ body.has-wallpaper { background: transparent; --text-2: var(--text-2-on-wall); }
 .illo-chip { display: inline-flex; align-items: center; gap: 6px; height: 32px; padding: 0 14px; border-radius: var(--radius-pill); white-space: nowrap; color: var(--text); font: var(--weight-semibold) 13px/1 var(--font); letter-spacing: 0; }
 .illo-chip .icon { width: 14px; height: 14px; color: var(--accent); stroke-width: 2; }
 /* a long name wraps inside the stage rather than running out of it (#124) */
-.illo-chip { max-width: 280px; height: auto; min-height: 32px; padding-block: 6px; white-space: normal; overflow-wrap: anywhere; line-height: 1.25; text-align: start; }
+.illo-chip { width: max-content; max-width: 280px; height: auto; min-height: 32px; padding-block: 6px; white-space: normal; overflow-wrap: anywhere; line-height: 1.25; text-align: start; }
 .illo-lines { left: 0; top: 0; width: 100%; height: 100%; transform: none; overflow: visible; }
 .illo-lines path { fill: none; stroke: var(--accent); stroke-width: 1.5; stroke-linecap: round; stroke-dasharray: 3 6; opacity: 0.55; }
 .illo-initial { font: var(--weight-bold) 34px/1 var(--font); letter-spacing: -0.02em; color: var(--accent); }
