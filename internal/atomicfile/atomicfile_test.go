@@ -82,3 +82,81 @@ func TestAWriteIsSyncedBeforeItCounts(t *testing.T) {
 		})
 	}
 }
+
+func TestAFileCanTakeAnotherModeThanTheStateFiles(t *testing.T) {
+	testenv.Isolate(t)
+	path := filepath.Join(t.TempDir(), "drop.d", "x.conf")
+	// A leftover temporary file with another mode must not decide the result.
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path+".new", nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := atomicfile.WriteMode(path, []byte("a"), 0o644, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if fi, _ := os.Stat(path); fi.Mode().Perm() != 0o644 {
+		t.Errorf("mode %o, want 644", fi.Mode().Perm())
+	}
+	var synced []string
+	defer atomicfile.SetSync(func(f *os.File) error {
+		fi, _ := f.Stat()
+		synced = append(synced, map[bool]string{true: "folder", false: "file"}[fi.IsDir()])
+		return nil
+	})()
+	if err := atomicfile.WriteMode(path, []byte("b"), 0o644, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if len(synced) != 2 || synced[0] != "file" || synced[1] != "folder" {
+		t.Errorf("synced %v, want the file and then its folder", synced)
+	}
+	nested := filepath.Join(t.TempDir(), "a", "b", "y.conf")
+	if err := atomicfile.WriteMode(nested, []byte("c"), 0o644, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if fi, _ := os.Stat(filepath.Dir(nested)); fi.Mode().Perm() != 0o755 {
+		t.Errorf("the folder's mode %o, want 755", fi.Mode().Perm())
+	}
+}
+
+// A file another program wrote under the temporary name (systemd-creds) is synced, then takes the name, then its
+// folder is synced; a failed sync leaves the old file.
+func TestAFileWrittenByAnotherProgramIsSyncedBeforeItTakesTheName(t *testing.T) {
+	testenv.Isolate(t)
+	for _, failing := range []string{"", "file"} {
+		dir := t.TempDir()
+		path := filepath.Join(dir, "c.cred")
+		if err := os.WriteFile(path, []byte("old"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path+".new", []byte("new"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		var synced []string
+		restore := atomicfile.SetSync(func(f *os.File) error {
+			fi, _ := f.Stat()
+			kind := map[bool]string{true: "folder", false: "file"}[fi.IsDir()]
+			synced = append(synced, kind)
+			if kind == failing {
+				return errors.New("EIO")
+			}
+			return nil
+		})
+		err := atomicfile.Commit(path + ".new")
+		restore()
+		got, _ := os.ReadFile(path)
+		if failing == "file" {
+			if err == nil || string(got) != "old" || len(synced) != 1 {
+				t.Errorf("failing sync: %v, %q, %v", err, got, synced)
+			}
+			if _, err := os.Stat(path + ".new"); !errors.Is(err, os.ErrNotExist) {
+				t.Errorf("the temporary file stayed: %v", err)
+			}
+			continue
+		}
+		if err != nil || string(got) != "new" || len(synced) != 2 || synced[0] != "file" || synced[1] != "folder" {
+			t.Errorf("commit: %v, %q, %v", err, got, synced)
+		}
+	}
+}
