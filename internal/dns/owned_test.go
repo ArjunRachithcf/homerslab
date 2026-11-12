@@ -360,12 +360,15 @@ func TestOnlyTheChallengesOwnNameIsShared(t *testing.T) {
 	}
 }
 
-// Another value at the same name is someone else's: ours is gone, so the book drops it, and theirs is left alone.
-func TestAnotherValueAtTheNameDoesNotKeepOursInTheBook(t *testing.T) {
+// Another value at the same name and type may be ours in the provider's own form: the delete is sent, and when it
+// removes nothing the record stays in the book, with a note.
+func TestAnotherValueAtTheNameKeepsOursInTheBook(t *testing.T) {
 	testenv.Isolate(t)
 	ctx := context.Background()
 	p, b := household(), &book{}
 	o := &dns.Owned{Provider: p, Zone: "example.test.", Domain: "example.test", Book: b}
+	var notes []dns.Drift
+	o.Drift = func(d dns.Drift) { notes = append(notes, d) }
 	r := dns.Record{Name: "photos", Type: "TXT", Value: "ours"}
 	if err := o.Create(ctx, r); err != nil {
 		t.Fatal(err)
@@ -377,13 +380,55 @@ func TestAnotherValueAtTheNameDoesNotKeepOursInTheBook(t *testing.T) {
 		}
 	}
 	p.mu.Unlock()
-	if err := o.Delete(ctx, r); err != nil {
-		t.Fatal(err)
+	if err := o.Delete(ctx, r); !errors.Is(err, dns.ErrNotDeleted) {
+		t.Errorf("delete: %v, want ErrNotDeleted", err)
 	}
-	if recs, _ := b.Records(ctx, "example.test."); slices.ContainsFunc(recs, func(k dns.Record) bool { return k.Name == "photos" }) {
-		t.Error("the book still lists a record the provider no longer has")
+	if recs, _ := b.Records(ctx, "example.test."); !slices.ContainsFunc(recs, func(k dns.Record) bool { return k.Name == "photos" }) {
+		t.Error("the book forgot a record whose name and type are still at the provider")
 	}
 	if got := p.has("photos", "TXT"); !slices.Equal(got, []string{"someone else's"}) {
 		t.Errorf("someone else's record: %v", got)
+	}
+	if len(notes) != 1 || notes[0].What != dns.DriftValueChanged {
+		t.Errorf("the drift report: %+v", notes)
+	}
+}
+
+// quoting is a provider that lists TXT values in quotes and names with a trailing dot, as some providers do, and
+// deletes only what it is given in that form.
+type quoting struct{ *provider }
+
+func (q quoting) GetRecords(ctx context.Context, zone string) ([]libdns.Record, error) {
+	recs, err := q.provider.GetRecords(ctx, zone)
+	for i, r := range recs {
+		rr := r.RR()
+		if rr.Type == "TXT" {
+			rr.Data = `"` + rr.Data + `"`
+		}
+		rr.Name += "."
+		recs[i] = rr
+	}
+	return recs, err
+}
+
+func (q quoting) DeleteRecords(context.Context, string, []libdns.Record) ([]libdns.Record, error) {
+	return nil, nil
+}
+
+// A provider that keeps values in its own form must not make a live record look deleted.
+func TestAProviderThatRewritesValuesNeverMakesALiveRecordLookGone(t *testing.T) {
+	testenv.Isolate(t)
+	ctx := context.Background()
+	p, b := household(), &book{}
+	o := &dns.Owned{Provider: quoting{p}, Zone: "example.test.", Domain: "example.test", Book: b}
+	r := dns.Record{Name: "photos", Type: "TXT", Value: "ours"}
+	if err := o.Create(ctx, r); err != nil {
+		t.Fatal(err)
+	}
+	if err := o.Delete(ctx, r); !errors.Is(err, dns.ErrNotDeleted) {
+		t.Errorf("delete: %v, want ErrNotDeleted", err)
+	}
+	if recs, _ := b.Records(ctx, "example.test."); !slices.ContainsFunc(recs, func(k dns.Record) bool { return k.Name == "photos" }) {
+		t.Error("the book forgot a record that is still at the provider")
 	}
 }

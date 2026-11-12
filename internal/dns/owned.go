@@ -59,6 +59,10 @@ type Drift struct {
 // DriftDeletedByHand is a record of HomersLab's that was deleted at the provider by hand: the book dropped it.
 const DriftDeletedByHand = "record-deleted-at-the-provider"
 
+// DriftValueChanged is a record of HomersLab's whose name and type are still at the provider with another value: kept
+// in the book, because it may be the same record in the provider's own form.
+const DriftValueChanged = "record-value-changed-at-the-provider"
+
 // Inventory is the name, under the domain, of the one TXT record that lists HomersLab's records by name and type, so
 // a restored primary finds them again (#79).
 const Inventory = "_homerslab"
@@ -175,7 +179,7 @@ func (o *Owned) delete(ctx context.Context, r Record) error {
 	}
 	// Looked up first: a provider such as RFC 2136's reports every delete as done, so only the listing says whether the
 	// record was still there. Gone means someone deleted it by hand.
-	if there, err := o.at(ctx, r.Name); err == nil && !slices.ContainsFunc(there, ours[i].matches) {
+	if there, err := o.at(ctx, r.Name); err == nil && !slices.ContainsFunc(there, ours[i].sameKind) {
 		return o.dropGone(ctx, ours[i])
 	}
 	// Any TTL: a provider may keep its own (a minimum of its own), and the record is HomersLab's all the same.
@@ -202,13 +206,20 @@ func (o *Owned) nothingDeleted(ctx context.Context, r Record) error {
 		}
 		return fmt.Errorf("%w: %s %s (%v)", ErrNotDeleted, r.Type, r.Name, err)
 	}
-	if slices.ContainsFunc(there, r.matches) {
-		if o.Log != nil {
-			o.Log.Warn("the DNS provider deleted nothing: the record stays listed as HomersLab's", "zone", o.zone(), "name", r.Name, "type", r.Type)
-		}
-		return fmt.Errorf("%w: %s %s", ErrNotDeleted, r.Type, r.Name)
+	if !slices.ContainsFunc(there, r.sameKind) {
+		return o.dropGone(ctx, r)
 	}
-	return o.dropGone(ctx, r)
+	// Something of that name and type is left. If its value is not the one HomersLab wrote, the provider may keep
+	// values in its own form (quotes, a trailing dot) or someone changed it: either way it is kept, and said.
+	if !slices.ContainsFunc(there, r.matches) {
+		if o.Drift != nil {
+			o.Drift(Drift{Zone: o.zone(), Record: r, What: DriftValueChanged})
+		}
+	}
+	if o.Log != nil {
+		o.Log.Warn("the DNS provider deleted nothing: the record stays listed as HomersLab's", "zone", o.zone(), "name", r.Name, "type", r.Type)
+	}
+	return fmt.Errorf("%w: %s %s", ErrNotDeleted, r.Type, r.Name)
 }
 
 // dropGone drops a record the provider is seen not to have from the book, and says so in the drift report.
@@ -271,6 +282,11 @@ func (r Record) libdns() libdns.Record {
 
 func (r Record) same(o Record) bool {
 	return same(r.Name, o.Name) && strings.EqualFold(r.Type, o.Type) && r.Value == o.Value
+}
+
+// sameKind is a record of the same name and type, whatever its value.
+func (r Record) sameKind(rr libdns.RR) bool {
+	return same(r.Name, rr.Name) && strings.EqualFold(r.Type, rr.Type)
 }
 
 func (r Record) matches(rr libdns.RR) bool {
