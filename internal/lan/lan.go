@@ -106,24 +106,29 @@ func Current() LAN {
 	return k.LAN()
 }
 
-// OnLink is what the firewall table keeps apps away from, read from the live machine (Kernel.OnLink); nothing when
-// the kernel can't be asked.
-func OnLink() (interfaces []string, prefixes []netip.Prefix) {
-	k, err := ReadKernel()
-	if err != nil {
-		return nil, nil
-	}
-	return k.OnLink()
+// Network is what the firewall table needs of this machine's network, from one reading of the kernel, so its parts
+// agree: the LAN's interfaces and every prefix on them (Kernel.OnLink), and the uplinks.
+type Network struct {
+	LAN      []string
+	Prefixes []netip.Prefix
+	Uplinks  []string
 }
 
-// Uplinks are the interfaces through which this machine reaches the internet, read from the live machine
-// (Kernel.Uplinks); none when the kernel can't be asked.
-func Uplinks() []string {
+// ReadNetwork is the Network, read from the live machine; an error, and no Network, when the kernel can't be asked.
+// The caller decides what holds until it answers: never an empty LAN taken for the real one (#148).
+func ReadNetwork() (Network, error) {
 	k, err := ReadKernel()
 	if err != nil {
-		return nil
+		return Network{}, err
 	}
-	return k.Uplinks()
+	return k.Network(), nil
+}
+
+// Network is the Network this kernel describes.
+func (k Kernel) Network() Network {
+	n := Network{Uplinks: k.Uplinks()}
+	n.LAN, n.Prefixes = k.OnLink()
+	return n
 }
 
 // Interfaces are the LAN's interfaces: those that carry a default route, IPv4 or IPv6, in the main table (#108). Not
@@ -145,21 +150,90 @@ func (k Kernel) Interfaces() []string {
 	return out
 }
 
-// Uplinks are the ways to the internet: the LAN's interfaces first, then every tunnel with a unicast default route
-// in any table (a VPN's, which is never the LAN). Never another link: a local virtual network's bridge with a default
-// route in a table of its own is still a local virtual network, whose VMs the firewall forwards.
+// Uplinks are the ways to the internet: the LAN's interfaces first, then every tunnel with a default route in any
+// table (a VPN's, which is never the LAN). A tunnel's default route is a unicast one to the whole address space, or
+// routes of its own, in one table, that cover the internet together (#148): OpenVPN's def1 puts 0.0.0.0/1 and
+// 128.0.0.0/1 there instead, its IPv6 redirect ::/3, 2000::/4, 3000::/4 and fc00::/7, and a WireGuard client often
+// everything but the private ranges. Never another link: a local virtual network's bridge with a default route in a
+// table of its own is still a local virtual network, whose VMs the firewall forwards.
 func (k Kernel) Uplinks() []string {
 	links := k.links()
 	out := k.Interfaces()
+	// A tunnel's unicast routes, by table, interface and family, in the order the kernel lists them.
+	type way struct {
+		table uint32
+		index int
+		v4    bool
+	}
+	var ways []way
+	dsts := map[way][]netip.Prefix{}
 	for _, r := range k.Routes {
-		if r.Type != unicast || r.Dst.Bits() != 0 {
+		if l, ok := links[r.Index]; !ok || r.Type != unicast || !l.tunnel() || l.Loopback {
 			continue
 		}
-		if l, ok := links[r.Index]; ok && l.tunnel() && !l.Loopback && !slices.Contains(out, l.Name) {
-			out = append(out, l.Name)
+		w := way{r.Table, r.Index, r.Dst.Addr().Is4()}
+		if _, ok := dsts[w]; !ok {
+			ways = append(ways, w)
+		}
+		dsts[w] = append(dsts[w], r.Dst.Masked())
+	}
+	for _, w := range ways {
+		internet, notInternet := internet6, []netip.Prefix(nil)
+		if w.v4 {
+			internet, notInternet = internet4, notInternet4
+		}
+		if name := links[w.index].Name; !slices.Contains(out, name) && covered(internet, slices.Concat(dsts[w], notInternet)) {
+			out = append(out, name)
 		}
 	}
 	return out
+}
+
+// The internet, as a tunnel's routes must cover it to be its default route: IPv4's space, of which notInternet4 is
+// never the internet (this network, private and shared ranges, loopback, link-local, multicast and the reserved
+// space: the firewall keeps apps from the private, shared and link-local ones, and the others are no public unicast
+// destination), and IPv6's global unicast space.
+var (
+	internet4    = netip.MustParsePrefix("0.0.0.0/0")
+	internet6    = netip.MustParsePrefix("2000::/3")
+	notInternet4 = []netip.Prefix{netip.MustParsePrefix("0.0.0.0/8"), netip.MustParsePrefix("10.0.0.0/8"),
+		netip.MustParsePrefix("100.64.0.0/10"), netip.MustParsePrefix("127.0.0.0/8"), netip.MustParsePrefix("169.254.0.0/16"),
+		netip.MustParsePrefix("172.16.0.0/12"), netip.MustParsePrefix("192.168.0.0/16"), netip.MustParsePrefix("224.0.0.0/3")}
+)
+
+// covered says whether the prefixes in set cover all of target: in one pass over them, sorted, so a tunnel's
+// thousands of routes (a BGP feed) cost little.
+func covered(target netip.Prefix, set []netip.Prefix) bool {
+	type span struct{ from, to netip.Addr }
+	var spans []span
+	for _, p := range set {
+		if p.Addr().Is4() == target.Addr().Is4() && p.Overlaps(target) {
+			spans = append(spans, span{p.Masked().Addr(), last(p)})
+		}
+	}
+	slices.SortFunc(spans, func(a, b span) int { return a.from.Compare(b.from) })
+	next, end := target.Masked().Addr(), last(target)
+	for _, s := range spans {
+		switch {
+		case s.from.Compare(next) > 0: // a gap before s
+			return false
+		case s.to.Compare(end) >= 0:
+			return true
+		case s.to.Compare(next) >= 0:
+			next = s.to.Next() // s.to is below end: never the family's last address
+		}
+	}
+	return false
+}
+
+// last is a prefix's last address.
+func last(p netip.Prefix) netip.Addr {
+	b := p.Masked().Addr().AsSlice()
+	for i := p.Bits(); i < len(b)*8; i++ {
+		b[i/8] |= 0x80 >> (i % 8)
+	}
+	a, _ := netip.AddrFromSlice(b)
+	return a
 }
 
 // LAN is the LAN this kernel describes.

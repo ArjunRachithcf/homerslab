@@ -3,10 +3,12 @@
 // table; story 73; #82).
 //
 // It knows four kinds of interface, each by its exact name: loopback, the mesh (NetBird's wt0), the container
-// engines' bridges (as Docker and Podman list them), and the LAN (the interfaces that carry the default route).
-// Everything else is a local virtual network (libvirt's virbr0, LXD's lxdbr0, a bridge nobody declared): its VMs
-// keep the internet, and nothing more. A name proves nothing: a LAN bridge called br-iot is not a container bridge,
-// and while no engine answers (at boot) no bridge is trusted.
+// engines' bridges (as Docker and Podman list them, and bridges to the kernel too), and the LAN (the interfaces that
+// carry the default route). Any other bridge, by the kernel's kind of link, is a local virtual network (libvirt's
+// virbr0, LXD's lxdbr0, a bridge nobody declared): its VMs keep the internet, and nothing more. Every other interface
+// (a tunnel, a VPN's with a default route or without, one the agent hasn't seen yet; a second NIC) gets the machine's
+// basics and nothing forwarded: no more than the LAN (#148). A name proves nothing: a LAN bridge called br-iot is not a
+// container bridge, and while no engine answers (at boot) no bridge is trusted.
 //
 //   - From the LAN: the machine itself only, by ICMP (ping, IPv6 neighbour discovery), DHCP and mDNS replies, the
 //     mesh's WireGuard port (so peers at home connect directly), and the setup link's listener while it is open,
@@ -20,6 +22,8 @@
 //     virtual network (ADR 0020). Extras that let an app reach the LAN or the mesh come with the install plan (#19).
 //   - From a local virtual network: this machine's DHCP, and its DNS at the network's own gateway (libvirt's and LXD's
 //     dnsmasq), no other listener, and the internet only.
+//   - From a tunnel, or any other interface that isn't a bridge (a second NIC): the machine's basics, as from the LAN, but never the
+//     setup listener, and nothing routed (#148).
 //
 // An interface name is rendered only when it is a plain name an interface can have: a wildcard or a quote from an
 // engine never reaches nft.
@@ -127,11 +131,17 @@ func Render(s State) string {
 		w("\t\tiifname %s accept", set(quoted(mesh)))
 	}
 	if len(bridges) > 0 {
-		w("\t\tiifname %s jump apps_in", set(quoted(bridges)))
+		// An engine's bridge is a bridge to the kernel too (#148): a tunnel an engine names is no app network.
+		w("\t\tiifname %s meta iifkind \"bridge\" jump apps_in", set(quoted(bridges)))
 	}
 	if len(lan) > 0 {
-		// What is neither loopback, the mesh, a bridge nor the LAN is a local virtual network.
-		w("\t\tiifname != %s jump virtual_in", set(quoted(lan)))
+		// A local virtual network is a bridge that is neither the LAN, an uplink, an engine's (above) nor the mesh: the
+		// kernel's kind of link decides, so a tunnel (a VPN's, an L2 one, one the agent hasn't seen yet) never is one,
+		// nor an interface of no kind (a second NIC): they get the machine's basics below, as the LAN does (#148).
+		// The guard is the LAN, not the ways out: while no LAN is known (no default route in the main table, or a VPN
+		// that replaced it), the LAN may itself be a bridge (a VM host's br0), and no bridge is taken for a local
+		// virtual network.
+		w("\t\tiifname != %s meta iifkind \"bridge\" jump virtual_in", set(quoted(out)))
 	}
 	w("\t\tmeta l4proto { icmp, ipv6-icmp } accept")
 	w("\t\tudp dport { 68, 546, 5353 } accept")
@@ -150,12 +160,18 @@ func Render(s State) string {
 		w("\t\tiifname %s drop", set(quoted(mesh)))
 	}
 	if len(bridges) > 0 {
-		w("\t\tiifname %s jump apps_out", set(quoted(bridges)))
+		w("\t\tiifname %s meta iifkind \"bridge\" jump apps_out", set(quoted(bridges)))
 	}
 	if len(out) > 0 {
 		w("\t\tiifname %s drop", set(quoted(out)))
 	}
-	w("\t\tjump outbound")
+	// Only a local virtual network, a bridge, is forwarded to the internet: never a tunnel, with a default route or
+	// without, nor an interface of no kind (a match on a kind that a link hasn't fails, so it is the policy's drop).
+	// And only while the LAN is known, as virtual_in: otherwise the LAN's own bridge would be forwarded, through a VPN
+	// that replaced the main table's default route, say (#167's review).
+	if len(lan) > 0 {
+		w("\t\tmeta iifkind \"bridge\" jump outbound")
+	}
 	w("\t}")
 
 	// Apps to this machine: only the DNS an engine serves on a bridge's gateway (an address of that bridge itself, never

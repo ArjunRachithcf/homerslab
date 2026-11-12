@@ -52,11 +52,11 @@ type Config struct {
 	Run host.Runner
 	// Resolve looks a name up through the machine's own resolver; net.DefaultResolver's when nil.
 	Resolve func(ctx context.Context, name string) ([]string, error)
-	// LAN is the machine's LAN: the interfaces with the default route and their prefixes; lan.OnLink when nil.
-	LAN func() ([]string, []netip.Prefix)
-	// Uplinks are the interfaces with a default route in any routing table, a VPN's tunnel too, through which apps
-	// reach the internet; lan.Uplinks when nil.
-	Uplinks func() []string
+	// Network is what the firewall table needs of the machine's network, from one reading of the kernel: the LAN's
+	// interfaces and prefixes, and the uplinks (a VPN's tunnel too, through which apps reach the internet);
+	// lan.ReadNetwork when nil. While it can't be read, the table keeps the last reading; before the first, it knows no
+	// LAN and no way out for apps (#148).
+	Network func() (lan.Network, error)
 	// Bridges are the container engines' bridges, by engine and name; asked of Docker and Podman when nil. An engine
 	// missing from the answer didn't answer (an error, a timeout): its last confirmed list is kept. Only names that
 	// IsBridge confirms (the kernel's /sys/class/net/<name>/bridge, from Sysroot, when nil) are used, kept ones too.
@@ -95,6 +95,8 @@ type Agent struct {
 	meshDrift  []firewall.Drift // what the agent found changed in the mesh client, and put back
 	reads      *reads           // compose reads, one at a time
 	edgeDown   string           // the edge's last check's error, so a down edge is logged once
+	network    lan.Network      // the network's last reading, which the table keeps while the kernel can't be asked
+	networkErr bool             // the network can't be read, which is logged once
 	stateErr   error            // why the saved state couldn't be read at start, if it couldn't
 	brokenFile bool             // the state file is that unreadable one, not yet put aside
 }
@@ -197,11 +199,8 @@ func New(ctx context.Context, c Config) (*Agent, error) {
 	if c.Resolve == nil {
 		c.Resolve = net.DefaultResolver.LookupHost
 	}
-	if c.LAN == nil {
-		c.LAN = lan.OnLink
-	}
-	if c.Uplinks == nil {
-		c.Uplinks = lan.Uplinks
+	if c.Network == nil {
+		c.Network = lan.ReadNetwork
 	}
 	if c.Bridges == nil {
 		run, root := c.Run, c.Sysroot
@@ -249,9 +248,10 @@ func New(ctx context.Context, c Config) (*Agent, error) {
 	}
 	if a.state.Enforcing {
 		// An agent that can't apply its table now keeps serving and tries again (Serve: before it says it's ready).
-		if err := a.fw.Apply(ctx, a.firewallState(ctx)); err != nil {
+		want := a.firewallState(ctx)
+		if err := a.fw.Apply(ctx, want); err != nil {
 			a.log.Error("restoring the firewall table; trying again", "err", err)
-			a.fw.Want(a.firewallState(ctx))
+			a.fw.Want(want)
 		} else {
 			a.log.Info("firewall table restored", "setupListener", !a.state.SetupClosed)
 		}
@@ -305,11 +305,22 @@ func (a *Agent) waitForTable(ctx context.Context) error {
 }
 
 // firewallState is the table as it should be now. It asks nothing of the engines: their bridges are the last ones
-// confirmed (refreshBridges).
+// confirmed (refreshBridges). The network is the kernel's, or its last reading while the kernel can't be asked: never
+// an empty one taken for the real one, which would let apps reach the LAN's global prefixes (#148).
 func (a *Agent) firewallState(context.Context) firewall.State {
-	ifaces, prefixes := a.cfg.LAN()
-	s := firewall.State{Mesh: a.state.Mesh, WireGuard: a.state.WireGuard, LAN: ifaces, LANPrefixes: prefixes,
-		Uplinks: a.cfg.Uplinks(), Bridges: a.bridges(), Resolvers: resolvers(a.cfg.Sysroot)}
+	switch n, err := a.cfg.Network(); {
+	case err != nil && !a.networkErr:
+		a.log.Error("reading the network from the kernel; the firewall table keeps the last reading", "err", err)
+		a.networkErr = true
+	case err == nil:
+		if a.networkErr {
+			a.log.Info("the kernel answers again: the firewall table follows the network")
+		}
+		a.network, a.networkErr = n, false
+	}
+	n := a.network
+	s := firewall.State{Mesh: a.state.Mesh, WireGuard: a.state.WireGuard, LAN: n.LAN, LANPrefixes: n.Prefixes,
+		Uplinks: n.Uplinks, Bridges: a.bridges(), Resolvers: resolvers(a.cfg.Sysroot)}
 	if !a.state.SetupClosed {
 		s.SetupPort = a.setupPort()
 	}
