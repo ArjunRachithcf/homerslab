@@ -171,9 +171,9 @@ func (e *edit) look(ctx context.Context, name string) (there, raw []libdns.RR, e
 }
 
 // listed is look, for a write: a listing in which the provider listed nothing is refused (ErrListingEmpty), never read
-// as a free name. Every zone holds its apex's SOA and NS, which both providers list (RFC 2136's zone transfer,
-// Infomaniak's API), so such a listing is a moment's answer, and the name may hold someone else's record; that holds
-// for a zone HomersLab has never written to as well (#171).
+// as a free name. A zone holds its apex's SOA and NS, which RFC 2136's zone transfer lists (BIND); that Infomaniak's
+// API lists the apex too isn't verified. Either way a zone is never empty, so such a listing is a moment's answer, and
+// the name may hold someone else's record; that holds for a zone HomersLab has never written to as well (#171).
 func (e *edit) listed(ctx context.Context, name string) ([]libdns.RR, error) {
 	there, _, empty, err := e.look(ctx, name)
 	if err == nil && empty {
@@ -271,7 +271,8 @@ func (e *edit) create(ctx context.Context, r Record) error {
 	return e.Book.Keep(ctx, e.zone, r)
 }
 
-// Delete deletes one of HomersLab's records, and refuses any other.
+// Delete deletes one of HomersLab's records, and refuses any other. Trying again a delete whose inventory update failed
+// is a success that writes the inventory, when the book's inventory still lists the record (#176).
 func (o *Owned) Delete(ctx context.Context, r Record) error {
 	e, err := o.edit()
 	if err != nil {
@@ -296,6 +297,12 @@ func (e *edit) delete(ctx context.Context, r Record) error {
 	}
 	i := slices.IndexFunc(ours, func(k Record) bool { return k.same(r) })
 	if i < 0 {
+		// A delete that finished but whose inventory update failed leaves the inventory listing a record the book no
+		// longer holds. Trying again is then a success that puts the inventory right (Delete does, after this): the
+		// book shows we deleted it. Nothing but the inventory is written (#176).
+		if e.deletedByUs(ours, r) {
+			return nil
+		}
 		return fmt.Errorf("%w: %s %s", ErrNotOurs, r.Type, r.Name)
 	}
 	// Looked up first: a provider such as RFC 2136's reports every delete as done, so only the listing says whether the
@@ -405,6 +412,45 @@ func (e *edit) note(r Record, what string) {
 	if e.Drift != nil {
 		e.Drift(Drift{Zone: e.zone, Record: r, What: what})
 	}
+}
+
+// deletedByUs says whether the book's inventory record lists a name and type that no record of the book has any more:
+// a record HomersLab wrote and deleted, whose inventory update didn't finish (#176). A record at that name and type that
+// someone else holds is no record of the book's, and nothing is changed for it: only the inventory is rewritten.
+func (e *edit) deletedByUs(ours []Record, r Record) bool {
+	if r.Name == e.rel(Inventory) {
+		return false
+	}
+	key := r.Name + " " + strings.ToUpper(r.Type)
+	if slices.ContainsFunc(ours, func(k Record) bool { return k.Name == r.Name && strings.EqualFold(k.Type, r.Type) }) {
+		return false
+	}
+	for _, k := range ours {
+		if k.Name == e.rel(Inventory) && strings.EqualFold(k.Type, "TXT") && slices.Contains(inventoried(k.Value), key) {
+			return true
+		}
+	}
+	return false
+}
+
+// inventoried is the "name TYPE" entries an inventory record's value lists.
+func inventoried(value string) []string {
+	list, ok := strings.CutPrefix(value, "homerslab=1; ")
+	if !ok {
+		return nil
+	}
+	return strings.Split(list, ", ")
+}
+
+// Reconcile rewrites the inventory record from the book, without any other write: for a create or delete whose
+// inventory update failed or met an empty listing, the periodic check calls it (#176). It fails as any write does,
+// ErrListingEmpty included, and is a no-op when the inventory is right.
+func (o *Owned) Reconcile(ctx context.Context) error {
+	e, err := o.edit()
+	if err != nil {
+		return err
+	}
+	return e.inventory(ctx)
 }
 
 // inventory writes the one record that lists HomersLab's records, or deletes it when there are none.
