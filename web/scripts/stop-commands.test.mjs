@@ -87,22 +87,30 @@ const jobs = () => {
 };
 
 const GO_CMD = /\bgo (-C \S+ )?(vet|test|build|run|install|generate|list|get|tool|mod)\b/;
-const FETCH = /stop-commands\.sh go mod (download|tidy)/;
 // Settings that let go reach a source without the proxy off (GONOPROXY=* with GOPROXY=off still fetches over git),
 // or skip the checksum database, anywhere in a job: in env:, in a step, or inline in run: text.
 const LEAKS = /\b(GONOPROXY|GOPRIVATE|GONOSUMDB|GONOSUMCHECK|GOINSECURE|GOSUMDB)\b|\bGOFLAGS\b(?!: -buildvcs=false\n)/; // GOFLAGS only as the jobs set it
-const PROXY_SET = /["']?\bGOPROXY\b["']?\s*:[ \t]*(\S*)/g;
+const FETCH_RUN = /^sh (\.\.\/)?\.github\/scripts\/stop-commands\.sh go mod (download|tidy -diff)$/;
 
-// What is wrong with a Go job's text; [] when nothing.
+// The fetch step is the one step whose only run: is exactly the wrapper line, nothing else in it.
+const isFetch = (step) => {
+  const runs = [...step.matchAll(/^ *(?:- )?run:[ \t]*(.*)$/gm)];
+  return runs.length === 1 && FETCH_RUN.test(runs[0][1]);
+};
+
+// What is wrong with a Go job's text; [] when nothing. GOPROXY may appear only as the job's `GOPROXY: "off"` and
+// as the fetch step's `GOPROXY: https://proxy.golang.org,direct`: any other occurrence (a later step's env, inline,
+// printf, a heredoc into $GITHUB_ENV) fails.
 function goJobProblems(body) {
   const problems = [];
   if (!/\n {4}env:\n( {6}.*\n)* {6}GOPROXY: "off"\n/.test(body)) problems.push('GOPROXY not off for the job');
   if (LEAKS.test(body)) problems.push('a setting that bypasses the proxy or the sums');
-  if (/\bGOPROXY\s*=/.test(body)) problems.push('GOPROXY set inline');
-  const steps = body.split('\n      - ').slice(1); // after the job's own header
-  for (const step of steps.filter((st) => GO_CMD.test(st) && !FETCH.test(st))) {
-    for (const m of step.matchAll(PROXY_SET)) if (m[1] !== '"off"') problems.push('a later step turns the proxy on');
+  const [head, ...steps] = body.split('\n      - ');
+  let rest = head.replace('\n      GOPROXY: "off"\n', '\n');
+  for (const step of steps) {
+    rest += '\n' + (isFetch(step) ? step.replace(/^ +GOPROXY: https:\/\/proxy\.golang\.org,direct$/m, '') : step);
   }
+  if (/GOPROXY/.test(rest)) problems.push('GOPROXY appears where only the job and the fetch step may set it');
   return problems;
 }
 
@@ -124,6 +132,14 @@ test('a Go job that leaks the proxy setting is caught, in every form', () => {
   assert.ok(bad('      - run: go test ./...\n        env:\n          GOPROXY: https://x\n').length);
   assert.ok(bad('      - run: go test ./...\n        env:\n          "GOPROXY": x\n').length);
   assert.ok(bad('      - run: go test ./...\n        env:\n          GOPROXY : x\n').length);
+  assert.ok(bad('      - run: |\n          GOPROXY<<X >> "$GITHUB_ENV"\n          https://x\n          X\n').length);
+  assert.ok(bad('      - run: printf -v GOPROXY x\n').length);
+  const fetch = '      - env:\n          GOPROXY: https://proxy.golang.org,direct\n        run: sh .github/scripts/stop-commands.sh go mod tidy -diff\n';
+  assert.deepEqual(bad(fetch), []);
+  // the fetch step with more in its run: goes on with the proxy on
+  assert.ok(bad(fetch.replace('run: sh', 'run: |\n          sh').concat('          go test ./...\n')).length);
+  // a lookalike that only mentions the wrapper
+  assert.ok(bad('      - env:\n          GOPROXY: https://proxy.golang.org,direct\n        run: go vet ./... # stop-commands.sh go mod download\n').length);
 });
 
 test('every Go job fetches its modules under the wrapper first, then runs with the proxy off', () => {
@@ -135,8 +151,8 @@ test('every Go job fetches its modules under the wrapper first, then runs with t
     // `go mod download all` writes sums into go.sum that go mod tidy -diff then refuses.
     assert.doesNotMatch(body, /go mod download all/, `${job}: leaves go.sum as it is`);
     const steps = body.split('\n      - ').slice(1);
-    const goSteps = steps.filter((step) => GO_CMD.test(step) && !FETCH.test(step));
-    const fetch = steps.findIndex((step) => FETCH.test(step));
+    const goSteps = steps.filter((step) => GO_CMD.test(step) && !isFetch(step));
+    const fetch = steps.findIndex(isFetch);
     assert.ok(fetch >= 0 && fetch < steps.indexOf(goSteps[0]), `${job}: fetches before it builds`);
   }
 });
