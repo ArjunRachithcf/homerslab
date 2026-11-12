@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/makiuchi-d/gozxing/qrcode/encoder"
+	"rsc.io/qr"
 	"rsc.io/qr/coding"
 
 	"github.com/ArjunRachithcf/homerslab/internal/cli/qrterm/qrtermtest"
@@ -30,6 +31,16 @@ func TestTheCodeUsesTheMaskWithTheLowestPenalty(t *testing.T) {
 		got, err := encode(text)
 		if err != nil {
 			t.Fatal(err)
+		}
+		// Mask 0 is what rsc.io/qr draws: the same mode and version as the library's.
+		lib, err := qr.Encode(text, qr.M)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if p, err := coding.NewPlan(coding.Version(versionOf(got.Size)), coding.M, 0); err != nil {
+			t.Fatal(err)
+		} else if c, err := p.Encode(encodingOf(text)); err != nil || !bytes.Equal(c.Bitmap, lib.Bitmap) {
+			t.Errorf("%q: with mask 0, the code isn't rsc.io/qr's (%v)", text, err)
 		}
 		var want *coding.Code
 		best := -1

@@ -47,8 +47,8 @@ func Render(text string, colour bool) (string, error) {
 	return b.String(), nil
 }
 
-// encode makes text's code at level M in the smallest version it fits, with the mask ISO/IEC 18004 §7.8.3 chooses:
-// the one with the lowest penalty. rsc.io/qr's own Encode always takes mask 0, and for some setup links that left
+// encode makes text's code at level M in the smallest version it fits, as rsc.io/qr does, with the mask of the lowest
+// penalty, as ISO/IEC 18004 §7.8.3 asks and ZXing's encoder scores it. rsc.io/qr's own Encode always takes mask 0, and for some setup links that left
 // patches in the data that a scanner takes for a finder pattern (#145).
 func encode(text string) (*coding.Code, error) {
 	enc := encodingOf(text)
@@ -118,7 +118,10 @@ func penalty(c *coding.Code) int {
 			for j := 0; j+len(finder) <= n; j++ {
 				match := true
 				for k, want := range finder {
-					match = match && line(i, j+k) == want
+					if line(i, j+k) != want {
+						match = false
+						break
+					}
 				}
 				if match && (light(line, i, j-4, j) || light(line, i, j+7, j+11)) {
 					score += 40
