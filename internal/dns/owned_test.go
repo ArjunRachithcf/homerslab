@@ -452,7 +452,7 @@ func TestARecordReplacedByHandLeavesTheBook(t *testing.T) {
 	}
 }
 
-// quoting is a provider that lists TXT values in quotes (split in two strings), CNAME targets in capitals without their trailing dot, and
+// quoting is a provider that lists TXT values in quotes (split in two strings, with escapes), CNAME targets in capitals without their trailing dot, and
 // names with a trailing dot, as some providers do, and deletes only what it is given in that form.
 type quoting struct{ *provider }
 
@@ -462,7 +462,8 @@ func (q quoting) GetRecords(ctx context.Context, zone string) ([]libdns.Record, 
 		rr := r.RR()
 		switch rr.Type {
 		case "TXT":
-			rr.Data = `"` + rr.Data[:len(rr.Data)/2] + `" "` + rr.Data[len(rr.Data)/2:] + `"` // in two strings
+			esc := strings.NewReplacer("u", `\117`, ";", `\;`)                                                          // RFC 1035's escapes, \DDD and \X
+			rr.Data = `"` + esc.Replace(rr.Data[:len(rr.Data)/2]) + `" "` + esc.Replace(rr.Data[len(rr.Data)/2:]) + `"` // in two strings
 		case "CNAME":
 			rr.Data = strings.ToUpper(strings.TrimSuffix(rr.Data, "."))
 		}
@@ -554,10 +555,10 @@ func TestNamesAreComparedInTheirASCIIForm(t *testing.T) {
 	}{
 		{"a Unicode domain, listed in punycode", "example.test.", "bücher.example.test", "", "_acme-challenge.xn--bcher-kva", strings.Clone},
 		{"a punycode domain, listed in Unicode", "example.test.", "xn--bcher-kva.example.test", "", "_acme-challenge.xn--bcher-kva", unicode},
-		{"mixed case and a trailing dot", "Example.Test.", "BÜCHER.Example.TEST.", "", "_acme-challenge.xn--bcher-kva",
+		{"mixed case and a trailing dot", "Example.Test.", "XN--BCHER-KVA.Example.TEST.", "", "_acme-challenge.xn--bcher-kva",
 			func(s string) string { return strings.ToUpper(s) + "." }},
-		{"a Unicode zone, its provider's in punycode", "exämple.test.", "Exämple.test", "xn--exmple-cua.test.", "_acme-challenge", strings.ToUpper},
-		{"a punycode zone, listed in Unicode", "xn--exmple-cua.test.", "bücher.xn--exmple-cua.test", "xn--exmple-cua.test.", "_acme-challenge.xn--bcher-kva", unicode},
+		{"a Unicode zone, its provider's in punycode", "exämple.test.", "exämple.test", "xn--exmple-cua.test.", "_acme-challenge", strings.ToUpper},
+		{"a punycode zone, listed in Unicode", "xn--exmple-cua.test.", "bücher.exämple.test", "xn--exmple-cua.test.", "_acme-challenge.xn--bcher-kva", unicode},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			p, b := household(), &book{}
@@ -782,5 +783,72 @@ func TestAChallengeDeletedByHandBesideAnotherClientsIsDeletedNotReplaced(t *test
 	}
 	if got := p.has("_acme-challenge", "TXT"); !slices.Equal(got, []string{"left-by-another-acme-client"}) {
 		t.Errorf("_acme-challenge holds %v", got)
+	}
+}
+
+// A name or a CNAME target that IDNA's mapping would fold into one of HomersLab's (a fullwidth letter, an ideographic
+// full stop, a soft hyphen) is someone else's, at a provider that keeps names as they are typed: it is never taken for
+// ours, and never deleted, on any retry (#164's review).
+func TestALookAlikeIsNeverOurs(t *testing.T) {
+	testenv.Isolate(t)
+	ctx := context.Background()
+	for _, tc := range []struct {
+		what string
+		ours dns.Record
+		look libdns.RR
+	}{
+		{"a fullwidth letter in the name", dns.Record{Name: "photos", Type: "A", Value: "192.0.2.1"}, libdns.RR{Name: "\uff50hotos", Type: "A", Data: "192.0.2.1"}},
+		{"an ideographic full stop in the name", dns.Record{Name: "photos.home", Type: "A", Value: "192.0.2.1"}, libdns.RR{Name: "photos\u3002home", Type: "A", Data: "192.0.2.1"}},
+		{"a soft hyphen in the name", dns.Record{Name: "photos", Type: "A", Value: "192.0.2.1"}, libdns.RR{Name: "pho\u00adtos", Type: "A", Data: "192.0.2.1"}},
+		{"a fullwidth letter in the target", dns.Record{Name: "media", Type: "CNAME", Value: "proxy.cluster.test."}, libdns.RR{Name: "media", Type: "CNAME", Data: "\uff50roxy.cluster.test."}},
+		{"an ideographic full stop in the target", dns.Record{Name: "media", Type: "CNAME", Value: "proxy.cluster.test."}, libdns.RR{Name: "media", Type: "CNAME", Data: "proxy\u3002cluster.test."}},
+		{"a soft hyphen in the target", dns.Record{Name: "media", Type: "CNAME", Value: "proxy.cluster.test."}, libdns.RR{Name: "media", Type: "CNAME", Data: "pro\u00adxy.cluster.test."}},
+	} {
+		t.Run(tc.what, func(t *testing.T) {
+			p, b := household(), &book{}
+			o := &dns.Owned{Provider: p, Zone: "example.test.", Domain: "example.test", Book: b}
+			if err := o.Create(ctx, tc.ours); err != nil {
+				t.Fatal(err)
+			}
+			// Ours deleted by hand, and the look-alike added.
+			p.mu.Lock()
+			p.records = slices.DeleteFunc(p.records, func(x libdns.RR) bool { return x.Name == tc.ours.Name && x.Type == tc.ours.Type })
+			p.records = append(p.records, tc.look)
+			p.mu.Unlock()
+			survives := func(when string) {
+				t.Helper()
+				if got := p.has(tc.look.Name, tc.look.Type); !slices.Equal(got, []string{tc.look.Data}) {
+					t.Errorf("%s: the look-alike %q holds %q", when, tc.look.Name, got)
+				}
+			}
+			if err := o.Delete(ctx, tc.ours); err != nil {
+				t.Errorf("a delete of a record deleted by hand: %v", err)
+			}
+			survives("after the delete")
+			for range 3 {
+				if err := o.Delete(ctx, tc.ours); !errors.Is(err, dns.ErrNotOurs) {
+					t.Errorf("a retry: %v, want ErrNotOurs", err)
+				}
+				survives("after a retry")
+			}
+			if recs, _ := b.Records(ctx, "example.test."); len(recs) != 0 {
+				t.Errorf("the book still lists %+v", recs)
+			}
+		})
+	}
+}
+
+// A name asked for that IDNA's mapping would fold into another is refused, as a listed one is never taken for it.
+func TestANameIsReadOnlyInItsTwoForms(t *testing.T) {
+	testenv.Isolate(t)
+	for _, n := range []string{"\uff50hotos", "photos\u3002home", "pho\u00adtos", "B\u00dcCHER", "bu\u0308cher", "\u212aey"} {
+		if got, err := dns.Canonical(n); !errors.Is(err, dns.ErrBadName) {
+			t.Errorf("Canonical(%q) = %q %v, want ErrBadName", n, got, err)
+		}
+	}
+	for n, want := range map[string]string{"PHOTOS.": "photos", "b\u00fccher": "xn--bcher-kva", "XN--BCHER-KVA": "xn--bcher-kva", "_acme-challenge.b\u00fccher.": "_acme-challenge.xn--bcher-kva", "@": "@", "*.Photos": "*.photos"} {
+		if got, err := dns.Canonical(n); err != nil || got != want {
+			t.Errorf("Canonical(%q) = %q %v, want %q", n, got, err, want)
+		}
 	}
 }

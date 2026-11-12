@@ -15,9 +15,13 @@ var names = idna.New(idna.MapForLookup(), idna.StrictDomainName(false), idna.Che
 	idna.VerifyDNSLength(true))
 
 // Canonical is a name in the one form HomersLab compares names in: ASCII (A-labels), in lower case, without a trailing
-// dot. libdns's "@" (the zone's apex) stays "@", and a "*" is allowed as the first label. A name that isn't valid IDNA,
-// or holds anything but letters, digits, hyphens and underscores once in ASCII, is refused (ErrBadName): it is never
-// kept as it is, or compared in another form (#153).
+// dot. libdns's "@" (the zone's apex) stays "@", and a "*" is allowed as the first label (#153).
+//
+// A name is read in two forms only, each with or without its trailing dot: its A-labels in any ASCII case, or exactly
+// its U-labels as IDNA writes them (lower case, NFC). Anything IDNA's mapping would have to fold first (a fullwidth
+// letter, an ideographic full stop, a soft hyphen, capitals outside ASCII) is refused, like a name that isn't valid
+// IDNA or holds anything but letters, digits, hyphens and underscores once in ASCII (ErrBadName): a provider that keeps
+// names as they are typed holds those as names of their own, so they are never taken for HomersLab's (#164's review).
 func Canonical(name string) (string, error) {
 	n := strings.TrimSuffix(name, ".")
 	if n == "@" {
@@ -34,7 +38,22 @@ func Canonical(name string) (string, error) {
 			return "", fmt.Errorf("%w: %q", ErrBadName, name)
 		}
 	}
-	return a, nil
+	if ascii(n) && strings.ToLower(n) == a {
+		return a, nil
+	}
+	if u, err := names.ToUnicode(a); err == nil && u == n {
+		return a, nil
+	}
+	return "", fmt.Errorf("%w: %q", ErrBadName, name)
+}
+
+func ascii(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] >= 0x80 {
+			return false
+		}
+	}
+	return true
 }
 
 // sameValue is a value of HomersLab's as a provider may list it in its own form: a TXT in quotes (one string or
@@ -56,8 +75,9 @@ func sameValue(typ, ours, theirs string) bool {
 	return false
 }
 
-// quoted is a TXT value in its presentation form, one or more quoted strings with \" and \\ escaped, as one text; ok
-// is false for anything else.
+// quoted is a TXT value in its presentation form (RFC 1035 §5.1), one or more quoted strings with \X and \DDD
+// escapes, as one text; ok is false for anything else. (A value someone else wrote as a literal "tok", quotes and
+// all, reads as tok: HomersLab's values are random tokens and its inventory, which nobody else writes.)
 func quoted(v string) (text string, ok bool) {
 	var b strings.Builder
 	for v = strings.TrimSpace(v); v != ""; v = strings.TrimLeft(v, " ") {
@@ -67,8 +87,20 @@ func quoted(v string) (text string, ok bool) {
 		i := 1
 		for ; i < len(v) && v[i] != '"'; i++ {
 			if v[i] == '\\' {
-				if i+1 == len(v) || v[i+1] != '"' && v[i+1] != '\\' {
+				switch {
+				case i+1 == len(v):
 					return "", false
+				case isDigit(v[i+1]):
+					if i+3 >= len(v) || !isDigit(v[i+2]) || !isDigit(v[i+3]) {
+						return "", false
+					}
+					d := int(v[i+1]-'0')*100 + int(v[i+2]-'0')*10 + int(v[i+3]-'0')
+					if d > 255 {
+						return "", false
+					}
+					b.WriteByte(byte(d))
+					i += 3
+					continue
 				}
 				i++
 			}
@@ -81,3 +113,5 @@ func quoted(v string) (text string, ok bool) {
 	}
 	return b.String(), b.Len() > 0
 }
+
+func isDigit(c byte) bool { return c >= '0' && c <= '9' }
