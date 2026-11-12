@@ -191,7 +191,8 @@ func (k Kernel) Uplinks() []string {
 
 // The internet, as a tunnel's routes must cover it to be its default route: IPv4's space, of which notInternet4 is
 // never the internet (this network, private and shared ranges, loopback, link-local, multicast and the reserved
-// space: apps never reach them through an uplink anyway), and IPv6's global unicast space.
+// space: the firewall keeps apps from the private, shared and link-local ones, and the others are no public unicast
+// destination), and IPv6's global unicast space.
 var (
 	internet4    = netip.MustParsePrefix("0.0.0.0/0")
 	internet6    = netip.MustParsePrefix("2000::/3")

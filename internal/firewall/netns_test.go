@@ -355,6 +355,60 @@ func TestTunnelsInNetworkNamespaces(t *testing.T) {
 	n.together(func() { refused("at boot, with no default route") })
 }
 
+// With no LAN known, no bridge is forwarded (#167's review): the LAN may be a bridge itself (a VM host's br0), and
+// OpenVPN's redirect-gateway without def1 replaces the main table's default route with its tunnel's, so no interface
+// carries the LAN's default route. A stranger behind that bridge, using the box as its gateway, must not reach the
+// internet through the owner's VPN.
+func TestWithNoLANKnownABridgeIsNotForwarded(t *testing.T) {
+	testenv.Isolate(t)
+	if os.Getenv(insideNamespaces) != "1" {
+		reexec(t, "^TestWithNoLANKnownABridgeIsNotForwarded$")
+		return
+	}
+	links, err := exec.Command("ip", "-o", "link", "show").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if lines := strings.Split(strings.TrimSpace(string(links)), "\n"); len(lines) != 1 || !strings.Contains(lines[0], ": lo:") {
+		t.Fatalf("refusing: this network namespace isn't fresh (%d links)", len(lines))
+	}
+	n := &netns{pids: map[string]int{}}
+	for _, name := range []string{"stranger", "vpn"} {
+		c := exec.Command("unshare", "-n", "sleep", "300")
+		if err := c.Start(); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = c.Process.Kill(); _ = c.Wait() })
+		n.pids[name] = c.Process.Pid
+	}
+	time.Sleep(200 * time.Millisecond)
+	script := fmt.Sprintf(`ip link set lo up
+		ip link add br0 type bridge
+		ip link add veth-lan type veth peer name eth0 netns %[1]d
+		ip link set veth-lan master br0
+		ip addr add 192.168.88.1/24 dev br0
+		ip link set br0 up; ip link set veth-lan up
+		echo 1 > /proc/sys/net/ipv4/ip_forward
+		nsenter -t %[1]d -n sh -ec "ip link set lo up; ip link set eth0 up; ip addr add 192.168.88.50/24 dev eth0; ip route add default via 192.168.88.1"
+		nsenter -t %[2]d -n sh -ec "ip link set lo up; ip addr add 198.51.100.7/32 dev lo"`, n.pids["stranger"], n.pids["vpn"])
+	if out, err := exec.Command("sh", "-ec", script).CombinedOutput(); err != nil {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	n.tunnel(t, unix.IFF_TUN, "tun0", "10.8.0.2", "vpn", "10.8.0.1")
+	if out, err := exec.Command("ip", "route", "add", "default", "dev", "tun0").CombinedOutput(); err != nil { // the VPN's
+		t.Fatalf("%v\n%s", err, out)
+	}
+	n.listen(t, "vpn", "198.51.100.7:9011") // the internet, through the VPN
+	n.want(t, "before the table: the box forwards a stranger behind br0 to the internet through the VPN", "stranger", "198.51.100.7:9011", true)
+
+	fw := &firewall.Firewall{Run: host.Exec}
+	if err := fw.Apply(context.Background(), firewall.State{Mesh: []string{"wt0"}, Uplinks: []string{"tun0"}}); err != nil {
+		t.Fatal(err)
+	}
+	n.want(t, "with no LAN known: a stranger behind the bridge isn't forwarded through the VPN", "stranger", "198.51.100.7:9011", false)
+	n.want(t, "but the box itself reaches the internet through it", "", "198.51.100.7:9011", true)
+}
+
 // tunnel makes the box's end of a tunnel (a tun device, or a tap one: L2), named name with the address box, and its
 // other end in the namespace far with the address peer and its default route through the tunnel, and relays the
 // packets between them, as a VPN's client does.

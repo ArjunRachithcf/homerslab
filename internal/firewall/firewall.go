@@ -138,6 +138,9 @@ func Render(s State) string {
 		// A local virtual network is a bridge that is neither the LAN, an uplink, an engine's (above) nor the mesh: the
 		// kernel's kind of link decides, so a tunnel (a VPN's, an L2 one, one the agent hasn't seen yet) never is one,
 		// nor an interface of no kind (a second NIC): they get the machine's basics below, as the LAN does (#148).
+		// The guard is the LAN, not the ways out: while no LAN is known (no default route in the main table, or a VPN
+		// that replaced it), the LAN may itself be a bridge (a VM host's br0), and no bridge is taken for a local
+		// virtual network.
 		w("\t\tiifname != %s meta iifkind \"bridge\" jump virtual_in", set(quoted(out)))
 	}
 	w("\t\tmeta l4proto { icmp, ipv6-icmp } accept")
@@ -164,7 +167,11 @@ func Render(s State) string {
 	}
 	// Only a local virtual network, a bridge, is forwarded to the internet: never a tunnel, with a default route or
 	// without, nor an interface of no kind (a match on a kind that a link hasn't fails, so it is the policy's drop).
-	w("\t\tmeta iifkind \"bridge\" jump outbound")
+	// And only while the LAN is known, as virtual_in: otherwise the LAN's own bridge would be forwarded, through a VPN
+	// that replaced the main table's default route, say (#167's review).
+	if len(lan) > 0 {
+		w("\t\tmeta iifkind \"bridge\" jump outbound")
+	}
 	w("\t}")
 
 	// Apps to this machine: only the DNS an engine serves on a bridge's gateway (an address of that bridge itself, never

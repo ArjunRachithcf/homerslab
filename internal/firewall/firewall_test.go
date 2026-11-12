@@ -248,9 +248,11 @@ func TestOnlyABridgeIsALocalVirtualNetworkOrForwarded(t *testing.T) {
 	if !strings.HasSuffix(forward, want) || strings.Count(forward, "jump outbound") != 1 {
 		t.Errorf("forward, want only bridges forwarded to the internet, by a match on their kind:\n%s", forward)
 	}
-	// With no LAN known (at boot) no interface is a local virtual network, and still only a bridge is forwarded.
-	boot := firewall.Render(firewall.State{Mesh: []string{"wt0"}})
-	if strings.Contains(boot, "jump virtual_in") || !strings.Contains(boot, "\t\tiifname { \"wt0\" } drop\n\t\tmeta iifkind \"bridge\" jump outbound\n\t}") {
+	// With no LAN known (at boot, or a VPN that replaced the default route) no interface is a local virtual network,
+	// and none but an engine's bridge is forwarded: the LAN may be a bridge itself.
+	boot := firewall.Render(firewall.State{Mesh: []string{"wt0"}, Uplinks: []string{"tun0"}, Bridges: []string{"docker0"}})
+	if strings.Contains(boot, "jump virtual_in") || strings.Contains(boot, "meta iifkind \"bridge\" jump outbound") ||
+		!strings.Contains(boot, "\t\tiifname { \"docker0\" } meta iifkind \"bridge\" jump apps_out\n\t\tiifname { \"tun0\" } drop\n\t}") {
 		t.Errorf("at boot:\n%s", boot)
 	}
 }
