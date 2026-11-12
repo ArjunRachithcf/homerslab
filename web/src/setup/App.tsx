@@ -8,9 +8,10 @@ import { answer, claim, dropLink, getPrimary, getSetup, goodNonce, heldLink, hol
 import { Assistant, Field, Icon, stepTitle, type Screen } from './Assistant';
 import { diskSize, memory } from './format';
 
-// An error says the manager didn't answer, unless it said why: then `says` holds that. Full: the disk under the
+// An error says the manager didn't answer, unless it did: then `title` is the neutral one and `says` holds what it said
+// (it answered, so the screen never claims it didn't, #109). Full: the disk under the
 // manager's database is full, so nothing can be kept until there is room.
-type Phase = { kind: 'loading' } | { kind: 'refused' } | { kind: 'error'; says?: Key } | { kind: 'full' }
+type Phase = { kind: 'loading' } | { kind: 'refused' } | { kind: 'error'; says?: Key; title?: Key } | { kind: 'full' }
   | { kind: 'ready'; setup: Setup; facts: Facts | null };
 
 const BUILT = new Set(['welcome', 'you', 'household', 'network', 'domain']);
@@ -87,7 +88,8 @@ export function App() {
 
   let screen: React.ReactNode = null;
   if (phase.kind === 'refused' || phase.kind === 'error' || phase.kind === 'full') {
-    screen = <Problem kind={phase.kind} says={phase.kind === 'error' ? phase.says : undefined} onRetry={retry} />;
+    screen = <Problem kind={phase.kind} says={phase.kind === 'error' ? phase.says : undefined}
+      title={phase.kind === 'error' ? phase.title : undefined} onRetry={retry} />;
   } else if (phase.kind === 'ready') {
     screen = <StepScreen phase={phase} view={view} go={go} onAnswered={(setup) => setPhase({ ...phase, setup })} />;
   }
@@ -113,9 +115,9 @@ export function App() {
 }
 
 /** The link was refused, the manager can't be reached, or the machine's disk is full. */
-function Problem({ kind, says, onRetry }: { kind: 'refused' | 'error' | 'full'; says?: Key; onRetry: () => void }) {
+function Problem({ kind, says, title: said, onRetry }: { kind: 'refused' | 'error' | 'full'; says?: Key; title?: Key; onRetry: () => void }) {
   const refused = kind === 'refused';
-  const title = t(refused ? 'setup.refused.title' : kind === 'full' ? 'setup.full.title' : 'setup.error.title');
+  const title = t(refused ? 'setup.refused.title' : kind === 'full' ? 'setup.full.title' : said ?? 'setup.error.title');
   useTitle(title);
   return (
     <Assistant steps={[]} now="" illoFacts={{}} illo="welcome" title={title}
@@ -173,8 +175,12 @@ const fromElsewhere = (e: unknown) => e instanceof Refused && (e.status === 403 
 /** The disk under the manager's database is full (#70). */
 const diskFull = (e: unknown) => e instanceof Refused && e.code === 'disk-full';
 
-const problem = (e: unknown): Phase =>
-  diskFull(e) ? { kind: 'full' } : { kind: 'error', says: fromElsewhere(e) ? 'setup.fail.here' : undefined };
+/** Any answer at all is neutral about it: a 5xx says to try again, a refusal from elsewhere says where to open setup. */
+const problem = (e: unknown): Phase => {
+  if (diskFull(e)) return { kind: 'full' };
+  if (!(e instanceof Refused)) return { kind: 'error' }; // no answer
+  return { kind: 'error', title: 'setup.error.answeredTitle', says: fromElsewhere(e) ? 'setup.fail.here' : 'setup.error.answered' };
+};
 
 /** A step can be shown when every step before it is done. */
 function reachable(setup: Setup, id: string): boolean {

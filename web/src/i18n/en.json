@@ -13,6 +13,8 @@
   "setup.refused.command": "sudo homerslab setup link",
   "setup.error.title": "Setup can’t reach HomersLab",
   "setup.error.lead": "The manager on this machine didn’t answer. Check that it runs, then try again.",
+  "setup.error.answeredTitle": "Setup didn’t open",
+  "setup.error.answered": "HomersLab couldn’t open setup. Try again in a moment.",
   "setup.error.retry": "Try again",
   "setup.full.title": "This machine’s disk is full",
   "setup.full.lead": "HomersLab can’t keep anything you answer until there’s room on it. Free some space on this machine, then try again.",
