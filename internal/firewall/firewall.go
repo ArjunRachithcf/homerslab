@@ -15,8 +15,8 @@
 //   - From the mesh: any listener of this machine (the mesh's own policies filter it), but nothing routed: only the
 //     edge, on this machine, reaches an app (#19).
 //   - From the apps (the engines' bridges): this machine's DNS at their bridge's own gateway, the resolvers it uses
-//     out through the LAN (never one at a mesh peer), IPv6 neighbour discovery,
-//     their own bridge, and the internet; never another app's bridge, the LAN, the mesh, a private range or a local
+//     out through an uplink (never one at a mesh peer), IPv6 neighbour discovery,
+//     their own bridge, and the internet through an uplink (the LAN's, or a VPN's tunnel, which is never the LAN); never another app's bridge, the LAN, the mesh, a private range or a local
 //     virtual network (ADR 0020). Extras that let an app reach the LAN or the mesh come with the install plan (#19).
 //   - From a local virtual network: this machine's DHCP, and its DNS at the network's own gateway (libvirt's and LXD's
 //     dnsmasq), no other listener, and the internet only.
@@ -65,6 +65,10 @@ type State struct {
 	// addresses). With none (no default route yet), nothing is let in from outside but the machine's own basics.
 	LAN         []string       `json:"lan"`
 	LANPrefixes []netip.Prefix `json:"lanPrefixes"`
+	// Uplinks are the interfaces with a default route in any routing table: the LAN's, and a VPN's tunnel, which is
+	// never the LAN (#108). Apps reach the internet through any of them; nothing is forwarded from them. Never the
+	// mesh or an engine's bridge.
+	Uplinks []string `json:"uplinks,omitempty"`
 	// Bridges are the container engines' bridges, by their exact names, as the engines list them. A LAN interface
 	// is never one, whatever the engines say.
 	Bridges []string `json:"bridges"`
@@ -108,6 +112,10 @@ func Render(s State) string {
 	lan := valid(s.LAN)
 	mesh := valid(s.Mesh)
 	bridges := slices.DeleteFunc(valid(s.Bridges), func(n string) bool { return slices.Contains(lan, n) || slices.Contains(mesh, n) })
+	// The ways out: the LAN, and the other uplinks.
+	out := slices.DeleteFunc(valid(append(slices.Clone(lan), s.Uplinks...)), func(n string) bool {
+		return !slices.Contains(lan, n) && (slices.Contains(mesh, n) || slices.Contains(bridges, n))
+	})
 	b.WriteString(header)
 
 	w("\tchain input {")
@@ -144,8 +152,8 @@ func Render(s State) string {
 	if len(bridges) > 0 {
 		w("\t\tiifname %s jump apps_out", set(quoted(bridges)))
 	}
-	if len(lan) > 0 {
-		w("\t\tiifname %s drop", set(quoted(lan)))
+	if len(out) > 0 {
+		w("\t\tiifname %s drop", set(quoted(out)))
 	}
 	w("\t\tjump outbound")
 	w("\t}")
@@ -165,7 +173,7 @@ func Render(s State) string {
 	// Belt and braces: the input chain's policy drops these too, but port 53 is decided here, whatever is added below.
 	w("\t\tmeta l4proto { tcp, udp } th dport 53 drop")
 	w("\t}")
-	// Apps out: their own bridge, the machine's resolvers through the LAN (the one DHCP gave it, which Docker's default
+	// Apps out: their own bridge, the machine's resolvers through an uplink (the one DHCP gave it, which Docker's default
 	// bridge copies: on purpose; never one at a mesh peer), the internet.
 	w("\tchain apps_out {")
 	for _, br := range bridges {
@@ -181,18 +189,19 @@ func Render(s State) string {
 			r6 = append(r6, r.String())
 		}
 	}
-	if len(r4) > 0 && len(lan) > 0 {
-		w("\t\toifname %s ip daddr %s meta l4proto { tcp, udp } th dport 53 accept", set(quoted(lan)), set(uniqStrings(r4)))
+	if len(r4) > 0 && len(out) > 0 {
+		w("\t\toifname %s ip daddr %s meta l4proto { tcp, udp } th dport 53 accept", set(quoted(out)), set(uniqStrings(r4)))
 	}
-	if len(r6) > 0 && len(lan) > 0 {
-		w("\t\toifname %s ip6 daddr %s meta l4proto { tcp, udp } th dport 53 accept", set(quoted(lan)), set(uniqStrings(r6)))
+	if len(r6) > 0 && len(out) > 0 {
+		w("\t\toifname %s ip6 daddr %s meta l4proto { tcp, udp } th dport 53 accept", set(quoted(out)), set(uniqStrings(r6)))
 	}
 	w("\t\tjump outbound")
 	w("\t}")
-	// To the internet only: out through the LAN's uplink, to an address that is neither private nor the LAN's.
+	// To the internet only: out through an uplink (the LAN's, a VPN's), to an address that is neither private nor the
+	// LAN's.
 	w("\tchain outbound {")
-	if len(lan) > 0 {
-		w("\t\toifname != %s drop", set(quoted(lan)))
+	if len(out) > 0 {
+		w("\t\toifname != %s drop", set(quoted(out)))
 	} else {
 		w("\t\tdrop")
 	}

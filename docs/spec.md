@@ -871,7 +871,9 @@ point. Nothing needs replacing for:
 - **The installer** prints the command `sudo homerslab setup link`, never the link itself: package managers keep a
   post-install script's output in readable logs (#74).
 - **The LAN** is the private networks and the on-link global IPv6 prefixes of the interfaces that carry the default
-  route, plus IPv6 link-local on those interfaces; never container bridges, VPNs or the mesh (#14 Q5, #73).
+  route, plus IPv6 link-local on those interfaces; never container bridges, VPNs or the mesh (#14 Q5, #73). Only the
+  main routing table's default routes count, through interfaces that aren't a tunnel, and no prefix that overlaps the
+  mesh's ranges is the LAN, whatever a router advertises (#108).
 - **The one-time link** works on the machine or its LAN for 30 minutes. It covers everything up to "mesh connected,
   certificate issued": the household, the identity provider, the mesh and its token, the domain and its DNS token,
   mail, and the recovery kit.

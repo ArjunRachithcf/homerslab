@@ -182,3 +182,36 @@ func TestPort53IsTheGatewaysOwnAndTheResolversOnlyThroughTheLAN(t *testing.T) {
 		t.Error("with no LAN known, apps still reach a resolver, through any interface")
 	}
 }
+
+// A VPN's tunnel with a default route (wg-quick's in table 51820, or a client's in main) is how apps reach the
+// internet then, but it is never the LAN (#108): apps may leave through it, nothing is forwarded from it, and the
+// setup listener stays the LAN's. The mesh and the engines' bridges are never a way out.
+func TestAppsLeaveThroughAVPNsTunnelThatIsNotTheLAN(t *testing.T) {
+	testenv.Isolate(t)
+	s := firewall.State{Mesh: []string{"wt0"}, LAN: []string{"eth0"}, Uplinks: []string{"eth0", "wg0", "wt0", "docker0", "bad name"},
+		Bridges: []string{"docker0"}, SetupPort: 7020, Resolvers: []netip.Addr{netip.MustParseAddr("10.2.0.1")}}
+	r := firewall.Render(s)
+	chain := func(name string) string {
+		_, after, _ := strings.Cut(r, "\tchain "+name+" {\n")
+		body, _, _ := strings.Cut(after, "\t}\n")
+		return body
+	}
+	for name, want := range map[string]string{
+		"outbound": `oifname != { "eth0", "wg0" } drop`,
+		"forward":  `iifname { "eth0", "wg0" } drop`,
+		"apps_out": `oifname { "eth0", "wg0" } ip daddr { 10.2.0.1 } meta l4proto { tcp, udp } th dport 53 accept`,
+		"input":    `iifname { "eth0" } tcp dport 7020 accept`,
+	} {
+		if !strings.Contains(chain(name), want) {
+			t.Errorf("%s lacks %q:\n%s", name, want, chain(name))
+		}
+	}
+	if got := chain("input"); !strings.Contains(got, `iifname != { "eth0" } jump virtual_in`) {
+		t.Errorf("input treats the VPN as the LAN:\n%s", got)
+	}
+	noLAN := s
+	noLAN.LAN, noLAN.Uplinks = nil, []string{"wg0"}
+	if got := firewall.Render(noLAN); !strings.Contains(got, `oifname != { "wg0" } drop`) || strings.Contains(got, "dport 7020") {
+		t.Errorf("with only a VPN's default route, want apps out through it and no setup listener:\n%s", got)
+	}
+}

@@ -54,6 +54,9 @@ type Config struct {
 	Resolve func(ctx context.Context, name string) ([]string, error)
 	// LAN is the machine's LAN: the interfaces with the default route and their prefixes; lan.OnLink when nil.
 	LAN func() ([]string, []netip.Prefix)
+	// Uplinks are the interfaces with a default route in any routing table, a VPN's tunnel too, through which apps
+	// reach the internet; lan.Uplinks when nil.
+	Uplinks func() []string
 	// Bridges are the container engines' bridges, by engine and name; asked of Docker and Podman when nil. An engine
 	// missing from the answer didn't answer (an error, a timeout): its last confirmed list is kept. Only names that
 	// IsBridge confirms (the kernel's /sys/class/net/<name>/bridge, from Sysroot, when nil) are used, kept ones too.
@@ -197,6 +200,9 @@ func New(ctx context.Context, c Config) (*Agent, error) {
 	if c.LAN == nil {
 		c.LAN = lan.OnLink
 	}
+	if c.Uplinks == nil {
+		c.Uplinks = lan.Uplinks
+	}
 	if c.Bridges == nil {
 		run, root := c.Run, c.Sysroot
 		c.Bridges = func(ctx context.Context) map[string][]string { return engineBridges(ctx, run, root) }
@@ -303,7 +309,7 @@ func (a *Agent) waitForTable(ctx context.Context) error {
 func (a *Agent) firewallState(context.Context) firewall.State {
 	ifaces, prefixes := a.cfg.LAN()
 	s := firewall.State{Mesh: a.state.Mesh, WireGuard: a.state.WireGuard, LAN: ifaces, LANPrefixes: prefixes,
-		Bridges: a.bridges(), Resolvers: resolvers(a.cfg.Sysroot)}
+		Uplinks: a.cfg.Uplinks(), Bridges: a.bridges(), Resolvers: resolvers(a.cfg.Sysroot)}
 	if !a.state.SetupClosed {
 		s.SetupPort = a.setupPort()
 	}
