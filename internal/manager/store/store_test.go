@@ -29,7 +29,7 @@ func TestAFullDiskIsErrDiskFull(t *testing.T) {
 	if _, err := s.db.ExecContext(ctx, `PRAGMA max_page_count = `+strconv.Itoa(pages)); err != nil {
 		t.Fatal(err)
 	}
-	err = s.CompleteStep(ctx, "welcome", map[string]string{"big": strings.Repeat("x", 1<<20)}, time.Now())
+	err = s.CompleteStep(ctx, "welcome", map[string]string{"big": strings.Repeat("x", 1<<20)}, time.Now(), AnyRevision)
 	if !errors.Is(err, ErrDiskFull) {
 		t.Errorf("a write that needs room on a full disk: %v, want ErrDiskFull", err)
 	}

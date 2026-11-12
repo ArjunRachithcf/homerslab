@@ -24,6 +24,7 @@
   "setup.fail.server": "HomersLab couldn’t save this. What you typed is still here: try again in a moment.",
   "setup.fail.offline": "This device couldn’t reach HomersLab. Check its connection, then try again: what you typed is still here.",
   "setup.fail.moved": "Setup moved on in another tab or browser. Reload to carry on from where it is now.",
+  "setup.fail.stale": "This step was changed in another tab or browser since you opened it, so your answer wasn’t kept. Reload to see what it says now, then change it again if you still want to.",
   "setup.fail.lanDone": "The home network’s part of setup is done, so this can’t change here any more. Reload to carry on over the mesh.",
   "setup.fail.mesh": "This step is answered over the mesh, not on your home network.",
   "setup.fail.refused": "HomersLab didn’t take this answer. Reload this page to carry on from where setup is.",

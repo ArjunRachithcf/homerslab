@@ -131,6 +131,8 @@ var (
 	ErrLANHalfDone     = errors.New("lan-half-done") // setup continues over the mesh
 	ErrNotWaiting      = errors.New("not-waiting")   // a secret no step is waiting for
 	ErrBadNonce        = errors.New("bad-nonce")     // a claim without its tab's nonce: the link is still good
+	ErrStale           = errors.New("stale")         // an answer made from an out-of-date view of its step (#110)
+	ErrStepDone        = errors.New("step-done")     // an answer to a done step that didn't say it is an edit
 )
 
 const (
@@ -229,6 +231,9 @@ type StepState struct {
 	ID    string `json:"id"`
 	Half  Half   `json:"half"`
 	State string `json:"state"` // todo, waiting (for Secret, given in the terminal) or done
+	// Revision counts the step's changes. An answer carries the one its page last saw: if the step changed since (in
+	// another tab, say), the answer is refused as stale.
+	Revision int64 `json:"revision"`
 	// Secret is the secret a waiting step needs, and Command what gives it; or Confirm, what it asks a yes to.
 	Secret  string `json:"secret,omitempty"`
 	Command string `json:"command,omitempty"`
@@ -247,7 +252,7 @@ func (s *Setup) State(ctx context.Context) (State, error) {
 	}
 	st := State{Steps: make([]StepState, 0, len(rows)), Answers: answers}
 	for _, r := range rows {
-		ss := StepState{ID: r.ID, Half: Half(r.Half), State: "todo"}
+		ss := StepState{ID: r.ID, Half: Half(r.Half), State: "todo", Revision: r.Revision}
 		if r.Done {
 			ss.State = "done"
 		} else {
@@ -276,8 +281,16 @@ func (s *Setup) LANHalfDone(ctx context.Context) (bool, error) {
 	return err == nil && st.Half == Mesh, err
 }
 
-// Answer takes a step's answer, given over the half "over", and returns the new state.
-func (s *Setup) Answer(ctx context.Context, id string, over Half, answer json.RawMessage) (State, error) {
+// Basis is the view of a step an answer was made from: the step's revision as its page last saw it, and whether the
+// answer says it changes a step that is done.
+type Basis struct {
+	Revision int64
+	Edit     bool
+}
+
+// Answer takes a step's answer, given over the half "over", and returns the new state. It changes nothing unless the
+// step is still at basis.Revision (ErrStale), and a step that is done only when basis says it is an edit (ErrStepDone).
+func (s *Setup) Answer(ctx context.Context, id string, over Half, answer json.RawMessage, basis Basis) (State, error) {
 	st, err := s.State(ctx)
 	if err != nil {
 		return State{}, err
@@ -300,6 +313,12 @@ func (s *Setup) Answer(ctx context.Context, id string, over Half, answer json.Ra
 			return State{}, ErrEarlierStepOpen
 		}
 	}
+	if basis.Revision < 0 || st.Steps[i].Revision != basis.Revision {
+		return State{}, ErrStale // before the handler runs: a stale page's answer does nothing, not even outside the database
+	}
+	if st.Steps[i].State == "done" && !basis.Edit {
+		return State{}, ErrStepDone
+	}
 	if over == LAN && carriesSecret(answer) {
 		secret := Secrets[id]
 		if secret == "" {
@@ -312,20 +331,24 @@ func (s *Setup) Answer(ctx context.Context, id string, over Half, answer json.Ra
 		return State{}, ErrNotBuilt
 	}
 	keep, err := h(ctx, answer, st.Answers)
-	return s.settle(ctx, id, keep, err)
+	return s.settle(ctx, id, keep, err, basis.Revision)
 }
 
-// settle keeps what a handler returned: the step done, waiting, or as it was with the handler's error.
-func (s *Setup) settle(ctx context.Context, id string, keep map[string]string, err error) (State, error) {
+// settle keeps what a handler returned: the step done, waiting, or as it was with the handler's error. The step moves
+// on only from revision, which the database checks as it keeps the change.
+func (s *Setup) settle(ctx context.Context, id string, keep map[string]string, err error, revision int64) (State, error) {
 	var secret *NeedsSecret
 	var confirm *NeedsConfirm
 	switch {
 	case errors.As(err, &secret):
-		err = s.db.Wait(ctx, id, "secret", secret.Secret, secret.Keep)
+		err = s.db.Wait(ctx, id, "secret", secret.Secret, secret.Keep, revision)
 	case errors.As(err, &confirm):
-		err = s.db.Wait(ctx, id, "confirm", confirm.Confirm, confirm.Keep)
+		err = s.db.Wait(ctx, id, "confirm", confirm.Confirm, confirm.Keep, revision)
 	case err == nil:
-		err = s.db.CompleteStep(ctx, id, keep, s.clock.Now())
+		err = s.db.CompleteStep(ctx, id, keep, s.clock.Now(), revision)
+	}
+	if errors.Is(err, store.ErrStale) {
+		return State{}, ErrStale
 	}
 	if err != nil {
 		return State{}, err
@@ -378,7 +401,7 @@ func (s *Setup) Secret(ctx context.Context, name, value string) (State, error) {
 		return State{}, ErrNotWaiting
 	}
 	keep, err := h(ctx, value, st.Answers)
-	return s.settle(ctx, step, keep, err)
+	return s.settle(ctx, step, keep, err, store.AnyRevision)
 }
 
 func index(id string) int {

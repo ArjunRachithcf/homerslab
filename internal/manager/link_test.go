@@ -250,7 +250,10 @@ func TestStateChangesComeFromTheSetupPageItself(t *testing.T) {
 	if r := b.do("PUT", "/api/v1/setup/steps/welcome", map[string]string{}, form); r.Code != http.StatusUnsupportedMediaType {
 		t.Errorf("a PUT that isn't JSON: %d %s, want 415", r.Code, r.Body)
 	}
-	same := func(r *http.Request) { r.Header.Set("Origin", "http://192.168.1.20:7020") }
+	same := func(r *http.Request) {
+		r.Header.Set("Origin", "http://192.168.1.20:7020")
+		r.Header.Set("If-Match", `"0"`)
+	}
 	if r := b.do("PUT", "/api/v1/setup/steps/welcome", map[string]string{}, same); r.Code != http.StatusOK {
 		t.Errorf("a PUT from the setup page: %d %s, want 200", r.Code, r.Body)
 	}

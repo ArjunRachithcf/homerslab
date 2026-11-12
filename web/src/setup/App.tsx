@@ -254,7 +254,8 @@ function useStep(id: string, setup: Setup, facts: Facts | null, next: () => void
     setBusy(true);
     setFailed(null); // a failure that happens again is a new notice, read out again
     try {
-      const s = await answer(id, body);
+      if (!step) throw new Refused(404, 'unknown-step');
+      const s = await answer(step, body);
       onAnswered(s);
       // The manager keeps what it was given in its normal form (spaces collapsed, full-width letters made plain, and
       // so on): show that.
@@ -464,6 +465,7 @@ function failure(e: unknown): Failure {
   if (!(e instanceof Refused)) return { says: 'setup.fail.server' };
   if (diskFull(e)) return { says: 'setup.full.answer' };
   if (e.code === 'lan-half-done') return { says: 'setup.fail.lanDone', reload: true };
+  if (e.code === 'stale' || e.code === 'step-done') return { says: 'setup.fail.stale', reload: true }; // another tab changed it
   if (e.code === 'over-the-mesh') return { says: 'setup.fail.mesh' };
   if (e.status === 409) return { says: 'setup.fail.moved', reload: true }; // earlier-step-open
   if (e.status === 501) return { says: 'setup.error.unbuilt' }; // not-built
