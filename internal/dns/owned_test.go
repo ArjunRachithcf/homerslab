@@ -1047,3 +1047,165 @@ func TestADeleteAfterAnEmptyListingIsSentAgainInTheProvidersForm(t *testing.T) {
 		t.Errorf("the inventory records: %v", got)
 	}
 }
+
+// A listing in which the provider listed nothing never says a name is free: every zone holds its apex's SOA and NS,
+// which both providers list (RFC 2136's zone transfer, Infomaniak's API), so such a listing is a moment's answer, an
+// eventual-consistency read, and the name may hold someone else's record. Create writes nothing, says so in the drift
+// report, and fails with an error the caller tries again later; Free says it can't tell. That holds whether or not the
+// zone has held a record of HomersLab's (#171).
+func TestAnEmptyListingNeverProvesANameFree(t *testing.T) {
+	testenv.Isolate(t)
+	ctx := context.Background()
+	foreign := libdns.RR{Name: "photos", Type: "A", Data: "192.0.2.10"}
+	ours := dns.Record{Name: "media", Type: "CNAME", Value: "proxy.cluster.test."}
+	for _, tc := range []struct {
+		name   string
+		r      dns.Record
+		before []dns.Record // what HomersLab created first
+		taken  bool         // once the listing is back
+	}{
+		{name: "a CNAME beside someone else's A, in a zone HomersLab never wrote to",
+			r: dns.Record{Name: "photos", Type: "CNAME", Value: "proxy.cluster.test."}, taken: true},
+		{name: "a CNAME beside someone else's A, in a zone that holds HomersLab's records",
+			r: dns.Record{Name: "photos", Type: "CNAME", Value: "proxy.cluster.test."}, before: []dns.Record{ours}, taken: true},
+		{name: "a TXT beside someone else's CNAME", r: dns.Record{Name: "www", Type: "TXT", Value: "beside a CNAME"}, taken: true},
+		{name: "a TXT beside someone else's TXT", r: dns.Record{Name: "_dmarc", Type: "TXT", Value: "v=DMARC1; p=none"}, taken: true},
+		{name: "the challenge's TXT, at a name ACME clients share",
+			r: dns.Record{Name: "_acme-challenge", Type: "TXT", Value: "token-digest"}, before: []dns.Record{ours}},
+		{name: "a name that is free", r: dns.Record{Name: "books", Type: "CNAME", Value: "proxy.cluster.test."}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p := household()
+			p.records = append(p.records, foreign)
+			f, b := &flaky{provider: p}, &book{}
+			o := &dns.Owned{Provider: f, Zone: "example.test.", Domain: "example.test", Book: b}
+			var notes []dns.Drift
+			o.Drift = func(d dns.Drift) { notes = append(notes, d) }
+			for _, r := range tc.before {
+				if err := o.Create(ctx, r); err != nil {
+					t.Fatal(err)
+				}
+			}
+			bookBefore, _ := b.Records(ctx, "example.test.")
+			p.mu.Lock()
+			zoneBefore, writesBefore := slices.Clone(p.records), len(p.writes)
+			p.mu.Unlock()
+
+			f.empty.Store(1)
+			if err := o.Create(ctx, tc.r); !errors.Is(err, dns.ErrListingEmpty) {
+				t.Errorf("create after an empty listing: %v, want ErrListingEmpty", err)
+			}
+			p.mu.Lock()
+			if !slices.Equal(p.records, zoneBefore) || len(p.writes) != writesBefore {
+				t.Errorf("written after an empty listing: %v", p.writes[writesBefore:])
+			}
+			p.mu.Unlock()
+			if recs, _ := b.Records(ctx, "example.test."); !slices.Equal(recs, bookBefore) {
+				t.Errorf("the book after an empty listing: %+v, want %+v", recs, bookBefore)
+			}
+			if len(notes) != 1 || notes[0] != (dns.Drift{Zone: "example.test.", Record: tc.r, What: dns.DriftListingLookedEmpty}) {
+				t.Errorf("the drift notes: %+v", notes)
+			}
+
+			f.empty.Store(1)
+			if free, err := o.Free(ctx, tc.r.Name); free || !errors.Is(err, dns.ErrListingEmpty) {
+				t.Errorf("free after an empty listing: %v %v, want false, ErrListingEmpty", free, err)
+			}
+
+			// Once the listing is back, the name is read as it is.
+			err := o.Create(ctx, tc.r)
+			if tc.taken != errors.Is(err, dns.ErrTaken) || !tc.taken && err != nil {
+				t.Errorf("create once the listing is back: %v, taken %v", err, tc.taken)
+			}
+		})
+	}
+}
+
+// Creating a record HomersLab already has there (its name, type and value) writes nothing and succeeds, a CNAME
+// included: the check for "already ours" comes before the one that a CNAME stands alone (#171). Another value of
+// HomersLab's at a CNAME's name is still refused, and so is someone else's record of the same name, type and value:
+// "ours" is what the book lists, never what the zone happens to hold.
+func TestCreatingARecordThatIsAlreadyOursIsANoOp(t *testing.T) {
+	testenv.Isolate(t)
+	ctx := context.Background()
+	for _, r := range []dns.Record{
+		{Name: "www", Type: "CNAME", Value: "example.test."},
+		{Name: "_dmarc", Type: "TXT", Value: "v=DMARC1; p=quarantine"},
+	} {
+		p := household()
+		o := &dns.Owned{Provider: p, Zone: "example.test.", Domain: "example.test", Book: &book{}}
+		if err := o.Create(ctx, r); !errors.Is(err, dns.ErrTaken) {
+			t.Errorf("creating someone else's %s %s as it stands: %v, want ErrTaken", r.Type, r.Name, err)
+		}
+		if len(p.writes) != 0 {
+			t.Errorf("written: %v", p.writes)
+		}
+	}
+	for _, r := range []dns.Record{
+		{Name: "photos", Type: "CNAME", Value: "proxy.cluster.test."},
+		{Name: "photos", Type: "TXT", Value: "a value"},
+		{Name: "photos", Type: "A", Value: "192.0.2.10"},
+		{Name: "_acme-challenge", Type: "TXT", Value: "token-digest"},
+	} {
+		t.Run(r.Type+" "+r.Name, func(t *testing.T) {
+			p, b := household(), &book{}
+			o := &dns.Owned{Provider: p, Zone: "example.test.", Domain: "example.test", Book: b}
+			if err := o.Create(ctx, r); err != nil {
+				t.Fatal(err)
+			}
+			bookBefore, _ := b.Records(ctx, "example.test.")
+			p.mu.Lock()
+			writesBefore := len(p.writes)
+			p.mu.Unlock()
+			if err := o.Create(ctx, r); err != nil {
+				t.Errorf("creating it again: %v", err)
+			}
+			p.mu.Lock()
+			if len(p.writes) != writesBefore {
+				t.Errorf("written again: %v", p.writes[writesBefore:])
+			}
+			p.mu.Unlock()
+			if recs, _ := b.Records(ctx, "example.test."); !slices.Equal(recs, bookBefore) {
+				t.Errorf("the book: %+v, want %+v", recs, bookBefore)
+			}
+			if r.Type == "CNAME" {
+				other := r
+				other.Value = "other.cluster.test."
+				if err := o.Create(ctx, other); !errors.Is(err, dns.ErrTaken) {
+					t.Errorf("another CNAME of HomersLab's at %s: %v, want ErrTaken", r.Name, err)
+				}
+				txt := dns.Record{Name: r.Name, Type: "TXT", Value: "beside our CNAME"}
+				if err := o.Create(ctx, txt); !errors.Is(err, dns.ErrTaken) {
+					t.Errorf("a TXT beside HomersLab's CNAME: %v, want ErrTaken", err)
+				}
+			}
+		})
+	}
+}
+
+// A create whose inventory record meets an empty listing keeps the record it wrote, and fails; trying again is a no-op
+// for the record, a CNAME included, and writes the inventory (#171).
+func TestACreateTriedAgainAfterAnEmptyListingFinishesTheInventory(t *testing.T) {
+	testenv.Isolate(t)
+	ctx := context.Background()
+	p, b := household(), &book{}
+	e := &emptyOnce{Provider: p}
+	o := &dns.Owned{Provider: e, Zone: "example.test.", Domain: "example.test", Book: b}
+	photos := dns.Record{Name: "photos", Type: "CNAME", Value: "proxy.cluster.test."}
+	e.at.Store(2) // the second listing: the inventory record's, after the name's
+	if err := o.Create(ctx, photos); !errors.Is(err, dns.ErrListingEmpty) {
+		t.Errorf("create: %v, want ErrListingEmpty", err)
+	}
+	if got := p.has("_homerslab", "TXT"); len(got) != 0 {
+		t.Errorf("the inventory after an empty listing: %v", got)
+	}
+	if err := o.Create(ctx, photos); err != nil {
+		t.Errorf("trying again: %v", err)
+	}
+	if got := p.has("photos", "CNAME"); len(got) != 1 {
+		t.Errorf("photos at the provider: %v", got)
+	}
+	if got := p.has("_homerslab", "TXT"); len(got) != 1 || got[0] != "homerslab=1; photos CNAME" {
+		t.Errorf("the inventory: %v", got)
+	}
+}

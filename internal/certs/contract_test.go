@@ -125,6 +125,10 @@ func TestTheDNSProviderContractOnThePrimary(t *testing.T) {
 		if err != nil || !hasRR(recs, "@", "MX") || !hasRR(recs, "*", "CNAME") {
 			t.Fatalf("the zone through its token: %v %v", recs, err)
 		}
+		// The apex's SOA and NS are listed: a listing that is empty is never a real zone's, so it is refused (#171).
+		if !hasRR(recs, "@", "SOA") || !hasRR(recs, "@", "NS") {
+			t.Errorf("the listing leaves out the apex's SOA or NS: %v", recs)
+		}
 		bad, _ := open(t, mesh.Secret(base64.StdEncoding.EncodeToString(make([]byte, 32))), theBook)
 		if _, err := bad.Provider.GetRecords(ctx, "example.test."); err == nil {
 			t.Error("a wrong TSIG key listed the zone")
@@ -141,6 +145,19 @@ func TestTheDNSProviderContractOnThePrimary(t *testing.T) {
 		}
 		if free, err := o.Free(ctx, "photos"); err != nil || !free {
 			t.Errorf("photos is free in the provider's listing: %v %v (the wildcard answers it in DNS)", free, err)
+		}
+		// A CNAME that is already HomersLab's is created again as a no-op (#171).
+		photos := dns.Record{Name: "photos", Type: "CNAME", Value: "proxy.cluster.test.", TTL: time.Minute}
+		for range 2 {
+			if err := o.Create(ctx, photos); err != nil {
+				t.Fatalf("the photos CNAME: %v", err)
+			}
+		}
+		if recs, _ := o.Provider.GetRecords(ctx, "example.test."); !hasRR(recs, "photos", "CNAME") {
+			t.Errorf("the photos CNAME isn't at the provider: %v", recs)
+		}
+		if err := o.Delete(ctx, photos); err != nil {
+			t.Fatal(err)
 		}
 		r := dns.Record{Name: "_acme-challenge", Type: "TXT", Value: "a-test-value", TTL: time.Minute}
 		if err := o.Create(ctx, r); err != nil {

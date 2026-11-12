@@ -19,7 +19,8 @@ import (
 	"github.com/ArjunRachithcf/homerslab/internal/testenv"
 )
 
-// zone is a DNS provider's zone in memory, through libdns, that keeps every name as it is written.
+// zone is a DNS provider's zone in memory, through libdns, that keeps every name as it is written. Its listing holds
+// the apex's SOA and NS too, as every zone's does: a listing that is empty proves nothing, and is refused (#171).
 type zone struct {
 	mu      sync.Mutex
 	records []libdns.RR
@@ -28,9 +29,12 @@ type zone struct {
 func (z *zone) GetRecords(context.Context, string) ([]libdns.Record, error) {
 	z.mu.Lock()
 	defer z.mu.Unlock()
-	out := make([]libdns.Record, len(z.records))
-	for i, r := range z.records {
-		out[i] = r
+	out := []libdns.Record{
+		libdns.RR{Name: "@", Type: "SOA", Data: "ns.example.test. admin.example.test. 1 7200 3600 1209600 60"},
+		libdns.RR{Name: "@", Type: "NS", Data: "ns.example.test."},
+	}
+	for _, r := range z.records {
+		out = append(out, r)
 	}
 	return out, nil
 }
