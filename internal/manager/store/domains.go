@@ -141,6 +141,13 @@ func (s *Store) AddWarning(ctx context.Context, w Warning) error {
 	return err
 }
 
+// OpenWarning says whether a source has a warning that isn't resolved.
+func (s *Store) OpenWarning(ctx context.Context, source string) (bool, error) {
+	var open bool
+	err := s.db.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM warning WHERE source = ? AND resolved_at IS NULL)`, source).Scan(&open)
+	return open, err
+}
+
 // ResolveWarnings marks a source's open warnings resolved.
 func (s *Store) ResolveWarnings(ctx context.Context, source string, at time.Time) error {
 	_, err := s.db.ExecContext(ctx, `UPDATE warning SET resolved_at = ? WHERE source = ? AND resolved_at IS NULL`, at.UnixMilli(), source)

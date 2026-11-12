@@ -171,20 +171,21 @@ func refusal(name, code string) string {
 }
 
 var secretRefusals = map[string]string{
-	"not-waiting":          "no step of first-time setup is waiting for this: choose your mesh on the setup page first",
-	"dns:not-waiting":      "no step of first-time setup is waiting for this: give your domain on the setup page first",
-	"secret-refused":       "the mesh refused this token: check it, then run the command again",
-	"dns:secret-refused":   "the DNS provider refused this token: check that it may edit the domain's records, then run the command again",
-	"mesh-unreachable":     "the mesh's control plane didn't answer: check the address on the setup page and this machine's internet",
-	"join-failed":          "the token works, but this machine didn't join the mesh: see journalctl -u homerslab-agent",
-	"no-value":             "nothing was read: paste the secret, then press Enter",
-	"dns:no-zone":          "no public DNS zone holds the domain: check its name on the setup page",
-	"dns:caa-forbids":      "the domain's CAA records don't let the certificate authority issue for it: add a CAA record for letsencrypt.org at your DNS provider, then run the command again",
-	"dns:issuance-failed":  "the token works, but the certificate wasn't issued: see journalctl -u homerslab-manager, then run the command again",
-	"dns:edge-failed":      "the certificate is issued, but the edge didn't take it: see journalctl -u homerslab-agent -u homerslab-edge",
-	"dns:names-failed":     "the certificate is issued, but the mesh's names weren't made: see journalctl -u homerslab-manager",
-	"dns:no-domain":        "first-time setup hasn't got to the domain yet: give it on the setup page, then use sudo homerslab setup secret dns",
-	"dns:mesh-unreachable": "the mesh's control plane didn't answer, so the names weren't made: check this machine's internet",
+	"not-waiting":           "no step of first-time setup is waiting for this: choose your mesh on the setup page first",
+	"dns:not-waiting":       "no step of first-time setup is waiting for this: give your domain on the setup page first",
+	"secret-refused":        "the mesh refused this token: check it, then run the command again",
+	"dns:secret-refused":    "the DNS provider refused this token: check that it may edit the domain's records, then run the command again",
+	"mesh-unreachable":      "the mesh's control plane didn't answer: check the address on the setup page and this machine's internet",
+	"join-failed":           "the token works, but this machine didn't join the mesh: see journalctl -u homerslab-agent",
+	"no-value":              "nothing was read: paste the secret, then press Enter",
+	"dns:no-zone":           "no public DNS zone holds the domain: check its name on the setup page",
+	"dns:caa-forbids":       "the domain's CAA records don't let the certificate authority issue for it: add a CAA record for letsencrypt.org at your DNS provider, then run the command again",
+	"dns:issuance-failed":   "the token works, but the certificate wasn't issued: see journalctl -u homerslab-manager, then run the command again",
+	"dns:dns-listing-empty": "the DNS provider listed nothing in the zone, which can be a moment's answer, so nothing was written: run the command again in a few minutes",
+	"dns:edge-failed":       "the certificate is issued, but the edge didn't take it: see journalctl -u homerslab-agent -u homerslab-edge",
+	"dns:names-failed":      "the certificate is issued, but the mesh's names weren't made: see journalctl -u homerslab-manager",
+	"dns:no-domain":         "first-time setup hasn't got to the domain yet: give it on the setup page, then use sudo homerslab setup secret dns",
+	"dns:mesh-unreachable":  "the mesh's control plane didn't answer, so the names weren't made: check this machine's internet",
 }
 
 // readSecret reads one line from stdin. On a terminal it asks with prompt, on stderr, and turns echo off meanwhile;
