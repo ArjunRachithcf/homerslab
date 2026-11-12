@@ -354,10 +354,12 @@ func TestTheTableFollowsTheLANAndTheEnginesBridges(t *testing.T) {
 	testenv.Isolate(t)
 	var mu sync.Mutex
 	prefix := "192.168.1.0/24"
+	var h *agenttest.Host
 	network := func() (lan.Network, error) {
 		mu.Lock()
 		defer mu.Unlock()
-		return lan.Network{LAN: []string{"br-iot"}, Prefixes: []netip.Prefix{netip.MustParsePrefix(prefix)}}, nil
+		return lan.Network{LAN: []string{"br-iot"}, Prefixes: []netip.Prefix{netip.MustParsePrefix(prefix)},
+			Uplinks4: []string{"br-iot"}, Uplinks6: []string{"br-iot"}, Virtual: h.Guests()}, nil
 	}
 	// Podman, from its network files: its default bridge and one network.
 	sysroot := fstest.MapFS{
@@ -367,7 +369,10 @@ func TestTheTableFollowsTheLANAndTheEnginesBridges(t *testing.T) {
 		"etc/resolv.conf":                     {Data: []byte("nameserver 127.0.0.53\n")},
 		"run/systemd/resolve/resolv.conf":     {Data: []byte("nameserver 192.168.1.1\nnameserver 2001:db8:1::1\n")},
 	}
-	sock, h := agenttest.StartWith(t, agent.Config{Network: network, Sysroot: sysroot})
+	sock, h0 := agenttest.StartWith(t, agent.Config{Network: network, Sysroot: sysroot})
+	mu.Lock()
+	h = h0
+	mu.Unlock()
 	call(t, sock, "POST", "/v1/mesh/join", joinBody())
 	// Docker's default bridge, a compose network it named br-<id>, one it was told to call br-iot (the LAN's own
 	// name), names nft would misread, and a name that is the LAN's NIC, not a bridge.
@@ -418,7 +423,7 @@ func TestTheTableFollowsTheLANAndTheEnginesBridges(t *testing.T) {
 	h.NotABridge("docker0")
 	h.NotABridge("br-abcdef012345")
 	call(t, sock, "POST", "/v1/firewall/check", nil)
-	if table, _ := h.Table(); strings.Contains(table, "docker0") || !strings.Contains(table, "podman1") {
+	if table, _ := h.Table(); strings.Contains(table, "docker0") || !strings.Contains(appNetworks(table), "podman1") {
 		t.Errorf("Docker's bridges are still trusted once they went:\n%s", table)
 	}
 }
@@ -619,7 +624,9 @@ func TestAHungDockerKeepsItsBridges(t *testing.T) {
 			h.DockerState("", "")
 			h.Engines(map[string]string{"1111111111111111": "br-compose"})
 			call(t, sock, "POST", "/v1/firewall/check", nil)
-			if table, _ := h.Table(); strings.Contains(table, "docker0") || !strings.Contains(table, `"br-compose"`) {
+			// docker0, still in the kernel with its containers' veths, is a bridge nobody declared: a local virtual
+			// network, no app network.
+			if table, _ := h.Table(); strings.Contains(appNetworks(table), "docker0") || !strings.Contains(appNetworks(table), `"br-compose"`) {
 				t.Errorf("once Docker answers again, its answer isn't the list:\n%s", table)
 			}
 			// Docker removed, or masked so it can never run: none, whatever the kernel still shows.
@@ -628,7 +635,7 @@ func TestAHungDockerKeepsItsBridges(t *testing.T) {
 				call(t, sock, "POST", "/v1/firewall/check", nil)
 				h.DockerState("inactive", load)
 				call(t, sock, "POST", "/v1/firewall/check", nil)
-				if table, _ := h.Table(); strings.Contains(table, "br-compose") {
+				if table, _ := h.Table(); strings.Contains(appNetworks(table), "br-compose") {
 					t.Errorf("Docker's bridges are still trusted once it is %s:\n%s", load, table)
 				}
 			}
@@ -976,14 +983,15 @@ func TestTheTableLetsAppsOutThroughTheUplinks(t *testing.T) {
 	testenv.Isolate(t)
 	network := func() (lan.Network, error) {
 		return lan.Network{LAN: []string{"enp5s0"}, Prefixes: []netip.Prefix{netip.MustParsePrefix("192.168.1.0/24")},
-			Uplinks: []string{"enp5s0", "wg0"}}, nil
+			Uplinks4: []string{"enp5s0", "wg0"}, Uplinks6: []string{"enp5s0"}}, nil
 	}
 	sock, h := agenttest.StartWith(t, agent.Config{Network: network})
 	call(t, sock, "POST", "/v1/mesh/join", joinBody())
 	call(t, sock, "POST", "/v1/firewall/check", nil)
 	table, _ := h.Table()
-	if !strings.Contains(table, `oifname != { "enp5s0", "wg0" } drop`) {
-		t.Errorf("apps can't leave through the VPN's tunnel:\n%s", table)
+	if !strings.Contains(table, `meta nfproto ipv4 oifname != { "enp5s0", "wg0" } drop`) ||
+		!strings.Contains(table, `meta nfproto ipv6 oifname != { "enp5s0" } drop`) {
+		t.Errorf("apps can't leave through the VPN's tunnel, or leave over IPv6 through it, which it doesn't cover:\n%s", table)
 	}
 	if !strings.Contains(table, `iifname { "enp5s0" } tcp dport 7020 accept`) || strings.Contains(table, `"wg0" } tcp dport`) {
 		t.Errorf("the setup listener isn't the LAN's alone:\n%s", table)
@@ -999,7 +1007,7 @@ func TestWhileTheKernelCantBeAskedTheTableKeepsTheLastNetwork(t *testing.T) {
 	var mu sync.Mutex
 	var failing error
 	read := lan.Network{LAN: []string{"enp5s0"}, Prefixes: []netip.Prefix{netip.MustParsePrefix("192.168.1.0/24"),
-		netip.MustParsePrefix("2001:db8:1::/64")}, Uplinks: []string{"enp5s0", "wg0"}}
+		netip.MustParsePrefix("2001:db8:1::/64")}, Uplinks4: []string{"enp5s0", "wg0"}, Uplinks6: []string{"enp5s0"}}
 	network := func() (lan.Network, error) {
 		mu.Lock()
 		defer mu.Unlock()
@@ -1017,7 +1025,7 @@ func TestWhileTheKernelCantBeAskedTheTableKeepsTheLastNetwork(t *testing.T) {
 	call(t, sock, "POST", "/v1/mesh/join", joinBody())
 	call(t, sock, "POST", "/v1/firewall/check", nil)
 	before, _ := h.Table()
-	for _, want := range []string{"2001:db8:1::/64", `oifname != { "enp5s0", "wg0" } drop`, `iifname { "enp5s0", "wg0" } drop`} {
+	for _, want := range []string{"2001:db8:1::/64", `meta nfproto ipv4 oifname != { "enp5s0", "wg0" } drop`, `iifname { "enp5s0", "wg0" } drop`} {
 		if !strings.Contains(before, want) {
 			t.Fatalf("the table lacks %q:\n%s", want, before)
 		}
@@ -1087,4 +1095,16 @@ func TestTheDropInAndASealedCredentialAreSyncedBeforeTheyCount(t *testing.T) {
 	if !slices.Contains(synced, "file "+cred+".new") || !slices.Contains(synced, "folder "+filepath.Dir(cred)) {
 		t.Errorf("the sealed credential's file and folder weren't both synced: %v", synced)
 	}
+}
+
+// appNetworks are the bridges a table takes for app networks: its apps_in and apps_out jumps and apps_out's own
+// bridges' rules.
+func appNetworks(table string) string {
+	var out []string
+	for _, l := range strings.Split(table, "\n") {
+		if strings.Contains(l, "jump apps_") || strings.Contains(l, "oifname \"") && strings.Contains(l, "iifname \"") {
+			out = append(out, strings.TrimSpace(l))
+		}
+	}
+	return strings.Join(out, "\n")
 }

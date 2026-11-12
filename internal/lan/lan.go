@@ -1,7 +1,8 @@
 // Package lan says what this machine's home network is: the private networks on the interfaces that carry its
 // default route in the main routing table, and the global IPv6 prefixes on those links, as the kernel reports them
-// over netlink. Containers' bridges carry no default route, and a VPN's or the mesh's tunnel is never the LAN, nor is
-// any range of theirs (#108).
+// over netlink. Only a link that may be a home network is the LAN: a NIC, or a VLAN, bond or bridge on one (#169).
+// Containers' bridges carry no default route, and a VPN's or the mesh's tunnel is never the LAN, nor is any range of
+// theirs (#108).
 package lan
 
 import (
@@ -56,6 +57,11 @@ type Link struct {
 	// or "" for a physical one.
 	Kind                   string
 	PointToPoint, Loopback bool
+	// Master is the index of the bridge, bond or team this link is a port of (IFLA_MASTER), or 0.
+	Master int
+	// Lower is the index of the link a VLAN sits on, or a veth's other end (IFLA_LINK), or 0: none, or one in another
+	// namespace (a container's veth), never the link itself.
+	Lower int
 }
 
 // Addr is one of the machine's addresses, with its prefix length, on the interface whose index it carries.
@@ -89,9 +95,12 @@ const (
 	ifaTentative  = 0x40
 )
 
-// tunnelKinds are the kinds of link that carry a VPN or a mesh, not a home network.
-var tunnelKinds = []string{"wireguard", "tun", "ipip", "ip6tnl", "sit", "gre", "gretap", "ip6gre", "ip6gretap",
-	"vti", "vti6", "xfrm", "ppp", "vxlan", "geneve", "ovpn"}
+// localKinds are the kinds of link that are this machine's own and carry no tunnel: a physical NIC's (none), a
+// bridge's, a container's veth, a VLAN, a bond, a team, a dummy, a macvlan, ipvlan or macvtap on a NIC, a VRF, Cilium's
+// netkit, and the kernel's ifb and nlmon. Every other kind is a tunnel (#169): one that carries a VPN or a mesh
+// (WireGuard, tun and tap, GRE, VXLAN, batman-adv, L2TP, bareudp, ERSPAN, AMT, ...), or one this code doesn't know.
+var localKinds = []string{"", "bridge", "veth", "vlan", "bond", "team", "dummy", "macvlan", "ipvlan", "macvtap", "vrf",
+	"netkit", "ifb", "nlmon"}
 
 // meshRanges are the ranges the meshes HomersLab runs give out (#14 Q5, ADR 0005): CGNAT (NetBird, Headscale and
 // Tailscale) and Tailscale's ULA, whichever mesh this machine is on.
@@ -107,11 +116,14 @@ func Current() LAN {
 }
 
 // Network is what the firewall table needs of this machine's network, from one reading of the kernel, so its parts
-// agree: the LAN's interfaces and every prefix on them (Kernel.OnLink), and the uplinks.
+// agree: the LAN's interfaces and every prefix on them (Kernel.OnLink), and the uplinks of each address family.
 type Network struct {
 	LAN      []string
 	Prefixes []netip.Prefix
-	Uplinks  []string
+	// Uplinks4 and Uplinks6 are the ways to the IPv4 and the IPv6 internet (Kernel.Uplinks).
+	Uplinks4, Uplinks6 []string
+	// Virtual are the bridges that may be a local virtual network or an app network (Kernel.Virtual).
+	Virtual []string
 }
 
 // ReadNetwork is the Network, read from the live machine; an error, and no Network, when the kernel can't be asked.
@@ -126,39 +138,68 @@ func ReadNetwork() (Network, error) {
 
 // Network is the Network this kernel describes.
 func (k Kernel) Network() Network {
-	n := Network{Uplinks: k.Uplinks()}
+	var n Network
+	n.Uplinks4, n.Uplinks6 = k.Uplinks()
 	n.LAN, n.Prefixes = k.OnLink()
+	n.Virtual = k.Virtual()
 	return n
 }
 
-// Interfaces are the LAN's interfaces: those that carry a default route, IPv4 or IPv6, in the main table (#108). Not
-// loopback, and not a VPN's or the mesh's (a tunnel: point-to-point, or a tunnel's kind of link), even when a
-// full-tunnel VPN puts its default route in the main table; and never through another table, where wg-quick puts a
-// full tunnel's (51820).
-func (k Kernel) Interfaces() []string {
-	links := k.links()
+// Virtual are the bridges that may be a local virtual network or an app network, a container engine's (#169): those
+// whose every port is a container's veth (its other end in the container's namespace) or a VM's tap, or that have
+// none yet. A bridge with a NIC among its ports (a
+// second NIC enslaved to it, a bond of NICs, a VLAN on one), an L2 tunnel or a link of a kind this code doesn't know
+// reaches past this machine: it is none, and the firewall treats it as it treats that NIC.
+func (k Kernel) Virtual() []string {
+	ports := k.ports()
 	var out []string
-	for _, r := range k.Routes {
-		if r.Table != mainTable || r.Type != unicast || r.Dst.Bits() != 0 {
-			continue
-		}
-		l, ok := links[r.Index]
-		if ok && !l.Loopback && !l.tunnel() && !slices.Contains(out, l.Name) {
+	for _, l := range k.Links {
+		if l.Kind == "bridge" && !slices.ContainsFunc(ports[l.Index], func(p Link) bool { return !p.guest() }) {
 			out = append(out, l.Name)
 		}
 	}
 	return out
 }
 
-// Uplinks are the ways to the internet: the LAN's interfaces first, then every tunnel with a default route in any
-// table (a VPN's, which is never the LAN). A tunnel's default route is a unicast one to the whole address space, or
-// routes of its own, in one table, that cover the internet together (#148): OpenVPN's def1 puts 0.0.0.0/1 and
-// 128.0.0.0/1 there instead, its IPv6 redirect ::/3, 2000::/4, 3000::/4 and fc00::/7, and a WireGuard client often
-// everything but the private ranges. Never another link: a local virtual network's bridge with a default route in a
-// table of its own is still a local virtual network, whose VMs the firewall forwards.
-func (k Kernel) Uplinks() []string {
+// Interfaces are the LAN's interfaces: those that carry a default route, IPv4 or IPv6, in the main table (#108), and
+// may be a home network (a NIC, or a VLAN, bond or bridge on one: #169). Not loopback, and not a VPN's or the mesh's,
+// even when a full-tunnel VPN puts its default route in the main table; and never through another table, where
+// wg-quick puts a full tunnel's (51820).
+func (k Kernel) Interfaces() []string { return k.defaults(either, true) }
+
+// defaults are the interfaces that carry a main-table default route that want accepts, in the kernel's order: only
+// those that may be the LAN, if home.
+func (k Kernel) defaults(want func(netip.Prefix) bool, home bool) []string {
+	links, ports := k.links(), k.ports()
+	var out []string
+	for _, r := range k.Routes {
+		if r.Table != mainTable || r.Type != unicast || r.Dst.Bits() != 0 || !want(r.Dst) {
+			continue
+		}
+		l, ok := links[r.Index]
+		if ok && !l.Loopback && (!home || k.home(l, links, ports, 0)) && !slices.Contains(out, l.Name) {
+			out = append(out, l.Name)
+		}
+	}
+	return out
+}
+
+func either(netip.Prefix) bool { return true }
+func is4(p netip.Prefix) bool  { return p.Addr().Is4() }
+func is6(p netip.Prefix) bool  { return p.Addr().Is6() }
+
+// Uplinks are the ways to the internet, for each address family (#169): the interfaces that carry that family's
+// default route in the main table first (the LAN's, or a link that may not be the LAN but is the machine's way out:
+// Open vSwitch's bridge, a system container's veth), then every tunnel with a default route of that family in any table (a VPN's, which is never the
+// LAN). A tunnel's default route is a unicast one to the whole address space, or routes of its own, in one table, that
+// cover the family's internet together (#148): OpenVPN's def1 puts 0.0.0.0/1 and 128.0.0.0/1 there instead, its IPv6
+// redirect ::/3, 2000::/4, 3000::/4 and fc00::/7, and a WireGuard client often everything but the private ranges. A
+// tunnel whose routes cover only the IPv6 internet is no way out for IPv4, whatever IPv4 ranges it also carries (a
+// split tunnel's), and the other way round. Never another link: a local virtual network's bridge with a default route
+// in a table of its own is still a local virtual network, whose VMs the firewall forwards.
+func (k Kernel) Uplinks() (v4, v6 []string) {
 	links := k.links()
-	out := k.Interfaces()
+	v4, v6 = k.defaults(is4, false), k.defaults(is6, false)
 	// A tunnel's unicast routes, by table, interface and family, in the order the kernel lists them.
 	type way struct {
 		table uint32
@@ -178,15 +219,15 @@ func (k Kernel) Uplinks() []string {
 		dsts[w] = append(dsts[w], r.Dst.Masked())
 	}
 	for _, w := range ways {
-		internet, notInternet := internet6, []netip.Prefix(nil)
+		internet, notInternet, out := internet6, []netip.Prefix(nil), &v6
 		if w.v4 {
-			internet, notInternet = internet4, notInternet4
+			internet, notInternet, out = internet4, notInternet4, &v4
 		}
-		if name := links[w.index].Name; !slices.Contains(out, name) && covered(internet, slices.Concat(dsts[w], notInternet)) {
-			out = append(out, name)
+		if name := links[w.index].Name; !slices.Contains(*out, name) && covered(internet, slices.Concat(dsts[w], notInternet)) {
+			*out = append(*out, name)
 		}
 	}
-	return out
+	return v4, v6
 }
 
 // The internet, as a tunnel's routes must cover it to be its default route: IPv4's space, of which notInternet4 is
@@ -306,12 +347,13 @@ func (k Kernel) LAN() LAN {
 	return l
 }
 
-// OnLink is what the firewall table keeps apps away from: the LAN's interfaces, and every prefix on them, private or
+// OnLink is what the firewall table keeps apps away from: the LAN's interfaces, and every prefix on them and on any
+// other interface the main table's default route goes through (one that may not be the LAN, #169's review), private or
 // global (a LAN may use global IPv6 addresses), but link-local, which the table covers whole. It is a list of what
 // apps never reach, so nothing is left out of it, the mesh's ranges included.
 func (k Kernel) OnLink() (interfaces []string, prefixes []netip.Prefix) {
 	interfaces = k.Interfaces()
-	for _, name := range interfaces {
+	for _, name := range slices.Concat(interfaces, k.defaults(either, false)) {
 		for _, a := range k.addrsOf(name) {
 			p := a.Prefix.Masked()
 			if !p.Addr().IsLinkLocalUnicast() && !p.Addr().IsLoopback() && !slices.Contains(prefixes, p) {
@@ -322,7 +364,59 @@ func (k Kernel) OnLink() (interfaces []string, prefixes []netip.Prefix) {
 	return interfaces, prefixes
 }
 
-func (l Link) tunnel() bool { return l.PointToPoint || slices.Contains(tunnelKinds, l.Kind) }
+func (l Link) tunnel() bool { return l.PointToPoint || !slices.Contains(localKinds, l.Kind) }
+
+// home says whether a link may be a home network, the LAN (#169): an allow-list. A physical NIC (a link of no kind,
+// not point-to-point), or, on one: a VLAN, a bond or a team of them, or a bridge with one among its ports, whose other
+// ports are only veths and VMs' taps (a VM host's br0). Nothing else: a tunnel of any kind, a kind this
+// code doesn't know, a veth, a dummy, a macvlan; nor a bridge of guests only, which is a local virtual network.
+func (k Kernel) home(l Link, links map[int]Link, ports map[int][]Link, depth int) bool {
+	if depth > 8 || l.Loopback || l.PointToPoint {
+		return false
+	}
+	switch l.Kind {
+	case "":
+		return true
+	case "vlan":
+		lower, ok := links[l.Lower]
+		return ok && k.home(lower, links, ports, depth+1)
+	case "bond", "team":
+		return len(ports[l.Index]) > 0 && !slices.ContainsFunc(ports[l.Index], func(p Link) bool {
+			return !k.home(p, links, ports, depth+1)
+		})
+	case "bridge":
+		nic := false
+		for _, p := range ports[l.Index] {
+			switch {
+			case k.home(p, links, ports, depth+1):
+				nic = true
+			case !p.guest() && p.Kind != "veth":
+				return false
+			}
+		}
+		return nic
+	}
+	return false
+}
+
+// guest says whether a bridge's port is a container's or a VM's: a veth whose other end is in another namespace (a
+// container's), or a tap (the tun driver's kind, never point-to-point: a tun device can't be a bridge's port). A veth
+// whose other end is here may lead anywhere, the LAN's bridge included (Proxmox's fwln0 and fwpr0): it is no guest's,
+// though the LAN's own bridge may have one.
+func (l Link) guest() bool {
+	return l.Kind == "veth" && l.Lower == 0 || l.Kind == "tun" && !l.PointToPoint
+}
+
+// ports are the links by the index of the bridge, bond or team they are ports of.
+func (k Kernel) ports() map[int][]Link {
+	m := map[int][]Link{}
+	for _, l := range k.Links {
+		if l.Master != 0 {
+			m[l.Master] = append(m[l.Master], l)
+		}
+	}
+	return m
+}
 
 // links are the links by their index.
 func (k Kernel) links() map[int]Link {

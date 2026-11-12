@@ -85,6 +85,161 @@ func TestATunnelIsNeverTheLAN(t *testing.T) {
 	}
 }
 
+// Only what may be a home network is the LAN (#169), an allow-list rather than a list of tunnels: a physical NIC (a
+// link of no kind), or a VLAN, a bond or a team, or a bridge on one. A VM host's bridge holds its NIC and its guests'
+// veths and taps; any other port (an L2 tunnel, a link of a kind nobody knows) makes it no home network. Every other
+// kind of link is never the LAN, with the main table's default route or without: batman-adv, L2TP, bareudp, ERSPAN,
+// AMT, a kind this code has never heard of, a veth, a dummy, a macvlan, a tap. A kind it doesn't know is a tunnel:
+// its networks are never the LAN either, and it is an uplink when its routes cover the internet.
+func TestOnlyANICOrABridgeVLANOrBondOnOneMayBeTheLAN(t *testing.T) {
+	testenv.Isolate(t)
+	type c struct {
+		name string
+		lan  bool
+		make func(*builder) *builder
+	}
+	single := func(kind string) func(*builder) *builder {
+		return func(b *builder) *builder { return b.link("x", kind, 0) }
+	}
+	cases := []c{
+		{"a NIC", true, single("")},
+		{"a VLAN on a NIC", true, func(b *builder) *builder { return b.link("eth0", "", 0).link("x", "vlan", 0).on("x", "eth0") }},
+		{"a VLAN on a VLAN on a NIC (802.1ad)", true, func(b *builder) *builder {
+			return b.link("eth0", "", 0).link("eth0.1", "vlan", 0).on("eth0.1", "eth0").link("x", "vlan", 0).on("x", "eth0.1")
+		}},
+		{"a bond of NICs", true, func(b *builder) *builder {
+			return b.link("x", "bond", 0).link("eth0", "", 0).port("eth0", "x").link("eth1", "", 0).port("eth1", "x")
+		}},
+		{"a team of a NIC", true, func(b *builder) *builder { return b.link("x", "team", 0).link("eth0", "", 0).port("eth0", "x") }},
+		{"a VM host's bridge: its NIC, a container's veth and a VM's tap", true, func(b *builder) *builder {
+			return b.link("x", "bridge", 0).link("eth0", "", 0).port("eth0", "x").link("veth1", "veth", 0).port("veth1", "x").
+				link("vnet0", "tun", 0).port("vnet0", "x")
+		}},
+		{"a VM host's bridge with Proxmox's firewall veth (its other end here, on the VM's fwbr0)", true, func(b *builder) *builder {
+			return b.link("x", "bridge", 0).link("eth0", "", 0).port("eth0", "x").link("fwpr0", "veth", 0).port("fwpr0", "x").
+				link("fwln0", "veth", 0).on("fwpr0", "fwln0").on("fwln0", "fwpr0")
+		}},
+		{"a bridge on a bond of NICs", true, func(b *builder) *builder {
+			return b.link("x", "bridge", 0).link("bond0", "bond", 0).port("bond0", "x").link("eth0", "", 0).port("eth0", "bond0")
+		}},
+		{"a VLAN on a VM host's bridge", true, func(b *builder) *builder {
+			return b.link("br0", "bridge", 0).link("eth0", "", 0).port("eth0", "br0").link("x", "vlan", 0).on("x", "br0")
+		}},
+		{"a point-to-point link of no kind", false, func(b *builder) *builder { return b.link("x", "", ptp) }},
+		{"a VLAN on nothing this namespace has", false, single("vlan")},
+		{"a VLAN on a veth", false, func(b *builder) *builder { return b.link("v", "veth", 0).link("x", "vlan", 0).on("x", "v") }},
+		{"a VLAN on a tunnel", false, func(b *builder) *builder { return b.link("g", "gretap", 0).link("x", "vlan", 0).on("x", "g") }},
+		{"a bond of nothing", false, single("bond")},
+		{"a bond with a veth", false, func(b *builder) *builder {
+			return b.link("x", "bond", 0).link("eth0", "", 0).port("eth0", "x").link("v", "veth", 0).port("v", "x")
+		}},
+		{"a bridge of nothing", false, single("bridge")},
+		{"a bridge of containers' veths and VMs' taps only", false, func(b *builder) *builder {
+			return b.link("x", "bridge", 0).link("veth1", "veth", 0).port("veth1", "x").link("vnet0", "tun", 0).port("vnet0", "x")
+		}},
+		{"a bridge with a NIC and an L2 tunnel", false, func(b *builder) *builder {
+			return b.link("x", "bridge", 0).link("eth0", "", 0).port("eth0", "x").link("vx", "vxlan", 0).port("vx", "x")
+		}},
+		{"a bridge with a NIC and a link of an unknown kind", false, func(b *builder) *builder {
+			return b.link("x", "bridge", 0).link("eth0", "", 0).port("eth0", "x").link("n", "newfangled", 0).port("n", "x")
+		}},
+		{"a bridge with a NIC and a VLAN on a tunnel", false, func(b *builder) *builder {
+			return b.link("x", "bridge", 0).link("eth0", "", 0).port("eth0", "x").link("g", "gretap", 0).
+				link("g.5", "vlan", 0).on("g.5", "g").port("g.5", "x")
+		}},
+	}
+	for _, kind := range []string{"batadv", "l2tp_eth", "bareudp", "erspan", "ip6erspan", "amt", "newfangled", "veth",
+		"dummy", "macvlan", "ipvlan", "tun", "gretap", "vxlan", "geneve", "wireguard", "wwan", "vrf"} {
+		cases = append(cases, c{"a " + kind + " link", false, single(kind)})
+	}
+	for _, c := range cases {
+		b := c.make(kernel().link("lo", "", lo)).
+			addr("x", "192.168.40.2/24", 0).addr("x", "fd40::2/64", 0).
+			route(mainTable, "0.0.0.0/0", gw, "x").route(mainTable, "::/0", gw, "x")
+		want := []string(nil)
+		if c.lan {
+			want = []string{"x"}
+		}
+		if got := b.k.Interfaces(); !reflect.DeepEqual(got, want) {
+			t.Errorf("%s with the default route: interfaces = %v, want %v", c.name, got, want)
+		}
+		if n := b.k.Network(); !reflect.DeepEqual(n.LAN, want) {
+			t.Errorf("%s: the firewall's LAN (and its setup listener) = %v, want %v", c.name, n.LAN, want)
+		}
+		if l := b.k.LAN(); !c.lan && (lan.FromHere(netip.MustParseAddr("192.168.40.9"), l) || len(l.Addresses) != 0) {
+			t.Errorf("%s: its network is the LAN: %+v", c.name, l)
+		}
+	}
+	// A kind nobody knows is a tunnel: inside a wide LAN its network is carved out, and it is an uplink when its routes
+	// cover the internet.
+	b := kernel().link("eth0", "", 0).link("n", "newfangled", 0).link("bat0", "batadv", 0).
+		addr("eth0", "10.0.0.20/8", 0).addr("n", "10.77.0.2/24", 0).addr("bat0", "10.78.0.2/24", 0).
+		route(mainTable, "0.0.0.0/0", gw, "eth0").route(100, "0.0.0.0/0", onLink, "n")
+	if l := b.k.LAN(); lan.FromHere(netip.MustParseAddr("10.77.0.9"), l) || lan.FromHere(netip.MustParseAddr("10.78.0.9"), l) ||
+		!lan.FromHere(netip.MustParseAddr("10.9.0.9"), l) {
+		t.Errorf("an unknown kind's or batman-adv's network inside the LAN is the LAN: %+v", l)
+	}
+	if v4, _ := b.k.Uplinks(); !reflect.DeepEqual(v4, []string{"eth0", "n"}) {
+		t.Errorf("IPv4 uplinks = %v, want eth0 and the unknown kind's link, whose default route is its own", v4)
+	}
+}
+
+// A default route in the main table through a link that may not be the LAN (#169's review): Open vSwitch's bridge, a
+// kind this code doesn't know, or the veth of a system container (LXC, systemd-nspawn). It is no LAN, so no setup
+// listener; but it is the machine's way to the internet, so apps leave through it for that family, and every network
+// on it is one apps never reach (Network.Prefixes), as the LAN's are.
+func TestADefaultRouteThroughALinkThatIsNoLANIsAWayOutAndKeptFromApps(t *testing.T) {
+	testenv.Isolate(t)
+	for _, kind := range []string{"openvswitch", "veth", "macvlan"} {
+		k := kernel().link("lo", "", lo).link("x", kind, 0).
+			addr("x", "192.168.40.2/24", 0).addr("x", "2001:db8:40::2/64", 0).addr("x", "fe80::2/64", 0).
+			route(mainTable, "0.0.0.0/0", gw, "x").route(mainTable, "::/0", gw, "x").k
+		n := k.Network()
+		if len(n.LAN) != 0 {
+			t.Errorf("a %s link: the LAN = %v, want none", kind, n.LAN)
+		}
+		if !reflect.DeepEqual(n.Uplinks4, []string{"x"}) || !reflect.DeepEqual(n.Uplinks6, []string{"x"}) {
+			t.Errorf("a %s link: uplinks = %v and %v, want x for both families", kind, n.Uplinks4, n.Uplinks6)
+		}
+		if want := []netip.Prefix{netip.MustParsePrefix("192.168.40.0/24"), netip.MustParsePrefix("2001:db8:40::/64")}; !sameSet(n.Prefixes, want) {
+			t.Errorf("a %s link: the networks apps never reach = %v, want %v", kind, n.Prefixes, want)
+		}
+	}
+}
+
+// A bridge is a local virtual network (or an app network) only when every port of it is a container's veth or a VM's
+// tap, or it has none yet (#169). A bridge with a NIC among its ports (a second NIC enslaved to it, a bond of NICs,
+// a VLAN on one), an L2 tunnel or a link of a kind nobody knows is none: it is treated as that NIC is. So is one with a
+// veth whose other end is in this namespace, which may lead to the LAN's bridge (Proxmox's fwbr0, its fwln0 and fwpr0
+// on the LAN's br0): a container's veth has its other end in the container's. A VM host's br0, the LAN, has its NIC
+// too, and stays the LAN with that veth. A link of another kind is never one, whatever its name.
+func TestABridgeIsALocalVirtualNetworkOnlyWithGuestsPorts(t *testing.T) {
+	testenv.Isolate(t)
+	k := kernel().link("lo", "", lo).link("eth0", "", 0).link("eth1", "", 0).link("eth2", "", 0).
+		link("br0", "bridge", 0).port("eth0", "br0").link("vnet0", "tun", 0).port("vnet0", "br0").
+		link("docker0", "bridge", 0).
+		link("virbr0", "bridge", 0).link("vnet1", "tun", 0).port("vnet1", "virbr0").link("vnet2", "tun", 0).port("vnet2", "virbr0").
+		link("lxdbr0", "bridge", 0).link("veth1", "veth", 0).port("veth1", "lxdbr0").link("tap1", "tun", 0).port("tap1", "lxdbr0").
+		link("br-nic", "bridge", 0).port("eth1", "br-nic").link("veth2", "veth", 0).port("veth2", "br-nic").
+		link("br-bond", "bridge", 0).link("bond0", "bond", 0).port("bond0", "br-bond").port("eth2", "bond0").
+		link("br-vlan", "bridge", 0).link("eth0.5", "vlan", 0).on("eth0.5", "eth0").port("eth0.5", "br-vlan").
+		link("br-vx", "bridge", 0).link("vx0", "vxlan", 0).port("vx0", "br-vx").
+		link("br-new", "bridge", 0).link("n0", "newfangled", 0).port("n0", "br-new").
+		link("br-dummy", "bridge", 0).link("d0", "dummy", 0).port("d0", "br-dummy").
+		link("br-tun", "bridge", 0).link("tun0", "tun", ptp).port("tun0", "br-tun").
+		link("fwbr0", "bridge", 0).link("tap2", "tun", 0).port("tap2", "fwbr0").link("fwln0", "veth", 0).port("fwln0", "fwbr0").
+		link("fwpr0", "veth", 0).on("fwln0", "fwpr0").on("fwpr0", "fwln0").port("fwpr0", "br0").
+		link("virbr9", "tun", 0).link("br-wg", "wireguard", ptp).
+		route(mainTable, "0.0.0.0/0", gw, "br0").k
+	want := []string{"docker0", "virbr0", "lxdbr0"}
+	if got := k.Virtual(); !reflect.DeepEqual(got, want) {
+		t.Errorf("local virtual networks = %v, want %v", got, want)
+	}
+	if got := k.Network().Virtual; !reflect.DeepEqual(got, want) {
+		t.Errorf("the network's local virtual networks = %v, want %v", got, want)
+	}
+}
+
 // The mesh's ranges are never the LAN (#108): a prefix inside one is refused (a rogue router advertisement of the
 // mesh's ULA /64 on the LAN; Tailscale's ULA), and a wider one keeps the rest of the network with the mesh's range
 // carved out. An address inside one is never a LAN address. The firewall's list keeps them all: apps reach none.
@@ -165,8 +320,33 @@ func TestTheUplinksAreTheLANAndTheTunnels(t *testing.T) {
 		routeType(mainTable, "::/0", 7, "eth1").
 		route(mainTable, "172.17.0.0/16", onLink, "docker0").
 		route(mainTable, "::/0", onLink, "lo").k
-	if got, want := k.Uplinks(), []string{"eth0", "wg0"}; !reflect.DeepEqual(got, want) {
-		t.Errorf("uplinks = %v, want %v", got, want)
+	if v4, v6 := k.Uplinks(); !reflect.DeepEqual(v4, []string{"eth0", "wg0"}) || !reflect.DeepEqual(v6, []string{"wg0"}) {
+		t.Errorf("uplinks = %v and %v, want eth0 and wg0 for IPv4, wg0 for IPv6", v4, v6)
+	}
+}
+
+// An interface is an uplink for an address family only when its routes cover that family's internet (#169): an
+// IPv6-only tunnel is no way out for IPv4, even with a public IPv4 range routed through it (a split tunnel), and an
+// IPv4-only one (OpenVPN's def1 without its IPv6 redirect) none for IPv6. The LAN's interfaces are uplinks for the
+// families of the default routes they carry: an IPv6 one on the Wi-Fi, an IPv4 one on the wire.
+func TestAnUplinkIsAnUplinkForTheFamiliesItsRoutesCover(t *testing.T) {
+	testenv.Isolate(t)
+	k := kernel().link("eth0", "", 0).link("wlan0", "", 0).link("v6only", "tun", ptp).link("v4only", "tun", ptp).
+		link("both", "wireguard", ptp).
+		route(mainTable, "0.0.0.0/0", gw, "eth0").route(mainTable, "::/0", gw, "wlan0").
+		route(mainTable, "2000::/3", onLink, "v6only").route(mainTable, "198.51.100.0/24", onLink, "v6only").
+		route(mainTable, "0.0.0.0/1", onLink, "v4only").route(mainTable, "128.0.0.0/1", onLink, "v4only").
+		route(mainTable, "2001:db8:5::/64", onLink, "v4only").
+		route(51820, "0.0.0.0/0", onLink, "both").route(51820, "::/0", onLink, "both").k
+	v4, v6 := k.Uplinks()
+	if want := []string{"eth0", "v4only", "both"}; !reflect.DeepEqual(v4, want) {
+		t.Errorf("IPv4 uplinks = %v, want %v", v4, want)
+	}
+	if want := []string{"wlan0", "v6only", "both"}; !reflect.DeepEqual(v6, want) {
+		t.Errorf("IPv6 uplinks = %v, want %v", v6, want)
+	}
+	if n := k.Network(); !reflect.DeepEqual(n.Uplinks4, v4) || !reflect.DeepEqual(n.Uplinks6, v6) {
+		t.Errorf("the network's uplinks = %v and %v, want %v and %v", n.Uplinks4, n.Uplinks6, v4, v6)
 	}
 }
 
@@ -211,8 +391,12 @@ func TestRoutesThatCoverTheInternetAreATunnelsDefaultRoute(t *testing.T) {
 	for i := 65535; i >= 0; i-- {                  // every /16, last first
 		b.route(51820, netip.PrefixFrom(netip.AddrFrom4([4]byte{byte(i >> 8), byte(i)}), 16).String(), gw, "bgp")
 	}
-	if got, want := b.k.Uplinks(), []string{"eth0", "def1", "quarters", "v6", "ovpn6", "allowed", "bgp"}; !reflect.DeepEqual(got, want) {
-		t.Errorf("uplinks = %v, want %v", got, want)
+	v4, v6 := b.k.Uplinks()
+	if want := []string{"eth0", "def1", "quarters", "allowed", "bgp"}; !reflect.DeepEqual(v4, want) {
+		t.Errorf("IPv4 uplinks = %v, want %v", v4, want)
+	}
+	if want := []string{"v6", "ovpn6"}; !reflect.DeepEqual(v6, want) {
+		t.Errorf("IPv6 uplinks = %v, want %v", v6, want)
 	}
 	if got := b.k.Interfaces(); !reflect.DeepEqual(got, []string{"eth0"}) {
 		t.Errorf("interfaces = %v, want eth0 only: covering routes make no LAN", got)
@@ -227,8 +411,10 @@ func TestTheNetworkIsOneReading(t *testing.T) {
 		route(mainTable, "0.0.0.0/0", gw, "eth0").route(51820, "0.0.0.0/0", onLink, "wg0").k
 	n := k.Network()
 	ifaces, prefixes := k.OnLink()
-	if !reflect.DeepEqual(n, lan.Network{LAN: ifaces, Prefixes: prefixes, Uplinks: []string{"eth0", "wg0"}}) || len(prefixes) != 2 {
-		t.Errorf("network = %+v, want the LAN %v %v and the uplinks eth0 and wg0", n, ifaces, prefixes)
+	if !reflect.DeepEqual(n, lan.Network{LAN: ifaces, Prefixes: prefixes, Uplinks4: []string{"eth0", "wg0"},
+		Virtual: []string{"docker0"}}) || len(prefixes) != 2 {
+		t.Errorf("network = %+v, want the LAN %v %v, the IPv4 uplinks eth0 and wg0, and docker0 a local virtual network", n,
+			ifaces, prefixes)
 	}
 }
 
@@ -299,6 +485,18 @@ func kernel() *builder { return &builder{} }
 func (b *builder) link(name, kind string, f linkFlags) *builder {
 	b.k.Links = append(b.k.Links, lan.Link{Index: len(b.k.Links) + 1, Name: name, Kind: kind,
 		PointToPoint: f&ptp != 0, Loopback: f&lo != 0})
+	return b
+}
+
+// port makes name a port of the bridge, bond or team master, as the kernel's IFLA_MASTER says.
+func (b *builder) port(name, master string) *builder {
+	b.k.Links[b.index(name)-1].Master = b.index(master)
+	return b
+}
+
+// on puts name (a VLAN) on the link lower, as the kernel's IFLA_LINK says.
+func (b *builder) on(name, lower string) *builder {
+	b.k.Links[b.index(name)-1].Lower = b.index(lower)
 	return b
 }
 
