@@ -204,10 +204,20 @@ func Bootstrap(ctx context.Context, base string, h idp.Household, bootstrap idp.
 	return own, nil
 }
 
-// defaultsReady says whether Authentik's worker has made its default objects, which HomersLab's own build on: the
-// provider flows, the OpenID scopes, the signing key. A fresh Authentik answers before they exist.
+// DefaultFlows are the flows Authentik's own default blueprints make, at Version: those HomersLab builds on (consent,
+// invalidation), closes (initial-setup), and guards (Prepare's refusal goes into every one that signs a person in or
+// sets something up for them).
+var DefaultFlows = []string{"default-authentication-flow", "default-authenticator-static-setup", "default-authenticator-totp-setup",
+	"default-authenticator-webauthn-setup", "default-invalidation-flow", "default-provider-authorization-explicit-consent",
+	consentFlow, invalidateFlow, "default-request", "default-source-authentication", "default-source-enrollment",
+	"default-source-pre-authentication", "default-user-settings-flow", firstAdminFlow, "default-password-change"}
+
+// defaultsReady says whether Authentik's worker has made its default objects, which HomersLab's own build on or
+// guard: every flow of its default blueprints, with every default and system blueprint applied (they come one by one,
+// a fresh Authentik answers before they are), and the signing key. Prepare guards the flows it finds, so it must not
+// run before they all are there.
 func defaultsReady(ctx context.Context, a *api) error {
-	for _, slug := range []string{consentFlow, invalidateFlow, "default-invalidation-flow", firstAdminFlow} {
+	for _, slug := range DefaultFlows {
 		f, err := one[flow](ctx, a, "/flows/instances/?slug="+q(slug))
 		if err != nil {
 			return err
@@ -215,6 +225,28 @@ func defaultsReady(ctx context.Context, a *api) error {
 		if f == nil {
 			return fmt.Errorf("%w: its default flow %s isn't made yet", idp.ErrNotReady, slug)
 		}
+	}
+	type instance struct {
+		Path    string `json:"path"`
+		Status  string `json:"status"`
+		Enabled bool   `json:"enabled"`
+	}
+	bs, err := list[instance](ctx, a, "/managed/blueprints/")
+	if err != nil {
+		return err
+	}
+	n := 0
+	for _, b := range bs {
+		if !b.Enabled || !(strings.HasPrefix(b.Path, "default/") || strings.HasPrefix(b.Path, "system/")) {
+			continue
+		}
+		n++
+		if b.Status != "successful" {
+			return fmt.Errorf("%w: its blueprint %s is %s", idp.ErrNotReady, b.Path, b.Status)
+		}
+	}
+	if n == 0 {
+		return fmt.Errorf("%w: it hasn't found its blueprints yet", idp.ErrNotReady)
 	}
 	cert, err := one[struct {
 		PK string `json:"pk"`

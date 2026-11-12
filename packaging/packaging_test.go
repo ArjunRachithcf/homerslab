@@ -182,6 +182,9 @@ func TestTheSignInIsOneUnitRunningTheStandardComposeCommand(t *testing.T) {
 	if s := one(t, u, "ExecStart"); s != "/usr/bin/docker compose --project-name homerslab-authentik "+file+" up --no-log-prefix --quiet-pull --abort-on-container-exit" {
 		t.Errorf("ExecStart=%s", s)
 	}
+	if one(t, u, "SuccessExitStatus") != "130" {
+		t.Errorf("SuccessExitStatus=%v, want 130: systemctl stop leaves the unit failed otherwise", u["SuccessExitStatus"])
+	}
 	if s := one(t, u, "RuntimeDirectory"); s != "homerslab-authentik" || one(t, u, "RuntimeDirectoryMode") != "0700" {
 		t.Errorf("the secrets' folder: %s %s", s, u["RuntimeDirectoryMode"])
 	}

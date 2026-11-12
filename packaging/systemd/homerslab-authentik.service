@@ -26,6 +26,8 @@ ExecStart=/usr/bin/docker compose --project-name homerslab-authentik --file /usr
 ExecStopPost=/usr/bin/docker compose --project-name homerslab-authentik --file /usr/share/homerslab/sign-in/authentik.compose.yaml stop
 # Always: compose ends with the stopped container's own exit status, 0 included.
 Restart=always
+# systemctl stop: compose ends with 130 when it stops the containers itself.
+SuccessExitStatus=130
 RestartSec=10s
 TimeoutStopSec=90s
 

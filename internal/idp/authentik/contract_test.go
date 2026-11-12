@@ -110,6 +110,24 @@ func TestTheIdentityProviderContractOnAuthentik(t *testing.T) {
 		if own == "" || own == w.bootstrap {
 			t.Fatal("no token of HomersLab's own")
 		}
+		// Bootstrap, like Prepare, goes on only once Authentik has made every flow Prepare guards: one made later
+		// would never be guarded.
+		for _, slug := range authentik.DefaultFlows {
+			if code := w.status(t, own, "/api/v3/flows/instances/"+slug+"/"); code != http.StatusOK {
+				t.Errorf("the default flow %s, once bootstrap was done: %d", slug, code)
+			}
+		}
+		var bs struct {
+			Results []struct {
+				Path, Status string
+			}
+		}
+		w.raw(t, own, "GET", "/api/v3/managed/blueprints/?page_size=500", nil, &bs)
+		for _, b := range bs.Results {
+			if (strings.HasPrefix(b.Path, "default/") || strings.HasPrefix(b.Path, "system/")) && b.Status != "successful" {
+				t.Errorf("the blueprint %s, once bootstrap was done: %s", b.Path, b.Status)
+			}
+		}
 		if code := w.status(t, w.bootstrap, "/api/v3/core/users/me/"); code != http.StatusForbidden && code != http.StatusUnauthorized {
 			t.Errorf("the bootstrap token after bootstrap: %d, want refused", code)
 		}
@@ -431,9 +449,10 @@ func up(t *testing.T, engine string) *world {
 	w.compose(t, "up", "-d", "--quiet-pull")
 	w.ready(t)
 	deadline := time.Now().Add(3 * time.Minute)
-	for w.status(t, w.bootstrap, "/api/v3/core/users/me/") != http.StatusOK || w.status(t, w.bootstrap, "/api/v3/flows/instances/default-provider-authorization-implicit-consent/") != http.StatusOK || w.status(t, w.bootstrap, "/api/v3/flows/instances/default-authenticator-webauthn-setup/") != http.StatusOK {
+	// Only until it takes its bootstrap token: whether its default flows are made is the adapter's to wait for.
+	for w.status(t, w.bootstrap, "/api/v3/core/users/me/") != http.StatusOK {
 		if time.Now().After(deadline) {
-			t.Fatal("Authentik never took its bootstrap token, or never made its default flows")
+			t.Fatal("Authentik never took its bootstrap token")
 		}
 		time.Sleep(2 * time.Second)
 	}
