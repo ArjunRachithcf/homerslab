@@ -1225,7 +1225,7 @@ func staleAfterDelete(t *testing.T) (o *dns.Owned, p *provider, e *emptyOnce, ph
 			t.Fatal(err)
 		}
 	}
-	e.at.Store(2) // the delete's lookup, then the inventory record's listing
+	e.at.Store(3) // the delete's lookup, the listing that shows photos gone after it, then the inventory record's
 	if err := o.Delete(ctx, photos); !errors.Is(err, dns.ErrListingEmpty) {
 		t.Fatalf("delete: %v, want ErrListingEmpty", err)
 	}
@@ -1327,6 +1327,216 @@ func TestTheNextCreateAfterAFailedInventoryPutsItRight(t *testing.T) {
 		t.Fatal(err)
 	}
 	if got := p.has("_homerslab", "TXT"); len(got) != 1 || got[0] != "homerslab=1; books CNAME, media CNAME" {
+		t.Errorf("the inventory: %v", got)
+	}
+}
+
+// blind is a provider as RFC 2136 is (internal/certs's contract suite, against BIND): every delete is reported done,
+// whatever it matched, and its listing joins a TXT record's strings into one value. A record that someone else's tool
+// stored in its other form, two strings ("a" "b" here), lists as HomersLab's value, and a delete in that value matches
+// nothing (#179). listFails and empty are for the listing after the delete; with unicode, it keeps names in Unicode.
+type blind struct {
+	*provider
+	unicode   bool
+	deletes   atomic.Int32
+	listFails atomic.Bool
+	empty     atomic.Bool
+}
+
+func (b *blind) AppendRecords(ctx context.Context, zone string, recs []libdns.Record) ([]libdns.Record, error) {
+	if b.unicode {
+		return unicodeStore{b.provider}.AppendRecords(ctx, zone, recs)
+	}
+	return b.provider.AppendRecords(ctx, zone, recs)
+}
+
+func (b *blind) GetRecords(ctx context.Context, zone string) ([]libdns.Record, error) {
+	if b.deletes.Load() > 0 && b.listFails.Load() {
+		return nil, errors.New("the provider is down")
+	}
+	if b.deletes.Load() > 0 && b.empty.Load() {
+		return nil, nil
+	}
+	recs, err := b.provider.GetRecords(ctx, zone)
+	for i, r := range recs {
+		if rr := r.RR(); rr.Type == "TXT" && strings.HasPrefix(rr.Data, `"`) {
+			rr.Data = strings.ReplaceAll(strings.Trim(rr.Data, `"`), `" "`, "")
+			recs[i] = rr
+		}
+	}
+	return recs, err
+}
+
+func (b *blind) DeleteRecords(ctx context.Context, zone string, recs []libdns.Record) ([]libdns.Record, error) {
+	b.deletes.Add(1)
+	_, err := b.provider.DeleteRecords(ctx, zone, recs)
+	return recs, err
+}
+
+// split stores HomersLab's TXT record at the provider in its other form, two strings, as another tool may.
+func (b *blind) split(r dns.Record) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	for i, x := range b.records {
+		if n, _ := idna.ToASCII(x.Name); n == r.Name && x.Type == r.Type && x.Data == r.Value {
+			b.records[i].Data = `"` + r.Value[:5] + `" "` + r.Value[5:] + `"`
+		}
+	}
+}
+
+// A delete the provider reports done is believed only once a listing shows the record gone: with RFC 2136, which reports
+// every delete done, a record stored in another form would otherwise leave the book while it is still at the provider,
+// and leave the inventory with it (#179). Whether the listing before the delete came back or was empty, and when the
+// delete is sent again in the provider's form (its names in Unicode), which matches nothing either.
+func TestADeleteIsDoneOnlyWhenAListingShowsTheRecordGone(t *testing.T) {
+	testenv.Isolate(t)
+	ctx := context.Background()
+	for _, tc := range []struct{ emptyFirst, unicode bool }{{false, false}, {true, false}, {true, true}} {
+		emptyFirst := tc.emptyFirst
+		r := dns.Record{Name: "_acme-challenge", Type: "TXT", Value: "split-by-another-tool", TTL: time.Minute}
+		domain, inventory := "example.test", dns.Inventory
+		if tc.unicode {
+			domain, inventory = "bücher.example.test", dns.Inventory+".bücher"
+			r.Name += ".xn--bcher-kva"
+		}
+		b, bk := &blind{provider: household(), unicode: tc.unicode}, &book{}
+		e := &emptyOnce{Provider: b}
+		o := &dns.Owned{Provider: e, Zone: "example.test.", Domain: domain, Book: bk}
+		var notes []dns.Drift
+		o.Drift = func(d dns.Drift) { notes = append(notes, d) }
+		if err := o.Create(ctx, r); err != nil {
+			t.Fatal(err)
+		}
+		b.split(r)
+		if emptyFirst {
+			e.at.Store(1)
+		}
+		if err := o.Delete(ctx, r); !errors.Is(err, dns.ErrNotDeleted) {
+			t.Errorf("empty first %v: the delete %v, want ErrNotDeleted", emptyFirst, err)
+		}
+		if got := b.has(unicode(r.Name), "TXT"); !slices.Contains(got, `"split" "-by-another-tool"`) {
+			t.Fatalf("empty first %v: the record at the provider: %v", emptyFirst, got)
+		}
+		if recs, _ := bk.Records(ctx, "example.test."); !slices.Contains(recs, r) {
+			t.Errorf("empty first %v: the book forgot a record that is still at the provider: %+v", emptyFirst, recs)
+		}
+		if got := b.has(inventory, "TXT"); !slices.Equal(got, []string{"homerslab=1; " + r.Name + " TXT"}) {
+			t.Errorf("empty first %v: the inventory %v", emptyFirst, got)
+		}
+		if len(notes) != 0 {
+			t.Errorf("empty first %v: a drift note for a record that is still there: %+v", emptyFirst, notes)
+		}
+	}
+
+	// A delete that does delete it is done, and nothing is said in the drift report.
+	r := dns.Record{Name: "_acme-challenge", Type: "TXT", Value: "split-by-another-tool", TTL: time.Minute}
+	b, bk := &blind{provider: household()}, &book{}
+	o := &dns.Owned{Provider: b, Zone: "example.test.", Domain: "example.test", Book: bk}
+	var notes []dns.Drift
+	o.Drift = func(d dns.Drift) { notes = append(notes, d) }
+	if err := o.Create(ctx, r); err != nil {
+		t.Fatal(err)
+	}
+	if err := o.Delete(ctx, r); err != nil {
+		t.Errorf("a delete that deletes it: %v", err)
+	}
+	if recs, _ := bk.Records(ctx, "example.test."); len(recs) != 0 || len(notes) != 0 || len(b.has(r.Name, "TXT")) != 1 {
+		t.Errorf("the book %+v, notes %+v, the challenge's name %v", recs, notes, b.has(r.Name, "TXT"))
+	}
+}
+
+// When the listing after a delete the provider reported done fails, or comes back empty, nothing shows the record gone:
+// it stays in the book, and the delete fails as one the provider did nothing for (#179).
+func TestADeleteReportedDoneWithoutAListingStaysInTheBook(t *testing.T) {
+	testenv.Isolate(t)
+	ctx := context.Background()
+	r := dns.Record{Name: "photos", Type: "CNAME", Value: "proxy.cluster.test."}
+	for _, tc := range []struct {
+		name string
+		prep func(*blind)
+		note []string
+	}{
+		{"the listing after it fails", func(b *blind) { b.listFails.Store(true) }, nil},
+		{"the listing after it is empty", func(b *blind) { b.empty.Store(true) }, []string{dns.DriftListingLookedEmpty}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			b, bk := &blind{provider: household()}, &book{}
+			o := &dns.Owned{Provider: b, Zone: "example.test.", Domain: "example.test", Book: bk}
+			var notes []string
+			o.Drift = func(d dns.Drift) { notes = append(notes, d.What) }
+			if err := o.Create(ctx, r); err != nil {
+				t.Fatal(err)
+			}
+			tc.prep(b)
+			if err := o.Delete(ctx, r); !errors.Is(err, dns.ErrNotDeleted) {
+				t.Errorf("the delete: %v, want ErrNotDeleted", err)
+			}
+			if recs, _ := bk.Records(ctx, "example.test."); !slices.Contains(recs, r) {
+				t.Errorf("the book: %+v", recs)
+			}
+			if !slices.Equal(notes, tc.note) {
+				t.Errorf("the drift notes: %v, want %v", notes, tc.note)
+			}
+			// Once a listing shows it gone, the next delete drops it.
+			b.listFails.Store(false)
+			b.empty.Store(false)
+			if err := o.Delete(ctx, r); err != nil {
+				t.Errorf("the next delete: %v", err)
+			}
+			if recs, _ := bk.Records(ctx, "example.test."); len(recs) != 0 {
+				t.Errorf("the book after the next delete: %+v", recs)
+			}
+		})
+	}
+}
+
+// Only the inventory record, the book's TXT record at the inventory's name, says a record was HomersLab's and deleted
+// (#176): a TXT record of the book's at another name, or a record of another type at the inventory's name, that reads
+// like an inventory says nothing, and a delete of a record the book doesn't hold stays refused (#179).
+func TestOnlyTheInventoryRecordSaysARecordWasDeletedByUs(t *testing.T) {
+	testenv.Isolate(t)
+	ctx := context.Background()
+	photos := dns.Record{Name: "photos", Type: "CNAME", Value: "proxy.cluster.test."}
+	for _, lookAlike := range []dns.Record{
+		{Name: "notes", Type: "TXT", Value: "homerslab=1; photos CNAME"},
+		{Name: dns.Inventory, Type: "SPF", Value: "homerslab=1; photos CNAME"},
+	} {
+		p, b := household(), &book{}
+		o := &dns.Owned{Provider: p, Zone: "example.test.", Domain: "example.test", Book: b}
+		if err := b.Keep(ctx, "example.test.", lookAlike); err != nil {
+			t.Fatal(err)
+		}
+		if err := o.Delete(ctx, photos); !errors.Is(err, dns.ErrNotOurs) {
+			t.Errorf("with %s %s in the book: the delete %v, want ErrNotOurs", lookAlike.Type, lookAlike.Name, err)
+		}
+		if len(p.writes) != 0 {
+			t.Errorf("with %s %s in the book: written %v", lookAlike.Type, lookAlike.Name, p.writes)
+		}
+	}
+}
+
+// A record of HomersLab's at the inventory's name, of a type other than TXT, is a record like any other: trying its
+// delete again after the inventory failed is a success that puts the inventory right (#176, #179).
+func TestADeleteAtTheInventorysNameTriedAgainSucceeds(t *testing.T) {
+	testenv.Isolate(t)
+	ctx := context.Background()
+	p := household()
+	e := &emptyOnce{Provider: p}
+	o := &dns.Owned{Provider: e, Zone: "example.test.", Domain: "example.test", Book: &book{}}
+	a := dns.Record{Name: dns.Inventory, Type: "A", Value: "192.0.2.10"}
+	for _, r := range []dns.Record{a, {Name: "media", Type: "CNAME", Value: "proxy.cluster.test."}} {
+		if err := o.Create(ctx, r); err != nil {
+			t.Fatal(err)
+		}
+	}
+	e.at.Store(3) // the delete's lookup, the listing after it, then the inventory record's
+	if err := o.Delete(ctx, a); !errors.Is(err, dns.ErrListingEmpty) {
+		t.Fatalf("delete: %v, want ErrListingEmpty", err)
+	}
+	if err := o.Delete(ctx, a); err != nil {
+		t.Errorf("trying again: %v", err)
+	}
+	if got := p.has(dns.Inventory, "TXT"); !slices.Equal(got, []string{"homerslab=1; media CNAME"}) {
 		t.Errorf("the inventory: %v", got)
 	}
 }

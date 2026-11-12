@@ -29,6 +29,9 @@ type Domains interface {
 	CAA(ctx context.Context, domain string) error
 	// Ensure keeps have while it is valid, and otherwise issues the domain's wildcard certificate.
 	Ensure(ctx context.Context, i Issuance, have *certs.Certificate, now time.Time) (certs.Certificate, bool, error)
+	// Reconcile puts the zone's inventory record right from the book of HomersLab's records, and writes no other record
+	// (dns.Owned.Reconcile). Of the issuance it takes the settings, the token, the zone, the domain and Drift.
+	Reconcile(ctx context.Context, i Issuance) error
 	// Authority names the certificate authority.
 	Authority() string
 }
@@ -81,6 +84,19 @@ func (d realDomains) Ensure(ctx context.Context, i Issuance, have *certs.Certifi
 // owned is the issuance's zone on the provider, as HomersLab may change it, saying its drift to the issuance.
 func (d realDomains) owned(i Issuance, p dns.Provider) *dns.Owned {
 	return &dns.Owned{Provider: p, Zone: i.Zone, Domain: i.Domain, Book: d.book, Log: d.a.Log, Drift: i.Drift}
+}
+
+func (d realDomains) Reconcile(ctx context.Context, i Issuance) error {
+	p, err := dns.Open(i.Settings, i.Token)
+	if err != nil {
+		return err
+	}
+	return d.reconcile(ctx, i, p)
+}
+
+// reconcile is Reconcile on provider p.
+func (d realDomains) reconcile(ctx context.Context, i Issuance, p dns.Provider) error {
+	return d.owned(i, p).Reconcile(ctx)
 }
 
 func (d realDomains) Authority() string { return d.a.Name }
@@ -388,6 +404,37 @@ func (m *Manager) reinstall(ctx context.Context, ans map[string]string, row stor
 }
 
 const warnCertificate = "certificate:"
+
+// reconcile puts the zone's inventory record right from the book, writing no other record: an inventory a create or a
+// delete left stale (its update failed, or met an empty listing) is rewritten at the scheduler's next run, and costs no
+// listing while it is right (#176, #179). It runs from the scheduler, once the domain's certificate is issued. An empty
+// listing writes nothing and is tried again at the next run, without a warning, and the drift report says so once, as
+// for a renewal (#175); any other failure is tried again too, and the scheduler logs it.
+func (m *Manager) reconcile(ctx context.Context) error {
+	m.certMu.Lock() // the zone's writes never interleave
+	defer m.certMu.Unlock()
+	ans, err := m.db.Answers(ctx)
+	if err != nil {
+		return err
+	}
+	domain := ans[ansDomain]
+	if _, err := m.db.Certificate(ctx, domain); errors.Is(err, store.ErrNotFound) || domain == "" {
+		return nil
+	} else if err != nil {
+		return err
+	}
+	token, err := m.agent.unseal(ctx, credDNSToken)
+	if err != nil {
+		return fmt.Errorf("the DNS token: %w", err)
+	}
+	err = m.domains.Reconcile(ctx, Issuance{Settings: settingsOf(ans), Token: token, Zone: ans[ansZone], Domain: domain,
+		Drift: m.dnsDrift(ctx, ans[ansRenewedAt])})
+	if errors.Is(err, dns.ErrListingEmpty) {
+		m.log.Info("the DNS zone's inventory record waits for a listing that isn't empty: tried again at the next run", "domain", domain)
+		return nil
+	}
+	return err
+}
 
 // emptyListingGrace is how long renewals may fail on the DNS provider's empty listings, tried again at every run of
 // the scheduler, before the admins are warned: an empty listing is most often a moment's answer (#175).

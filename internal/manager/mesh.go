@@ -525,8 +525,8 @@ func (m *Manager) currentToken(ctx context.Context, ans map[string]string) (mesh
 	return mesh.Token{Value: value, UserID: ans[ansTokenUser], ID: ans[ansTokenID], ExpiresAt: expires}, nil
 }
 
-// RunDue runs the scheduler's jobs that are due: so far, the mesh token's rotation, the mesh's drift check, and the
-// certificate's renewal.
+// RunDue runs the scheduler's jobs that are due: so far, the mesh token's rotation, the mesh's drift check, the
+// certificate's renewal, and the DNS zone's inventory record (#179).
 func (m *Manager) RunDue(ctx context.Context) {
 	if err := m.giveSetupPort(ctx); err != nil {
 		m.log.Error("giving the agent the setup listener's port", "err", err)
@@ -536,6 +536,9 @@ func (m *Manager) RunDue(ctx context.Context) {
 	}
 	if err := m.renew(ctx); err != nil {
 		m.log.Error("the certificate's renewal", "err", err)
+	}
+	if err := m.reconcile(ctx); err != nil {
+		m.log.Error("putting the DNS zone's inventory record right", "err", err)
 	}
 	if err := m.checkMesh(ctx); err != nil {
 		m.log.Error("checking the mesh", "err", err)
