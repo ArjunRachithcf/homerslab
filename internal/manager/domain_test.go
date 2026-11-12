@@ -47,6 +47,8 @@ type fakeDomains struct {
 	issued int
 	zones  []string // the zones it was asked for, and with which token: "zone token"
 	last   manager.Issuance
+	drift  []dns.Drift // the dns package's drift notes, given to the issuance's Drift at every Ensure
+	fail   error       // what an issuance fails with, when it isn't nil
 }
 
 func newFakeDomains() *fakeDomains { return &fakeDomains{token: dnsToken, life: 90 * 24 * time.Hour} }
@@ -79,6 +81,14 @@ func (f *fakeDomains) Ensure(_ context.Context, i manager.Issuance, have *certs.
 	f.last = i
 	if have != nil && !have.Due(now) {
 		return *have, false, nil
+	}
+	for _, d := range f.drift {
+		if i.Drift != nil {
+			i.Drift(d)
+		}
+	}
+	if f.fail != nil {
+		return certs.Certificate{}, false, f.fail
 	}
 	if i.Token.Reveal() != f.token {
 		return certs.Certificate{}, false, manager.ErrDNSRefused

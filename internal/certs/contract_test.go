@@ -280,6 +280,31 @@ func TestTheDNSProviderContractOnThePrimary(t *testing.T) {
 		}
 	})
 
+	t.Run("a renewal whose listing comes back empty fails as an empty listing, writes nothing, and says so (#175)", func(t *testing.T) {
+		p, err := dns.Open(settings, tsig)
+		if err != nil {
+			t.Fatal(err)
+		}
+		c := &counting{Provider: emptyListing{p}}
+		o := &dns.Owned{Provider: c, Zone: "example.test.", Domain: "example.test", Book: theBook}
+		var notes []dns.Drift
+		o.Drift = func(d dns.Drift) { notes = append(notes, d) }
+		fresh, err := certs.NewKey() // an account of its own: no authorization to reuse, so the challenge is presented
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, issued, err := authority.Ensure(ctx, certs.Request{Domain: "example.test", Zone: o, AccountKey: fresh}, &cert, due)
+		if !errors.Is(err, dns.ErrListingEmpty) || issued {
+			t.Fatalf("a renewal on an empty listing: issued %v, %v; want ErrListingEmpty through the ACME client", issued, err)
+		}
+		if c.writes.Load() != 0 {
+			t.Errorf("wrote %d times on an empty listing", c.writes.Load())
+		}
+		if len(notes) == 0 || notes[0].What != dns.DriftListingLookedEmpty || notes[0].Record.Name != "_acme-challenge" {
+			t.Errorf("the drift notes: %+v", notes)
+		}
+	})
+
 	t.Run("the replaced token renews", func(t *testing.T) {
 		o, _ := open(t, tsig, theBook)
 		got, issued, err := authority.Ensure(ctx, certs.Request{Domain: "example.test", Zone: o, AccountKey: renewer}, &cert, due)
@@ -321,6 +346,11 @@ func (c *counting) DeleteRecords(ctx context.Context, zone string, recs []libdns
 	c.writes.Add(1)
 	return c.Provider.DeleteRecords(ctx, zone, recs)
 }
+
+// emptyListing is a provider whose listing of the zone comes back empty, as a moment's answer can.
+type emptyListing struct{ dns.Provider }
+
+func (emptyListing) GetRecords(context.Context, string) ([]libdns.Record, error) { return nil, nil }
 
 // book is the manager's list of HomersLab's records, in memory.
 type book struct {

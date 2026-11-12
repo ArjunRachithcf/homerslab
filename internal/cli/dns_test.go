@@ -76,10 +76,11 @@ func TestSetupSecretDNSSaysWhereTheTokenGoesThenSendsIt(t *testing.T) {
 func TestSetupSecretDNSSaysWhatToDoWhenRefused(t *testing.T) {
 	testenv.Isolate(t)
 	for code, want := range map[string]string{
-		"secret-refused":  "the DNS provider refused this token",
-		"caa-forbids":     "CAA records",
-		"no-zone":         "no public DNS zone holds the domain",
-		"issuance-failed": "the certificate wasn't issued",
+		"secret-refused":    "the DNS provider refused this token",
+		"caa-forbids":       "CAA records",
+		"no-zone":           "no public DNS zone holds the domain",
+		"issuance-failed":   "the certificate wasn't issued",
+		"dns-listing-empty": "the DNS provider listed nothing in the zone",
 	} {
 		sock, _ := routedControl(t, map[string][2]string{
 			"GET /api/v1/setup":             {"", atDomainStep},

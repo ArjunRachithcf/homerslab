@@ -38,6 +38,27 @@ func TestAFullDiskIsErrDiskFull(t *testing.T) {
 	}
 }
 
+// A failed renewal is a write like any other: on a full disk it is ErrDiskFull, and an unknown domain's ErrNotFound.
+func TestAFailedRenewalOnAFullDiskIsErrDiskFull(t *testing.T) {
+	testenv.Isolate(t)
+	s, err := Open(filepath.Join(t.TempDir(), "m.db"), []Step{{ID: "welcome", Half: "lan"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	ctx := context.Background()
+	if err := s.RenewalFailed(ctx, "example.test", time.Now(), "why"); !errors.Is(err, ErrNotFound) {
+		t.Errorf("an unknown domain's failed renewal: %v, want ErrNotFound", err)
+	}
+	if err := s.SaveCertificate(ctx, Certificate{Domain: "example.test", Serial: "1"}); err != nil {
+		t.Fatal(err)
+	}
+	s.FillDisk()
+	if err := s.RenewalFailed(ctx, "example.test", time.Now(), "why"); !errors.Is(err, ErrDiskFull) {
+		t.Errorf("a failed renewal on a full disk: %v, want ErrDiskFull", err)
+	}
+}
+
 // Where ENOSPC meets fsync, ftruncate or the shared-memory file, SQLite says only "disk I/O error"; then the disk is
 // full if the folder has next to no room left.
 func TestAnIOErrorOnADiskWithNoRoomIsErrDiskFull(t *testing.T) {
