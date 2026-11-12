@@ -435,7 +435,8 @@ func TestABridgeWithANICInNetworkNamespaces(t *testing.T) {
 	t.Cleanup(func() { _ = guest.Process.Kill(); _ = guest.Wait() })
 	n.pids["guest"] = guest.Process.Pid
 	time.Sleep(100 * time.Millisecond)
-	script := fmt.Sprintf(`ip link add br-x type bridge
+	// br-x's own MAC address, so it doesn't take a new port's (the lowest) and leave the guest's ARP entry stale.
+	script := fmt.Sprintf(`ip link add br-x address 02:00:00:00:01:23 type bridge
 		ip link add veth-x type veth peer name eth0 netns %[1]d
 		ip link set veth-x master br-x
 		ip addr add 192.168.123.1/24 dev br-x
