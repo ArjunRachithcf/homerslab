@@ -120,6 +120,16 @@ func (o *Owned) Name(label string) (string, error) {
 	return e.rel(label), nil
 }
 
+// Names are the zone, with its trailing dot as libdns names it, and the domain, in their one form (Canonical): what a
+// caller reads the zone's names against, never the raw fields (#165). It fails when either isn't a valid name.
+func (o *Owned) Names() (zone, domain string, err error) {
+	e, err := o.edit()
+	if err != nil {
+		return "", "", err
+	}
+	return e.zone, e.domain, nil
+}
+
 // canonical is a record as it is asked for, its name in its one form.
 func (r Record) canonical() (Record, error) {
 	n, err := Canonical(r.Name)
