@@ -55,6 +55,47 @@ jobs:
           CGO_ENABLED: "0"
         run: go test -count=1 ./internal/agent/...
 
+  agent-unit-caps:
+    name: Agent reads (as root, with only the agent unit's capabilities)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    # Modules come only from the step that fetches them, as in the Go job.
+    env:
+      GOPROXY: "off"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - name: Fetch the modules
+        env:
+          GOPROXY: https://proxy.golang.org,direct
+        run: sh .github/scripts/stop-commands.sh go mod download
+      # Root without CAP_DAC_OVERRIDE reads only what everyone may, and the runner's home may not be: the tests are
+      # built from a copy of the checkout in a folder everyone may read (they find their testdata by its source path).
+      - name: Build the agent's tests, as released
+        run: |
+          src=$(mktemp -d /tmp/homerslab-XXXXXX)
+          chmod 755 "$src"
+          cp -a . "$src"
+          cd "$src" && CGO_ENABLED=0 go test -c -o agent.test ./internal/agent
+          echo "SRC=$src" >> "$GITHUB_ENV"
+      # The Go job's root holds Docker's capabilities (CAP_KILL among them, not CAP_NET_ADMIN); the agent's unit gives
+      # it far fewer. As root on the runner with exactly the unit's set, read from the unit file (#138), a read's
+      # child, which runs as nobody, must still end at its deadline and with the agent.
+      - name: A read's child, under the agent unit's capabilities
+        env:
+          DOCKER_HOST: unix:///nonexistent
+          CONTAINER_HOST: unix:///nonexistent
+        run: |
+          cd "$SRC"
+          sudo --preserve-env=DOCKER_HOST,CONTAINER_HOST \
+            sh .github/scripts/as-unit.sh packaging/systemd/homerslab-agent.service \
+            ./agent.test -test.v -test.count=1 -test.timeout=3m \
+            -test.run 'TestAHostileReadIsKilledAtItsDeadline|TestAReadsChild|TestAReadRunsConfined|TestAReadsEndingIsSaid'
+
   firewall:
     name: Firewall table (network namespaces)
     runs-on: ubuntu-24.04
