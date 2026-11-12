@@ -25,6 +25,7 @@ import (
 
 	"github.com/ArjunRachithcf/homerslab/internal/agent"
 	"github.com/ArjunRachithcf/homerslab/internal/host"
+	"github.com/ArjunRachithcf/homerslab/internal/lan"
 	"github.com/ArjunRachithcf/homerslab/internal/node"
 )
 
@@ -84,13 +85,11 @@ func StartWith(t testing.TB, c agent.Config) (string, *Host) {
 	if c.Resolve == nil {
 		c.Resolve = func(context.Context, string) ([]string, error) { return []string{"192.0.2.1"}, nil }
 	}
-	if c.LAN == nil {
-		c.LAN = func() ([]string, []netip.Prefix) {
-			return []string{"enp5s0"}, []netip.Prefix{netip.MustParsePrefix("192.168.1.0/24"), netip.MustParsePrefix("2001:db8:1::/64")}
+	if c.Network == nil {
+		c.Network = func() (lan.Network, error) { // the LAN's uplink only: never this machine's own
+			return lan.Network{LAN: []string{"enp5s0"},
+				Prefixes: []netip.Prefix{netip.MustParsePrefix("192.168.1.0/24"), netip.MustParsePrefix("2001:db8:1::/64")}}, nil
 		}
-	}
-	if c.Uplinks == nil {
-		c.Uplinks = func() []string { return nil } // the LAN's only: never this machine's own
 	}
 	if c.SetupPort == 0 {
 		c.SetupPort = 7020

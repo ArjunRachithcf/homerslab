@@ -22,6 +22,7 @@ import (
 	"github.com/ArjunRachithcf/homerslab/internal/agent/agenttest"
 	"github.com/ArjunRachithcf/homerslab/internal/atomicfile"
 	"github.com/ArjunRachithcf/homerslab/internal/firewall"
+	"github.com/ArjunRachithcf/homerslab/internal/lan"
 	"github.com/ArjunRachithcf/homerslab/internal/testenv"
 )
 
@@ -353,10 +354,10 @@ func TestTheTableFollowsTheLANAndTheEnginesBridges(t *testing.T) {
 	testenv.Isolate(t)
 	var mu sync.Mutex
 	prefix := "192.168.1.0/24"
-	lan := func() ([]string, []netip.Prefix) {
+	network := func() (lan.Network, error) {
 		mu.Lock()
 		defer mu.Unlock()
-		return []string{"br-iot"}, []netip.Prefix{netip.MustParsePrefix(prefix)}
+		return lan.Network{LAN: []string{"br-iot"}, Prefixes: []netip.Prefix{netip.MustParsePrefix(prefix)}}, nil
 	}
 	// Podman, from its network files: its default bridge and one network.
 	sysroot := fstest.MapFS{
@@ -366,7 +367,7 @@ func TestTheTableFollowsTheLANAndTheEnginesBridges(t *testing.T) {
 		"etc/resolv.conf":                     {Data: []byte("nameserver 127.0.0.53\n")},
 		"run/systemd/resolve/resolv.conf":     {Data: []byte("nameserver 192.168.1.1\nnameserver 2001:db8:1::1\n")},
 	}
-	sock, h := agenttest.StartWith(t, agent.Config{LAN: lan, Sysroot: sysroot})
+	sock, h := agenttest.StartWith(t, agent.Config{Network: network, Sysroot: sysroot})
 	call(t, sock, "POST", "/v1/mesh/join", joinBody())
 	// Docker's default bridge, a compose network it named br-<id>, one it was told to call br-iot (the LAN's own
 	// name), names nft would misread, and a name that is the LAN's NIC, not a bridge.
@@ -973,8 +974,11 @@ func TestTheNATMapperSettingIsUnknownWhenSystemdCannotSayAndLeftAlone(t *testing
 // A full-tunnel VPN's interface is a way out for apps, not the LAN (#108).
 func TestTheTableLetsAppsOutThroughTheUplinks(t *testing.T) {
 	testenv.Isolate(t)
-	uplinks := func() []string { return []string{"enp5s0", "wg0"} }
-	sock, h := agenttest.StartWith(t, agent.Config{Uplinks: uplinks})
+	network := func() (lan.Network, error) {
+		return lan.Network{LAN: []string{"enp5s0"}, Prefixes: []netip.Prefix{netip.MustParsePrefix("192.168.1.0/24")},
+			Uplinks: []string{"enp5s0", "wg0"}, Tunnels: []string{"wg0"}}, nil
+	}
+	sock, h := agenttest.StartWith(t, agent.Config{Network: network})
 	call(t, sock, "POST", "/v1/mesh/join", joinBody())
 	call(t, sock, "POST", "/v1/firewall/check", nil)
 	table, _ := h.Table()
@@ -983,6 +987,63 @@ func TestTheTableLetsAppsOutThroughTheUplinks(t *testing.T) {
 	}
 	if !strings.Contains(table, `iifname { "enp5s0" } tcp dport 7020 accept`) || strings.Contains(table, `"wg0" } tcp dport`) {
 		t.Errorf("the setup listener isn't the LAN's alone:\n%s", table)
+	}
+}
+
+// While the kernel can't be asked (#148), the table keeps the last reading of the network: the LAN's prefixes stay out
+// of the apps' reach, and its uplinks and tunnels keep their rules. An agent that never read the network has no LAN,
+// no way out for apps and no setup listener open: it fails closed. It follows the network again once the kernel
+// answers.
+func TestWhileTheKernelCantBeAskedTheTableKeepsTheLastNetwork(t *testing.T) {
+	testenv.Isolate(t)
+	var mu sync.Mutex
+	var failing error
+	read := lan.Network{LAN: []string{"enp5s0"}, Prefixes: []netip.Prefix{netip.MustParsePrefix("192.168.1.0/24"),
+		netip.MustParsePrefix("2001:db8:1::/64")}, Uplinks: []string{"enp5s0", "wg0"}, Tunnels: []string{"wg0", "tun0"}}
+	network := func() (lan.Network, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		if failing != nil {
+			return lan.Network{}, failing
+		}
+		return read, nil
+	}
+	fail := func(err error) {
+		mu.Lock()
+		defer mu.Unlock()
+		failing = err
+	}
+	sock, h := agenttest.StartWith(t, agent.Config{Network: network})
+	call(t, sock, "POST", "/v1/mesh/join", joinBody())
+	call(t, sock, "POST", "/v1/firewall/check", nil)
+	before, _ := h.Table()
+	for _, want := range []string{"2001:db8:1::/64", `oifname != { "enp5s0", "wg0" } drop`, `iifname { "enp5s0", "tun0", "wg0" } drop`} {
+		if !strings.Contains(before, want) {
+			t.Fatalf("the table lacks %q:\n%s", want, before)
+		}
+	}
+	fail(errors.New("netlink: the dump was interrupted by a change"))
+	call(t, sock, "POST", "/v1/firewall/check", nil)
+	if after, _ := h.Table(); after != before {
+		t.Errorf("while the kernel can't be asked, the table changed:\n%s\nwant the last reading's:\n%s", after, before)
+	}
+	fail(nil)
+	read.Prefixes = append(read.Prefixes, netip.MustParsePrefix("2001:db8:5::/64"))
+	call(t, sock, "POST", "/v1/firewall/check", nil)
+	if after, _ := h.Table(); !strings.Contains(after, "2001:db8:5::/64") {
+		t.Errorf("the table didn't follow the network once the kernel answered:\n%s", after)
+	}
+
+	// Never read: closed.
+	never := func() (lan.Network, error) { return lan.Network{}, errors.New("netlink: no answer") }
+	sock, h = agenttest.StartWith(t, agent.Config{Network: never})
+	call(t, sock, "POST", "/v1/mesh/join", joinBody())
+	call(t, sock, "POST", "/v1/firewall/check", nil)
+	table, _ := h.Table()
+	_, outbound, _ := strings.Cut(table, "\tchain outbound {\n")
+	if !strings.HasPrefix(outbound, "\t\tdrop\n") || strings.Contains(table, "tcp dport 7020") || strings.Contains(table, "jump virtual_in") {
+		t.Errorf("an agent that never read the network, want no way out for apps, no setup listener and no local "+
+			"virtual network:\n%s", table)
 	}
 }
 

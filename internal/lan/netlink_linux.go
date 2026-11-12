@@ -13,11 +13,15 @@ import (
 // ReadKernel asks the kernel over netlink for this machine's links, addresses and routes: every routing table, with
 // each route's own table, so the LAN can keep to the main one (#108). A dump that fails or that a change interrupted
 // (the kernel's buffer full, or routes changing while they were read) is asked again, up to five times in all.
-func ReadKernel() (Kernel, error) {
+func ReadKernel() (Kernel, error) { return retried(readKernel) }
+
+// retried is read's first whole reading, asking up to five times in all; or, after the fifth failure, that failure
+// and no reading.
+func retried(read func() (Kernel, error)) (Kernel, error) {
 	var err error
 	for range 5 {
 		var k Kernel
-		if k, err = readKernel(); err == nil {
+		if k, err = read(); err == nil {
 			return k, nil
 		}
 	}

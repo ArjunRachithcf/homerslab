@@ -169,6 +169,60 @@ func TestTheUplinksAreTheLANAndTheTunnels(t *testing.T) {
 	}
 }
 
+// OpenVPN's def1 (redirect-gateway def1) puts 0.0.0.0/1 and 128.0.0.0/1 through its tunnel instead of a default
+// route (#148). Routes of one tunnel, in one table, that cover a family's whole address space count as its default
+// route: two halves, quarters, or IPv6's ::/1 and 8000::/1. One half, halves on two interfaces or in two tables, a
+// blackhole half, OpenVPN's IPv6 set (which leaves most of the space out), or a link that isn't a tunnel don't. The
+// LAN keeps to real default routes.
+func TestRoutesThatCoverTheWholeSpaceAreATunnelsDefaultRoute(t *testing.T) {
+	testenv.Isolate(t)
+	b := kernel().link("eth0", "", 0).link("eth1", "", 0)
+	for _, n := range []string{"def1", "half", "split-a", "split-b", "tables", "quarters", "v6", "blackhole", "ovpn6"} {
+		b.link(n, "tun", ptp)
+	}
+	k := b.route(mainTable, "0.0.0.0/0", gw, "eth0").
+		route(mainTable, "0.0.0.0/1", onLink, "def1").route(mainTable, "128.0.0.0/1", onLink, "def1").
+		route(mainTable, "0.0.0.0/1", onLink, "half").route(mainTable, "10.8.0.0/24", onLink, "half").
+		route(mainTable, "0.0.0.0/1", onLink, "split-a").route(mainTable, "128.0.0.0/1", onLink, "split-b").
+		route(mainTable, "0.0.0.0/1", onLink, "tables").route(100, "128.0.0.0/1", onLink, "tables").
+		route(100, "0.0.0.0/2", gw, "quarters").route(100, "64.0.0.0/2", gw, "quarters").
+		route(100, "128.0.0.0/1", gw, "quarters").
+		route(mainTable, "::/1", onLink, "v6").route(mainTable, "8000::/1", onLink, "v6").
+		route(mainTable, "0.0.0.0/1", onLink, "blackhole").routeType(mainTable, "128.0.0.0/1", 6, "blackhole").
+		route(mainTable, "::/3", onLink, "ovpn6").route(mainTable, "2000::/4", onLink, "ovpn6").
+		route(mainTable, "3000::/4", onLink, "ovpn6").route(mainTable, "fc00::/7", onLink, "ovpn6").
+		route(mainTable, "0.0.0.0/1", gw, "eth1").route(mainTable, "128.0.0.0/1", gw, "eth1").k
+	if got, want := k.Uplinks(), []string{"eth0", "def1", "quarters", "v6"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("uplinks = %v, want %v", got, want)
+	}
+	if got := k.Interfaces(); !reflect.DeepEqual(got, []string{"eth0"}) {
+		t.Errorf("interfaces = %v, want eth0 only: covering routes make no LAN", got)
+	}
+}
+
+// The tunnels are every link that carries a VPN or a mesh, by its kind or as a point-to-point link, with a default
+// route or without: the firewall never treats one as a local virtual network (#148). A Network is one reading of
+// the kernel: the LAN, its prefixes, the uplinks and the tunnels together.
+func TestTheNetworkListsEveryTunnel(t *testing.T) {
+	testenv.Isolate(t)
+	k := kernel().link("lo", "", lo).link("eth0", "", 0).link("docker0", "bridge", 0).link("virbr0", "bridge", 0).
+		link("dummy0", "dummy", 0).link("wt0", "wireguard", ptp).link("wg0", "wireguard", ptp).link("tun0", "tun", ptp).
+		link("tap0", "tun", 0).link("ppp0", "ppp", ptp).link("gre1", "gre", 0).link("odd0", "", ptp).
+		addr("eth0", "192.168.1.20/24", 0).addr("tun0", "10.8.0.2/24", 0).
+		route(mainTable, "0.0.0.0/0", gw, "eth0").route(51820, "0.0.0.0/0", onLink, "wg0").k
+	n := k.Network()
+	if want := []string{"wt0", "wg0", "tun0", "tap0", "ppp0", "gre1", "odd0"}; !reflect.DeepEqual(n.Tunnels, want) {
+		t.Errorf("tunnels = %v, want %v", n.Tunnels, want)
+	}
+	ifaces, prefixes := k.OnLink()
+	if !reflect.DeepEqual(n.LAN, ifaces) || !reflect.DeepEqual(n.Prefixes, prefixes) || !reflect.DeepEqual(n.Uplinks, k.Uplinks()) {
+		t.Errorf("network = %+v, want the LAN %v %v and the uplinks %v", n, ifaces, prefixes, k.Uplinks())
+	}
+	if want := []string{"eth0", "wg0"}; !reflect.DeepEqual(n.Uplinks, want) {
+		t.Errorf("uplinks = %v, want %v", n.Uplinks, want)
+	}
+}
+
 func TestOnlyThisMachineAndTheLANAreFromHere(t *testing.T) {
 	testenv.Isolate(t)
 	l := lan.LAN{Prefixes: []netip.Prefix{netip.MustParsePrefix("192.168.1.0/24")}, Interfaces: []string{"enp5s0"}}

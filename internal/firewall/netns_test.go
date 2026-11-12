@@ -10,7 +10,7 @@ package firewall_test
 // 53 at every address (as NetBird's resolver and dnsmasq would), the LAN host is the resolver DHCP gave the box, and
 // the mesh peer runs a resolver too, which the box's resolv.conf may name (NetBird's DNS). The LAN host routes the box's mesh address, the containers' and the VMs'
 // networks through the box, as a hostile device at home would; it is also the box's router, with an address on "the
-// internet" behind it.
+// internet" behind it. VPNs' servers, vpn and vpn2, are at the other ends of the box's tun0 and tap0 (TestTunnelsInNetworkNamespaces).
 
 import (
 	"bytes"
@@ -21,11 +21,14 @@ import (
 	"net/netip"
 	"os"
 	"os/exec"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	"golang.org/x/sys/unix"
 
 	"github.com/ArjunRachithcf/homerslab/internal/firewall"
 	"github.com/ArjunRachithcf/homerslab/internal/host"
@@ -102,7 +105,7 @@ func TestMain(m *testing.M) {
 func TestTheFirewallTableInNetworkNamespaces(t *testing.T) {
 	testenv.Isolate(t)
 	if os.Getenv(insideNamespaces) != "1" {
-		reexec(t)
+		reexec(t, "^TestTheFirewallTableInNetworkNamespaces$")
 		return
 	}
 	n := newNet(t)
@@ -276,8 +279,145 @@ func TestTheFirewallTableInNetworkNamespaces(t *testing.T) {
 	}
 }
 
-// reexec runs this test again in its own user and network namespace.
-func reexec(t *testing.T) {
+// A tunnel is never a local virtual network, nor a way in (#148). The box's tun0 leads to a VPN's server (vpn), and its
+// tap0 (an L2 tunnel, Ethernet-like) to another (vpn2), each through a userspace relay as OpenVPN's is: a host there
+// must reach nothing of the box beyond what every interface gets, no DHCP or DNS, and nothing is forwarded from it,
+// with a default route through the tunnel or without, the table told of the tunnel or not, and at boot with no default
+// route at all.
+func TestTunnelsInNetworkNamespaces(t *testing.T) {
+	testenv.Isolate(t)
+	if os.Getenv(insideNamespaces) != "1" {
+		reexec(t, "^TestTunnelsInNetworkNamespaces$")
+		return
+	}
+	n := newNet(t)
+	n.tunnel(t, unix.IFF_TUN, "tun0", "10.8.0.2", "vpn", "10.8.0.1")
+	n.tunnel(t, unix.IFF_TAP, "tap0", "10.9.0.2", "vpn2", "10.9.0.1")
+	refused := func(when string) {
+		for _, far := range []struct{ from, box string }{{"vpn", "10.8.0.2"}, {"vpn2", "10.9.0.2"}} {
+			when := when + " (" + far.from + ")"
+			n.want(t, when+": the VPN's side gets no DNS from the box", far.from, far.box+":53", false)
+			n.wantUDP(t, when+": nor over UDP", far.from, far.box+":53", false)
+			n.wantUDP(t, when+": nor its DHCP", far.from, far.box+":67", false)
+			n.want(t, when+": nor any listener", far.from, far.box+":8022", false)
+			n.want(t, when+": nor the setup listener", far.from, far.box+":7020", false)
+			n.want(t, when+": nor DNS at the box's LAN address", far.from, "192.168.77.1:53", false)
+			n.want(t, when+": nothing from the VPN's side is forwarded to the internet", far.from, "203.0.113.50:9001", false)
+			n.want(t, when+": nor to the LAN", far.from, "192.168.77.50:9000", false)
+			n.want(t, when+": nor to an app", far.from, "172.30.0.2:8444", false)
+			n.want(t, when+": nor to the mesh", far.from, "100.88.1.2:9002", false)
+			n.want(t, when+": nor to a local virtual network", far.from, "192.168.122.2:9003", false)
+		}
+	}
+	others := func(when string) {
+		n.wantUDP(t, when+": a VM still gets its DHCP", "vm", "192.168.122.1:67", true)
+		n.want(t, when+": and its DNS", "vm", "192.168.122.1:53", true)
+		n.want(t, when+": and the internet", "vm", "203.0.113.50:9001", true)
+		n.want(t, when+": an app still reaches the internet", "ctr", "203.0.113.50:9001", true)
+	}
+	n.together(func() {
+		for _, far := range []struct{ from, box string }{{"vpn", "10.8.0.2"}, {"vpn2", "10.9.0.2"}} {
+			n.want(t, "before the table: the VPN's side gets DNS from the box", far.from, far.box+":53", true)
+			n.wantUDP(t, "before the table: and its DHCP", far.from, far.box+":67", true)
+			n.want(t, "before the table: the box forwards the VPN's side to the internet", far.from, "203.0.113.50:9001", true)
+		}
+	})
+
+	fw := &firewall.Firewall{Run: host.Exec}
+	apply := func(s firewall.State) {
+		t.Helper()
+		if err := fw.Apply(context.Background(), s); err != nil {
+			t.Fatal(err)
+		}
+	}
+	lanPrefixes := []netip.Prefix{netip.MustParsePrefix("192.168.77.0/24"), netip.MustParsePrefix("fd00:77::/64"), netip.MustParsePrefix("2001:db8:77::/64")}
+	split := firewall.State{Mesh: []string{"wt0"}, WireGuard: []int{51820}, SetupPort: 7020, LAN: []string{"br-iot"},
+		LANPrefixes: lanPrefixes, Bridges: []string{"br-test", "br-other", "docker0"}, Tunnels: []string{"tun0", "tap0"},
+		Resolvers: []netip.Addr{netip.MustParseAddr("192.168.77.50")}}
+	full := split
+	full.Uplinks = []string{"br-iot", "tun0", "tap0"}
+	untold := split
+	untold.Tunnels = nil
+	named := split
+	named.Bridges = append(slices.Clone(split.Bridges), "tun0", "tap0") // an engine naming the tunnels as its bridges
+	for _, c := range []struct {
+		when string
+		s    firewall.State
+	}{
+		{"tunnels without a default route", split},
+		{"full tunnels, uplinks", full},
+		{"tunnels the table wasn't told of", untold},
+		{"tunnels an engine named bridges", named},
+	} {
+		apply(c.s)
+		n.together(func() { refused(c.when); others(c.when) })
+		n.pingFrom(t, c.when+": the VPN's side still reaches the machine itself (ping), as every interface does", "vpn", "10.8.0.2", true)
+		n.pingFrom(t, c.when+": over the L2 tunnel too", "vpn2", "10.9.0.2", true)
+	}
+	for _, c := range []struct {
+		when string
+		s    firewall.State
+	}{
+		{"at boot, with no default route", firewall.State{Mesh: []string{"wt0"}, WireGuard: []int{51820}, SetupPort: 7020, Tunnels: []string{"tun0", "tap0"}}},
+		{"at boot, the table told of no tunnel", firewall.State{Mesh: []string{"wt0"}, WireGuard: []int{51820}, SetupPort: 7020}},
+	} {
+		apply(c.s)
+		n.together(func() { refused(c.when) })
+	}
+}
+
+// tunnel makes the box's end of a tunnel (a tun device, or a tap one: L2), named name with the address box, and its
+// other end in the namespace far with the address peer and its default route through the tunnel, and relays the
+// packets between them, as a VPN's client does.
+func (n *netns) tunnel(t *testing.T, mode uint16, name, box, far, peer string) {
+	t.Helper()
+	near, other := openTun(t, name, mode), openTun(t, name+"-far", mode)
+	for _, p := range [][2]*os.File{{near, other}, {other, near}} {
+		go func() {
+			b := make([]byte, 65536)
+			for {
+				k, err := p[0].Read(b)
+				if err != nil {
+					return
+				}
+				_, _ = p[1].Write(b[:k])
+			}
+		}()
+	}
+	script := fmt.Sprintf(`ip addr add %[1]s peer %[2]s/32 dev %[3]s; ip link set %[3]s up
+		ip link set %[3]s-far netns %[4]d
+		nsenter -t %[4]d -n sh -ec "ip link set lo up; ip link set %[3]s-far up; ip addr add %[2]s peer %[1]s/32 dev %[3]s-far; ip route add default via %[1]s dev %[3]s-far onlink"`,
+		box, peer, name, n.pids[far])
+	if out, err := exec.Command("sh", "-ec", script).CombinedOutput(); err != nil {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	n.listen(t, far, peer+":9010") // so the relay is known to work both ways
+	n.want(t, "the box reaches the far end of "+name, "", peer+":9010", true)
+}
+
+// openTun makes a tun or tap device (mode) named name, without packet information, which lives while the file is open.
+func openTun(t *testing.T, name string, mode uint16) *os.File {
+	t.Helper()
+	fd, err := unix.Open("/dev/net/tun", unix.O_RDWR|unix.O_NONBLOCK|unix.O_CLOEXEC, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ifr, err := unix.NewIfreq(name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ifr.SetUint16(mode | unix.IFF_NO_PI)
+	if err := unix.IoctlIfreq(fd, unix.TUNSETIFF, ifr); err != nil {
+		_ = unix.Close(fd)
+		t.Fatalf("making %s: %v", name, err)
+	}
+	f := os.NewFile(uintptr(fd), name)
+	t.Cleanup(func() { _ = f.Close() })
+	return f
+}
+
+// reexec runs the test run names again in its own user and network namespace.
+func reexec(t *testing.T, run string) {
 	t.Helper()
 	for _, tool := range []string{"unshare", "nsenter", "ip", "nft", "ping"} {
 		if _, err := exec.LookPath(tool); err != nil {
@@ -291,7 +431,7 @@ func reexec(t *testing.T) {
 	if os.Geteuid() == 0 {
 		flags = "-n"
 	}
-	cmd := exec.Command("unshare", flags, os.Args[0], "-test.run=^TestTheFirewallTableInNetworkNamespaces$", "-test.v", "-test.count=1")
+	cmd := exec.Command("unshare", flags, os.Args[0], "-test.run="+run, "-test.v", "-test.count=1")
 	cmd.Env = append(os.Environ(), insideNamespaces+"=1")
 	out, err := cmd.CombinedOutput()
 	if err != nil {
@@ -321,7 +461,7 @@ func newNet(t *testing.T) *netns {
 		t.Fatalf("refusing: this network namespace isn't fresh (%d links)", len(lines))
 	}
 	n := &netns{pids: map[string]int{}}
-	for _, name := range []string{"lan", "peer", "ctr", "ctr3", "ctr2", "ctr0", "vm"} {
+	for _, name := range []string{"lan", "peer", "ctr", "ctr3", "ctr2", "ctr0", "vm", "vpn", "vpn2"} {
 		c := exec.Command("unshare", "-n", "sleep", "300")
 		if err := c.Start(); err != nil {
 			t.Fatal(err)
@@ -377,7 +517,8 @@ func newNet(t *testing.T) *netns {
 		ip addr add 203.0.113.50/32 dev lo; ip -6 addr add 2001:db8:ffff::50/128 dev lo nodad
 		ip route add 100.88.0.0/16 via 192.168.77.1; ip route add 172.30.0.0/24 via 192.168.77.1
 		ip route add 172.31.0.0/24 via 192.168.77.1; ip route add 192.168.122.0/24 via 192.168.77.1
-		ip route add 172.17.0.0/16 via 192.168.77.1
+		ip route add 172.17.0.0/16 via 192.168.77.1; ip route add 10.8.0.0/24 via 192.168.77.1
+		ip route add 10.9.0.0/24 via 192.168.77.1
 		ip -6 route add 2001:db8:30::/64 via 2001:db8:77::1`)
 	in("peer", `ip link set lo up; ip link set eth0 up; ip addr add 100.88.1.2/16 dev eth0; ip route add default via 100.88.1.1`)
 	in("ctr", `ip link set lo up; ip link set eth0 up; ip addr add 172.30.0.2/24 dev eth0; ip route add default via 172.30.0.1
@@ -511,7 +652,12 @@ func (n *netns) want(t *testing.T, what, from, addr string, reach bool) {
 
 func (n *netns) ping(t *testing.T, what, addr string, reach bool) {
 	t.Helper()
-	got := exec.Command("nsenter", "-t", strconv.Itoa(n.pids["lan"]), "-n", "ping", "-c1", "-W1", addr).Run() == nil
+	n.pingFrom(t, what, "lan", addr, reach)
+}
+
+func (n *netns) pingFrom(t *testing.T, what, from, addr string, reach bool) {
+	t.Helper()
+	got := exec.Command("nsenter", "-t", strconv.Itoa(n.pids[from]), "-n", "ping", "-c1", "-W1", addr).Run() == nil
 	if got != reach {
 		t.Errorf("%s: ping %s %v, want %v", what, addr, got, reach)
 	}

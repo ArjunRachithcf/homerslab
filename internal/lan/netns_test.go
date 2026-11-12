@@ -27,6 +27,8 @@ const insideNamespace = "HOMERSLAB_LAN_NETNS"
 //   - wg1, a real WireGuard full tunnel in table 51821: not the LAN, but an uplink;
 //   - wt0, the mesh: a real WireGuard interface with its CGNAT address and its ULA /64;
 //   - tun0, a VPN client's tun device that puts a default route in the main table, behind eth0's;
+//   - tun1, OpenVPN's def1: 0.0.0.0/1 and 128.0.0.0/1 through it instead of a default route, an uplink too (#148);
+//   - tun2, a tunnel with one half only, in a table of its own: a tunnel, not an uplink;
 //   - and a rogue router advertisement on the LAN: the mesh's ULA /64 on eth0, with an address from it.
 func TestTheLANInANetworkNamespace(t *testing.T) {
 	testenv.Isolate(t)
@@ -71,6 +73,17 @@ func TestTheLANInANetworkNamespace(t *testing.T) {
 		ip addr add 10.8.1.1/32 peer 10.8.9.0/24 dev tun0
 		ip route add default dev tun0 metric 500
 		ip -6 route add default dev tun0 metric 500
+
+		ip tuntap add mode tun name tun1
+		ip link set tun1 up
+		ip addr add 10.9.0.2/24 dev tun1
+		ip route add 0.0.0.0/1 via 10.9.0.1 dev tun1
+		ip route add 128.0.0.0/1 via 10.9.0.1 dev tun1
+
+		ip tuntap add mode tun name tun2
+		ip link set tun2 up
+		ip addr add 10.10.0.2/24 dev tun2
+		ip route add 0.0.0.0/1 dev tun2 table 100
 
 		ip -6 addr add fd10:abcd:0:1::99/64 dev eth0 nodad
 	`)
@@ -130,16 +143,19 @@ func TestTheLANInANetworkNamespace(t *testing.T) {
 		}
 	}
 
-	ifaces, prefixes := lan.OnLink()
-	if want := []string{"eth0"}; !slices.Equal(ifaces, want) {
-		t.Errorf("OnLink interfaces = %v, want %v", ifaces, want)
+	n := readNetwork(t)
+	if want := []string{"eth0"}; !slices.Equal(n.LAN, want) {
+		t.Errorf("the network's LAN = %v, want %v", n.LAN, want)
 	}
-	if want := append(slices.Clone(wantPrefixes), netip.MustParsePrefix("fd10:abcd:0:1::/64")); !sameSet(prefixes, want) {
-		t.Errorf("OnLink prefixes = %v, want %v: every network on the LAN's link, which apps never reach", prefixes, want)
+	if want := append(slices.Clone(wantPrefixes), netip.MustParsePrefix("fd10:abcd:0:1::/64")); !sameSet(n.Prefixes, want) {
+		t.Errorf("the network's prefixes = %v, want %v: every network on the LAN's link, which apps never reach", n.Prefixes, want)
 	}
-	if got, want := lan.Uplinks(), []string{"eth0", "wg1", "tun0"}; !sameSet(got, want) || got[0] != "eth0" {
-		t.Errorf("uplinks = %v, want %v, the LAN's first: apps reach the internet through the VPNs' tunnels too, "+
-			"not the dummy wg0, which is no tunnel", got, want)
+	if got, want := n.Uplinks, []string{"eth0", "wg1", "tun0", "tun1"}; !sameSet(got, want) || got[0] != "eth0" {
+		t.Errorf("uplinks = %v, want %v, the LAN's first: apps reach the internet through the VPNs' tunnels too (OpenVPN's "+
+			"def1 halves on tun1), not the dummy wg0, which is no tunnel, nor tun2, which has one half", got, want)
+	}
+	if got, want := n.Tunnels, []string{"wg1", "wt0", "tun0", "tun1", "tun2"}; !sameSet(got, want) {
+		t.Errorf("tunnels = %v, want %v: every tunnel, with a default route or without", got, want)
 	}
 }
 
@@ -163,10 +179,10 @@ func TestNoLANWhenOnlyAnotherTableHasADefaultRoute(t *testing.T) {
 	if l := lan.Current(); len(l.Interfaces) != 0 || len(l.Prefixes) != 0 || len(l.Addresses) != 0 {
 		t.Errorf("LAN = %+v, want none: the default routes are in table 51820 only", l)
 	}
-	if ifaces, prefixes := lan.OnLink(); len(ifaces) != 0 || len(prefixes) != 0 {
-		t.Errorf("OnLink = %v %v, want none", ifaces, prefixes)
+	if n := readNetwork(t); len(n.LAN) != 0 || len(n.Prefixes) != 0 {
+		t.Errorf("the network's LAN = %v %v, want none", n.LAN, n.Prefixes)
 	}
-	if got := lan.Uplinks(); len(got) != 0 {
+	if got := readNetwork(t).Uplinks; len(got) != 0 {
 		t.Errorf("uplinks = %v, want none: wg0 is a dummy, not a tunnel", got)
 	}
 }
@@ -194,7 +210,7 @@ func TestABridgeWithADefaultRouteInAnotherTableIsNoUplink(t *testing.T) {
 		ip -6 addr add fd00:7a::1/64 dev virbr0 nodad
 		ip -6 route add default via fd00:7a::fe dev virbr0 table 100
 	`)
-	if got := lan.Uplinks(); !slices.Equal(got, []string{"eth0"}) {
+	if got := readNetwork(t).Uplinks; !slices.Equal(got, []string{"eth0"}) {
 		t.Errorf("uplinks = %v, want eth0 only: the bridge is a local virtual network", got)
 	}
 	if got := lan.Current().Interfaces; !slices.Equal(got, []string{"eth0"}) {
@@ -231,6 +247,15 @@ func TestAMultipathDefaultRouteInANetworkNamespace(t *testing.T) {
 	if !sameSet(l.Prefixes, want) {
 		t.Errorf("prefixes = %v, want %v", l.Prefixes, want)
 	}
+}
+
+func readNetwork(t *testing.T) lan.Network {
+	t.Helper()
+	n, err := lan.ReadNetwork()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return n
 }
 
 func sh(t *testing.T, script string) {

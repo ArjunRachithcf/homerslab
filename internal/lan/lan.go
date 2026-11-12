@@ -106,24 +106,37 @@ func Current() LAN {
 	return k.LAN()
 }
 
-// OnLink is what the firewall table keeps apps away from, read from the live machine (Kernel.OnLink); nothing when
-// the kernel can't be asked.
-func OnLink() (interfaces []string, prefixes []netip.Prefix) {
-	k, err := ReadKernel()
-	if err != nil {
-		return nil, nil
-	}
-	return k.OnLink()
+// Network is what the firewall table needs of this machine's network, from one reading of the kernel, so its parts
+// agree: the LAN's interfaces and every prefix on them (Kernel.OnLink), the uplinks, and the tunnels.
+type Network struct {
+	LAN      []string
+	Prefixes []netip.Prefix
+	Uplinks  []string
+	// Tunnels are every link that carries a VPN or a mesh (a tunnel's kind of link, or a point-to-point one), with a
+	// default route or without: never the LAN, and never a local virtual network (#148).
+	Tunnels []string
 }
 
-// Uplinks are the interfaces through which this machine reaches the internet, read from the live machine
-// (Kernel.Uplinks); none when the kernel can't be asked.
-func Uplinks() []string {
+// ReadNetwork is the Network, read from the live machine; an error, and no Network, when the kernel can't be asked.
+// The caller decides what holds until it answers: never an empty LAN taken for the real one (#148).
+func ReadNetwork() (Network, error) {
 	k, err := ReadKernel()
 	if err != nil {
-		return nil
+		return Network{}, err
 	}
-	return k.Uplinks()
+	return k.Network(), nil
+}
+
+// Network is the Network this kernel describes.
+func (k Kernel) Network() Network {
+	n := Network{Uplinks: k.Uplinks()}
+	n.LAN, n.Prefixes = k.OnLink()
+	for _, l := range k.Links {
+		if l.tunnel() && !l.Loopback && !slices.Contains(n.Tunnels, l.Name) {
+			n.Tunnels = append(n.Tunnels, l.Name)
+		}
+	}
+	return n
 }
 
 // Interfaces are the LAN's interfaces: those that carry a default route, IPv4 or IPv6, in the main table (#108). Not
@@ -145,21 +158,61 @@ func (k Kernel) Interfaces() []string {
 	return out
 }
 
-// Uplinks are the ways to the internet: the LAN's interfaces first, then every tunnel with a unicast default route
-// in any table (a VPN's, which is never the LAN). Never another link: a local virtual network's bridge with a default
-// route in a table of its own is still a local virtual network, whose VMs the firewall forwards.
+// Uplinks are the ways to the internet: the LAN's interfaces first, then every tunnel with a default route in any
+// table (a VPN's, which is never the LAN). A tunnel's default route is a unicast one to the whole address space, or
+// routes of its own, in one table, that cover it together: OpenVPN's def1 puts 0.0.0.0/1 and 128.0.0.0/1 there instead
+// (#148). Never another link: a local virtual network's bridge with a default route in a table of its own is still a
+// local virtual network, whose VMs the firewall forwards.
 func (k Kernel) Uplinks() []string {
 	links := k.links()
 	out := k.Interfaces()
+	// A tunnel's unicast routes, by table, interface and family, in the order the kernel lists them.
+	type way struct {
+		table uint32
+		index int
+		v4    bool
+	}
+	var ways []way
+	dsts := map[way][]netip.Prefix{}
 	for _, r := range k.Routes {
-		if r.Type != unicast || r.Dst.Bits() != 0 {
+		if l, ok := links[r.Index]; !ok || r.Type != unicast || !l.tunnel() || l.Loopback {
 			continue
 		}
-		if l, ok := links[r.Index]; ok && l.tunnel() && !l.Loopback && !slices.Contains(out, l.Name) {
-			out = append(out, l.Name)
+		w := way{r.Table, r.Index, r.Dst.Addr().Is4()}
+		if _, ok := dsts[w]; !ok {
+			ways = append(ways, w)
+		}
+		dsts[w] = append(dsts[w], r.Dst.Masked())
+	}
+	for _, w := range ways {
+		everything := netip.PrefixFrom(netip.IPv6Unspecified(), 0)
+		if w.v4 {
+			everything = netip.PrefixFrom(netip.IPv4Unspecified(), 0)
+		}
+		if name := links[w.index].Name; !slices.Contains(out, name) && covered(everything, dsts[w]) {
+			out = append(out, name)
 		}
 	}
 	return out
+}
+
+// covered says whether the prefixes in set cover all of p (p masked): one of them holds it, or each of its halves is
+// covered. Only halves that some prefix in set overlaps are looked into.
+func covered(p netip.Prefix, set []netip.Prefix) bool {
+	overlaps := false
+	for _, q := range set {
+		if q.Bits() <= p.Bits() && q.Contains(p.Addr()) {
+			return true
+		}
+		overlaps = overlaps || q.Overlaps(p)
+	}
+	if !overlaps || p.Bits() == p.Addr().BitLen() {
+		return false
+	}
+	upper := p.Addr().AsSlice()
+	upper[p.Bits()/8] |= 0x80 >> (p.Bits() % 8)
+	hi, _ := netip.AddrFromSlice(upper)
+	return covered(netip.PrefixFrom(p.Addr(), p.Bits()+1), set) && covered(netip.PrefixFrom(hi, p.Bits()+1), set)
 }
 
 // LAN is the LAN this kernel describes.
