@@ -1209,3 +1209,124 @@ func TestACreateTriedAgainAfterAnEmptyListingFinishesTheInventory(t *testing.T) 
 		t.Errorf("the inventory: %v", got)
 	}
 }
+
+// staleAfterDelete is a zone with photos and media, in which deleting photos met an empty listing at the inventory
+// record: photos is gone from the provider and the book, and the inventory record still lists it (#176).
+func staleAfterDelete(t *testing.T) (o *dns.Owned, p *provider, e *emptyOnce, photos dns.Record) {
+	t.Helper()
+	ctx := context.Background()
+	p = household()
+	e = &emptyOnce{Provider: p}
+	o = &dns.Owned{Provider: e, Zone: "example.test.", Domain: "example.test", Book: &book{}}
+	photos = dns.Record{Name: "photos", Type: "CNAME", Value: "proxy.cluster.test."}
+	media := dns.Record{Name: "media", Type: "CNAME", Value: "proxy.cluster.test."}
+	for _, r := range []dns.Record{photos, media} {
+		if err := o.Create(ctx, r); err != nil {
+			t.Fatal(err)
+		}
+	}
+	e.at.Store(2) // the delete's lookup, then the inventory record's listing
+	if err := o.Delete(ctx, photos); !errors.Is(err, dns.ErrListingEmpty) {
+		t.Fatalf("delete: %v, want ErrListingEmpty", err)
+	}
+	if got := p.has("_homerslab", "TXT"); len(got) != 1 || got[0] != "homerslab=1; media CNAME, photos CNAME" {
+		t.Fatalf("the stale inventory: %v", got)
+	}
+	return o, p, e, photos
+}
+
+// The inventory is put right from the book on its own (#176): an explicit Reconcile writes the inventory and nothing
+// else.
+func TestReconcileRewritesAStaleInventoryFromTheBook(t *testing.T) {
+	testenv.Isolate(t)
+	o, p, _, _ := staleAfterDelete(t)
+	before := len(p.writes)
+	if err := o.Reconcile(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := p.has("_homerslab", "TXT"); len(got) != 1 || got[0] != "homerslab=1; media CNAME" {
+		t.Errorf("the inventory: %v", got)
+	}
+	for _, w := range p.writes[before:] {
+		if !strings.Contains(w, "_homerslab") {
+			t.Errorf("reconcile wrote %q, which isn't the inventory", w)
+		}
+	}
+	if got := p.has("media", "CNAME"); len(got) != 1 {
+		t.Errorf("media: %v", got)
+	}
+	writes := len(p.writes)
+	if err := o.Reconcile(context.Background()); err != nil || len(p.writes) != writes {
+		t.Errorf("a second reconcile: %v, writes %v", err, p.writes[writes:])
+	}
+}
+
+// Reconcile meets an empty listing like any write: it fails, retryably, and the next one finishes it.
+func TestReconcileThroughAnEmptyListingFailsAndIsTriedAgain(t *testing.T) {
+	testenv.Isolate(t)
+	o, p, e, _ := staleAfterDelete(t)
+	e.at.Store(1)
+	before := len(p.writes)
+	if err := o.Reconcile(context.Background()); !errors.Is(err, dns.ErrListingEmpty) {
+		t.Errorf("reconcile: %v, want ErrListingEmpty", err)
+	}
+	if len(p.writes) != before {
+		t.Errorf("written through an empty listing: %v", p.writes[before:])
+	}
+	if err := o.Reconcile(context.Background()); err != nil {
+		t.Error(err)
+	}
+	if got := p.has("_homerslab", "TXT"); len(got) != 1 || got[0] != "homerslab=1; media CNAME" {
+		t.Errorf("the inventory: %v", got)
+	}
+}
+
+// Trying the delete again, the record gone from the provider and from the book, which still shows the inventory
+// listing it, is a success that puts the inventory right: not ErrNotOurs (#176).
+func TestADeleteTriedAgainAfterTheInventoryFailedSucceeds(t *testing.T) {
+	testenv.Isolate(t)
+	o, p, _, photos := staleAfterDelete(t)
+	if err := o.Delete(context.Background(), photos); err != nil {
+		t.Errorf("trying again: %v", err)
+	}
+	if got := p.has("_homerslab", "TXT"); len(got) != 1 || got[0] != "homerslab=1; media CNAME" {
+		t.Errorf("the inventory: %v", got)
+	}
+	if got := p.has("photos", "CNAME"); len(got) != 0 {
+		t.Errorf("photos: %v", got)
+	}
+	// Once the inventory is right, the book shows nothing of the record: it is not ours.
+	if err := o.Delete(context.Background(), photos); !errors.Is(err, dns.ErrNotOurs) {
+		t.Errorf("a third delete: %v, want ErrNotOurs", err)
+	}
+}
+
+// A record the book never held, and the inventory never listed, is still refused, and nothing is written.
+func TestADeleteOfWhatWeNeverWroteStaysRefused(t *testing.T) {
+	testenv.Isolate(t)
+	o, p, _, _ := staleAfterDelete(t)
+	before := len(p.writes)
+	for _, r := range []dns.Record{
+		{Name: "www", Type: "CNAME", Value: "example.test."},
+		{Name: "photos", Type: "A", Value: "192.0.2.10"},
+	} {
+		if err := o.Delete(context.Background(), r); !errors.Is(err, dns.ErrNotOurs) {
+			t.Errorf("delete %+v: %v, want ErrNotOurs", r, err)
+		}
+	}
+	if len(p.writes) != before {
+		t.Errorf("written: %v", p.writes[before:])
+	}
+}
+
+// The next operation on the zone puts the inventory right too, without another write of the stale record's.
+func TestTheNextCreateAfterAFailedInventoryPutsItRight(t *testing.T) {
+	testenv.Isolate(t)
+	o, p, _, _ := staleAfterDelete(t)
+	if err := o.Create(context.Background(), dns.Record{Name: "books", Type: "CNAME", Value: "proxy.cluster.test."}); err != nil {
+		t.Fatal(err)
+	}
+	if got := p.has("_homerslab", "TXT"); len(got) != 1 || got[0] != "homerslab=1; books CNAME, media CNAME" {
+		t.Errorf("the inventory: %v", got)
+	}
+}

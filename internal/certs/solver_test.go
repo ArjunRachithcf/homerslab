@@ -213,3 +213,43 @@ func TestTheChallengeIsAwaitedAtTheZonesOneForm(t *testing.T) {
 		t.Errorf("a challenge for another zone's name: %v, want ErrBadName", err)
 	}
 }
+
+// emptyZone is a provider whose listing comes back empty, and that records every write.
+type emptyZone struct {
+	mu     sync.Mutex
+	writes []string
+}
+
+func (*emptyZone) GetRecords(context.Context, string) ([]libdns.Record, error) { return nil, nil }
+
+func (z *emptyZone) AppendRecords(_ context.Context, _ string, recs []libdns.Record) ([]libdns.Record, error) {
+	z.mu.Lock()
+	defer z.mu.Unlock()
+	z.writes = append(z.writes, "add")
+	return recs, nil
+}
+
+func (z *emptyZone) DeleteRecords(_ context.Context, _ string, recs []libdns.Record) ([]libdns.Record, error) {
+	z.mu.Lock()
+	defer z.mu.Unlock()
+	z.writes = append(z.writes, "delete")
+	return recs, nil
+}
+
+// A challenge presented while the provider's listing is empty (a moment's answer, which proves nothing) writes
+// nothing, and fails with an error that may be tried again later: never as a free name (#171, #176).
+func TestPresentThroughAnEmptyListingWritesNothingAndMayBeTriedAgain(t *testing.T) {
+	testenv.Isolate(t)
+	z, b := &emptyZone{}, &book{}
+	s := certs.ChallengeSolver(certs.Authority{}, &dns.Owned{Provider: z, Zone: "example.test.", Domain: "example.test", Book: b})
+	err := s.Present(context.Background(), challenge("example.test"))
+	if !errors.Is(err, dns.ErrListingEmpty) {
+		t.Errorf("present: %v, want ErrListingEmpty", err)
+	}
+	if len(z.writes) != 0 {
+		t.Errorf("written through an empty listing: %v", z.writes)
+	}
+	if recs, _ := b.Records(context.Background(), "example.test."); len(recs) != 0 {
+		t.Errorf("the book: %+v", recs)
+	}
+}
