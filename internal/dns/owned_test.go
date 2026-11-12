@@ -956,7 +956,10 @@ func TestAListingThatLooksEmptyNeverDropsTheBooksEntries(t *testing.T) {
 				t.Errorf("photos at the provider: %v, want %v", got, tc.atProvider)
 			}
 			// No record HomersLab wrote is left at the provider without its entry in the book.
-			for _, rr := range f.provider.records {
+			f.provider.mu.Lock()
+			left := slices.Clone(f.provider.records)
+			f.provider.mu.Unlock()
+			for _, rr := range left {
 				if !slices.ContainsFunc(household().records, func(x libdns.RR) bool { return x == rr }) &&
 					!slices.ContainsFunc(recs, func(k dns.Record) bool { return k.Name == rr.Name && k.Type == rr.Type && k.Value == rr.Data }) {
 					t.Errorf("left at the provider, untracked: %+v", rr)
@@ -988,5 +991,59 @@ func TestAListingThatLooksEmptyNeverDropsTheBooksEntries(t *testing.T) {
 				t.Errorf("creating photos again: %v", err)
 			}
 		})
+	}
+}
+
+// emptyOnce is a provider one of whose listings comes back empty: the at-th from now (none when 0).
+type emptyOnce struct {
+	dns.Provider
+	at atomic.Int32
+}
+
+func (e *emptyOnce) GetRecords(ctx context.Context, zone string) ([]libdns.Record, error) {
+	if e.at.Load() > 0 && e.at.Add(-1) == 0 {
+		return nil, nil
+	}
+	return e.Provider.GetRecords(ctx, zone)
+}
+
+// After an empty listing, the delete goes out in HomersLab's own form, which a provider that keeps another form doesn't
+// match; once the next listing shows the record, the delete is sent again as the provider lists it, so a moment's empty
+// listing doesn't fail the delete, or a create whose inventory record changes (#166's review).
+func TestADeleteAfterAnEmptyListingIsSentAgainInTheProvidersForm(t *testing.T) {
+	testenv.Isolate(t)
+	ctx := context.Background()
+	p, b := household(), &book{}
+	e := &emptyOnce{Provider: unicodeStore{p}}
+	o := &dns.Owned{Provider: e, Zone: "example.test.", Domain: "bücher.example.test", Book: b}
+	var notes []dns.Drift
+	o.Drift = func(d dns.Drift) { notes = append(notes, d) }
+	r := dns.Record{Name: "_acme-challenge.xn--bcher-kva", Type: "TXT", Value: "digest"}
+	if err := o.Create(ctx, r); err != nil {
+		t.Fatal(err)
+	}
+	e.at.Store(1)
+	if err := o.Delete(ctx, r); err != nil {
+		t.Errorf("delete: %v", err)
+	}
+	if got := p.has("_acme-challenge.bücher", "TXT"); len(got) != 0 {
+		t.Errorf("the challenge is still at the provider: %v", got)
+	}
+	if recs, _ := b.Records(ctx, "example.test."); len(recs) != 0 || len(notes) != 0 {
+		t.Errorf("the book %+v, notes %+v", recs, notes)
+	}
+
+	// A create whose old inventory record's delete meets the empty listing.
+	photos := dns.Record{Name: "photos.xn--bcher-kva", Type: "CNAME", Value: "proxy.cluster.test."}
+	media := dns.Record{Name: "media.xn--bcher-kva", Type: "CNAME", Value: "proxy.cluster.test."}
+	if err := o.Create(ctx, photos); err != nil {
+		t.Fatal(err)
+	}
+	e.at.Store(3) // the name's, the new inventory record's, then the old one's delete's
+	if err := o.Create(ctx, media); err != nil {
+		t.Errorf("a create whose inventory's delete met an empty listing: %v", err)
+	}
+	if got := p.has("_homerslab.bücher", "TXT"); len(got) != 1 || !strings.Contains(got[0], "media") {
+		t.Errorf("the inventory records: %v", got)
 	}
 }
