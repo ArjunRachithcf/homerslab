@@ -1,13 +1,12 @@
 package cli
 
 import (
-	"strings"
-
-	"github.com/ArjunRachithcf/homerslab/internal/manager/plan"
 	"net/netip"
+	"strings"
 	"testing"
 
 	"github.com/ArjunRachithcf/homerslab/internal/lan"
+	"github.com/ArjunRachithcf/homerslab/internal/manager/plan"
 	"github.com/ArjunRachithcf/homerslab/internal/testenv"
 )
 
