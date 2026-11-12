@@ -51,7 +51,7 @@ func running(t *testing.T, options ...any) string {
 			id      string
 			answers map[string]string
 		}{{"welcome", nil}, {"you", map[string]string{"name": "Inês Ferreira", "mail": "ines@ferreira.family"}}, {"household", map[string]string{"household": "The Ferreira household"}}} {
-			if err := db.CompleteStep(context.Background(), st.id, st.answers, time.Now()); err != nil {
+			if err := db.CompleteStep(context.Background(), st.id, st.answers, time.Now(), store.AnyRevision); err != nil {
 				t.Fatal(err)
 			}
 		}

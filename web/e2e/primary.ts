@@ -155,7 +155,8 @@ export class Primary {
     const api = async (method: string, path: string, body: unknown, token?: string) => {
       const resp = await fetch(new URL(path, link), {
         method, body: JSON.stringify(body),
-        headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+        // A step answered for the first time is at revision 0.
+        headers: { 'Content-Type': 'application/json', ...(method === 'PUT' ? { 'If-Match': '"0"' } : {}), ...(token ? { Authorization: `Bearer ${token}` } : {}) },
       });
       if (!resp.ok) throw new Error(`${method} ${path}: ${resp.status} ${await resp.text()}`);
       return resp.json() as Promise<{ token?: string }>;

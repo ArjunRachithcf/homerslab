@@ -355,10 +355,11 @@ type state struct {
 	Half    string `json:"half"`
 	Current string `json:"current"`
 	Steps   []struct {
-		ID      string `json:"id"`
-		Half    string `json:"half"`
-		State   string `json:"state"`
-		Confirm string `json:"confirm"`
+		ID       string `json:"id"`
+		Half     string `json:"half"`
+		State    string `json:"state"`
+		Confirm  string `json:"confirm"`
+		Revision int64  `json:"revision"`
 	} `json:"steps"`
 	Answers map[string]string `json:"answers"`
 }
@@ -374,11 +375,40 @@ func (b *browser) state() state {
 	return s
 }
 
+// answer is what the page does: it answers from the step's current revision, and says it is an edit when the step is
+// done. A test of a stale or a plain answer to a done step uses put.
 func (b *browser) answer(step string, body any) response {
+	b.p.t.Helper()
+	for _, st := range b.state().Steps {
+		if st.ID == step {
+			return b.put(step, body, st.Revision, st.State == "done")
+		}
+	}
+	return b.put(step, body, 0, false)
+}
+
+// put answers a step from the revision a page saw, as an edit or not.
+func (b *browser) put(step string, body any, revision int64, edit bool) response {
 	if body == nil {
 		body = map[string]string{}
 	}
-	return b.do("PUT", "/api/v1/setup/steps/"+step, body)
+	path := "/api/v1/setup/steps/" + step
+	if edit {
+		path += "?edit=true"
+	}
+	return b.do("PUT", path, body, func(r *http.Request) { r.Header.Set("If-Match", fmt.Sprintf(`"%d"`, revision)) })
+}
+
+// revision is a step's revision now.
+func (b *browser) revision(step string) int64 {
+	b.p.t.Helper()
+	for _, st := range b.state().Steps {
+		if st.ID == step {
+			return st.Revision
+		}
+	}
+	b.p.t.Fatalf("no step %q", step)
+	return 0
 }
 
 func (b *browser) mustAnswer(step string, body any) state {

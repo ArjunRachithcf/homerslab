@@ -20,6 +20,8 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -277,13 +279,42 @@ func (m *Manager) getPrimary(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, facts)
 }
 
+// stepBasis reads the view of the step an answer was made from: its revision in If-Match (a quoted number, as the
+// state gave it), and ?edit=true when the answer changes a step that is done.
+func stepBasis(r *http.Request) (setup.Basis, string) {
+	h := r.Header.Get("If-Match")
+	if h == "" {
+		return setup.Basis{}, "revision-required"
+	}
+	n, err := strconv.ParseInt(strings.Trim(h, `"`), 10, 64)
+	if err != nil || n < 0 || !strings.HasPrefix(h, `"`) || !strings.HasSuffix(h, `"`) {
+		return setup.Basis{}, "bad-revision"
+	}
+	switch r.URL.Query().Get("edit") {
+	case "":
+		return setup.Basis{Revision: n}, ""
+	case "true":
+		return setup.Basis{Revision: n, Edit: true}, ""
+	}
+	return setup.Basis{}, "bad-edit"
+}
+
 func (m *Manager) putStep(w http.ResponseWriter, r *http.Request) {
+	basis, bad := stepBasis(r)
+	if bad != "" {
+		status := http.StatusBadRequest
+		if bad == "revision-required" {
+			status = http.StatusPreconditionRequired
+		}
+		fail(w, status, bad)
+		return
+	}
 	var raw json.RawMessage
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10)).Decode(&raw); err != nil {
 		fail(w, http.StatusBadRequest, "not-json")
 		return
 	}
-	st, err := m.setup.Answer(r.Context(), r.PathValue("id"), setup.LAN, raw)
+	st, err := m.setup.Answer(r.Context(), r.PathValue("id"), setup.LAN, raw, basis)
 	var invalid *setup.Invalid
 	var overHTTP *setup.SecretOverHTTP
 	switch {
@@ -299,7 +330,7 @@ func (m *Manager) putStep(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusNotFound, err.Error())
 	case errors.Is(err, setup.ErrOverTheMesh):
 		fail(w, http.StatusForbidden, err.Error())
-	case errors.Is(err, setup.ErrEarlierStepOpen), errors.Is(err, setup.ErrLANHalfDone):
+	case errors.Is(err, setup.ErrEarlierStepOpen), errors.Is(err, setup.ErrLANHalfDone), errors.Is(err, setup.ErrStale), errors.Is(err, setup.ErrStepDone):
 		fail(w, http.StatusConflict, err.Error())
 	case errors.Is(err, setup.ErrNotBuilt):
 		fail(w, http.StatusNotImplemented, err.Error())
