@@ -3,7 +3,8 @@
 // `::name args::data` after TrimStart, then the v1 form `##[name args]data` anywhere in the line, each only for a
 // registered command. While commands are stopped, the runner takes no command but the stop token, which resumes them;
 // the model registers only that name then. TrimStart is .NET's: it strips U+0085 (JS's doesn't) and leaves U+FEFF
-// (JS's \s has it).
+// (JS's \s has it). The model is looser than the runner while stopped: the runner never falls back to `##[` on a
+// line whose `::` form parsed, the model does, so it may resume where the runner wouldn't (the safe direction).
 const REGISTERED = ['add-mask', 'add-matcher', 'add-path', 'debug', 'echo', 'endgroup', 'error', 'group', 'notice',
   'remove-matcher', 'save-state', 'set-env', 'set-output', 'stop-commands', 'warning', 'internal-set-repo-path'];
 

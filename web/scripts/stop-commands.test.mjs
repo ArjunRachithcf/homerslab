@@ -86,27 +86,57 @@ const jobs = () => {
   return at.map((m, i) => [m[1], ci.slice(m.index, at[i + 1]?.index ?? ci.length)]);
 };
 
-const GO_CMD = /\bgo (vet|test|build|run|install|generate|list)\b/;
+const GO_CMD = /\bgo (-C \S+ )?(vet|test|build|run|install|generate|list|get|tool|mod)\b/;
+const FETCH = /stop-commands\.sh go mod (download|tidy)/;
+// Settings that let go reach a source without the proxy off (GONOPROXY=* with GOPROXY=off still fetches over git),
+// or skip the checksum database, anywhere in a job: in env:, in a step, or inline in run: text.
+const LEAKS = /\b(GONOPROXY|GOPRIVATE|GONOSUMDB|GONOSUMCHECK|GOINSECURE|GOSUMDB)\b|\bGOFLAGS\b(?!: -buildvcs=false\n)/; // GOFLAGS only as the jobs set it
+const PROXY_SET = /["']?\bGOPROXY\b["']?\s*:[ \t]*(\S*)/g;
 
-test('a Go command is found by every verb the filter lists, and ', () => {
-  for (const verb of ['vet', 'test', 'build', 'run', 'install', 'generate', 'list']) assert.match(`run: go ${verb} ./...`, GO_CMD);
+// What is wrong with a Go job's text; [] when nothing.
+function goJobProblems(body) {
+  const problems = [];
+  if (!/\n {4}env:\n( {6}.*\n)* {6}GOPROXY: "off"\n/.test(body)) problems.push('GOPROXY not off for the job');
+  if (LEAKS.test(body)) problems.push('a setting that bypasses the proxy or the sums');
+  if (/\bGOPROXY\s*=/.test(body)) problems.push('GOPROXY set inline');
+  const steps = body.split('\n      - ').slice(1); // after the job's own header
+  for (const step of steps.filter((st) => GO_CMD.test(st) && !FETCH.test(st))) {
+    for (const m of step.matchAll(PROXY_SET)) if (m[1] !== '"off"') problems.push('a later step turns the proxy on');
+  }
+  return problems;
+}
+
+test('a Go command is found by every verb and form the filter lists, and not by a lookalike', () => {
+  for (const verb of ['vet', 'test', 'build', 'run', 'install', 'generate', 'list', 'get', 'tool', 'mod verify'])
+    assert.match(`run: go ${verb} ./...`, GO_CMD);
+  assert.match('run: go -C tools build ./x', GO_CMD);
   assert.doesNotMatch('run: gopher', GO_CMD);
+});
+
+test('a Go job that leaks the proxy setting is caught, in every form', () => {
+  const ok = '\n  job:\n    env:\n      GOPROXY: "off"\n    steps:\n      - run: go test ./...\n';
+  assert.deepEqual(goJobProblems(ok), []);
+  const bad = (text) => goJobProblems(ok.replace('      - run: go test ./...\n', text));
+  assert.ok(bad('      - run: GOPROXY=off GONOPROXY=* go get x\n').length);
+  assert.ok(bad('      - run: go get x\n        env:\n          GONOPROXY: "*"\n').length);
+  assert.ok(bad('      - run: go test ./...\n        env:\n          GOPRIVATE: x\n').length);
+  assert.ok(bad('      - run: go test ./...\n        env:\n          GOFLAGS: -insecure\n').length);
+  assert.ok(bad('      - run: go test ./...\n        env:\n          GOPROXY: https://x\n').length);
+  assert.ok(bad('      - run: go test ./...\n        env:\n          "GOPROXY": x\n').length);
+  assert.ok(bad('      - run: go test ./...\n        env:\n          GOPROXY : x\n').length);
 });
 
 test('every Go job fetches its modules under the wrapper first, then runs with the proxy off', () => {
   const goJobs = jobs().filter(([, body]) => GO_CMD.test(body));
   assert.ok(goJobs.length >= 5, goJobs.map(([id]) => id).join(' '));
   for (const [job, body] of goJobs) {
-    assert.match(body, /\n {4}env:\n( {6}.*\n)* {6}GOPROXY: "off"\n/, `${job}: GOPROXY off for the job`);
+    assert.deepEqual(goJobProblems(body), [], job);
     assert.match(body, /stop-commands\.sh go mod (download|tidy -diff)\n/, `${job}: fetches its modules first`);
     // `go mod download all` writes sums into go.sum that go mod tidy -diff then refuses.
     assert.doesNotMatch(body, /go mod download all/, `${job}: leaves go.sum as it is`);
-    const steps = body.split('\n      - ');
-    const goSteps = steps.filter((step) => GO_CMD.test(step));
-    for (const step of goSteps) assert.doesNotMatch(step, /GOPROXY: (?!"off")/, `${job}: a later step turns the proxy on`);
-    // GOPROXY inline in a run: line (`GOPROXY=... go ...`, `export GOPROXY=...`) would bypass the env: check above.
-    assert.doesNotMatch(body, /GOPROXY=/, `${job}: GOPROXY set inline`);
-    const fetch = steps.findIndex((step) => /stop-commands\.sh go mod (download|tidy)/.test(step));
+    const steps = body.split('\n      - ').slice(1);
+    const goSteps = steps.filter((step) => GO_CMD.test(step) && !FETCH.test(step));
+    const fetch = steps.findIndex((step) => FETCH.test(step));
     assert.ok(fetch >= 0 && fetch < steps.indexOf(goSteps[0]), `${job}: fetches before it builds`);
   }
 });
