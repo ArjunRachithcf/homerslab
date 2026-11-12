@@ -3,6 +3,7 @@ package manager_test
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"sync"
 	"testing"
@@ -114,25 +115,22 @@ func TestATabThatSawAStepOpenCantAnswerItOnceAnotherDid(t *testing.T) {
 	}
 }
 
-// Two tabs answer from one revision at the same moment: one is kept, one is refused, whichever the manager meets first,
-// even when both pass the manager's early check (the handler of the step holds both until each has begun).
-func TestOfTwoAnswersFromOneRevisionOnlyOneIsKept(t *testing.T) {
+// Two tabs answer from one revision at the same moment: the first decides. The other is refused before its handler
+// runs, so nothing it would have written (a sealed credential, a call to NetBird) can outlive it.
+func TestOfTwoAnswersFromOneRevisionOnlyTheFirstsHandlerRuns(t *testing.T) {
 	testenv.Isolate(t)
-	var in sync.WaitGroup
-	in.Add(2)
-	gate := func(_ context.Context, raw json.RawMessage, _ map[string]string) (map[string]string, error) {
-		in.Done()
-		done := make(chan struct{})
-		go func() { in.Wait(); close(done) }()
-		select {
-		case <-done:
-		case <-time.After(3 * time.Second):
-		}
+	var mu sync.Mutex
+	var ran []string
+	handler := func(_ context.Context, raw json.RawMessage, _ map[string]string) (map[string]string, error) {
 		var a struct{ Name string }
 		_ = json.Unmarshal(raw, &a)
+		mu.Lock()
+		ran = append(ran, a.Name)
+		mu.Unlock()
+		time.Sleep(300 * time.Millisecond) // long enough for the other answer to arrive
 		return map[string]string{"household": a.Name}, nil
 	}
-	p := newPrimary(t, func(p *primary) { p.steps["household"] = gate })
+	p := newPrimary(t, func(p *primary) { p.steps["household"] = handler })
 	b := p.claimed()
 	b.mustAnswer("welcome", nil)
 	b.mustAnswer("you", ines)
@@ -145,8 +143,29 @@ func TestOfTwoAnswersFromOneRevisionOnlyOneIsKept(t *testing.T) {
 	if !(a == http.StatusOK && c == http.StatusConflict || a == http.StatusConflict && c == http.StatusOK) {
 		t.Errorf("two answers from one revision: %d and %d, want one 200 and one 409", a, c)
 	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(ran) != 1 {
+		t.Fatalf("handlers that ran: %v, want only the winner's", ran)
+	}
+	if got := b.state().Answers["household"]; got != ran[0] {
+		t.Errorf("the kept answer is %q, the winner's is %q", got, ran[0])
+	}
 	if got := b.revision("household"); got != rev+1 {
 		t.Errorf("both answers moved the revision: %d, want %d", got, rev+1)
+	}
+}
+
+func TestEditAcceptsOnlyTrue(t *testing.T) {
+	testenv.Isolate(t)
+	b := newPrimary(t).claimed()
+	b.firstThree()
+	rev := fmt.Sprintf(`"%d"`, b.revision("you"))
+	for _, q := range []string{"1", "yes", "True", "false"} {
+		r := b.do("PUT", "/api/v1/setup/steps/you?edit="+q, ines, func(r *http.Request) { r.Header.Set("If-Match", rev) })
+		if r.Code != http.StatusBadRequest || r.errorCode(t) != "bad-edit" {
+			t.Errorf("?edit=%s: %d %s, want 400 bad-edit", q, r.Code, r.Body)
+		}
 	}
 }
 

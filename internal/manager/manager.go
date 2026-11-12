@@ -290,7 +290,13 @@ func stepBasis(r *http.Request) (setup.Basis, string) {
 	if err != nil || n < 0 || !strings.HasPrefix(h, `"`) || !strings.HasSuffix(h, `"`) {
 		return setup.Basis{}, "bad-revision"
 	}
-	return setup.Basis{Revision: n, Edit: r.URL.Query().Get("edit") == "true"}, ""
+	switch r.URL.Query().Get("edit") {
+	case "":
+		return setup.Basis{Revision: n}, ""
+	case "true":
+		return setup.Basis{Revision: n, Edit: true}, ""
+	}
+	return setup.Basis{}, "bad-edit"
 }
 
 func (m *Manager) putStep(w http.ResponseWriter, r *http.Request) {

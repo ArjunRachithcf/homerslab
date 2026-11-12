@@ -188,6 +188,11 @@ type Setup struct {
 	// most every SeenEvery. A new link ends every session, so there is at most one.
 	mu   sync.Mutex
 	seen *lastUse
+
+	// acting is held from checking an answer through its handler to keeping it, in Answer and Secret: of two answers
+	// from one revision the first decides, and the other is refused before its handler can do anything (seal a
+	// credential, ask NetBird) that would outlive it (#110).
+	acting sync.Mutex
 }
 
 // lastUse is when this process last saw a session used, and when it last wrote that to the database (Elapsed). Used
@@ -291,6 +296,8 @@ type Basis struct {
 // Answer takes a step's answer, given over the half "over", and returns the new state. It changes nothing unless the
 // step is still at basis.Revision (ErrStale), and a step that is done only when basis says it is an edit (ErrStepDone).
 func (s *Setup) Answer(ctx context.Context, id string, over Half, answer json.RawMessage, basis Basis) (State, error) {
+	s.acting.Lock()
+	defer s.acting.Unlock()
 	st, err := s.State(ctx)
 	if err != nil {
 		return State{}, err
@@ -386,6 +393,8 @@ func carriesSecret(raw json.RawMessage) bool {
 // Secret takes a secret, by name, for the step waiting for it, and finishes that step. It comes from this machine's
 // terminal over the control socket, never from the LAN page.
 func (s *Setup) Secret(ctx context.Context, name, value string) (State, error) {
+	s.acting.Lock()
+	defer s.acting.Unlock()
 	st, err := s.State(ctx)
 	if err != nil {
 		return State{}, err
