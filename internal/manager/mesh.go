@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/ArjunRachithcf/homerslab/internal/agent"
+	"github.com/ArjunRachithcf/homerslab/internal/dns"
 	"github.com/ArjunRachithcf/homerslab/internal/manager/setup"
 	"github.com/ArjunRachithcf/homerslab/internal/manager/store"
 	"github.com/ArjunRachithcf/homerslab/internal/mesh"
@@ -534,11 +535,16 @@ func (m *Manager) RunDue(ctx context.Context) {
 	if err := m.rotate(ctx); err != nil {
 		m.log.Error("the mesh token's rotation", "err", err)
 	}
-	if err := m.renew(ctx); err != nil {
-		m.log.Error("the certificate's renewal", "err", err)
+	renewal := m.renew(ctx)
+	if renewal != nil {
+		m.log.Error("the certificate's renewal", "err", renewal)
 	}
-	if err := m.reconcile(ctx); err != nil {
-		m.log.Error("putting the DNS zone's inventory record right", "err", err)
+	// Not on the listing that just came back empty: its drift note would alternate with the renewal's at every run,
+	// and never collapse into one (#175).
+	if !errors.Is(renewal, dns.ErrListingEmpty) {
+		if err := m.reconcile(ctx); err != nil {
+			m.log.Error("putting the DNS zone's inventory record right", "err", err)
+		}
 	}
 	if err := m.checkMesh(ctx); err != nil {
 		m.log.Error("checking the mesh", "err", err)

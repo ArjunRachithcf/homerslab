@@ -342,8 +342,8 @@ func (e *edit) delete(ctx context.Context, r Record) error {
 //     sent in (HomersLab's own, after a listing that failed or came back empty) and resend allows it, the delete is sent
 //     once more in it, and settled again without another; otherwise the record stays in the book (ErrNotDeleted);
 //   - the lookup fails: nothing is known, and the record stays too;
-//   - the provider lists nothing in the zone: nothing is known either, the record stays, and the drift report says the
-//     listing looked empty (#166);
+//   - the provider lists nothing in the zone: nothing is known either, the record stays, the drift report says the
+//     listing looked empty (#166), and the error is ErrListingEmpty too, which callers try again quietly (#175);
 //   - our value is gone, after a delete the provider reported done: it is deleted, and leaves the book;
 //   - our value is gone, after a delete the provider did nothing for: nothing of that name and type is left, or only
 //     HomersLab's other values (or, at the challenge's name, which other ACME clients share, anyone's), so someone
@@ -369,7 +369,7 @@ func (e *edit) settle(ctx context.Context, ours []Record, i int, kept Record, se
 			e.Log.Warn("the DNS provider listed nothing in the zone after a delete: the record stays listed as HomersLab's", "zone", e.zone, "name", r.Name, "type", r.Type)
 		}
 		e.note(r, DriftListingLookedEmpty)
-		return fmt.Errorf("%w: %s %s (%v)", ErrNotDeleted, r.Type, r.Name, ErrListingEmpty)
+		return fmt.Errorf("%w: %s %s (%w)", ErrNotDeleted, r.Type, r.Name, ErrListingEmpty) // tried again, as an empty listing
 	case slices.ContainsFunc(there, r.matches):
 		exact := raw[slices.IndexFunc(there, r.matches)]
 		if exact.TTL = 0; resend && exact.Data != "" && exact != sent {

@@ -1446,7 +1446,8 @@ func TestADeleteIsDoneOnlyWhenAListingShowsTheRecordGone(t *testing.T) {
 }
 
 // When the listing after a delete the provider reported done fails, or comes back empty, nothing shows the record gone:
-// it stays in the book, and the delete fails as one the provider did nothing for (#179).
+// it stays in the book, and the delete fails as one the provider did nothing for; after an empty listing, as an empty
+// listing too, which its callers try again quietly (#175, #179).
 func TestADeleteReportedDoneWithoutAListingStaysInTheBook(t *testing.T) {
 	testenv.Isolate(t)
 	ctx := context.Background()
@@ -1468,8 +1469,9 @@ func TestADeleteReportedDoneWithoutAListingStaysInTheBook(t *testing.T) {
 				t.Fatal(err)
 			}
 			tc.prep(b)
-			if err := o.Delete(ctx, r); !errors.Is(err, dns.ErrNotDeleted) {
-				t.Errorf("the delete: %v, want ErrNotDeleted", err)
+			err := o.Delete(ctx, r)
+			if !errors.Is(err, dns.ErrNotDeleted) || errors.Is(err, dns.ErrListingEmpty) != (tc.note != nil) {
+				t.Errorf("the delete: %v, want ErrNotDeleted, and ErrListingEmpty for an empty listing (tried again quietly)", err)
 			}
 			if recs, _ := bk.Records(ctx, "example.test."); !slices.Contains(recs, r) {
 				t.Errorf("the book: %+v", recs)

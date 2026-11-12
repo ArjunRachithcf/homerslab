@@ -430,7 +430,7 @@ func (m *Manager) reconcile(ctx context.Context) error {
 	err = m.domains.Reconcile(ctx, Issuance{Settings: settingsOf(ans), Token: token, Zone: ans[ansZone], Domain: domain,
 		Drift: m.dnsDrift(ctx, ans[ansRenewedAt])})
 	if errors.Is(err, dns.ErrListingEmpty) {
-		m.log.Info("the DNS zone's inventory record waits for a listing that isn't empty: tried again at the next run", "domain", domain)
+		m.log.Debug("the DNS zone's inventory record waits for a listing that isn't empty: tried again at the next run", "domain", domain)
 		return nil
 	}
 	return err

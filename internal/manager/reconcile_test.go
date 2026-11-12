@@ -101,6 +101,37 @@ func TestAReconcileOnAnEmptyListingIsTriedAgainQuietly(t *testing.T) {
 	}
 }
 
+// While a due renewal stops on an empty listing, the zone's inventory isn't reconciled in the same run: its listing has
+// just come back empty, and the two notes, the challenge's and the inventory's, would follow each other in the drift
+// report at every run instead of collapsing into one (#175, #179). Once the listing is back, both run.
+func TestAnEmptyListingAtTheRenewalIsOneDriftNoteWithTheReconcile(t *testing.T) {
+	testenv.Isolate(t)
+	p, b, _, fd := atDomain(t)
+	throughDomain(t, p, b)
+	ctx := context.Background()
+	note := func(name string) dns.Drift {
+		return dns.Drift{Zone: "example.test.", Record: dns.Record{Name: name, Type: "TXT", Value: driftValue}, What: dns.DriftListingLookedEmpty}
+	}
+	empty := fmt.Errorf("presenting for challenge: %w", dns.ErrListingEmpty)
+	p.clock.Add(60 * 24 * time.Hour)
+	fd.fail, fd.drift = empty, []dns.Drift{note("_acme-challenge")}
+	fd.reconcileFail, fd.reconcileDrift = fmt.Errorf("the inventory record: %w", dns.ErrListingEmpty), []dns.Drift{note(dns.Inventory)}
+	before := len(fd.reconciles())
+	for range 5 {
+		p.clock.Add(time.Hour)
+		p.m.RunDue(ctx)
+	}
+	if d := p.drift(t); len(d) != 1 {
+		t.Errorf("five runs on an empty listing: %d notes, want one: %+v", len(d), d)
+	}
+	fd.fail, fd.drift, fd.reconcileFail, fd.reconcileDrift = nil, nil, nil, nil
+	p.clock.Add(time.Hour)
+	p.m.RunDue(ctx)
+	if n := len(fd.reconciles()) - before; n != 1 || fd.count() != 2 {
+		t.Errorf("once the listing is back: reconciled %d times, issued %d", n, fd.count())
+	}
+}
+
 // staleBook is a book whose inventory record still lists a record it no longer holds, as a delete whose inventory
 // update failed leaves it (#176).
 type staleBook struct{ recs []dns.Record }
