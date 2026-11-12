@@ -25,6 +25,7 @@ const (
 	Missing          = "missing"
 	TooLong          = "too-long"
 	HiddenCharacters = "hidden-characters" // an invisible character, or one a name can't use
+	TooManyMarks     = "too-many-marks"    // more than MarksMax combining marks on one letter
 	NotAMail         = "not-a-mail"
 )
 

@@ -70,6 +70,7 @@
   "step.you.mailInvalid": "Type a mail address, like name@example.org.",
   "step.you.nameTooLong": "Your name can be 64 characters at most. An accent or an emoji can count as more than one.",
   "step.you.nameHidden": "Your name has an invisible character, or one a name can’t use, often pasted along with it. Type it again.",
+  "step.you.nameMarks": "Your name has too many accents or marks on one letter: four at most. Type it again.",
   "step.you.mailTooLong": "A mail address can be 254 characters at most.",
   "step.you.mailHidden": "This mail address has an invisible character, often pasted along with it. Type it again.",
 
@@ -80,6 +81,7 @@
   "step.household.why": "Give the household a name to continue.",
   "step.household.invalid": "Give the household a name.",
   "step.household.tooLong": "The household’s name can be 64 characters at most. An accent or an emoji can count as more than one.",
+  "step.household.marks": "The name has too many accents or marks on one letter: four at most. Type it again.",
   "step.household.hidden": "The name has an invisible character, or one a name can’t use, often pasted along with it. Type it again.",
 
   "step.signin.title": "How everyone signs in",

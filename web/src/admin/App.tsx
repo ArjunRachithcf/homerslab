@@ -291,6 +291,14 @@ function Row({ lead, title, sub, trail }: { lead?: string; title: ReactNode; sub
   );
 }
 
+/** People's names for a sentence: each in an element of its own, so a right-to-left name can't reorder the words around it. */
+const peopleNames = (names: string[]): ReactNode => {
+  const bdis = names.map((n, i) => <bdi key={i}>{n}</bdi>);
+  const last = bdis.pop();
+  return !last ? null : bdis.length === 0 ? last
+    : rich('plan.and', { a: bdis.flatMap((b, i) => (i ? [', ', b] : [b])), b: last });
+};
+
 const engineName = (e: string) => t(e === 'podman' ? 'engine.podman' : 'engine.docker');
 
 const plural = (n: number, one: Key, many: Key, vars: Record<string, string | number>) => t(n === 1 ? one : many, { n, ...vars });
@@ -338,7 +346,7 @@ function PlanSections({ p }: { p: Plan }) {
       <section aria-labelledby="pq-who">
         <Q id="pq-who" title={t('plan.who')} sub={t('plan.who.sub')} />
         <div className="group">
-          <Row lead="people" title={`${t(`plan.who.${p.audience.default}` as Key)}: ${people.length ? and(people) : t('plan.who.nobody')}`}
+          <Row lead="people" title={<>{t(`plan.who.${p.audience.default}` as Key)}: {people.length ? peopleNames(people) : t('plan.who.nobody')}</>}
             sub={p.audience.kidView ? t('plan.who.kidView', { view: p.audience.kidView }) : undefined} />
         </div>
       </section>
@@ -412,7 +420,7 @@ function PlanCard({ p }: { p: Plan }) {
         <li><Icon name="mesh" /><span>{rich('plan.creates.name', { host: <span className="host">{p.name.host}</span> })}</span></li>
         {p.secrets.length > 0 && <li><Icon name="lock" /><span>{plural(p.secrets.length, 'plan.creates.secrets.one', 'plan.creates.secrets.many', {})}</span></li>}
         {p.backups.data.length > 0 && <li><Icon name="backups" /><span>{t('plan.creates.backups')}</span></li>}
-        {people.length > 0 && <li><Icon name="home" /><span>{t('plan.creates.home', { people: and(people) })}</span></li>}
+        {people.length > 0 && <li><Icon name="home" /><span>{rich('plan.creates.home', { people: peopleNames(people) })}</span></li>}
       </ul>
       <button type="button" className="btn btn-primary btn-lg btn-block" disabled aria-describedby="install-why">
         {p.risky && <Icon name="key" />}{t(p.risky ? 'plan.installKey' : 'plan.install')}

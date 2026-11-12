@@ -383,3 +383,43 @@ func TestMailAddresses(t *testing.T) {
 		}
 	}
 }
+
+// Combining marks are capped at 4 in a row on one base (#124): "A" under 60 marks is Zalgo text, which draws over the
+// lines around it. Real names with marks (Persian and Arabic vowel signs, Hebrew points, Thai, Hindi, Tibetan stacks)
+// pass.
+func TestCombiningMarksAreCapped(t *testing.T) {
+	testenv.Isolate(t)
+	b := newPrimary(t).claimed()
+	b.firstThree()
+	zalgo := "A" + strings.Repeat("\u0316\u0317\u0318\u0319\u031a", 12) // 60 marks that don't compose with the A
+	for _, c := range []struct{ what, name string }{
+		{"Persian with vowel signs", "محمّد رضا"},
+		{"Persian with a shadda and a fatha", "علیٌّ \u0645\u064e\u0651"},
+		{"Arabic with harakat", "عَبْدُ ٱللَّٰهِ"},
+		{"Hebrew with niqqud and a dagesh", "ש\u05b8\u05c1לו\u05b9ם כ\u05b9\u05bcה\u05b5ן"},
+		{"Thai with stacked marks", "ก\u0e38\u0e49 ส\u0e21\u0e0a\u0e32\u0e22\u0e48\u0e47"},
+		{"a Tibetan stack of four marks", "བ\u0f71\u0f72\u0f74\u0f7a"},
+		{"exactly four marks", "A\u0316\u0317\u0318\u0319"},
+		{"four marks on each of two words", "A\u0316\u0317\u0318\u0319 B\u0316\u0317\u0318\u0319"},
+		{"a keycap with its selector", "Flat 1\ufe0f\u20e3"},
+	} {
+		if r := b.answer("household", map[string]string{"name": c.name}); r.Code != http.StatusOK {
+			t.Errorf("%s (%+q): %d %s, want it accepted", c.what, c.name, r.Code, r.Body)
+		}
+	}
+	for _, c := range []struct{ what, name string }{
+		{"60 marks on an A", zalgo},
+		{"five marks on an A", "A\u0316\u0317\u0318\u0319\u031a"},
+		{"five marks on a Persian letter", "م\u064b\u064c\u064d\u064e\u064f"},
+		{"five marks on the second word", "Inês F\u0316\u0317\u0318\u0319\u031a"},
+	} {
+		r := b.answer("household", map[string]string{"name": c.name})
+		if r.Code != http.StatusBadRequest || !strings.Contains(string(r.Body), `"name":"too-many-marks"`) {
+			t.Errorf("%s as the household's name: %d %s, want 400 too-many-marks", c.what, r.Code, r.Body)
+		}
+		r = b.answer("you", map[string]string{"name": c.name, "mail": "ines@example.org"})
+		if r.Code != http.StatusBadRequest || !strings.Contains(string(r.Body), `"name":"too-many-marks"`) {
+			t.Errorf("%s as the admin's name: %d %s, want 400 too-many-marks", c.what, r.Code, r.Body)
+		}
+	}
+}

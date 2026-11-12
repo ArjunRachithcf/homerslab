@@ -9,7 +9,7 @@
   const tile = (icon, x, y, i, { s = 64, w, h, thick = true, r, cls = '' } = {}) =>
     `<span class="illo-tile ${thick ? 'glass-thick' : 'glass'} ${cls}" ${at(x, y, i, `--s:${s}px;${w ? `width:${w}px;` : ''}${h ? `height:${h}px;` : ''}${r ? `--r:${r}deg;` : ''}`)}>${icon}</span>`;
   const orb = (icon, x, y, i, s = 32, cls = '') => `<span class="illo-orb glass ${cls}" ${at(x, y, i, `--s:${s}px;`)}>${icon}</span>`;
-  const chip = (icon, text, x, y, i) => `<span class="illo-chip glass-thick" ${at(x, y, i)}>${icon}${esc(text)}</span>`;
+  const chip = (icon, text, x, y, i) => `<span class="illo-chip glass-thick" ${at(x, y, i)}>${icon}<bdi>${esc(text)}</bdi></span>`;
   const lines = (d) => `<svg class="illo-lines" viewBox="-150 -86 300 172" preserveAspectRatio="xMidYMid meet" aria-hidden="true" focusable="false">${d.map((p) => `<path d="${p}"/>`).join('')}</svg>`;
   const stage = (inner, cls = '') => `<div class="illo ${cls}" aria-hidden="true">${inner}</div>`;
   const I = (n, cls = 'icon') => window.I(n, cls);
@@ -20,7 +20,7 @@
       ${tile(window.MARK, 0, 0, 1, { s: 92 })}${orb(I('play'), -110, -38, 2)}${orb(I('folder'), 112, -40, 3)}${orb(I('calendar'), -100, 46, 4)}${orb(I('heart'), 104, 46, 5)}`),
     // you: your initial and your address, as you type them
     you: ({ name = '', mail = '' } = {}) => stage(`${glow(200, 0, -10)}
-      <span class="illo-orb glass-thick" ${at(0, -22, 1, '--s:84px;')}><span class="illo-initial">${esc((name.trim()[0] || '?').toUpperCase())}</span></span>
+      <span class="illo-orb glass-thick" ${at(0, -22, 1, '--s:84px;')}><span class="illo-initial"><bdi>${esc((name.trim()[0] || '?').toUpperCase())}</bdi></span></span>
       ${chip(I('mail'), mail || 'your mail address', 0, 52, 2)}`),
     // the household: its name on a plate, the people you will invite around it
     household: ({ name = '' } = {}) => stage(`${glow(220, 0, 0)}${lines(['M-70 40 L-20 6', 'M0 52 L0 12', 'M70 40 L20 6'])}

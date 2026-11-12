@@ -31,7 +31,7 @@ import (
 //
 // And a name must show: it needs a letter, number or symbol, or a keycap (#, * or a digit, VS16, U+20E3). A few
 // characters draw nothing or stand for broken bytes, though the profile allows them, so they are refused
-// (drawsNothing).
+// (drawsNothing). At most MarksMax combining marks may follow one another (#124).
 func name(typed string) (string, string) {
 	n := nickname(typed)
 	switch {
@@ -39,6 +39,8 @@ func name(typed string) (string, string) {
 		return "", Missing
 	case strings.ContainsFunc(n, drawsNothing):
 		return "", HiddenCharacters
+	case tooManyMarks(n):
+		return "", TooManyMarks
 	}
 	plain := withoutExceptions(n)
 	if out, err := precis.Nickname.String(plain); err != nil || out != plain {
@@ -52,6 +54,28 @@ func name(typed string) (string, string) {
 		return "", TooLong
 	}
 	return n, ""
+}
+
+// MarksMax is the most combining marks a name may stack on one letter (#124): Zalgo text draws over the lines around it.
+const MarksMax = 4
+
+// tooManyMarks says whether n has more than MarksMax combining marks (Mn, Mc, Me) in a row. Every real name's stacks are
+// shorter: Arabic vowel signs, Hebrew points, Thai and Hindi, a Tibetan stack. The combining grapheme joiner (U+034F)
+// isn't counted and doesn't break a run: NFKC inserts it after 30 marks, and a name made of it is refused as hidden.
+func tooManyMarks(n string) bool {
+	run := 0
+	for _, r := range n {
+		switch {
+		case r == '\u034f':
+		case unicode.In(r, unicode.Mn, unicode.Mc, unicode.Me):
+			if run++; run > MarksMax {
+				return true
+			}
+		default:
+			run = 0
+		}
+	}
+	return false
 }
 
 // nickname is the Nickname profile's preparation, which leaves the exceptions as they are: non-ASCII spaces to
