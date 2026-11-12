@@ -49,8 +49,9 @@ var (
 	// ErrBadName is a name that isn't valid IDNA: it is refused, never compared in another form (#153).
 	ErrBadName = errors.New("not a valid domain name")
 
-	// errEmpty is a listing of a zone that holds a record of HomersLab's in which the provider listed nothing (#166).
-	errEmpty = errors.New("the provider's listing of the zone was empty")
+	// ErrListingEmpty is a listing of a zone in which the provider listed nothing: it proves nothing, so the change is
+	// refused, and may be tried again later (#166, #171).
+	ErrListingEmpty = errors.New("the provider's listing of the zone was empty")
 )
 
 // Drift is a note for the drift report: HomersLab's record and the provider's zone no longer agree, and the manager
@@ -69,9 +70,9 @@ const DriftDeletedByHand = "record-deleted-at-the-provider"
 // type: someone replaced it by hand. The book dropped it, and the other value is left as it is (#153).
 const DriftReplacedByHand = "record-replaced-at-the-provider"
 
-// DriftListingLookedEmpty is a record of HomersLab's that the provider's listing left out along with every other
-// record of the zone, after a delete the provider did nothing for. An empty listing of a zone that holds this record
-// proves nothing (a moment's answer, an eventual-consistency read), so the book kept it (#166).
+// DriftListingLookedEmpty is a record the provider's listing left out along with every other record of the zone. An
+// empty listing proves nothing (a moment's answer, an eventual-consistency read): after a delete the provider did
+// nothing for, the book kept the record (#166); before a create, the record wasn't written (#171).
 const DriftListingLookedEmpty = "provider-listing-looked-empty"
 
 // Inventory is the name, under the domain, of the one TXT record that lists HomersLab's records by name and type, so
@@ -146,17 +147,11 @@ func (r Record) canonical() (Record, error) {
 	return r, err
 }
 
-// at lists the zone's records at a name (in its one form): with their names in that form, and as the provider listed
-// them (raw), which is the form its deletes match. A name the provider lists that isn't valid is never at the name:
-// HomersLab's own names are valid, and a name is never compared in another form.
-func (e *edit) at(ctx context.Context, name string) (there, raw []libdns.RR, err error) {
-	there, raw, _, err = e.look(ctx, name)
-	return there, raw, err
-}
-
-// look is at, and whether the provider listed nothing at all in the zone. A zone that holds a record of HomersLab's is
-// never empty, so such a listing proves nothing: it is read like a failed one wherever it would drop a record from the
-// book (#166).
+// look lists the zone's records at a name (in its one form): with their names in that form, and as the provider listed
+// them (raw), which is the form its deletes match; and whether the provider listed nothing at all in the zone. A name
+// the provider lists that isn't valid is never at the name: HomersLab's own names are valid, and a name is never
+// compared in another form. A zone is never empty, so a listing that is proves nothing: it is read like a failed one
+// wherever it would drop a record from the book (#166), and refused before a write (listed, #171).
 func (e *edit) look(ctx context.Context, name string) (there, raw []libdns.RR, empty bool, err error) {
 	all, err := e.Provider.GetRecords(ctx, e.zone)
 	if err != nil {
@@ -175,6 +170,18 @@ func (e *edit) look(ctx context.Context, name string) (there, raw []libdns.RR, e
 	return there, raw, len(all) == 0, nil
 }
 
+// listed is look, for a write: a listing in which the provider listed nothing is refused (ErrListingEmpty), never read
+// as a free name. Every zone holds its apex's SOA and NS, which both providers list (RFC 2136's zone transfer,
+// Infomaniak's API), so such a listing is a moment's answer, and the name may hold someone else's record; that holds
+// for a zone HomersLab has never written to as well (#171).
+func (e *edit) listed(ctx context.Context, name string) ([]libdns.RR, error) {
+	there, _, empty, err := e.look(ctx, name)
+	if err == nil && empty {
+		return nil, fmt.Errorf("%w: %s", ErrListingEmpty, e.zone)
+	}
+	return there, err
+}
+
 // ours is the book's records for the zone: as it keeps them, and with their names in their one form.
 func (e *edit) ours(ctx context.Context) (canon, kept []Record, err error) {
 	kept, err = e.Book.Records(ctx, e.zone)
@@ -191,7 +198,7 @@ func (e *edit) ours(ctx context.Context) (canon, kept []Record, err error) {
 }
 
 // Free says whether a name holds no record at all, read from the provider's listing, never from DNS, where the
-// public wildcard answers every name.
+// public wildcard answers every name. A listing in which the provider listed nothing can't say (ErrListingEmpty).
 func (o *Owned) Free(ctx context.Context, name string) (bool, error) {
 	e, err := o.edit()
 	if err != nil {
@@ -200,13 +207,14 @@ func (o *Owned) Free(ctx context.Context, name string) (bool, error) {
 	if name, err = Canonical(name); err != nil {
 		return false, err
 	}
-	there, _, err := e.at(ctx, name)
-	return len(there) == 0, err
+	there, err := e.listed(ctx, name)
+	return err == nil && len(there) == 0, err
 }
 
-// Create adds a record and keeps it as HomersLab's. It is refused when the name holds a CNAME, or anything that
-// isn't HomersLab's; only an ACME challenge's TXT records, which several clients may hold at once (RFC 8555 §8.4),
-// share their name.
+// Create adds a record and keeps it as HomersLab's; a record that is already there and HomersLab's is left as it is.
+// It is refused when the name holds a CNAME, or anything that isn't HomersLab's; only an ACME challenge's TXT records,
+// which several clients may hold at once (RFC 8555 §8.4), share their name. A listing in which the provider listed
+// nothing is refused too (ErrListingEmpty), with a drift note, and nothing is written.
 func (o *Owned) Create(ctx context.Context, r Record) error {
 	e, err := o.edit()
 	if err != nil {
@@ -225,7 +233,13 @@ func (e *edit) create(ctx context.Context, r Record) error {
 	if r.Value == "" || r.Type == "" {
 		return fmt.Errorf("%w: %s %s", ErrNoValue, r.Type, r.Name)
 	}
-	there, _, err := e.at(ctx, r.Name)
+	there, err := e.listed(ctx, r.Name)
+	if errors.Is(err, ErrListingEmpty) {
+		if e.Log != nil {
+			e.Log.Warn("the DNS provider listed nothing in the zone: that isn't taken as the name being free, and nothing was written", "zone", e.zone, "name", r.Name, "type", r.Type)
+		}
+		e.note(r, DriftListingLookedEmpty)
+	}
 	if err != nil {
 		return err
 	}
@@ -233,14 +247,18 @@ func (e *edit) create(ctx context.Context, r Record) error {
 	if err != nil {
 		return err
 	}
+	// Already there, and HomersLab's: nothing to write, a CNAME included.
+	if slices.ContainsFunc(there, func(rr libdns.RR) bool {
+		return r.matches(rr) && slices.ContainsFunc(ours, func(k Record) bool { return k.matches(rr) })
+	}) {
+		return nil
+	}
 	challenge := strings.EqualFold(r.Type, "TXT") && r.Name == e.rel(Challenge)
 	for _, rr := range there {
 		mine := slices.ContainsFunc(ours, func(k Record) bool { return k.matches(rr) })
 		switch {
 		case strings.EqualFold(rr.Type, "CNAME"), strings.EqualFold(r.Type, "CNAME"):
 			return fmt.Errorf("%w: %s holds a %s, and no other data may sit beside a CNAME", ErrTaken, r.Name, rr.Type)
-		case mine && r.matches(rr):
-			return nil // already there, and HomersLab's
 		case !mine && !(challenge && strings.EqualFold(rr.Type, "TXT")):
 			return fmt.Errorf("%w: %s holds a %s record", ErrTaken, r.Name, rr.Type)
 		}
@@ -340,7 +358,7 @@ func (e *edit) nothingDeleted(ctx context.Context, ours []Record, i int, kept Re
 			e.Log.Warn("the DNS provider deleted nothing, and listed nothing in the zone: the record stays listed as HomersLab's", "zone", e.zone, "name", r.Name, "type", r.Type)
 		}
 		e.note(r, DriftListingLookedEmpty)
-		return fmt.Errorf("%w: %s %s (%v)", ErrNotDeleted, r.Type, r.Name, errEmpty)
+		return fmt.Errorf("%w: %s %s (%v)", ErrNotDeleted, r.Type, r.Name, ErrListingEmpty)
 	case slices.ContainsFunc(there, r.matches):
 		exact := raw[slices.IndexFunc(there, r.matches)]
 		if exact.TTL = 0; exact.Data != "" && exact != sent {
