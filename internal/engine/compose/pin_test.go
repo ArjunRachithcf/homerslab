@@ -66,6 +66,15 @@ func requires(t *testing.T, path string) map[string]string {
 func goCmd(t *testing.T, args ...string) string {
 	t.Helper()
 	cmd := exec.Command("go", args...)
+	// The go command writes telemetry counters under XDG_CONFIG_HOME, in a helper that can outlive it (GOTELEMETRY
+	// can't be set from the environment). Under the test's home that races the TempDir's cleanup ("directory not
+	// empty", #139), so give it a folder of its own, removed best-effort.
+	cfg, err := os.MkdirTemp("", "go-config-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(cfg) })
+	cmd.Env = append(os.Environ(), "XDG_CONFIG_HOME="+cfg)
 	var stderr strings.Builder
 	cmd.Stderr = &stderr
 	b, err := cmd.Output()
