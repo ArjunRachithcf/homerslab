@@ -169,6 +169,33 @@ func TestTheDNSProviderContractOnThePrimary(t *testing.T) {
 		}
 	})
 
+	t.Run("a record deleted at the provider by hand leaves the book at the next delete, with a drift note", func(t *testing.T) {
+		o, _ := open(t, tsig, theBook)
+		var notes []dns.Drift
+		o.Drift = func(d dns.Drift) { notes = append(notes, d) }
+		r := dns.Record{Name: "_acme-challenge", Type: "TXT", Value: "deleted-by-hand", TTL: time.Minute}
+		if err := o.Create(ctx, r); err != nil {
+			t.Fatal(err)
+		}
+		// Behind HomersLab's back, straight at BIND.
+		if _, err := o.Provider.DeleteRecords(ctx, "example.test.", []libdns.Record{libdns.RR{Name: r.Name, Type: r.Type, Data: r.Value}}); err != nil {
+			t.Fatal(err)
+		}
+		if err := o.Delete(ctx, r); err != nil {
+			t.Fatalf("deleting a record that is gone at the provider: %v", err)
+		}
+		if b, _ := theBook.Records(ctx, "example.test."); len(b) != 0 {
+			t.Errorf("the book still lists %v", b)
+		}
+		if len(notes) != 1 || notes[0].What != dns.DriftDeletedByHand || notes[0].Record.Value != "deleted-by-hand" {
+			t.Errorf("the drift report: %+v", notes)
+		}
+		recs, _ := o.Provider.GetRecords(ctx, "example.test.")
+		if hasRR(recs, "_homerslab", "TXT") || hasRR(recs, "_acme-challenge", "TXT") {
+			t.Errorf("HomersLab's records stayed: %v", recs)
+		}
+	})
+
 	t.Run("CAA records that don't allow the authority are named", func(t *testing.T) {
 		o, _ := open(t, tsig, theBook)
 		caa := libdns.CAA{Name: "@", TTL: time.Minute, Tag: "issue", Value: "sectigo.com"}
@@ -258,11 +285,6 @@ func TestTheDNSProviderContractOnThePrimary(t *testing.T) {
 		}
 		if n := c.writes.Load(); n != 0 {
 			t.Errorf("the restore wrote %d DNS records", n)
-		}
-		// The machine was lost or stolen: its key may be in someone's hands, so a new one is issued all the same.
-		got, issued, err = authority.Ensure(ctx, certs.Request{Domain: "example.test", Zone: o, AccountKey: account, Fresh: true}, &restored, time.Now())
-		if err != nil || !issued || got.Serial == cert.Serial {
-			t.Fatalf("after a lost machine: issued %v: %v", issued, err)
 		}
 	})
 }

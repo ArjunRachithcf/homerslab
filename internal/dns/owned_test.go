@@ -6,6 +6,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -266,7 +267,10 @@ func TestADeleteNeverOrphansARecord(t *testing.T) {
 		t.Error("another client's challenge record is gone")
 	}
 
-	// Someone deleted HomersLab's record at the provider: nothing was deleted, and the book still lists it.
+	// Someone deleted HomersLab's record at the provider by hand: the lookup finds it gone, so the book drops it, and
+	// the drift report says so.
+	var notes []dns.Drift
+	o.Drift = func(d dns.Drift) { notes = append(notes, d) }
 	r := dns.Record{Name: "photos", Type: "CNAME", Value: "proxy.cluster.test."}
 	if err := o.Create(ctx, r); err != nil {
 		t.Fatal(err)
@@ -274,11 +278,71 @@ func TestADeleteNeverOrphansARecord(t *testing.T) {
 	p.mu.Lock()
 	p.records = slices.DeleteFunc(p.records, func(x libdns.RR) bool { return x.Name == "photos" })
 	p.mu.Unlock()
-	if err := o.Delete(ctx, r); !errors.Is(err, dns.ErrNotDeleted) {
-		t.Errorf("a delete the provider did nothing for: %v, want ErrNotDeleted", err)
+	if err := o.Delete(ctx, r); err != nil {
+		t.Errorf("a delete of a record gone from the provider: %v", err)
 	}
-	if recs, _ := b.Records(ctx, "example.test."); !slices.ContainsFunc(recs, func(k dns.Record) bool { return k.Name == "photos" }) {
-		t.Error("the book forgot a record the provider never deleted")
+	if recs, _ := b.Records(ctx, "example.test."); slices.ContainsFunc(recs, func(k dns.Record) bool { return k.Name == "photos" }) {
+		t.Error("the book still lists a record the provider no longer has")
+	}
+	if len(notes) != 1 || notes[0].Zone != "example.test." || notes[0].Record.Name != "photos" || notes[0].What != dns.DriftDeletedByHand {
+		t.Errorf("the drift report: %+v", notes)
+	}
+}
+
+// stubborn is a provider whose deletes do nothing (or whose lookups fail): the record is still there, or unknown.
+type stubborn struct {
+	*provider
+	failList atomic.Bool
+}
+
+func (s *stubborn) GetRecords(ctx context.Context, zone string) ([]libdns.Record, error) {
+	if s.failList.Load() {
+		return nil, errors.New("the provider is down")
+	}
+	return s.provider.GetRecords(ctx, zone)
+}
+
+func (s *stubborn) DeleteRecords(context.Context, string, []libdns.Record) ([]libdns.Record, error) {
+	return nil, nil
+}
+
+// A record is dropped from the book only when the provider is seen not to have it: never while it is still there,
+// never when the lookup fails.
+func TestARecordStaysInTheBookWhileTheProviderMayHaveIt(t *testing.T) {
+	testenv.Isolate(t)
+	ctx := context.Background()
+	r := dns.Record{Name: "photos", Type: "CNAME", Value: "proxy.cluster.test."}
+	for _, tc := range []struct {
+		name string
+		prep func(*stubborn)
+	}{
+		{"the provider still has it", func(*stubborn) {}},
+		{"the lookup fails", func(s *stubborn) {
+			s.provider.mu.Lock()
+			s.provider.records = slices.DeleteFunc(s.provider.records, func(x libdns.RR) bool { return x.Name == "photos" })
+			s.provider.mu.Unlock()
+			s.failList.Store(true)
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s, b := &stubborn{provider: household()}, &book{}
+			o := &dns.Owned{Provider: s, Zone: "example.test.", Domain: "example.test", Book: b}
+			var notes []dns.Drift
+			o.Drift = func(d dns.Drift) { notes = append(notes, d) }
+			if err := o.Create(ctx, r); err != nil {
+				t.Fatal(err)
+			}
+			tc.prep(s)
+			if err := o.Delete(ctx, r); !errors.Is(err, dns.ErrNotDeleted) {
+				t.Errorf("delete: %v, want ErrNotDeleted", err)
+			}
+			if recs, _ := b.Records(ctx, "example.test."); !slices.ContainsFunc(recs, func(k dns.Record) bool { return k.Name == "photos" }) {
+				t.Error("the book forgot a record that may still be at the provider")
+			}
+			if len(notes) != 0 {
+				t.Errorf("a drift note without proof: %+v", notes)
+			}
+		})
 	}
 }
 
@@ -293,5 +357,33 @@ func TestOnlyTheChallengesOwnNameIsShared(t *testing.T) {
 		if err := o.Create(context.Background(), dns.Record{Name: name, Type: "TXT", Value: "ours"}); !errors.Is(err, dns.ErrTaken) {
 			t.Errorf("a TXT at %s beside someone else's: %v, want ErrTaken", name, err)
 		}
+	}
+}
+
+// Another value at the same name is someone else's: ours is gone, so the book drops it, and theirs is left alone.
+func TestAnotherValueAtTheNameDoesNotKeepOursInTheBook(t *testing.T) {
+	testenv.Isolate(t)
+	ctx := context.Background()
+	p, b := household(), &book{}
+	o := &dns.Owned{Provider: p, Zone: "example.test.", Domain: "example.test", Book: b}
+	r := dns.Record{Name: "photos", Type: "TXT", Value: "ours"}
+	if err := o.Create(ctx, r); err != nil {
+		t.Fatal(err)
+	}
+	p.mu.Lock()
+	for i := range p.records {
+		if p.records[i].Name == "photos" {
+			p.records[i].Data = "someone else's"
+		}
+	}
+	p.mu.Unlock()
+	if err := o.Delete(ctx, r); err != nil {
+		t.Fatal(err)
+	}
+	if recs, _ := b.Records(ctx, "example.test."); slices.ContainsFunc(recs, func(k dns.Record) bool { return k.Name == "photos" }) {
+		t.Error("the book still lists a record the provider no longer has")
+	}
+	if got := p.has("photos", "TXT"); !slices.Equal(got, []string{"someone else's"}) {
+		t.Errorf("someone else's record: %v", got)
 	}
 }

@@ -48,6 +48,17 @@ var (
 	ErrNotDeleted = errors.New("the provider deleted nothing")
 )
 
+// Drift is a note for the drift report: HomersLab's record and the provider's zone no longer agree, and the manager
+// put its own side right.
+type Drift struct {
+	Zone   string
+	Record Record
+	What   string
+}
+
+// DriftDeletedByHand is a record of HomersLab's that was deleted at the provider by hand: the book dropped it.
+const DriftDeletedByHand = "record-deleted-at-the-provider"
+
 // Inventory is the name, under the domain, of the one TXT record that lists HomersLab's records by name and type, so
 // a restored primary finds them again (#79).
 const Inventory = "_homerslab"
@@ -62,6 +73,7 @@ type Owned struct {
 	Domain   string // the household's domain, at or under the zone
 	Book     Book
 	Log      *slog.Logger // where a delete the provider did nothing for is said; none when nil
+	Drift    func(Drift)  // the drift report's note for a record found deleted at the provider; none when nil
 }
 
 func (o *Owned) zone() string { return strings.ToLower(libdns.AbsoluteName("@", o.Zone)) }
@@ -161,6 +173,11 @@ func (o *Owned) delete(ctx context.Context, r Record) error {
 	if i < 0 {
 		return fmt.Errorf("%w: %s %s", ErrNotOurs, r.Type, r.Name)
 	}
+	// Looked up first: a provider such as RFC 2136's reports every delete as done, so only the listing says whether the
+	// record was still there. Gone means someone deleted it by hand.
+	if there, err := o.at(ctx, r.Name); err == nil && !slices.ContainsFunc(there, ours[i].matches) {
+		return o.dropGone(ctx, ours[i])
+	}
 	// Any TTL: a provider may keep its own (a minimum of its own), and the record is HomersLab's all the same.
 	exact := ours[i]
 	exact.TTL = 0
@@ -169,12 +186,43 @@ func (o *Owned) delete(ctx context.Context, r Record) error {
 		return fmt.Errorf("deleting %s %s: %w", r.Type, r.Name, err)
 	}
 	if len(deleted) == 0 {
+		return o.nothingDeleted(ctx, ours[i])
+	}
+	return o.Book.Forget(ctx, o.zone(), ours[i])
+}
+
+// nothingDeleted handles a delete the provider did nothing for. The name is looked up again in the provider's
+// listing: when the record is not there, someone deleted it by hand, so the book drops it and the drift report says so. While the
+// provider still has it, or when the lookup fails, nothing is known, and the record stays in the book (ErrNotDeleted).
+func (o *Owned) nothingDeleted(ctx context.Context, r Record) error {
+	there, err := o.at(ctx, r.Name)
+	if err != nil {
+		if o.Log != nil {
+			o.Log.Warn("the DNS provider deleted nothing, and the lookup failed: the record stays listed as HomersLab's", "zone", o.zone(), "name", r.Name, "type", r.Type, "err", err)
+		}
+		return fmt.Errorf("%w: %s %s (%v)", ErrNotDeleted, r.Type, r.Name, err)
+	}
+	if slices.ContainsFunc(there, r.matches) {
 		if o.Log != nil {
 			o.Log.Warn("the DNS provider deleted nothing: the record stays listed as HomersLab's", "zone", o.zone(), "name", r.Name, "type", r.Type)
 		}
 		return fmt.Errorf("%w: %s %s", ErrNotDeleted, r.Type, r.Name)
 	}
-	return o.Book.Forget(ctx, o.zone(), ours[i])
+	return o.dropGone(ctx, r)
+}
+
+// dropGone drops a record the provider is seen not to have from the book, and says so in the drift report.
+func (o *Owned) dropGone(ctx context.Context, r Record) error {
+	if err := o.Book.Forget(ctx, o.zone(), r); err != nil {
+		return err
+	}
+	if o.Log != nil {
+		o.Log.Warn("a record of HomersLab's was deleted at the provider by hand: the book dropped it", "zone", o.zone(), "name", r.Name, "type", r.Type)
+	}
+	if o.Drift != nil {
+		o.Drift(Drift{Zone: o.zone(), Record: r, What: DriftDeletedByHand})
+	}
+	return nil
 }
 
 // inventory writes the one record that lists HomersLab's records, or deletes it when there are none.

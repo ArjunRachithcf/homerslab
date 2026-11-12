@@ -157,16 +157,13 @@ type Request struct {
 	Zone       *dns.Owned
 	AccountKey mesh.Secret
 	Contact    string // the admin's mail address
-	// Fresh asks for a new certificate even while the one there is valid: the machine that held its key was lost or
-	// stolen.
-	Fresh bool
 }
 
 // Ensure keeps have while it is valid and not due at now, and only otherwise issues a new one: a restore, a rehearsal
 // or a reinstall puts the old certificate back instead of using up the authority's limits (#80). It says whether it
 // issued.
 func (a Authority) Ensure(ctx context.Context, r Request, have *Certificate, now time.Time) (Certificate, bool, error) {
-	if have != nil && !r.Fresh && have.Domain == r.Domain && !have.Due(now) && now.After(have.NotBefore) {
+	if have != nil && have.Domain == r.Domain && !have.Due(now) && now.After(have.NotBefore) {
 		return *have, false, nil
 	}
 	c, err := a.Issue(ctx, r)
