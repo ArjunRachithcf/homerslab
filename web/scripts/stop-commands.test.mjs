@@ -47,11 +47,14 @@ test("as the runner reads it, the command's output runs no command, however it's
 test('without a whole token it runs nothing and fails', () => {
   const bin = mkdtempSync(path.join(tmpdir(), 'stop-commands-'));
   try {
-    writeFileSync(path.join(bin, 'od'), '#!/bin/sh\nexit 0\n'); // an od that gives no bytes
-    chmodSync(path.join(bin, 'od'), 0o755);
-    const r = wrapped('echo ran', { ...process.env, PATH: `${bin}:${process.env.PATH}` });
-    assert.equal(r.status, 1);
-    assert.doesNotMatch(r.stdout, /ran/);
+    // an od that gives no bytes, and one that gives a token too short to be one
+    for (const out of ['', '0a1b2c3d4e5f60718293a4b5c6d7e8f']) {
+      writeFileSync(path.join(bin, 'od'), `#!/bin/sh\necho '${out}'\n`);
+      chmodSync(path.join(bin, 'od'), 0o755);
+      const r = wrapped('echo ran', { ...process.env, PATH: `${bin}:${process.env.PATH}` });
+      assert.equal(r.status, 1, `token "${out}"`);
+      assert.doesNotMatch(r.stdout, /ran/, `token "${out}"`);
+    }
   } finally {
     rmSync(bin, { recursive: true, force: true });
   }
@@ -83,8 +86,15 @@ const jobs = () => {
   return at.map((m, i) => [m[1], ci.slice(m.index, at[i + 1]?.index ?? ci.length)]);
 };
 
+const GO_CMD = /\bgo (vet|test|build|run|install|generate|list)\b/;
+
+test('a Go command is found by every verb the filter lists, and ', () => {
+  for (const verb of ['vet', 'test', 'build', 'run', 'install', 'generate', 'list']) assert.match(`run: go ${verb} ./...`, GO_CMD);
+  assert.doesNotMatch('run: gopher', GO_CMD);
+});
+
 test('every Go job fetches its modules under the wrapper first, then runs with the proxy off', () => {
-  const goJobs = jobs().filter(([, body]) => /\bgo (vet|test|build)\b/.test(body));
+  const goJobs = jobs().filter(([, body]) => GO_CMD.test(body));
   assert.ok(goJobs.length >= 5, goJobs.map(([id]) => id).join(' '));
   for (const [job, body] of goJobs) {
     assert.match(body, /\n {4}env:\n( {6}.*\n)* {6}GOPROXY: "off"\n/, `${job}: GOPROXY off for the job`);
@@ -92,8 +102,10 @@ test('every Go job fetches its modules under the wrapper first, then runs with t
     // `go mod download all` writes sums into go.sum that go mod tidy -diff then refuses.
     assert.doesNotMatch(body, /go mod download all/, `${job}: leaves go.sum as it is`);
     const steps = body.split('\n      - ');
-    const goSteps = steps.filter((step) => /\bgo (vet|test|build)\b/.test(step));
+    const goSteps = steps.filter((step) => GO_CMD.test(step));
     for (const step of goSteps) assert.doesNotMatch(step, /GOPROXY: (?!"off")/, `${job}: a later step turns the proxy on`);
+    // GOPROXY inline in a run: line (`GOPROXY=... go ...`, `export GOPROXY=...`) would bypass the env: check above.
+    assert.doesNotMatch(body, /GOPROXY=/, `${job}: GOPROXY set inline`);
     const fetch = steps.findIndex((step) => /stop-commands\.sh go mod (download|tidy)/.test(step));
     assert.ok(fetch >= 0 && fetch < steps.indexOf(goSteps[0]), `${job}: fetches before it builds`);
   }

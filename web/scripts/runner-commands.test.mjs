@@ -16,3 +16,9 @@ test('nothing runs while commands are stopped, until the token resumes them', ()
     ['stop-commands', 'resume', 'warning']);
   assert.deepEqual(names('x ##[stop-commands]zz\n::warning::swallowed'), ['stop-commands']);
 });
+
+test("leading whitespace is .NET's TrimStart: U+0085 goes, U+FEFF stays", () => {
+  assert.deepEqual(names('\u0085::warning::a'), ['warning']);
+  assert.deepEqual(names('\u0085  ::warning::a'), ['warning']);
+  assert.deepEqual(names('﻿::warning::a'), []);
+});
