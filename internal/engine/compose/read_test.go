@@ -126,6 +126,9 @@ func laughs(n, levels int) string {
 	return b.String()
 }
 
+// refusalBudget is far above what a loaded runner needs and far below what unbounded work costs.
+const refusalBudget = 10 * time.Second
+
 // The agent reads as root, so a small file can't make it work hard: aliases, deep nesting and big files are refused
 // before anything parses them in full.
 func TestAProjectThatWouldExhaustTheAgentIsRefusedFast(t *testing.T) {
@@ -149,16 +152,22 @@ func TestAProjectThatWouldExhaustTheAgentIsRefusedFast(t *testing.T) {
 	} {
 		start := time.Now()
 		_, err := r.Read(context.Background(), "homerslab-example", []byte(file))
-		if took := time.Since(start); !errors.Is(err, compose.ErrNotPlain) || took > 100*time.Millisecond {
-			t.Errorf("%s: %v after %s, want ErrNotPlain within 100 ms", name, err, took)
+		// The refusal itself is the property: ErrNotPlain, not a parse that finished or failed otherwise. The clock only
+		// catches a file that is expanded or walked before it is refused (a billion laughs takes hours, not seconds),
+		// so it has headroom for a loaded CI runner (a 100 ms bound flaked at 1.7 s under load, #159).
+		if !errors.Is(err, compose.ErrNotPlain) {
+			t.Errorf("%s: %v, want ErrNotPlain", name, err)
+		}
+		if took := time.Since(start); took > refusalBudget {
+			t.Errorf("%s refused after %s, want within %s", name, took, refusalBudget)
 		}
 	}
 	// The longest chains the caps allow read quickly.
 	for _, ref := range []string{"depends_on: [s%d]", "links: [s%d]", "volumes_from: [s%d]", "network_mode: 'service:s%d'", "ipc: 'service:s%d'", "pid: 'service:s%d'"} {
 		start := time.Now()
 		_, err := r.Read(context.Background(), "homerslab-example", []byte(chain(64, ref)))
-		if took := time.Since(start); took > time.Second {
-			t.Errorf("a chain of 64 by %s: %v after %s, want it read within a second", ref, err, took)
+		if took := time.Since(start); took > refusalBudget {
+			t.Errorf("a chain of 64 by %s: %v after %s, want it read within %s", ref, err, took, refusalBudget)
 		}
 	}
 	// 64 services, a few references each, and 64 levels are still a plain file.
@@ -276,8 +285,14 @@ func TestAProjectThatMultipliesItsWorkIsRefusedFast(t *testing.T) {
 	} {
 		start := time.Now()
 		_, err := r.Read(context.Background(), "homerslab-example", []byte(file))
-		if took := time.Since(start); !errors.Is(err, compose.ErrNotPlain) || took > 100*time.Millisecond {
-			t.Errorf("%s: %v after %s, want ErrNotPlain within 100 ms", name, err, took)
+		// The refusal itself is the property: ErrNotPlain, not a parse that finished or failed otherwise. The clock only
+		// catches a file that is expanded or walked before it is refused (a billion laughs takes hours, not seconds),
+		// so it has headroom for a loaded CI runner (a 100 ms bound flaked at 1.7 s under load, #159).
+		if !errors.Is(err, compose.ErrNotPlain) {
+			t.Errorf("%s: %v, want ErrNotPlain", name, err)
+		}
+		if took := time.Since(start); took > refusalBudget {
+			t.Errorf("%s refused after %s, want within %s", name, took, refusalBudget)
 		}
 	}
 	for name, file := range map[string]string{
