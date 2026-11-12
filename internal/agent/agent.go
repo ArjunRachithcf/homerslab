@@ -320,7 +320,7 @@ func (a *Agent) firewallState(context.Context) firewall.State {
 	}
 	n := a.network
 	s := firewall.State{Mesh: a.state.Mesh, WireGuard: a.state.WireGuard, LAN: n.LAN, LANPrefixes: n.Prefixes,
-		Uplinks: n.Uplinks, Bridges: a.bridges(), Resolvers: resolvers(a.cfg.Sysroot)}
+		Uplinks4: n.Uplinks4, Uplinks6: n.Uplinks6, Virtual: n.Virtual, Bridges: a.bridges(), Resolvers: resolvers(a.cfg.Sysroot)}
 	if !a.state.SetupClosed {
 		s.SetupPort = a.setupPort()
 	}

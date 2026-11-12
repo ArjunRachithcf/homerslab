@@ -149,8 +149,8 @@ func TestNoNameNftWouldMisreadIsRendered(t *testing.T) {
 
 func TestPort53IsTheGatewaysOwnAndTheResolversOnlyThroughTheLAN(t *testing.T) {
 	testenv.Isolate(t)
-	s := firewall.State{Mesh: []string{"wt0"}, LAN: []string{"enp5s0"}, Bridges: []string{"docker0"},
-		Resolvers: []netip.Addr{netip.MustParseAddr("192.168.1.1"), netip.MustParseAddr("2001:db8:1::1")}}
+	s := firewall.State{Mesh: []string{"wt0"}, LAN: []string{"enp5s0"}, Uplinks4: []string{"enp5s0"}, Uplinks6: []string{"enp5s0"},
+		Bridges: []string{"docker0"}, Resolvers: []netip.Addr{netip.MustParseAddr("192.168.1.1"), netip.MustParseAddr("2001:db8:1::1")}}
 	r := firewall.Render(s)
 	chain := func(name string) string {
 		_, after, _ := strings.Cut(r, "\tchain "+name+" {\n")
@@ -177,7 +177,7 @@ func TestPort53IsTheGatewaysOwnAndTheResolversOnlyThroughTheLAN(t *testing.T) {
 		t.Errorf("apps_out has %d port-53 rules, want the two through the LAN:\n%s", n, out)
 	}
 	noLAN := s
-	noLAN.LAN = nil
+	noLAN.LAN, noLAN.Uplinks4, noLAN.Uplinks6 = nil, nil, nil
 	if strings.Contains(firewall.Render(noLAN), "daddr { 192.168.1.1 }") {
 		t.Error("with no LAN known, apps still reach a resolver, through any interface")
 	}
@@ -188,8 +188,9 @@ func TestPort53IsTheGatewaysOwnAndTheResolversOnlyThroughTheLAN(t *testing.T) {
 // setup listener stays the LAN's. The mesh and the engines' bridges are never a way out.
 func TestAppsLeaveThroughAVPNsTunnelThatIsNotTheLAN(t *testing.T) {
 	testenv.Isolate(t)
-	s := firewall.State{Mesh: []string{"wt0"}, LAN: []string{"eth0"}, Uplinks: []string{"eth0", "wg0", "wt0", "docker0", "bad name"},
-		Bridges: []string{"docker0"}, SetupPort: 7020, Resolvers: []netip.Addr{netip.MustParseAddr("10.2.0.1")}}
+	s := firewall.State{Mesh: []string{"wt0"}, LAN: []string{"eth0"}, Uplinks4: []string{"eth0", "wg0", "wt0", "docker0", "bad name"},
+		Bridges: []string{"docker0"}, Virtual: []string{"docker0", "virbr0", "wg0"}, SetupPort: 7020,
+		Resolvers: []netip.Addr{netip.MustParseAddr("10.2.0.1")}}
 	r := firewall.Render(s)
 	chain := func(name string) string {
 		_, after, _ := strings.Cut(r, "\tchain "+name+" {\n")
@@ -197,7 +198,7 @@ func TestAppsLeaveThroughAVPNsTunnelThatIsNotTheLAN(t *testing.T) {
 		return body
 	}
 	for name, want := range map[string]string{
-		"outbound": `oifname != { "eth0", "wg0" } drop`,
+		"outbound": `meta nfproto ipv4 oifname != { "eth0", "wg0" } drop`,
 		"forward":  `iifname { "eth0", "wg0" } drop`,
 		"apps_out": `oifname { "eth0", "wg0" } ip daddr { 10.2.0.1 } meta l4proto { tcp, udp } th dport 53 accept`,
 		"input":    `iifname { "eth0" } tcp dport 7020 accept`,
@@ -206,12 +207,12 @@ func TestAppsLeaveThroughAVPNsTunnelThatIsNotTheLAN(t *testing.T) {
 			t.Errorf("%s lacks %q:\n%s", name, want, chain(name))
 		}
 	}
-	if got := chain("input"); !strings.Contains(got, `iifname != { "eth0", "wg0" } meta iifkind "bridge" jump virtual_in`) {
+	if got := chain("input"); !strings.Contains(got, `iifname { "virbr0" } meta iifkind "bridge" jump virtual_in`) {
 		t.Errorf("input treats the VPN as a local virtual network:\n%s", got)
 	}
 	noLAN := s
-	noLAN.LAN, noLAN.Uplinks = nil, []string{"wg0"}
-	if got := firewall.Render(noLAN); !strings.Contains(got, `oifname != { "wg0" } drop`) || strings.Contains(got, "dport 7020") {
+	noLAN.LAN, noLAN.Uplinks4 = nil, []string{"wg0"}
+	if got := firewall.Render(noLAN); !strings.Contains(got, `meta nfproto ipv4 oifname != { "wg0" } drop`) || strings.Contains(got, "dport 7020") {
 		t.Errorf("with only a VPN's default route, want apps out through it and no setup listener:\n%s", got)
 	}
 }
@@ -223,8 +224,8 @@ func TestAppsLeaveThroughAVPNsTunnelThatIsNotTheLAN(t *testing.T) {
 // no kind (a second NIC, which a match on a kind never matches) is none of them. The mesh stays the mesh.
 func TestOnlyABridgeIsALocalVirtualNetworkOrForwarded(t *testing.T) {
 	testenv.Isolate(t)
-	s := firewall.State{Mesh: []string{"wt0"}, LAN: []string{"eth0"}, Uplinks: []string{"eth0", "wg0"},
-		Bridges: []string{"docker0", "tun0"}}
+	s := firewall.State{Mesh: []string{"wt0"}, LAN: []string{"eth0"}, Uplinks4: []string{"eth0", "wg0"}, Uplinks6: []string{"eth0"},
+		Bridges: []string{"docker0", "tun0"}, Virtual: []string{"docker0", "virbr0"}}
 	r := firewall.Render(s)
 	chain := func(name string) string {
 		_, after, _ := strings.Cut(r, "\tchain "+name+" {\n")
@@ -234,25 +235,114 @@ func TestOnlyABridgeIsALocalVirtualNetworkOrForwarded(t *testing.T) {
 	input := chain("input")
 	for _, want := range []string{
 		`iifname { "wt0" } accept`,
-		`iifname { "docker0", "tun0" } meta iifkind "bridge" jump apps_in`,
-		`iifname != { "eth0", "wg0" } meta iifkind "bridge" jump virtual_in`,
+		`iifname { "docker0" } meta iifkind "bridge" jump apps_in`,
+		`iifname { "virbr0" } meta iifkind "bridge" jump virtual_in`,
 	} {
 		if !strings.Contains(input, want) {
 			t.Errorf("input lacks %q:\n%s", want, input)
 		}
 	}
 	forward := chain("forward")
-	want := "\t\tiifname { \"docker0\", \"tun0\" } meta iifkind \"bridge\" jump apps_out\n" +
+	want := "\t\tiifname { \"docker0\" } meta iifkind \"bridge\" jump apps_out\n" +
 		"\t\tiifname { \"eth0\", \"wg0\" } drop\n" +
-		"\t\tmeta iifkind \"bridge\" jump outbound\n"
+		"\t\tiifname { \"virbr0\" } meta iifkind \"bridge\" jump outbound\n"
 	if !strings.HasSuffix(forward, want) || strings.Count(forward, "jump outbound") != 1 {
 		t.Errorf("forward, want only bridges forwarded to the internet, by a match on their kind:\n%s", forward)
 	}
 	// With no LAN known (at boot, or a VPN that replaced the default route) no interface is a local virtual network,
 	// and none but an engine's bridge is forwarded: the LAN may be a bridge itself.
-	boot := firewall.Render(firewall.State{Mesh: []string{"wt0"}, Uplinks: []string{"tun0"}, Bridges: []string{"docker0"}})
-	if strings.Contains(boot, "jump virtual_in") || strings.Contains(boot, "meta iifkind \"bridge\" jump outbound") ||
+	boot := firewall.Render(firewall.State{Mesh: []string{"wt0"}, Uplinks4: []string{"tun0"}, Bridges: []string{"docker0"},
+		Virtual: []string{"docker0", "virbr0"}})
+	if strings.Contains(boot, "jump virtual_in") || strings.Contains(boot, `meta iifkind "bridge" jump outbound`) ||
 		!strings.Contains(boot, "\t\tiifname { \"docker0\" } meta iifkind \"bridge\" jump apps_out\n\t\tiifname { \"tun0\" } drop\n\t}") {
 		t.Errorf("at boot:\n%s", boot)
+	}
+}
+
+// A bridge with a NIC among its ports (a second NIC enslaved to it) reaches past this machine: it is no local virtual
+// network and no app network (#169). Only the bridges the kernel's last reading found with guests' ports alone (State.
+// Virtual) are: a bridge with a NIC, or one the agent hasn't read yet, gets no virtual_in and nothing from it is
+// forwarded, as for that NIC; an engine's bridge with a NIC gets nothing in at all, and nothing forwarded. With no
+// reading, no bridge is either.
+func TestABridgeWithANICIsTreatedAsThatNIC(t *testing.T) {
+	testenv.Isolate(t)
+	s := firewall.State{Mesh: []string{"wt0"}, LAN: []string{"eth0"}, Uplinks4: []string{"eth0"}, Uplinks6: []string{"eth0"},
+		Bridges: []string{"docker0", "br-nic"}, Virtual: []string{"docker0", "virbr0", "eth0", "wt0", "bad name"}}
+	r := firewall.Render(s)
+	chain := func(r, name string) string {
+		_, after, _ := strings.Cut(r, "\tchain "+name+" {\n")
+		body, _, _ := strings.Cut(after, "\t}\n")
+		return body
+	}
+	input, forward := chain(r, "input"), chain(r, "forward")
+	for _, want := range []string{
+		`iifname { "docker0" } meta iifkind "bridge" jump apps_in`,
+		`iifname { "br-nic" } meta iifkind "bridge" drop`,
+		`iifname { "virbr0" } meta iifkind "bridge" jump virtual_in`,
+	} {
+		if !strings.Contains(input, want) {
+			t.Errorf("input lacks %q:\n%s", want, input)
+		}
+	}
+	for _, want := range []string{
+		`iifname { "docker0" } meta iifkind "bridge" jump apps_out`,
+		`iifname { "virbr0" } meta iifkind "bridge" jump outbound`,
+	} {
+		if !strings.Contains(forward, want) {
+			t.Errorf("forward lacks %q:\n%s", want, forward)
+		}
+	}
+	if strings.Count(r, "virtual_in") != 2 || strings.Count(forward, "jump") != 2 || strings.Contains(chain(r, "apps_out"), "br-nic") {
+		t.Errorf("a bridge that isn't a local virtual network, the LAN or the mesh is one:\n%s", r)
+	}
+	unread := s
+	unread.Virtual = nil
+	r = firewall.Render(unread)
+	if strings.Contains(chain(r, "input"), "jump virtual_in") || strings.Contains(chain(r, "forward"), "jump") ||
+		!strings.Contains(chain(r, "input"), `iifname { "br-nic", "docker0" } meta iifkind "bridge" drop`) {
+		t.Errorf("with no bridge read as a local virtual network, want none forwarded or let in:\n%s", r)
+	}
+}
+
+// Each address family leaves only through its own uplinks (#169): a tunnel that is a way out for IPv6 only (its routes
+// cover only the IPv6 internet) is none for IPv4, and the other way round; the LAN's interface is one for the families
+// of its default routes. A family with no uplink has no way out, and the machine's resolvers are reached through that
+// family's uplinks only. Nothing is forwarded from any of them.
+func TestEachFamilyLeavesOnlyThroughItsOwnUplinks(t *testing.T) {
+	testenv.Isolate(t)
+	s := firewall.State{Mesh: []string{"wt0"}, LAN: []string{"eth0"}, Uplinks4: []string{"eth0", "v4only"},
+		Uplinks6: []string{"eth0", "v6only"}, Bridges: []string{"docker0"},
+		Resolvers: []netip.Addr{netip.MustParseAddr("192.0.2.53"), netip.MustParseAddr("2001:db8:53::53")}}
+	chain := func(r, name string) string {
+		_, after, _ := strings.Cut(r, "\tchain "+name+" {\n")
+		body, _, _ := strings.Cut(after, "\t}\n")
+		return body
+	}
+	r := firewall.Render(s)
+	if got, want := chain(r, "outbound"), "\t\tmeta nfproto ipv4 oifname != { \"eth0\", \"v4only\" } drop\n"+
+		"\t\tmeta nfproto ipv6 oifname != { \"eth0\", \"v6only\" } drop\n"; !strings.HasPrefix(got, want) {
+		t.Errorf("outbound, want each family through its own uplinks:\n%s", got)
+	}
+	for _, want := range []string{
+		`oifname { "eth0", "v4only" } ip daddr { 192.0.2.53 } meta l4proto { tcp, udp } th dport 53 accept`,
+		`oifname { "eth0", "v6only" } ip6 daddr { 2001:db8:53::53 } meta l4proto { tcp, udp } th dport 53 accept`,
+	} {
+		if !strings.Contains(chain(r, "apps_out"), want) {
+			t.Errorf("apps_out lacks %q:\n%s", want, chain(r, "apps_out"))
+		}
+	}
+	if !strings.Contains(chain(r, "forward"), `iifname { "eth0", "v4only", "v6only" } drop`) {
+		t.Errorf("forward, want nothing forwarded from any uplink:\n%s", chain(r, "forward"))
+	}
+	v4only := s
+	v4only.Uplinks6 = nil
+	if got := chain(firewall.Render(v4only), "outbound"); !strings.HasPrefix(got, "\t\tmeta nfproto ipv4 oifname != { \"eth0\", \"v4only\" } drop\n"+
+		"\t\tmeta nfproto ipv6 drop\n") || strings.Contains(firewall.Render(v4only), "ip6 daddr { 2001:db8:53::53 }") {
+		t.Errorf("with no IPv6 uplink, want no way out over IPv6, nor to an IPv6 resolver:\n%s", got)
+	}
+	none := s
+	none.Uplinks4, none.Uplinks6 = nil, nil
+	if got := chain(firewall.Render(none), "outbound"); !strings.HasPrefix(got, "\t\tdrop\n") {
+		t.Errorf("with no uplink, want no way out (the LAN is one only as its default routes say):\n%s", got)
 	}
 }

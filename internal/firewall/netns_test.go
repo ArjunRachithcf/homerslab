@@ -32,6 +32,7 @@ import (
 
 	"github.com/ArjunRachithcf/homerslab/internal/firewall"
 	"github.com/ArjunRachithcf/homerslab/internal/host"
+	"github.com/ArjunRachithcf/homerslab/internal/lan"
 	"github.com/ArjunRachithcf/homerslab/internal/testenv"
 )
 
@@ -129,7 +130,8 @@ func TestTheFirewallTableInNetworkNamespaces(t *testing.T) {
 	// The LAN is a bridge named br-iot: it is the LAN because it carries the default route, and the engines list
 	// br-test, not it.
 	open := firewall.State{Mesh: []string{"wt0"}, WireGuard: []int{51820}, SetupPort: 7020, LAN: []string{"br-iot"},
-		LANPrefixes: lanPrefixes, Bridges: []string{"br-test", "br-other", "docker0"},
+		LANPrefixes: lanPrefixes, Uplinks4: []string{"br-iot"}, Uplinks6: []string{"br-iot"},
+		Bridges: []string{"br-test", "br-other", "docker0"}, Virtual: guests(t),
 		Resolvers: []netip.Addr{netip.MustParseAddr("192.168.77.50"), netip.MustParseAddr("100.88.1.2")}}
 	apply := func(s firewall.State) {
 		t.Helper()
@@ -332,10 +334,12 @@ func TestTunnelsInNetworkNamespaces(t *testing.T) {
 	}
 	lanPrefixes := []netip.Prefix{netip.MustParsePrefix("192.168.77.0/24"), netip.MustParsePrefix("fd00:77::/64"), netip.MustParsePrefix("2001:db8:77::/64")}
 	split := firewall.State{Mesh: []string{"wt0"}, WireGuard: []int{51820}, SetupPort: 7020, LAN: []string{"br-iot"},
-		LANPrefixes: lanPrefixes, Bridges: []string{"br-test", "br-other", "docker0"},
+		LANPrefixes: lanPrefixes, Uplinks4: []string{"br-iot"}, Uplinks6: []string{"br-iot"},
+		Bridges: []string{"br-test", "br-other", "docker0"}, Virtual: guests(t),
 		Resolvers: []netip.Addr{netip.MustParseAddr("192.168.77.50")}}
 	full := split
-	full.Uplinks = []string{"br-iot", "tun0", "tap0"}
+	full.Uplinks4 = []string{"br-iot", "tun0", "tap0"}
+	full.Uplinks6 = full.Uplinks4
 	named := split
 	named.Bridges = append(slices.Clone(split.Bridges), "tun0", "tap0") // an engine naming the tunnels as its bridges
 	for _, c := range []struct {
@@ -369,8 +373,12 @@ func TestWithNoLANKnownABridgeIsNotForwarded(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if lines := strings.Split(strings.TrimSpace(string(links)), "\n"); len(lines) != 1 || !strings.Contains(lines[0], ": lo:") {
-		t.Fatalf("refusing: this network namespace isn't fresh (%d links)", len(lines))
+	addrs, err := exec.Command("ip", "-o", "addr", "show").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !fresh(string(links), string(addrs)) {
+		t.Fatalf("refusing: this network namespace isn't fresh:\n%s", links)
 	}
 	n := &netns{pids: map[string]int{}}
 	for _, name := range []string{"stranger", "vpn"} {
@@ -402,11 +410,183 @@ func TestWithNoLANKnownABridgeIsNotForwarded(t *testing.T) {
 	n.want(t, "before the table: the box forwards a stranger behind br0 to the internet through the VPN", "stranger", "198.51.100.7:9011", true)
 
 	fw := &firewall.Firewall{Run: host.Exec}
-	if err := fw.Apply(context.Background(), firewall.State{Mesh: []string{"wt0"}, Uplinks: []string{"tun0"}}); err != nil {
+	if err := fw.Apply(context.Background(), firewall.State{Mesh: []string{"wt0"}, Uplinks4: []string{"tun0"}, Virtual: guests(t)}); err != nil {
 		t.Fatal(err)
 	}
 	n.want(t, "with no LAN known: a stranger behind the bridge isn't forwarded through the VPN", "stranger", "198.51.100.7:9011", false)
 	n.want(t, "but the box itself reaches the internet through it", "", "198.51.100.7:9011", true)
+}
+
+// A bridge with a NIC among its ports reaches past this machine, so it is treated as that NIC is (#169): never a
+// local virtual network, never an app network, nothing forwarded. The box has a bridge br-x with a guest behind it
+// (on a veth); the kernel's reading says whether it is of guests' ports only, before and after a dummy, standing for a
+// second NIC (a namespace can hold no NIC), is enslaved to it. As a local virtual network, and as an engine's bridge.
+func TestABridgeWithANICInNetworkNamespaces(t *testing.T) {
+	testenv.Isolate(t)
+	if os.Getenv(insideNamespaces) != "1" {
+		reexec(t, "^TestABridgeWithANICInNetworkNamespaces$")
+		return
+	}
+	n := newNet(t)
+	guest := exec.Command("unshare", "-n", "sleep", "300")
+	if err := guest.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = guest.Process.Kill(); _ = guest.Wait() })
+	n.pids["guest"] = guest.Process.Pid
+	time.Sleep(100 * time.Millisecond)
+	script := fmt.Sprintf(`ip link add br-x type bridge
+		ip link add veth-x type veth peer name eth0 netns %[1]d
+		ip link set veth-x master br-x
+		ip addr add 192.168.123.1/24 dev br-x
+		ip link set br-x up; ip link set veth-x up
+		nsenter -t %[1]d -n sh -ec "ip link set lo up; ip link set eth0 up; ip addr add 192.168.123.2/24 dev eth0; ip route add default via 192.168.123.1"
+		nsenter -t %[2]d -n ip route add 192.168.123.0/24 via 192.168.77.1`, n.pids["guest"], n.pids["lan"])
+	if out, err := exec.Command("sh", "-ec", script).CombinedOutput(); err != nil {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	fw := &firewall.Firewall{Run: host.Exec}
+	apply := func(s firewall.State) {
+		t.Helper()
+		if err := fw.Apply(context.Background(), s); err != nil {
+			t.Fatal(err)
+		}
+	}
+	s := firewall.State{Mesh: []string{"wt0"}, WireGuard: []int{51820}, SetupPort: 7020, LAN: []string{"br-iot"},
+		LANPrefixes: []netip.Prefix{netip.MustParsePrefix("192.168.77.0/24"), netip.MustParsePrefix("2001:db8:77::/64")},
+		Uplinks4:    []string{"br-iot"}, Uplinks6: []string{"br-iot"}, Bridges: []string{"br-test", "br-other", "docker0"}}
+	vm := func(when string, reach bool) {
+		n.together(func() {
+			n.wantUDP(t, when+": the guest gets the box's DHCP", "guest", "192.168.123.1:67", reach)
+			n.want(t, when+": and its DNS", "guest", "192.168.123.1:53", reach)
+			n.want(t, when+": and the internet", "guest", "203.0.113.50:9001", reach)
+		})
+	}
+	nic := func(when string) {
+		n.together(func() {
+			n.want(t, when+": the guest reaches no listener of the box", "guest", "192.168.123.1:8022", false)
+			n.want(t, when+": nor the setup listener", "guest", "192.168.123.1:7020", false)
+			n.want(t, when+": nor the LAN", "guest", "192.168.77.50:9000", false)
+			n.want(t, when+": nor an app", "guest", "172.30.0.2:8444", false)
+		})
+	}
+
+	s.Virtual = guests(t)
+	if !slices.Contains(s.Virtual, "br-x") || !slices.Contains(s.Virtual, "virbr0") || slices.Contains(s.Virtual, "br-iot") {
+		t.Fatalf("the kernel's local virtual networks: %v", s.Virtual)
+	}
+	apply(s)
+	vm("a bridge of a veth", true)
+	nic("a bridge of a veth")
+
+	if out, err := exec.Command("sh", "-ec", "ip link add eth5 type dummy; ip link set eth5 master br-x; ip link set eth5 up").CombinedOutput(); err != nil {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	s.Virtual = guests(t)
+	if slices.Contains(s.Virtual, "br-x") || !slices.Contains(s.Virtual, "virbr0") {
+		t.Fatalf("with a NIC among br-x's ports, the kernel's local virtual networks: %v", s.Virtual)
+	}
+	apply(s)
+	vm("a bridge with a NIC", false)
+	nic("a bridge with a NIC")
+	n.pingFrom(t, "a bridge with a NIC: the guest still reaches the machine itself, as from a NIC", "guest", "192.168.123.1", true)
+	n.want(t, "a VM on a bridge of guests keeps its internet", "vm", "203.0.113.50:9001", true)
+
+	// An engine's bridge with a NIC: nothing in, nothing forwarded.
+	s.Bridges = append(s.Bridges, "br-x")
+	apply(s)
+	vm("an engine's bridge with a NIC", false)
+	nic("an engine's bridge with a NIC")
+	n.pingFrom(t, "an engine's bridge with a NIC: nothing in at all", "guest", "192.168.123.1", false)
+	n.want(t, "an app on a bridge of guests keeps its internet", "ctr", "203.0.113.50:9001", true)
+	if out, err := exec.Command("ip", "link", "set", "eth5", "nomaster").CombinedOutput(); err != nil {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	s.Virtual = guests(t)
+	apply(s)
+	n.together(func() {
+		n.want(t, "an engine's bridge of a veth again: its app reaches the box's DNS", "guest", "192.168.123.1:53", true)
+		n.want(t, "and the internet", "guest", "203.0.113.50:9001", true)
+		n.wantUDP(t, "but no DHCP: it is an app network", "guest", "192.168.123.1:67", false)
+	})
+}
+
+// guests are the bridges this namespace's kernel reads as of guests' ports only (lan.Network.Virtual).
+func guests(t *testing.T) []string {
+	t.Helper()
+	n, err := lan.ReadNetwork()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return n.Virtual
+}
+
+// A tunnel is a way out for apps only in the families its routes cover (#169). The box's tun0 leads to a VPN's server
+// (vpn) with an address on the IPv4 and on the IPv6 internet behind it, and the box routes a range of each through it
+// (a split tunnel). While tun0 is an uplink for IPv6 only (its routes cover only the IPv6 internet), an app reaches the
+// IPv6 internet through it and not the IPv4 one, and the other way round; the LAN stays each family's way out.
+func TestATunnelIsAWayOutOnlyForTheFamiliesItCovers(t *testing.T) {
+	testenv.Isolate(t)
+	if os.Getenv(insideNamespaces) != "1" {
+		reexec(t, "^TestATunnelIsAWayOutOnlyForTheFamiliesItCovers$")
+		return
+	}
+	n := newNet(t)
+	n.tunnel(t, unix.IFF_TUN, "tun0", "10.8.0.2", "vpn", "10.8.0.1")
+	script := fmt.Sprintf(`ip -6 addr add fd88::2/64 dev tun0 nodad
+		ip route add 198.51.100.0/24 dev tun0
+		ip -6 route add 2001:db8:aaaa::/48 dev tun0
+		nsenter -t %d -n sh -ec "ip -6 addr add fd88::1/64 dev tun0-far nodad; ip -6 route add default dev tun0-far
+			ip addr add 198.51.100.7/32 dev lo; ip -6 addr add 2001:db8:aaaa::7/128 dev lo nodad"`, n.pids["vpn"])
+	if out, err := exec.Command("sh", "-ec", script).CombinedOutput(); err != nil {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	n.listen(t, "vpn", "198.51.100.7:9012")
+	n.listen(t, "vpn", "[2001:db8:aaaa::7]:9013")
+	// The box's IPv6 link-local addresses, which neighbour discovery needs, are usable once duplicate address
+	// detection is done.
+	for i := 0; ; i++ {
+		out, err := exec.Command("ip", "-6", "addr", "show", "tentative").Output()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(bytes.TrimSpace(out)) == 0 {
+			break
+		}
+		if i == 50 {
+			t.Fatalf("duplicate address detection never ended:\n%s", out)
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	n.together(func() {
+		n.want(t, "before the table: an app reaches the IPv4 internet through the tunnel", "ctr", "198.51.100.7:9012", true)
+		n.want(t, "before the table: and the IPv6 internet", "ctr", "[2001:db8:aaaa::7]:9013", true)
+		n.want(t, "before the table: and the IPv6 internet through the LAN", "ctr", "[2001:db8:ffff::50]:9005", true)
+	})
+	fw := &firewall.Firewall{Run: host.Exec}
+	base := firewall.State{Mesh: []string{"wt0"}, WireGuard: []int{51820}, LAN: []string{"br-iot"},
+		LANPrefixes: []netip.Prefix{netip.MustParsePrefix("192.168.77.0/24"), netip.MustParsePrefix("2001:db8:77::/64")},
+		Bridges:     []string{"br-test", "br-other", "docker0"}, Virtual: guests(t)}
+	v6 := base
+	v6.Uplinks4, v6.Uplinks6 = []string{"br-iot"}, []string{"br-iot", "tun0"}
+	v4 := base
+	v4.Uplinks4, v4.Uplinks6 = []string{"br-iot", "tun0"}, []string{"br-iot"}
+	for _, c := range []struct {
+		when       string
+		s          firewall.State
+		ipv4, ipv6 bool
+	}{{"an IPv6-only uplink", v6, false, true}, {"an IPv4-only uplink", v4, true, false}} {
+		if err := fw.Apply(context.Background(), c.s); err != nil {
+			t.Fatal(err)
+		}
+		n.together(func() {
+			n.want(t, c.when+": an app reaches the IPv4 internet through the tunnel", "ctr", "198.51.100.7:9012", c.ipv4)
+			n.want(t, c.when+": an app reaches the IPv6 internet through the tunnel", "ctr", "[2001:db8:aaaa::7]:9013", c.ipv6)
+			n.want(t, c.when+": an app still reaches the IPv4 internet through the LAN", "ctr", "203.0.113.50:9001", true)
+			n.want(t, c.when+": and the IPv6 internet", "ctr", "[2001:db8:ffff::50]:9005", true)
+			n.want(t, c.when+": nothing from the VPN's side is forwarded", "vpn", "203.0.113.50:9001", false)
+		})
+	}
 }
 
 // tunnel makes the box's end of a tunnel (a tun device, or a tap one: L2), named name with the address box, and its
@@ -500,8 +680,12 @@ func newNet(t *testing.T) *netns {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if lines := strings.Split(strings.TrimSpace(string(links)), "\n"); len(lines) != 1 || !strings.Contains(lines[0], ": lo:") {
-		t.Fatalf("refusing: this network namespace isn't fresh (%d links)", len(lines))
+	addrs, err := exec.Command("ip", "-o", "addr", "show").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !fresh(string(links), string(addrs)) {
+		t.Fatalf("refusing: this network namespace isn't fresh:\n%s", links)
 	}
 	n := &netns{pids: map[string]int{}}
 	for _, name := range []string{"lan", "peer", "ctr", "ctr3", "ctr2", "ctr0", "vm", "vpn", "vpn2"} {
@@ -711,4 +895,30 @@ func orBox(s string) string {
 		return "box"
 	}
 	return s
+}
+
+// fresh says whether `ip -o link show` and `ip -o addr show` list a brand-new network namespace: loopback, and at most
+// the fallback tunnel devices the kernel adds to every namespace once their module is loaded (as a test that makes an
+// erspan or a gretap link loads ip_gre), by their exact names, down and with no address. Never the machine's own
+// namespace, which has its NICs.
+func fresh(links, addrs string) bool {
+	for _, l := range strings.Split(strings.TrimSpace(addrs), "\n") {
+		if f := strings.Fields(l); len(f) > 0 && (len(f) < 2 || f[1] != "lo") {
+			return false
+		}
+	}
+	fallback := []string{"gre0", "gretap0", "erspan0", "tunl0", "sit0", "ip6tnl0", "ip6gre0", "ip_vti0", "ip6_vti0"}
+	lines := strings.Split(strings.TrimSpace(links), "\n")
+	for i, l := range lines {
+		f := strings.Fields(l)
+		if len(f) < 3 {
+			return false
+		}
+		name, _, _ := strings.Cut(strings.TrimSuffix(f[1], ":"), "@")
+		up := slices.Contains(strings.Split(strings.Trim(f[2], "<>"), ","), "UP")
+		if i == 0 && name != "lo" || i > 0 && (!slices.Contains(fallback, name) || up) {
+			return false
+		}
+	}
+	return len(lines) > 0
 }
