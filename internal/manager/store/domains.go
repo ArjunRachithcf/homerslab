@@ -109,22 +109,17 @@ func (s *Store) Certificate(ctx context.Context, domain string) (Certificate, er
 	return Certificate{}, ErrNotFound
 }
 
-// RenewalFailed records a failed renewal, and says whether it is the first since the last success.
-func (s *Store) RenewalFailed(ctx context.Context, domain string, at time.Time, why string) (first bool, err error) {
-	err = s.tx(ctx, func(tx *sql.Tx) error {
-		var failures int
-		if err := tx.QueryRowContext(ctx, `SELECT failures FROM certificate WHERE domain = ?`, domain).Scan(&failures); err != nil {
-			if errors.Is(err, sql.ErrNoRows) {
-				return ErrNotFound
-			}
-			return err
-		}
-		first = failures == 0
-		_, err := tx.ExecContext(ctx, `UPDATE certificate SET failures = failures + 1, last_error = ?,
-			failing_since = coalesce(failing_since, ?) WHERE domain = ?`, why, at.UnixMilli(), domain)
+// RenewalFailed records a failed renewal.
+func (s *Store) RenewalFailed(ctx context.Context, domain string, at time.Time, why string) error {
+	res, err := s.db.ExecContext(ctx, `UPDATE certificate SET failures = failures + 1, last_error = ?,
+		failing_since = coalesce(failing_since, ?) WHERE domain = ?`, why, at.UnixMilli(), domain)
+	if err != nil {
 		return err
-	})
-	return first, err
+	}
+	if n, err := res.RowsAffected(); err != nil || n == 0 {
+		return errors.Join(ErrNotFound, err)
+	}
+	return nil
 }
 
 // Warning is something an admin should look at.
@@ -141,10 +136,11 @@ func (s *Store) AddWarning(ctx context.Context, w Warning) error {
 	return err
 }
 
-// OpenWarning says whether a source has a warning that isn't resolved.
-func (s *Store) OpenWarning(ctx context.Context, source string) (bool, error) {
+// OpenWarning says whether a source has this warning, and it isn't resolved.
+func (s *Store) OpenWarning(ctx context.Context, source, what string) (bool, error) {
 	var open bool
-	err := s.db.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM warning WHERE source = ? AND resolved_at IS NULL)`, source).Scan(&open)
+	err := s.db.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM warning WHERE source = ? AND what = ? AND resolved_at IS NULL)`,
+		source, what).Scan(&open)
 	return open, err
 }
 

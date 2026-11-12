@@ -104,6 +104,22 @@ func (s *Store) AddDrift(ctx context.Context, d Drift) error {
 	return err
 }
 
+// AddDriftUnlessLast records drift, unless the source's last drift report says the same.
+func (s *Store) AddDriftUnlessLast(ctx context.Context, d Drift) error {
+	return s.tx(ctx, func(tx *sql.Tx) error {
+		var last string
+		err := tx.QueryRowContext(ctx, `SELECT what FROM drift WHERE source = ? ORDER BY at DESC, rowid DESC LIMIT 1`, d.Source).Scan(&last)
+		if err == nil && last == d.What {
+			return nil
+		}
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return err
+		}
+		_, err = tx.ExecContext(ctx, `INSERT INTO drift (at, source, what) VALUES (?, ?, ?)`, d.At.UnixMilli(), d.Source, d.What)
+		return err
+	})
+}
+
 // Drifts are the drift reports, newest first, at most limit.
 func (s *Store) Drifts(ctx context.Context, limit int) ([]Drift, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT at, source, what FROM drift ORDER BY at DESC, rowid DESC LIMIT ?`, limit)

@@ -98,6 +98,9 @@ const (
 	ansDNSKeyAlg   = "dnsKeyAlgorithm"
 	ansZone        = "dnsZone"
 	ansAdminURL    = "adminUrl"
+	// ansEmptySince is when renewals began to stop on the DNS provider's empty listings, since the last certificate
+	// kept or issued, RFC 3339; empty when none has (#175).
+	ansEmptySince = "dnsListingEmptySince"
 	// ansPort is the household's port, chosen once at the network step (ADR 0021).
 	ansPort = "householdPort"
 )
@@ -222,7 +225,12 @@ func (m *Manager) ensureCertificate(ctx context.Context, ans map[string]string, 
 		if errors.Is(err, dns.ErrListingEmpty) {
 			return false, fmt.Errorf("%w: %w", errIssue, err) // tried again on the schedule: secretFailed and renewalFailed tell it apart
 		}
-		return false, fmt.Errorf("%w: %v", errIssue, err)
+		return false, fmt.Errorf("%w: %v", errIssue, err) // the other failures keep their code (#175)
+	}
+	if ans[ansEmptySince] != "" { // the empty listings are over
+		if err := m.db.SaveAnswers(ctx, map[string]string{ansEmptySince: ""}); err != nil {
+			return false, err
+		}
 	}
 	if issued {
 		if err := m.agent.seal(ctx, credTLSKey, c.Key); err != nil {
@@ -378,26 +386,27 @@ const warnCertificate = "certificate:"
 // the scheduler, before the admins are warned: an empty listing is most often a moment's answer (#175).
 const emptyListingGrace = 24 * time.Hour
 
-// renewalFailed counts a failed renewal, and warns the admins when they haven't been warned yet. A renewal that the
-// DNS provider's empty listing stopped warns only once such failures have gone on for emptyListingGrace; until then
-// the scheduler tries again at its next run (#175).
+// renewalFailed counts a failed renewal, and warns the admins of its cause unless that warning is open already. A
+// renewal that the DNS provider's empty listing stopped warns only once such failures have gone on for
+// emptyListingGrace since the first of them after the last renewal; until then the scheduler tries again at its next
+// run (#175).
 func (m *Manager) renewalFailed(ctx context.Context, row store.Certificate, why error) error {
 	now := m.cfg.Now()
-	if _, err := m.db.RenewalFailed(ctx, row.Domain, now, why.Error()); err != nil {
+	if err := m.db.RenewalFailed(ctx, row.Domain, now, why.Error()); err != nil {
 		return err
 	}
 	failed := fmt.Errorf("renewing the certificate for *.%s: %w", row.Domain, why)
-	since := row.FailingSince
-	if since.IsZero() {
-		since = now
+	ans, err := m.db.Answers(ctx)
+	if err != nil {
+		return errors.Join(failed, err)
 	}
 	empty := errors.Is(why, dns.ErrListingEmpty)
-	if empty && now.Sub(since) < emptyListingGrace {
+	since, _ := time.Parse(time.RFC3339Nano, ans[ansEmptySince])
+	switch {
+	case empty && since.IsZero():
+		return errors.Join(failed, m.db.SaveAnswers(ctx, map[string]string{ansEmptySince: now.UTC().Format(time.RFC3339Nano)}))
+	case empty && now.Sub(since) < emptyListingGrace:
 		return failed
-	}
-	open, err := m.db.OpenWarning(ctx, warnCertificate+row.Domain)
-	if err != nil || open {
-		return errors.Join(failed, err)
 	}
 	expires := row.NotAfter.UTC().Format("2 January 2006")
 	what := fmt.Sprintf("The certificate for *.%s couldn't be renewed, and it expires on %s. If the DNS token no longer "+
@@ -407,6 +416,10 @@ func (m *Manager) renewalFailed(ctx context.Context, row store.Certificate, why 
 			"coming back empty, which proves nothing, so HomersLab wrote no record. It keeps trying on its schedule, and the "+
 			"certificate expires on %s. If the DNS token can no longer read the zone's records, give a new one on the primary: "+
 			"sudo homerslab dns token", row.Domain, expires)
+	}
+	open, err := m.db.OpenWarning(ctx, warnCertificate+row.Domain, what)
+	if err != nil || open {
+		return errors.Join(failed, err)
 	}
 	if err := m.db.AddWarning(ctx, store.Warning{At: now, Source: warnCertificate + row.Domain, What: what}); err != nil {
 		return err
@@ -418,7 +431,8 @@ func (m *Manager) renewalFailed(ctx context.Context, row store.Certificate, why 
 const driftDNS = "dns"
 
 // dnsDrift records the zone's drift notes in the drift report, beside the mesh's: each record by its type and name, and
-// never its value (#175).
+// never its value. A note the same as the report's last DNS note isn't added again: a listing that stays empty is
+// one note, not one at every run of the scheduler (#175).
 func (m *Manager) dnsDrift(ctx context.Context) func(dns.Drift) {
 	ctx = context.WithoutCancel(ctx) // a note is kept even when the request that issued has gone
 	return func(d dns.Drift) {
@@ -432,11 +446,11 @@ func (m *Manager) dnsDrift(ctx context.Context) func(dns.Drift) {
 				"as it is, and HomersLab no longer counts the record as its own", rec, zone)
 		case dns.DriftListingLookedEmpty:
 			what = fmt.Sprintf("The DNS provider's listing of %s came back empty, which proves nothing: HomersLab left %s as it "+
-				"was and wrote nothing; the change is tried again later", zone, rec)
+				"was and wrote nothing", zone, rec)
 		default:
 			what = fmt.Sprintf("%s: %s in %s", d.What, rec, zone)
 		}
-		if err := m.db.AddDrift(ctx, store.Drift{At: m.cfg.Now(), Source: driftDNS, What: what}); err != nil {
+		if err := m.db.AddDriftUnlessLast(ctx, store.Drift{At: m.cfg.Now(), Source: driftDNS, What: what}); err != nil {
 			m.log.Error("recording the DNS provider's drift", "zone", zone, "record", rec, "what", d.What, "err", err)
 		}
 	}

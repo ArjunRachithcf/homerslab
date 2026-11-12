@@ -181,7 +181,7 @@ var secretRefusals = map[string]string{
 	"dns:no-zone":           "no public DNS zone holds the domain: check its name on the setup page",
 	"dns:caa-forbids":       "the domain's CAA records don't let the certificate authority issue for it: add a CAA record for letsencrypt.org at your DNS provider, then run the command again",
 	"dns:issuance-failed":   "the token works, but the certificate wasn't issued: see journalctl -u homerslab-manager, then run the command again",
-	"dns:dns-listing-empty": "the DNS provider listed nothing in the zone, which can be a moment's answer, so nothing was written: run the command again in a few minutes",
+	"dns:dns-listing-empty": "the DNS provider listed nothing in the zone, which can be a moment's answer, so no DNS record was written and the certificate wasn't issued: run the command again in a few minutes",
 	"dns:edge-failed":       "the certificate is issued, but the edge didn't take it: see journalctl -u homerslab-agent -u homerslab-edge",
 	"dns:names-failed":      "the certificate is issued, but the mesh's names weren't made: see journalctl -u homerslab-manager",
 	"dns:no-domain":         "first-time setup hasn't got to the domain yet: give it on the setup page, then use sudo homerslab setup secret dns",

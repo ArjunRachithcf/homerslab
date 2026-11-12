@@ -198,3 +198,94 @@ func TestTheRealZoneSaysItsDriftToTheIssuance(t *testing.T) {
 		t.Errorf("the issuance's drift notes: %+v", notes)
 	}
 }
+
+// A day of empty listings is counted from the first of them, never from an older failure of another kind; and once
+// its warning is open, a token the provider refuses still raises the warning to replace it (#175).
+func TestTheEmptyListingsDayIsTheirOwn(t *testing.T) {
+	testenv.Isolate(t)
+	p, b, _, fd := atDomain(t)
+	throughDomain(t, p, b)
+	ctx := context.Background()
+	empty := fmt.Errorf("presenting for challenge: %w", dns.ErrListingEmpty)
+	run := func(hours int) {
+		for range hours {
+			p.clock.Add(time.Hour)
+			p.m.RunDue(ctx)
+		}
+	}
+
+	p.clock.Add(60 * 24 * time.Hour)
+	fd.fail = manager.ErrDNSRefused
+	run(48) // two days of a refused token: its warning
+	fd.fail = empty
+	run(2)
+	ws := p.warnings(t)
+	if len(ws) != 1 || !strings.Contains(ws[0].What, "If the DNS token no longer works") {
+		t.Fatalf("two hours of empty listings after two days of a refused token: %+v", ws)
+	}
+	run(23)
+	if ws := p.warnings(t); len(ws) != 2 || !strings.Contains(ws[0].What, "empty") {
+		t.Fatalf("a day of empty listings: %+v", ws)
+	}
+	fd.fail = manager.ErrDNSRefused
+	run(1)
+	if ws := p.warnings(t); len(ws) != 2 {
+		t.Errorf("the token's warning is open still: %+v", ws)
+	}
+	fd.fail = nil
+	run(1)
+	for _, w := range p.warnings(t) {
+		if w.Resolved.IsZero() {
+			t.Errorf("open after the renewal: %+v", w)
+		}
+	}
+
+	// After the success, the day starts again; and a token refused once the empty listings' warning is open raises
+	// the token's warning too.
+	p.clock.Add(60 * 24 * time.Hour)
+	fd.fail = empty
+	run(2)
+	for _, w := range p.warnings(t) {
+		if w.Resolved.IsZero() {
+			t.Errorf("two hours of empty listings after a renewal: %+v", w)
+		}
+	}
+	run(23)
+	fd.fail = manager.ErrDNSRefused
+	run(1)
+	var open []string
+	for _, w := range p.warnings(t) {
+		if w.Resolved.IsZero() {
+			open = append(open, w.What)
+		}
+	}
+	if len(open) != 2 || !strings.Contains(open[0], "If the DNS token no longer works") || !strings.Contains(open[1], "empty") {
+		t.Errorf("the open warnings: %q, want the token's over the empty listings'", open)
+	}
+}
+
+// The scheduler's runs on a listing that stays empty say so once in the drift report, not at every run: the report's
+// other notes never drop out under them (#175).
+func TestAnEmptyListingThatLastsIsOneDriftNote(t *testing.T) {
+	testenv.Isolate(t)
+	p, b, _, fd := atDomain(t)
+	throughDomain(t, p, b)
+	ctx := context.Background()
+	note := dns.Drift{Zone: "example.test.", Record: dns.Record{Name: "_acme-challenge", Type: "TXT", Value: driftValue}, What: dns.DriftListingLookedEmpty}
+	p.clock.Add(60 * 24 * time.Hour)
+	fd.fail = fmt.Errorf("presenting for challenge: %w", dns.ErrListingEmpty)
+	fd.drift = []dns.Drift{note, note} // the challenge's create, then its clean-up
+	for range 5 {
+		p.clock.Add(time.Hour)
+		p.m.RunDue(ctx)
+	}
+	if d := p.drift(t); len(d) != 1 {
+		t.Errorf("five runs on an empty listing: %d notes, want one: %+v", len(d), d)
+	}
+	fd.drift = []dns.Drift{{Zone: "example.test.", Record: note.Record, What: dns.DriftDeletedByHand}, note}
+	p.clock.Add(time.Hour)
+	p.m.RunDue(ctx)
+	if d := p.drift(t); len(d) != 3 {
+		t.Errorf("another note between them: %d notes, want three: %+v", len(d), d)
+	}
+}
