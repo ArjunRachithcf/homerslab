@@ -146,6 +146,8 @@ func TestAProjectThatWouldExhaustTheAgentIsRefusedFast(t *testing.T) {
 		"include /dev/urandom behind a merge key": "<<: {include: [/dev/urandom]}\nservices: {web: {image: x}}\n",
 		"65 services":                             services(65, 0),
 		"a depends_on fan":                        services(64, 40),
+		"129 references, few paths":               hub(63, "depends_on: [s0], links: [s0], volumes_from: [s0]"),
+		"more paths than the cap, few references": fib(20),
 		"a links fan":                             fan("links"),
 		"a volumes_from fan":                      fan("volumes_from"),
 		"block nesting":                           "services:\n  web:\n    image: x\n    x-deep:\n" + deepBlock(70),
@@ -171,7 +173,7 @@ func TestAProjectThatWouldExhaustTheAgentIsRefusedFast(t *testing.T) {
 		}
 	}
 	// 64 services, a few references each, and 64 levels are still a plain file.
-	for name, file := range map[string]string{"64 services": services(64, 1), "a short chain": chain(16, "links: [s%d]")} {
+	for name, file := range map[string]string{"64 services": services(64, 1), "a short chain": chain(16, "links: [s%d]"), "126 references": hub(63, "depends_on: [s0], links: [s0]")} {
 		if _, err := r.Read(context.Background(), "homerslab-example", []byte(file)); err != nil {
 			t.Errorf("%s: %v", name, err)
 		}
@@ -198,6 +200,16 @@ func services(n, fan int) string {
 			}
 			b.WriteString("]\n")
 		}
+	}
+	return b.String()
+}
+
+// hub is s0 and n services, each with the same references (extra) to s0: many references, but few paths.
+func hub(n int, extra string) string {
+	var b strings.Builder
+	b.WriteString("services:\n  s0: {image: x}\n")
+	for i := 1; i <= n; i++ {
+		fmt.Fprintf(&b, "  s%d: {image: x, %s}\n", i, extra)
 	}
 	return b.String()
 }
