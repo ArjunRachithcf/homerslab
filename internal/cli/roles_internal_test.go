@@ -2,9 +2,11 @@ package cli
 
 import (
 	"net/netip"
+	"strings"
 	"testing"
 
 	"github.com/ArjunRachithcf/homerslab/internal/lan"
+	"github.com/ArjunRachithcf/homerslab/internal/manager/plan"
 	"github.com/ArjunRachithcf/homerslab/internal/testenv"
 )
 
@@ -25,5 +27,16 @@ func TestTheLinksAddressFollowsTheListener(t *testing.T) {
 		if (want == "" && got.IsValid()) || (want != "" && got != netip.MustParseAddr(want)) {
 			t.Errorf("listening on %s: the link's address = %v, want %q", listen, got, want)
 		}
+	}
+}
+
+// A person's name in a plan is shown inside FSI...PDI (#124), so a right-to-left name can't reorder "Adults:" before
+// it or the words after it.
+func TestAPlansPeopleAreIsolated(t *testing.T) {
+	testenv.Isolate(t)
+	var b strings.Builder
+	planWords(&b, plan.Plan{Audience: plan.Audience{Default: "adults", People: []plan.Person{{Name: "محمد رضا", Role: "admin"}, {Name: "Rui", Role: "adult"}}}})
+	if want := "Adults: ⁨محمد رضا⁩, ⁨Rui⁩"; !strings.Contains(b.String(), want) {
+		t.Errorf("no %+q in\n%s", want, b.String())
 	}
 }

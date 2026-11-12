@@ -5,7 +5,7 @@ import { expect, test } from './primary';
 
 for (const look of looks) {
   test(`first-time setup passes axe (WCAG 2.2 AA): ${lookName(look)}`, async ({ page, primary }) => {
-    test.slow(); // ten screens, each settled and audited: about 15 s alone, more beside other tests
+    test.slow(); // many screens, each settled and audited: about 15 s alone, more beside other tests
     await wear(page, look);
     const h1 = page.getByRole('heading', { level: 1 });
     const next = page.getByRole('button', { name: 'Continue' });
@@ -13,6 +13,14 @@ for (const look of looks) {
     await page.goto((await primary.newLink()).localUrl.replace(/#.*/, ''));
     await expect(h1).toContainText('This link doesn’t work any more');
     await accessible(page, 'the link doesn’t work');
+
+    // the disk under the manager's database is full when the page opens (#70)
+    await page.route('**/api/v1/setup', (route) =>
+      route.fulfill({ status: 507, contentType: 'application/json', body: '{"error":"disk-full"}' }));
+    await page.goto((await primary.newLink()).localUrl);
+    await expect(h1).toContainText('This machine’s disk is full');
+    await accessible(page, 'the disk is full');
+    await page.unroute('**/api/v1/setup');
 
     await page.goto((await primary.newLink()).localUrl);
     await expect(h1).toContainText('Let’s set up HomersLab');
@@ -28,11 +36,38 @@ for (const look of looks) {
     await next.click();
     await expect(page.getByText('Type a mail address, like name@example.org.')).toBeVisible();
     await accessible(page, 'your name, refused');
+    // every answer the manager refuses says why, and each of those messages is audited: invisible, too long, too many marks
+    const name = page.getByLabel('Your name', { exact: true });
+    for (const [typed, says] of [['Inês\u202eevil', 'Your name has an invisible character'], ['I'.repeat(65), 'Your name can be 64 characters at most.'],
+      [`A${'\u0316\u0317\u0318\u0319\u031a'.repeat(12)}`, 'Your name has too many accents or marks on one letter']] as const) {
+      await name.fill(typed);
+      await next.click();
+      await expect(page.getByText(says)).toBeVisible();
+      await accessible(page, `your name, refused: ${says}`);
+    }
+    await name.fill('Inês Ferreira');
+    // the disk fills while an answer is sent: the alert beside the button, the typed answer kept
     await page.getByLabel('Your mail address', { exact: true }).fill('ines@ferreira.family');
+    await page.route('**/api/v1/setup/steps/you', (route) =>
+      route.fulfill({ status: 507, contentType: 'application/json', body: '{"error":"disk-full"}' }));
+    await next.click();
+    await expect(page.getByRole('alert')).toContainText('This machine’s disk is full');
+    await accessible(page, 'your name, the disk is full');
+    await page.unroute('**/api/v1/setup/steps/you');
     await next.click();
 
     await expect(h1).toContainText('Name your household');
     await accessible(page, 'your household');
+    const household = page.getByLabel('The household’s name', { exact: true });
+    await household.fill('H'.repeat(65));
+    await next.click();
+    await expect(page.getByText('The household’s name can be 64 characters at most.')).toBeVisible();
+    await accessible(page, 'your household, refused');
+    await household.fill('Ferreira\u0316\u0317\u0318\u0319\u031a');
+    await next.click();
+    await expect(page.getByText('The name has too many accents or marks on one letter')).toBeVisible();
+    await accessible(page, 'your household, too many marks');
+    await household.fill('The Ferreira household');
     await next.click();
 
     await expect(h1).toContainText('How everyone signs in');

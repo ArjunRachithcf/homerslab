@@ -149,7 +149,7 @@ export class Primary {
   }
 
   // First-time setup's built steps, answered through the setup page's API: the Ferreira household, Inês its admin.
-  async setUp(): Promise<void> {
+  async setUp(names: { you?: string; household?: string } = {}): Promise<void> {
     const link = new URL((await this.newLink()).localUrl);
     const key = new URLSearchParams(link.hash.slice(1)).get('k');
     const api = async (method: string, path: string, body: unknown, token?: string) => {
@@ -163,8 +163,8 @@ export class Primary {
     };
     const { token } = await api('POST', '/api/v1/setup/claim', { key, nonce: 'a-tab-of-its-own-0123456789' });
     await api('PUT', '/api/v1/setup/steps/welcome', {}, token);
-    await api('PUT', '/api/v1/setup/steps/you', { name: 'Inês Ferreira', mail: 'ines@ferreira.family' }, token);
-    await api('PUT', '/api/v1/setup/steps/household', { name: 'The Ferreira household' }, token);
+    await api('PUT', '/api/v1/setup/steps/you', { name: names.you ?? 'Inês Ferreira', mail: 'ines@ferreira.family' }, token);
+    await api('PUT', '/api/v1/setup/steps/household', { name: names.household ?? 'The Ferreira household' }, token);
     this.withDomain();
   }
 

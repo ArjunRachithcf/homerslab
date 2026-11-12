@@ -64,7 +64,7 @@ export type Facts = {
 };
 
 /** Why the manager refused a field's answer. */
-export type Reason = 'missing' | 'too-long' | 'hidden-characters' | 'not-a-mail';
+export type Reason = 'missing' | 'too-long' | 'hidden-characters' | 'too-many-marks' | 'not-a-mail';
 
 /** The request got no answer: the network dropped it, or the manager isn't listening. */
 export class Unreachable extends Error {

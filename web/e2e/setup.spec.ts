@@ -150,6 +150,11 @@ test('a refused answer says why', async ({ page, primary }) => {
   await expect(page.getByText('Your name has an invisible character')).toBeVisible();
   await expect(name).toHaveAttribute('aria-invalid', 'true');
 
+  await name.fill(`A${'\u0316\u0317\u0318\u0319\u031a'.repeat(12)}`); // Zalgo text: 60 marks on one letter (#124)
+  await mail.fill('ines@ferreira.family');
+  await next.click();
+  await expect(page.getByText('Your name has too many accents or marks on one letter: four at most.')).toBeVisible();
+
   await name.fill('I'.repeat(65));
   await mail.fill(`${'a'.repeat(250)}@ferreira.family`);
   await next.click();
@@ -166,6 +171,9 @@ test('a refused answer says why', async ({ page, primary }) => {
   await household.fill('H'.repeat(65));
   await next.click();
   await expect(page.getByText('The household’s name can be 64 characters at most.')).toBeVisible();
+  await household.fill('Ferreira\u0316\u0317\u0318\u0319\u031a');
+  await next.click();
+  await expect(page.getByText('The name has too many accents or marks on one letter: four at most.')).toBeVisible();
 });
 
 // The manager keeps a name in its normal form, and the page shows that form (#69).
