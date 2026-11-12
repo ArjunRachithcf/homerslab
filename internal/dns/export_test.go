@@ -11,3 +11,6 @@ func WithExchange(r Resolver, f func(ctx context.Context, q *mdns.Msg, server st
 	r.exchange = f
 	return r
 }
+
+// Quoted is quoted: a TXT value in its presentation form, read as one text.
+var Quoted = quoted

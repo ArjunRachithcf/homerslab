@@ -841,7 +841,7 @@ func TestALookAlikeIsNeverOurs(t *testing.T) {
 // A name asked for that IDNA's mapping would fold into another is refused, as a listed one is never taken for it.
 func TestANameIsReadOnlyInItsTwoForms(t *testing.T) {
 	testenv.Isolate(t)
-	for _, n := range []string{"\uff50hotos", "photos\u3002home", "pho\u00adtos", "B\u00dcCHER", "bu\u0308cher", "\u212aey"} {
+	for _, n := range []string{"\uff50hotos", "photos\u3002home", "pho\u00adtos", "B\u00dcCHER", "bu\u0308cher", "\u212aey", "xn--bcher-kva.b\u00fccher"} {
 		if got, err := dns.Canonical(n); !errors.Is(err, dns.ErrBadName) {
 			t.Errorf("Canonical(%q) = %q %v, want ErrBadName", n, got, err)
 		}
@@ -850,5 +850,19 @@ func TestANameIsReadOnlyInItsTwoForms(t *testing.T) {
 		if got, err := dns.Canonical(n); err != nil || got != want {
 			t.Errorf("Canonical(%q) = %q %v, want %q", n, got, err, want)
 		}
+	}
+}
+
+// A TXT value's \DDD escape is one byte: a number above 255 is refused, never wrapped onto another byte ("\367" would
+// otherwise read as "o").
+func TestATXTEscapeAbove255IsRefused(t *testing.T) {
+	testenv.Isolate(t)
+	for _, v := range []string{`"o\256"`, `"\367urs"`, `"o\999"`} {
+		if got, ok := dns.Quoted(v); ok {
+			t.Errorf("Quoted(%s) = %q, want it refused", v, got)
+		}
+	}
+	if got, ok := dns.Quoted(`"o\117" "rs"`); !ok || got != "ours" {
+		t.Errorf(`Quoted("o\117" "rs") = %q %v, want "ours"`, got, ok)
 	}
 }
