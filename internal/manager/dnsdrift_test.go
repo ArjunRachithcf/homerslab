@@ -71,12 +71,14 @@ func TestAnEmptyListingHasItsOwnCodeAndIsTriedAgainOnTheSchedule(t *testing.T) {
 
 	b.mustAnswer("domain", infomaniak)
 	fd.fail = empty
-	if r := p.secret("dns", dnsToken); r.Code != http.StatusServiceUnavailable || r.errorCode(t) != "dns-listing-empty" {
-		t.Errorf("an empty listing during setup: %d %s, want 503 dns-listing-empty", r.Code, r.Body)
+	if r := p.secret("dns", dnsToken); r.Code != http.StatusServiceUnavailable || r.errorCode(t) != "dns-listing-empty" ||
+		r.Header.Get("Retry-After") != "300" {
+		t.Errorf("an empty listing during setup: %d %s, Retry-After %q; want 503 dns-listing-empty, 300", r.Code, r.Body,
+			r.Header.Get("Retry-After"))
 	}
 	fd.fail = errors.New("the ACME account at Let's Encrypt: rate limited")
-	if r := p.secret("dns", dnsToken); r.Code != http.StatusBadGateway || r.errorCode(t) != "issuance-failed" {
-		t.Errorf("another failure: %d %s, want 502 issuance-failed", r.Code, r.Body)
+	if r := p.secret("dns", dnsToken); r.Code != http.StatusBadGateway || r.errorCode(t) != "issuance-failed" || r.Header.Get("Retry-After") != "" {
+		t.Errorf("another failure: %d %s, Retry-After %q; want 502 issuance-failed, none", r.Code, r.Body, r.Header.Get("Retry-After"))
 	}
 	fd.fail = nil
 	if r := p.secret("dns", dnsToken); r.Code != http.StatusOK {
@@ -287,5 +289,36 @@ func TestAnEmptyListingThatLastsIsOneDriftNote(t *testing.T) {
 	p.m.RunDue(ctx)
 	if d := p.drift(t); len(d) != 3 {
 		t.Errorf("another note between them: %d notes, want three: %+v", len(d), d)
+	}
+}
+
+// A note collapses only into the same note since the last good renewal: the same empty listing, or the same record
+// deleted by hand, at a renewal months later is a note of its own, at its own time (#175).
+func TestTheSameDriftAtALaterRenewalIsANoteOfItsOwn(t *testing.T) {
+	testenv.Isolate(t)
+	p, b, _, fd := atDomain(t)
+	throughDomain(t, p, b)
+	ctx := context.Background()
+	rec := dns.Record{Name: "_acme-challenge", Type: "TXT", Value: driftValue}
+	for _, what := range []string{dns.DriftListingLookedEmpty, dns.DriftDeletedByHand} {
+		before := len(p.drift(t))
+		for _, renewal := range []struct {
+			after time.Duration
+			fail  error
+		}{
+			{60 * 24 * time.Hour, fmt.Errorf("presenting for challenge: %w", dns.ErrListingEmpty)}, // a note, then renewed
+			{61 * 24 * time.Hour, nil}, // the same note, at the renewal after
+		} {
+			p.clock.Add(renewal.after)
+			fd.drift, fd.fail = []dns.Drift{{Zone: "example.test.", Record: rec, What: what}}, renewal.fail
+			p.m.RunDue(ctx)
+			fd.drift, fd.fail = nil, nil
+			p.clock.Add(time.Hour)
+			p.m.RunDue(ctx) // renewed, when the first run wasn't
+		}
+		d := p.drift(t)
+		if len(d)-before != 2 {
+			t.Errorf("%s at two renewals 61 days apart: %d notes, want two: %+v", what, len(d)-before, d)
+		}
 	}
 }

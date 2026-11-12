@@ -111,15 +111,17 @@ func (s *Store) Certificate(ctx context.Context, domain string) (Certificate, er
 
 // RenewalFailed records a failed renewal.
 func (s *Store) RenewalFailed(ctx context.Context, domain string, at time.Time, why string) error {
-	res, err := s.db.ExecContext(ctx, `UPDATE certificate SET failures = failures + 1, last_error = ?,
-		failing_since = coalesce(failing_since, ?) WHERE domain = ?`, why, at.UnixMilli(), domain)
-	if err != nil {
-		return err
-	}
-	if n, err := res.RowsAffected(); err != nil || n == 0 {
-		return errors.Join(ErrNotFound, err)
-	}
-	return nil
+	return s.tx(ctx, func(tx *sql.Tx) error {
+		res, err := tx.ExecContext(ctx, `UPDATE certificate SET failures = failures + 1, last_error = ?,
+			failing_since = coalesce(failing_since, ?) WHERE domain = ?`, why, at.UnixMilli(), domain)
+		if err != nil {
+			return err
+		}
+		if n, err := res.RowsAffected(); err != nil || n == 0 {
+			return errors.Join(ErrNotFound, err)
+		}
+		return nil
+	})
 }
 
 // Warning is something an admin should look at.

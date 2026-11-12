@@ -101,6 +101,9 @@ const (
 	// ansEmptySince is when renewals began to stop on the DNS provider's empty listings, since the last certificate
 	// kept or issued, RFC 3339; empty when none has (#175).
 	ansEmptySince = "dnsListingEmptySince"
+	// ansRenewedAt is when the domain's certificate was last issued, RFC 3339: a DNS drift note collapses only into
+	// the same note since then (#175).
+	ansRenewedAt = "dnsRenewedAt"
 	// ansPort is the household's port, chosen once at the network step (ADR 0021).
 	ansPort = "householdPort"
 )
@@ -219,18 +222,13 @@ func (m *Manager) ensureCertificate(ctx context.Context, ans map[string]string, 
 		return false, err // never a new certificate because the agent didn't answer
 	}
 	c, issued, err := m.domains.Ensure(ctx, Issuance{Settings: settingsOf(ans), Token: token, Zone: ans[ansZone], Domain: domain,
-		Account: account, Contact: ans["mail"], Drift: m.dnsDrift(ctx)}, have, m.cfg.Now())
+		Account: account, Contact: ans["mail"], Drift: m.dnsDrift(ctx, ans[ansRenewedAt])}, have, m.cfg.Now())
 	if err != nil {
 		m.log.Warn("the domain's certificate", "domain", domain, "err", err)
 		if errors.Is(err, dns.ErrListingEmpty) {
 			return false, fmt.Errorf("%w: %w", errIssue, err) // tried again on the schedule: secretFailed and renewalFailed tell it apart
 		}
 		return false, fmt.Errorf("%w: %v", errIssue, err) // the other failures keep their code (#175)
-	}
-	if ans[ansEmptySince] != "" { // the empty listings are over
-		if err := m.db.SaveAnswers(ctx, map[string]string{ansEmptySince: ""}); err != nil {
-			return false, err
-		}
 	}
 	if issued {
 		if err := m.agent.seal(ctx, credTLSKey, c.Key); err != nil {
@@ -241,8 +239,17 @@ func (m *Manager) ensureCertificate(ctx context.Context, ans map[string]string, 
 			return false, err
 		}
 		m.log.Info("issued the domain's certificate", "domain", domain, "serial", c.Serial, "notAfter", c.NotAfter, "renewAt", c.RenewAt())
+		// The empty listings are over, and the drift notes since start again.
+		if err := m.db.SaveAnswers(ctx, map[string]string{ansEmptySince: "", ansRenewedAt: m.cfg.Now().UTC().Format(time.RFC3339Nano)}); err != nil {
+			return false, err
+		}
 	} else {
 		m.log.Info("kept the domain's certificate: still valid", "domain", domain, "serial", c.Serial, "renewAt", c.RenewAt())
+		if ans[ansEmptySince] != "" { // the empty listings are over
+			if err := m.db.SaveAnswers(ctx, map[string]string{ansEmptySince: ""}); err != nil {
+				return false, err
+			}
+		}
 	}
 	if err := m.installCertificate(ctx, ans, c); err != nil {
 		return issued, err
@@ -431,10 +438,12 @@ func (m *Manager) renewalFailed(ctx context.Context, row store.Certificate, why 
 const driftDNS = "dns"
 
 // dnsDrift records the zone's drift notes in the drift report, beside the mesh's: each record by its type and name, and
-// never its value. A note the same as the report's last DNS note isn't added again: a listing that stays empty is
-// one note, not one at every run of the scheduler (#175).
-func (m *Manager) dnsDrift(ctx context.Context) func(dns.Drift) {
+// never its value. A note the same as the report's last DNS note since the certificate was last issued (renewed, RFC
+// 3339; the beginning when empty) isn't added again: a listing that stays empty is one note, not one at every run of
+// the scheduler, and the same note at a later renewal is one of its own (#175).
+func (m *Manager) dnsDrift(ctx context.Context, renewed string) func(dns.Drift) {
 	ctx = context.WithoutCancel(ctx) // a note is kept even when the request that issued has gone
+	since, _ := time.Parse(time.RFC3339Nano, renewed)
 	return func(d dns.Drift) {
 		zone, rec := strings.TrimSuffix(d.Zone, "."), d.Record.Type+" "+d.Record.Name
 		var what string
@@ -450,7 +459,7 @@ func (m *Manager) dnsDrift(ctx context.Context) func(dns.Drift) {
 		default:
 			what = fmt.Sprintf("%s: %s in %s", d.What, rec, zone)
 		}
-		if err := m.db.AddDriftUnlessLast(ctx, store.Drift{At: m.cfg.Now(), Source: driftDNS, What: what}); err != nil {
+		if err := m.db.AddDriftUnlessLast(ctx, store.Drift{At: m.cfg.Now(), Source: driftDNS, What: what}, since); err != nil {
 			m.log.Error("recording the DNS provider's drift", "zone", zone, "record", rec, "what", d.What, "err", err)
 		}
 	}
