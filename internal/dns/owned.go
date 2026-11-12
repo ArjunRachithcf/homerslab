@@ -55,8 +55,8 @@ var (
 )
 
 // Drift is a note for the drift report: HomersLab's record and the provider's zone no longer agree, and the manager
-// put its own side right; or, for DriftListingLookedEmpty, the provider's listing couldn't say, and the book was left
-// as it is.
+// put its own side right; or, for DriftListingLookedEmpty, the provider's listing couldn't say, the book was left as it
+// is, and a record that was asked for (not yet HomersLab's, it may be) wasn't written.
 type Drift struct {
 	Zone   string
 	Record Record
@@ -214,7 +214,9 @@ func (o *Owned) Free(ctx context.Context, name string) (bool, error) {
 // Create adds a record and keeps it as HomersLab's; a record that is already there and HomersLab's is left as it is.
 // It is refused when the name holds a CNAME, or anything that isn't HomersLab's; only an ACME challenge's TXT records,
 // which several clients may hold at once (RFC 8555 §8.4), share their name. A listing in which the provider listed
-// nothing is refused too (ErrListingEmpty), with a drift note, and nothing is written.
+// nothing is refused too (ErrListingEmpty), with a drift note, and the record isn't written. When only the inventory
+// record's listing comes back empty, the record is written and kept, the inventory isn't changed, and Create fails all
+// the same, as for a listing that fails: trying again is a no-op for the record, and writes the inventory.
 func (o *Owned) Create(ctx context.Context, r Record) error {
 	e, err := o.edit()
 	if err != nil {
