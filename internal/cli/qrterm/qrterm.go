@@ -48,8 +48,9 @@ func Render(text string, colour bool) (string, error) {
 }
 
 // encode makes text's code at level M in the smallest version it fits, as rsc.io/qr does, with the mask of the lowest
-// penalty, as ISO/IEC 18004 §7.8.3 asks and ZXing's encoder scores it. rsc.io/qr's own Encode always takes mask 0, and for some setup links that left
-// patches in the data that a scanner takes for a finder pattern (#145).
+// penalty, as ISO/IEC 18004 §7.8.3 asks and ZXing's encoder scores it. rsc.io/qr's own Encode always takes mask 0;
+// with the lowest-penalty mask, fewer codes have a patch of data that a scanner takes for a finder pattern in one
+// frame, though some still do (#145).
 func encode(text string) (*coding.Code, error) {
 	enc := encodingOf(text)
 	v := coding.Version(coding.MinVersion)

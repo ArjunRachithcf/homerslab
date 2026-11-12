@@ -26,6 +26,8 @@ func TestTheCodeOfAKeyThatOnceFailedDecodesSquareOn(t *testing.T) {
 	}
 }
 
+// This checks that every code reads through the four views a phone gets over a few frames (qrtermtest.Decode), not
+// which mask the code uses: with mask 0 these codes read too.
 func TestTheCodeDecodesForEveryKey(t *testing.T) {
 	testenv.Isolate(t)
 	for _, link := range qrtermtest.Links(300) {
@@ -36,6 +38,25 @@ func TestTheCodeDecodesForEveryKey(t *testing.T) {
 		if got, err := qrtermtest.Decode(out); err != nil || got != link {
 			t.Errorf("the code says %q (%v), want %q\n%s", got, err, link, out)
 		}
+	}
+}
+
+// The mask matters for one frame: square on, ZXing misses 3 of these 300 codes, against 4 when the code is drawn
+// with mask 0. The seed is fixed, so the count is too.
+func TestTheCodeMissesFewerKeysSquareOnThanWithMaskZero(t *testing.T) {
+	testenv.Isolate(t)
+	var missed []string
+	for _, link := range qrtermtest.Links(300) {
+		out, err := qrterm.Render(link, false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got, err := qrtermtest.Frame(out, 0); err != nil || got != link {
+			missed = append(missed, link)
+		}
+	}
+	if len(missed) > 3 {
+		t.Errorf("square on, ZXing misses %d of 300 codes, want at most 3 (mask 0 misses 4): %q", len(missed), missed)
 	}
 }
 

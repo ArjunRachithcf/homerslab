@@ -53,11 +53,12 @@ func TestTheCodeUsesTheMaskWithTheLowestPenalty(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if score := zxingPenalty(c.Bitmap, c.Size, c.Stride); best < 0 || score < best {
+			score := zxingPenalty(c.Bitmap, c.Size, c.Stride)
+			if best < 0 || score < best {
 				want, best = c, score
 			}
-			if got := penalty(c); got != zxingPenalty(c.Bitmap, c.Size, c.Stride) {
-				t.Errorf("%q, mask %d: penalty %d, ZXing's %d", text, mask, got, zxingPenalty(c.Bitmap, c.Size, c.Stride))
+			if got := penalty(c); got != score {
+				t.Errorf("%q, mask %d: penalty %d, ZXing's %d", text, mask, got, score)
 			}
 		}
 		if !bytes.Equal(got.Bitmap, want.Bitmap) {
