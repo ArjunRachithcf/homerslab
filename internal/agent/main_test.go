@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"runtime"
 	"testing"
 	"time"
 
@@ -53,13 +54,18 @@ func parent() int {
 	if err != nil {
 		return 1
 	}
-	cmd := agent.ChildCommand(context.Background(), os.Getenv("HOMERSLAB_TEST_EXE"), dir, "homerslab-web", 60)
+	cmd, control, err := agent.ChildCommand(context.Background(), os.Getenv("HOMERSLAB_TEST_EXE"), dir, "homerslab-web", 60)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
 	cmd.Stdin = os.Stdin // the test's pipe, held open beyond this process: the child waits for its file
 	if err := cmd.Start(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
 	}
 	fmt.Println(cmd.Process.Pid)
-	time.Sleep(time.Hour) // until killed
+	time.Sleep(time.Hour)      // until killed
+	runtime.KeepAlive(control) // held open until then: its finalizer would close it
 	return 0
 }

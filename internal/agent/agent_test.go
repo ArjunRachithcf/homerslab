@@ -217,11 +217,12 @@ func TestAgentReadsAComposeProjectForPlanning(t *testing.T) {
 	}
 }
 
-// A read runs in a child that the agent kills at the deadline: the work really stops, the slot is free again at once,
-// and the agent answers for its facts while a hostile read burns CPU.
+// A read runs in a child that ends at the deadline: the work really stops, the slot is free again at once, and the
+// agent answers for its facts while a hostile read burns CPU. It holds under the agent unit's own capabilities, where
+// a root agent can't signal its child (#138): CI runs it with exactly those.
 func TestAHostileReadIsKilledAtItsDeadline(t *testing.T) {
 	testenv.Isolate(t)
-	real := agent.HostileReads(t, 300*time.Millisecond)
+	real := agent.HostileReads(t, agenttest.Executable(t), 300*time.Millisecond)
 	sock := agenttest.Start(t, agenttest.Primary())
 	body := map[string]string{"project": "homerslab-web", "compose": "services: {web: {image: x}}\n"}
 
@@ -259,7 +260,13 @@ func TestAReadRunsConfinedAndRefusesWorkFast(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer os.RemoveAll(dir)
-	cmd := agent.ChildCommand(context.Background(), agenttest.Executable(t), dir, "homerslab-web", 5)
+	ctx, cancel := context.WithTimeout(context.Background(), 7*time.Second)
+	defer cancel()
+	cmd, control, err := agent.ChildCommand(ctx, agenttest.Executable(t), dir, "homerslab-web", 5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer control.Close()
 	cmd.Stdin = strings.NewReader("services: {web: {image: x}}\n")
 	out, err := cmd.Output()
 	if err != nil {
@@ -272,6 +279,8 @@ func TestAReadRunsConfinedAndRefusesWorkFast(t *testing.T) {
 			Groups      string
 			Limits      map[string]uint64
 			OOMScoreAdj string
+			DeadlineMs  int64
+			Controlled  bool
 		}
 	}
 	if err := json.Unmarshal(out, &res); err != nil || res.Project == nil {
@@ -293,6 +302,10 @@ func TestAReadRunsConfinedAndRefusesWorkFast(t *testing.T) {
 	}
 	if c.OOMScoreAdj != "1000" {
 		t.Errorf("oom_score_adj = %q, want 1000", c.OOMScoreAdj)
+	}
+	// It was handed what is left of the agent's deadline, and watches its control pipe.
+	if c.DeadlineMs <= 6000 || c.DeadlineMs > 7000 || !c.Controlled {
+		t.Errorf("the child's deadline %d ms, controlled %v; want what is left of 7 s, and its control pipe watched", c.DeadlineMs, c.Controlled)
 	}
 
 	var fan strings.Builder
@@ -323,6 +336,7 @@ func TestAReadsEndingIsSaid(t *testing.T) {
 		code   string
 	}{
 		"its CPU limit":       {"cat >/dev/null; kill -XCPU $$", http.StatusGatewayTimeout, "read-timeout"},
+		"its own deadline":    {`cat >/dev/null; echo '{"error":"deadline"}'; exit 1`, http.StatusGatewayTimeout, "read-timeout"},
 		"a real CPU limit":    {"cat >/dev/null; ulimit -S -t 1; while :; do :; done", http.StatusGatewayTimeout, "read-timeout"},
 		"Go's out of memory":  {"cat >/dev/null; echo 'fatal error: runtime: out of memory' >&2; exit 2", http.StatusUnprocessableEntity, "read-too-big"},
 		"Go can't allocate":   {"cat >/dev/null; echo 'fatal error: runtime: cannot allocate memory' >&2; exit 2", http.StatusUnprocessableEntity, "read-too-big"},
@@ -357,13 +371,88 @@ func TestANameThatIsntOursStartsNoChild(t *testing.T) {
 	}
 }
 
-// A read's child dies with the agent, also when the agent is root and the child starts as nobody: the IDs are set in
-// the fork before the parent-death signal, so changing them doesn't clear it.
+// A read's child ends itself at the deadline it was handed, on its own clock, and says so: a root agent without
+// CAP_KILL can't signal a child that runs as nobody (#138). It does with one core, as the agent's unit gives it, while
+// the read burns CPU, and long before its CPU limit.
+func TestAReadsChildEndsAtItsOwnDeadline(t *testing.T) {
+	testenv.Isolate(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	child := exec.CommandContext(ctx, os.Args[0], "agent", "read-project-burn", "--cpu-seconds", "30", "--deadline", "300ms", "--", "homerslab-web")
+	child.Env = append(os.Environ(), "GOMAXPROCS=1")
+	child.Stdin = strings.NewReader("services: {web: {image: x}}\n")
+	child.Dir = t.TempDir()
+	start := time.Now()
+	said, _ := child.Output()
+	if took := time.Since(start); !strings.Contains(string(said), `"error":"deadline"`) || took < 300*time.Millisecond || took > 2*time.Second {
+		t.Errorf("a child past its deadline said %q after %s, want deadline at 300 ms", said, took)
+	}
+}
+
+// A read's child ends when the write end of its control pipe closes, which the kernel does when the agent dies,
+// however it dies: a root agent without CAP_KILL can't send the parent-death signal to a child that runs as nobody
+// (#138). While the pipe stays open, the child waits for its file.
+func TestAReadsChildEndsWhenItsControlPipeCloses(t *testing.T) {
+	testenv.Isolate(t)
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer w.Close()
+	in, keep, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer in.Close()
+	defer keep.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	child := exec.CommandContext(ctx, os.Args[0], "agent", "read-project", "--deadline", "1m", "--control-fd", "3", "--", "homerslab-web")
+	child.Stdin, child.ExtraFiles, child.Dir = in, []*os.File{r}, t.TempDir()
+	if err := child.Start(); err != nil {
+		t.Fatal(err)
+	}
+	r.Close()
+	ended := make(chan time.Time, 1)
+	go func() { _ = child.Wait(); ended <- time.Now() }()
+	select {
+	case <-ended:
+		t.Fatal("the child ended while its control pipe was open")
+	case <-time.After(300 * time.Millisecond):
+	}
+	closed := time.Now()
+	w.Close()
+	select {
+	case at := <-ended:
+		if took := at.Sub(closed); took > time.Second {
+			t.Errorf("the child ended %s after its control pipe closed", took)
+		}
+	case <-time.After(4 * time.Second):
+		t.Error("the child outlived its control pipe")
+	}
+
+	// A control file that isn't a pipe could stay open after the agent is gone: the child refuses to read.
+	f, err := os.Create(filepath.Join(t.TempDir(), "not-a-pipe"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	child = exec.CommandContext(ctx, os.Args[0], "agent", "read-project", "--control-fd", "3", "--", "homerslab-web")
+	child.Stdin, child.ExtraFiles, child.Dir = strings.NewReader("services: {web: {image: x}}\n"), []*os.File{f}, t.TempDir()
+	if out, err := child.CombinedOutput(); err == nil || !strings.Contains(string(out), "not a pipe") {
+		t.Errorf("a control file that isn't a pipe: %v %s, want it refused", err, out)
+	}
+}
+
+// A read's child dies with the agent, also when the agent is root and the child starts as nobody: its control pipe
+// closes with the agent. (The parent-death signal, which the IDs set in the fork before it don't clear, needs CAP_KILL,
+// which the agent's unit doesn't have.)
 func TestAReadsChildDiesWithTheAgent(t *testing.T) {
 	testenv.Isolate(t)
 	helper := exec.Command(os.Args[0], "-test.run=^$")
 	helper.Env = append(os.Environ(), "HOMERSLAB_TEST_PARENT=1", "HOMERSLAB_TEST_EXE="+agenttest.Executable(t))
-	// The child's standard input stays open after its parent dies, so only the parent-death signal can end it.
+	// The child's standard input stays open after its parent dies, so only its control pipe (or the parent-death
+	// signal, with CAP_KILL) can end it.
 	in, keep, err := os.Pipe()
 	if err != nil {
 		t.Fatal(err)

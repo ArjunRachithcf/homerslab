@@ -1,6 +1,7 @@
 #!/bin/sh
 # Runs a command as root with exactly the capabilities a systemd unit gives its service, read from the unit file
-# itself (its one CapabilityBoundingSet= line, and NoNewPrivileges=), so a test and the unit can't drift (#138).
+# itself (its one CapabilityBoundingSet= line, and NoNewPrivileges=), so a test and the unit's capabilities can't drift
+# (#138). The unit's other sandboxing (system calls, namespaces, paths) isn't modelled.
 # systemd starts a root service with nothing inheritable, so on exec its permitted and effective sets are the bounding
 # set; setpriv does the same, and this checks that it did before it runs the command.
 #
@@ -25,7 +26,7 @@ names=$(printf '%s\n' $caps | tr 'A-Z' 'a-z' | sed 's/^cap_//')
 want=$(printf '%s\n' "$names" | sort | paste -sd, -)
 keep=$(printf '%s\n' "$names" | sed 's/^/+/' | paste -sd, -)
 nnp=
-if grep -qx 'NoNewPrivileges=yes' "$unit"; then
+if grep -Eiq '^NoNewPrivileges=[[:space:]]*(yes|true|on|1)[[:space:]]*$' "$unit"; then
 	nnp=--no-new-privs
 fi
 

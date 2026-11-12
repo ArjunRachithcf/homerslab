@@ -83,9 +83,9 @@ jobs:
           cd "$src" && CGO_ENABLED=0 go test -c -o agent.test ./internal/agent
           echo "SRC=$src" >> "$GITHUB_ENV"
       # The Go job's root holds Docker's capabilities (CAP_KILL among them, not CAP_NET_ADMIN); the agent's unit gives
-      # it far fewer. As root on the runner with exactly the unit's set, read from the unit file (#138), a read's
-      # child, which runs as nobody, must still end at its deadline and with the agent.
-      - name: A read's child, under the agent unit's capabilities
+      # it far fewer. As root on the runner with exactly the unit's set, read from the unit file (#138), the agent's
+      # tests run again: a read's child, which runs as nobody, must still end at its deadline and with the agent.
+      - name: The agent's tests, under the agent unit's capabilities
         env:
           DOCKER_HOST: unix:///nonexistent
           CONTAINER_HOST: unix:///nonexistent
@@ -93,8 +93,7 @@ jobs:
           cd "$SRC"
           sudo --preserve-env=DOCKER_HOST,CONTAINER_HOST \
             sh .github/scripts/as-unit.sh packaging/systemd/homerslab-agent.service \
-            ./agent.test -test.v -test.count=1 -test.timeout=3m \
-            -test.run 'TestAHostileReadIsKilledAtItsDeadline|TestAReadsChild|TestAReadRunsConfined|TestAReadsEndingIsSaid'
+            "$SRC/agent.test" -test.v -test.count=1 -test.timeout=5m
 
   firewall:
     name: Firewall table (network namespaces)
