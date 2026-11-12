@@ -48,6 +48,9 @@ var (
 	ErrNotDeleted = errors.New("the provider deleted nothing")
 	// ErrBadName is a name that isn't valid IDNA: it is refused, never compared in another form (#153).
 	ErrBadName = errors.New("not a valid domain name")
+
+	// errEmpty is a listing of a zone that holds a record of HomersLab's in which the provider listed nothing (#166).
+	errEmpty = errors.New("the provider's listing of the zone was empty")
 )
 
 // Drift is a note for the drift report: HomersLab's record and the provider's zone no longer agree, and the manager
@@ -64,6 +67,11 @@ const DriftDeletedByHand = "record-deleted-at-the-provider"
 // DriftReplacedByHand is a record of HomersLab's that the provider no longer has, with another value at its name and
 // type: someone replaced it by hand. The book dropped it, and the other value is left as it is (#153).
 const DriftReplacedByHand = "record-replaced-at-the-provider"
+
+// DriftListingLookedEmpty is a record of HomersLab's that the provider's listing left out along with every other
+// record of the zone, after a delete the provider did nothing for. An empty listing of a zone that holds this record
+// proves nothing (a moment's answer, an eventual-consistency read), so the book kept it (#166).
+const DriftListingLookedEmpty = "provider-listing-looked-empty"
 
 // Inventory is the name, under the domain, of the one TXT record that lists HomersLab's records by name and type, so
 // a restored primary finds them again (#79).
@@ -141,9 +149,17 @@ func (r Record) canonical() (Record, error) {
 // them (raw), which is the form its deletes match. A name the provider lists that isn't valid is never at the name:
 // HomersLab's own names are valid, and a name is never compared in another form.
 func (e *edit) at(ctx context.Context, name string) (there, raw []libdns.RR, err error) {
+	there, raw, _, err = e.look(ctx, name)
+	return there, raw, err
+}
+
+// look is at, and whether the provider listed nothing at all in the zone. A zone that holds a record of HomersLab's is
+// never empty, so such a listing proves nothing: it is read like a failed one wherever it would drop a record from the
+// book (#166).
+func (e *edit) look(ctx context.Context, name string) (there, raw []libdns.RR, empty bool, err error) {
 	all, err := e.Provider.GetRecords(ctx, e.zone)
 	if err != nil {
-		return nil, nil, fmt.Errorf("listing the zone %s: %w", e.zone, err)
+		return nil, nil, false, fmt.Errorf("listing the zone %s: %w", e.zone, err)
 	}
 	for _, r := range all {
 		rr := r.RR()
@@ -155,7 +171,7 @@ func (e *edit) at(ctx context.Context, name string) (there, raw []libdns.RR, err
 		rr.Name = n
 		there = append(there, rr)
 	}
-	return there, raw, nil
+	return there, raw, len(all) == 0, nil
 }
 
 // ours is the book's records for the zone: as it keeps them, and with their names in their one form.
@@ -262,8 +278,16 @@ func (e *edit) delete(ctx context.Context, r Record) error {
 		return fmt.Errorf("%w: %s %s", ErrNotOurs, r.Type, r.Name)
 	}
 	// Looked up first: a provider such as RFC 2136's reports every delete as done, so only the listing says whether the
-	// record was still there. Gone means someone deleted it by hand.
-	there, raw, err := e.at(ctx, r.Name)
+	// record was still there. Gone, from a listing that holds the zone's other records, means someone deleted it by
+	// hand. An empty listing, like a failed one, says nothing: the record is deleted as HomersLab wrote it, and never
+	// left at the provider untracked (#166).
+	there, raw, empty, err := e.look(ctx, r.Name)
+	if err == nil && empty {
+		if e.Log != nil {
+			e.Log.Warn("the DNS provider listed nothing in the zone: the record is deleted as HomersLab wrote it", "zone", e.zone, "name", r.Name, "type", r.Type)
+		}
+		err = errEmpty
+	}
 	if err == nil && !slices.ContainsFunc(there, ours[i].sameKind) {
 		return e.drop(ctx, ours[i], kept[i], DriftDeletedByHand)
 	}
@@ -290,6 +314,8 @@ func (e *edit) delete(ctx context.Context, r Record) error {
 // listing:
 //   - our value is still there (in the provider's own form, it may be): the record stays in the book (ErrNotDeleted);
 //   - the lookup fails: nothing is known, and the record stays too;
+//   - the provider lists nothing in the zone, which holds at least this record: nothing is known either, the record
+//     stays, and the drift report says the listing looked empty (#166);
 //   - nothing of that name and type is left, or only HomersLab's other values (or, at the challenge's name, which other
 //     ACME clients share, anyone's): someone deleted it by hand;
 //   - someone else's value of that name and type is: someone replaced it by hand (#153).
@@ -297,7 +323,7 @@ func (e *edit) delete(ctx context.Context, r Record) error {
 // The last two drop it from the book, and the drift report says so. The provider's other records are never touched.
 func (e *edit) nothingDeleted(ctx context.Context, ours []Record, i int, kept Record) error {
 	r := ours[i]
-	there, _, err := e.at(ctx, r.Name)
+	there, _, empty, err := e.look(ctx, r.Name)
 	foreign := func(rr libdns.RR) bool {
 		return r.sameKind(rr) && !slices.ContainsFunc(ours, func(k Record) bool { return k.matches(rr) })
 	}
@@ -308,6 +334,12 @@ func (e *edit) nothingDeleted(ctx context.Context, ours []Record, i int, kept Re
 			e.Log.Warn("the DNS provider deleted nothing, and the lookup failed: the record stays listed as HomersLab's", "zone", e.zone, "name", r.Name, "type", r.Type, "err", err)
 		}
 		return fmt.Errorf("%w: %s %s (%v)", ErrNotDeleted, r.Type, r.Name, err)
+	case empty:
+		if e.Log != nil {
+			e.Log.Warn("the DNS provider deleted nothing, and listed nothing in the zone: the record stays listed as HomersLab's", "zone", e.zone, "name", r.Name, "type", r.Type)
+		}
+		e.note(r, DriftListingLookedEmpty)
+		return fmt.Errorf("%w: %s %s (%v)", ErrNotDeleted, r.Type, r.Name, errEmpty)
 	case slices.ContainsFunc(there, r.matches):
 		if e.Log != nil {
 			e.Log.Warn("the DNS provider deleted nothing: the record stays listed as HomersLab's", "zone", e.zone, "name", r.Name, "type", r.Type)
@@ -333,10 +365,15 @@ func (e *edit) drop(ctx context.Context, r, kept Record, what string) error {
 		}
 		e.Log.Warn("a record of HomersLab's was "+how+" at the provider by hand: the book dropped it", "zone", e.zone, "name", r.Name, "type", r.Type)
 	}
+	e.note(r, what)
+	return nil
+}
+
+// note is a note for the drift report, when there is one.
+func (e *edit) note(r Record, what string) {
 	if e.Drift != nil {
 		e.Drift(Drift{Zone: e.zone, Record: r, What: what})
 	}
-	return nil
 }
 
 // inventory writes the one record that lists HomersLab's records, or deletes it when there are none.
