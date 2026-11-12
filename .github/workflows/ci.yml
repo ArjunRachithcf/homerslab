@@ -84,6 +84,16 @@ jobs:
           DOCKER_HOST: unix:///nonexistent
           CONTAINER_HOST: unix:///nonexistent
         run: sudo --preserve-env=HOMERSLAB_REQUIRE_NETNS,DOCKER_HOST,CONTAINER_HOST ./fw.test -test.v -test.count=1
+      # The LAN as the kernel reports it over netlink (#108), in a fresh namespace the same way: a full-tunnel VPN, the
+      # mesh's WireGuard interface and a rogue router advertisement.
+      - name: Build the LAN's test
+        run: CGO_ENABLED=0 go test -c -o lan.test ./internal/lan
+      - name: The LAN in throwaway namespaces
+        env:
+          HOMERSLAB_REQUIRE_NETNS: "1"
+          DOCKER_HOST: unix:///nonexistent
+          CONTAINER_HOST: unix:///nonexistent
+        run: sudo --preserve-env=HOMERSLAB_REQUIRE_NETNS,DOCKER_HOST,CONTAINER_HOST ./lan.test -test.v -test.count=1
 
   mesh:
     name: Mesh contract (self-hosted NetBird in containers)

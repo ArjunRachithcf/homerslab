@@ -173,7 +173,10 @@ test('the key goes only into the claim, however often it is sent', async ({ page
   const key = new URLSearchParams(new URL(link.localUrl).hash.slice(1)).get('k') ?? '';
   expect(key).not.toBe('');
   const sent: { url: string; headers: string; body: string }[] = [];
-  page.on('request', (r) => sent.push({ url: r.url(), headers: JSON.stringify(r.headers()), body: r.postData() ?? '' }));
+  const recording: Promise<void>[] = [];
+  page.on('request', (r) => recording.push((async () => {
+    sent.push({ url: r.url(), headers: JSON.stringify(await r.allHeaders()), body: r.postData() ?? '' }); // all of them, extra ones too
+  })()));
   let first = true;
   await page.route(CLAIM, async (route) => {
     if (first) {
@@ -186,6 +189,7 @@ test('the key goes only into the claim, however often it is sent', async ({ page
   await page.goto(link.localUrl);
   await expect(page.getByRole('heading', { level: 1 })).toContainText(welcome);
 
+  await Promise.all(recording);
   const claims = sent.filter((r) => r.url.endsWith('/api/v1/setup/claim'));
   expect(claims.length).toBe(2);
   for (const c of claims) expect(JSON.parse(c.body)).toEqual({ key, nonce: expect.stringMatching(/^[A-Za-z0-9_-]{43}$/) });
@@ -209,7 +213,51 @@ test('a claim the manager refuses from here says so, and keeps the link', async 
   await page.goto(link.localUrl);
   await expect(page.getByText('HomersLab takes setup only from this machine or your home network')).toBeVisible();
   await expect(page.getByText('didn’t answer')).toHaveCount(0); // it did answer
+  await expect(page.getByRole('heading', { level: 1 })).toHaveText('Setup didn’t open'); // not "can’t reach HomersLab"
+  await expect(page).toHaveTitle(/Setup didn’t open/);
   await expect(page).toHaveURL(stillOut(link.localUrl));
+});
+
+// The manager answered, so the screen never says it didn't (#109): a neutral title, and for a 5xx a lead that says to
+// try again in a moment.
+test('a claim the manager answers 500 says setup didn’t open, not that the manager is silent, and "Try again" claims it', async ({ page, primary }) => {
+  const link = await primary.newLink();
+  await page.route(CLAIM, (route) =>
+    route.fulfill({ status: 500, contentType: 'application/json', body: '{"error":"internal"}' }));
+  await page.goto(link.localUrl);
+  await expect(page.getByRole('heading', { level: 1 })).toHaveText('Setup didn’t open');
+  await expect(page.getByText('HomersLab couldn’t open setup. Try again in a moment.')).toBeVisible();
+  await expect(page.getByText('Setup can’t reach HomersLab')).toHaveCount(0);
+  await expect(page.getByText('didn’t answer')).toHaveCount(0);
+  await expect(page).toHaveURL(stillOut(link.localUrl)); // the link still works, so it stays
+
+  await page.unroute(CLAIM);
+  await page.getByRole('button', { name: 'Try again' }).click();
+  await expect(page.getByRole('heading', { level: 1 })).toContainText(welcome);
+});
+
+// The same link arriving in a tab whose claim is still out (the person pastes it again) is one claim, not two: a
+// second claim of the key by the same tab would only be answered from the manager's one-minute memory, and the first
+// answer's session would be the one superseded.
+test('the same link opened again while its claim is out shares that claim', async ({ page, primary }) => {
+  const link = await primary.newLink();
+  const claims: Request[] = [];
+  let held: Route | undefined;
+  await page.route(CLAIM, async (route) => {
+    claims.push(route.request());
+    if (!held) held = route;
+    else await route.continue();
+  });
+  await page.goto(link.localUrl);
+  await expect.poll(() => held).toBeDefined();
+  const bare = link.localUrl.replace(/&n=.*$/, '');
+  await page.evaluate((hash) => { location.hash = hash; }, new URL(bare).hash);
+  await page.waitForTimeout(300); // the second opening has had its chance to send
+  expect(claims.length).toBe(1);
+  await held?.continue();
+  await expect(page.getByRole('heading', { level: 1 })).toContainText(welcome);
+  expect(claims.length).toBe(1);
+  expect(primary.openSessions()).toBe(1);
 });
 
 test('a late answer to an earlier link’s claim doesn’t replace the newer link’s session', async ({ page, primary }) => {

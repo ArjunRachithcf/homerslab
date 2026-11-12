@@ -1,18 +1,12 @@
 // Package lan says what this machine's home network is: the private networks on the interfaces that carry its
-// default route, and the global IPv6 prefixes on those links. Containers' bridges and the mesh carry no default
-// route, so they are not the LAN.
+// default route in the main routing table, and the global IPv6 prefixes on those links, as the kernel reports them
+// over netlink. Containers' bridges carry no default route, and a VPN's or the mesh's tunnel is never the LAN, nor is
+// any range of theirs (#108).
 package lan
 
 import (
-	"bufio"
-	"bytes"
-	"encoding/hex"
-	"io/fs"
-	"net"
 	"net/netip"
-	"os"
 	"slices"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -24,6 +18,8 @@ type LAN struct {
 	Prefixes   []netip.Prefix
 	Interfaces []string
 	Addresses  []netip.Addr
+	// Excluded are the mesh's and the tunnels' ranges inside the LAN's prefixes: never the LAN (#108).
+	Excluded []netip.Prefix
 }
 
 // FromHere says whether a request from addr comes from this machine or its LAN. A link-local address is the same on
@@ -38,94 +34,275 @@ func FromHere(addr netip.Addr, l LAN) bool {
 		return addr.Is6() && addr.Zone() != "" && slices.Contains(l.Interfaces, addr.Zone())
 	}
 	addr = addr.WithZone("")
-	for _, p := range l.Prefixes {
-		if p.Contains(addr) {
-			return true
-		}
+	if slices.ContainsFunc(l.Excluded, func(p netip.Prefix) bool { return p.Contains(addr) }) {
+		return false
 	}
-	return false
+	return slices.ContainsFunc(l.Prefixes, func(p netip.Prefix) bool { return p.Contains(addr) })
 }
 
-// Current is the LAN, read from the live machine.
-func Current() LAN { return Read(os.DirFS("/proc"), ipv4Addrs) }
+// Kernel is what the kernel says of this machine's network: its links, their addresses, and the routes of every
+// table (ReadKernel).
+type Kernel struct {
+	Links  []Link
+	Addrs  []Addr
+	Routes []Route
+}
 
-// Read is the LAN of the machine whose /proc is proc, with v4 listing an interface's IPv4 addresses (nil: none).
+// Link is a network interface.
+type Link struct {
+	Index int
+	Name  string
+	// Kind is the link's type as the kernel names it: "wireguard", "tun" (tun and tap), "veth", "bridge", "dummy",
+	// or "" for a physical one.
+	Kind                   string
+	PointToPoint, Loopback bool
+}
+
+// Addr is one of the machine's addresses, with its prefix length, on the interface whose index it carries.
+type Addr struct {
+	Index  int
+	Prefix netip.Prefix
+	// Peer is the network at the other end of a point-to-point address (`ip addr add A peer P/len`), if it has one:
+	// Prefix is then the machine's own end alone.
+	Peer netip.Prefix
+	// Flags are the address's IFA_F_ flags: temporary, tentative, deprecated, failed duplicate address detection.
+	Flags uint32
+}
+
+// Route is a route of one table: a multipath route is one Route per next hop.
+type Route struct {
+	Table uint32 // the main table is 254
+	Type  uint8  // a unicast route is 1; local, broadcast, unreachable and blackhole ones are others
+	Dst   netip.Prefix
+	// Gateway: the route goes through a router, not straight onto the link.
+	Gateway bool
+	Index   int // the interface it goes out of
+}
+
+// The kernel's numbers this package reads (linux/rtnetlink.h, linux/if_addr.h).
+const (
+	mainTable     = 254
+	unicast       = 1
+	ifaTemporary  = 0x01
+	ifaDADFailed  = 0x08
+	ifaDeprecated = 0x20
+	ifaTentative  = 0x40
+)
+
+// tunnelKinds are the kinds of link that carry a VPN or a mesh, not a home network.
+var tunnelKinds = []string{"wireguard", "tun", "ipip", "ip6tnl", "sit", "gre", "gretap", "ip6gre", "ip6gretap",
+	"vti", "vti6", "xfrm", "ppp", "vxlan", "geneve", "ovpn"}
+
+// meshRanges are the ranges the meshes HomersLab runs give out (#14 Q5, ADR 0005): CGNAT (NetBird, Headscale and
+// Tailscale) and Tailscale's ULA, whichever mesh this machine is on.
+var meshRanges = []netip.Prefix{netip.MustParsePrefix("100.64.0.0/10"), netip.MustParsePrefix("fd7a:115c:a1e0::/48")}
+
+// Current is the LAN, read from the live machine; no LAN at all when the kernel can't be asked.
+func Current() LAN {
+	k, err := ReadKernel()
+	if err != nil {
+		return LAN{}
+	}
+	return k.LAN()
+}
+
+// OnLink is what the firewall table keeps apps away from, read from the live machine (Kernel.OnLink); nothing when
+// the kernel can't be asked.
+func OnLink() (interfaces []string, prefixes []netip.Prefix) {
+	k, err := ReadKernel()
+	if err != nil {
+		return nil, nil
+	}
+	return k.OnLink()
+}
+
+// Uplinks are the interfaces through which this machine reaches the internet, read from the live machine
+// (Kernel.Uplinks); none when the kernel can't be asked.
+func Uplinks() []string {
+	k, err := ReadKernel()
+	if err != nil {
+		return nil
+	}
+	return k.Uplinks()
+}
+
+// Interfaces are the LAN's interfaces: those that carry a default route, IPv4 or IPv6, in the main table (#108). Not
+// loopback, and not a VPN's or the mesh's (a tunnel: point-to-point, or a tunnel's kind of link), even when a
+// full-tunnel VPN puts its default route in the main table; and never through another table, where wg-quick puts a
+// full tunnel's (51820).
+func (k Kernel) Interfaces() []string {
+	links := k.links()
+	var out []string
+	for _, r := range k.Routes {
+		if r.Table != mainTable || r.Type != unicast || r.Dst.Bits() != 0 {
+			continue
+		}
+		l, ok := links[r.Index]
+		if ok && !l.Loopback && !l.tunnel() && !slices.Contains(out, l.Name) {
+			out = append(out, l.Name)
+		}
+	}
+	return out
+}
+
+// Uplinks are the ways to the internet: the LAN's interfaces first, then every tunnel with a unicast default route
+// in any table (a VPN's, which is never the LAN). Never another link: a local virtual network's bridge with a default
+// route in a table of its own is still a local virtual network, whose VMs the firewall forwards.
+func (k Kernel) Uplinks() []string {
+	links := k.links()
+	out := k.Interfaces()
+	for _, r := range k.Routes {
+		if r.Type != unicast || r.Dst.Bits() != 0 {
+			continue
+		}
+		if l, ok := links[r.Index]; ok && l.tunnel() && !l.Loopback && !slices.Contains(out, l.Name) {
+			out = append(out, l.Name)
+		}
+	}
+	return out
+}
+
+// LAN is the LAN this kernel describes.
 //
-// The LAN is, on the interfaces that carry the default route:
+// The LAN is, on its interfaces (Interfaces):
 //   - the private IPv4 networks (RFC 1918) and IPv6 ULAs (#14, Q5);
 //   - the global IPv6 prefixes on the link itself, so that a home whose ISP hands out only those can set up (#73):
-//     a /64 or narrower that the routing table says is on the link (no router in between) and that holds one of the
+//     a /64 or narrower that the main table says is on the link (no router in between) and that holds one of the
 //     machine's own addresses there, from SLAAC (a /64) or DHCPv6 (a /128). Never a wider prefix, the default route's,
 //     or one reached through a router.
 //
+// Never the mesh's ranges (meshRanges, and every network on a tunnel, #108): a prefix inside one is refused, so a
+// rogue router advertising the mesh's ULA /64 on the LAN doesn't make mesh peers the LAN; a wider one keeps the rest
+// of the network, and LAN.Excluded carves the range out. An address in one is never the LAN's.
+//
 // Its addresses are the machine's own on those networks, the best first: stable before temporary (privacy) ones, and
 // none that is still tentative or failed duplicate address detection.
-func Read(proc fs.FS, v4 func(iface string) []netip.Prefix) LAN {
-	l := LAN{Interfaces: DefaultRouteInterfaces(proc)}
-	onLink := onLinkPrefixes(proc)
-	v6 := ipv6Addrs(proc)
-	var later []netip.Addr // temporary addresses, after the stable ones
-	addPrefix := func(p netip.Prefix) {
-		if !slices.Contains(l.Prefixes, p) {
-			l.Prefixes = append(l.Prefixes, p)
-		}
+func (k Kernel) LAN() LAN {
+	l := LAN{Interfaces: k.Interfaces()}
+	onLink := k.onLinkPrefixes()
+	mesh := k.meshPrefixes()
+	inMesh := func(p netip.Prefix) bool {
+		return slices.ContainsFunc(mesh, func(m netip.Prefix) bool { return m.Bits() <= p.Bits() && m.Contains(p.Addr()) })
 	}
+	var later []netip.Addr // temporary addresses, after the stable ones
 	for _, name := range l.Interfaces {
-		if v4 != nil {
-			for _, p := range v4(name) {
-				if p.Addr().Is4() && p.Addr().IsPrivate() {
-					addPrefix(p.Masked())
-					l.Addresses = append(l.Addresses, p.Addr())
-				}
-			}
-		}
-		var ula, global []ipv6Addr
-		for _, a := range v6[name] {
-			switch {
-			case a.prefix.Addr().IsPrivate():
-				a.lan = []netip.Prefix{a.prefix.Masked()}
-				ula = append(ula, a)
-			case a.prefix.Addr().IsGlobalUnicast():
+		var v4, ula, global []lanAddr
+		for _, a := range k.addrsOf(name) {
+			switch addr := a.Prefix.Addr(); {
+			case addr.Is4() && addr.IsPrivate():
+				v4 = append(v4, lanAddr{Addr: a, lan: []netip.Prefix{a.Prefix.Masked()}})
+			case addr.Is4():
+			case addr.IsPrivate():
+				ula = append(ula, lanAddr{Addr: a, lan: []netip.Prefix{a.Prefix.Masked()}})
+			case addr.IsGlobalUnicast():
+				var in []netip.Prefix
 				for _, p := range onLink[name] {
-					if p.Contains(a.prefix.Addr()) {
-						a.lan = append(a.lan, p)
+					if p.Contains(addr) {
+						in = append(in, p)
 					}
 				}
-				if a.lan != nil {
-					global = append(global, a)
-				}
+				global = append(global, lanAddr{Addr: a, lan: in})
 			}
 		}
-		for _, a := range append(ula, global...) {
+		for _, a := range slices.Concat(v4, ula, global) {
+			if a.lan = slices.DeleteFunc(a.lan, inMesh); len(a.lan) == 0 {
+				continue
+			}
 			for _, p := range a.lan {
-				addPrefix(p)
+				if !slices.Contains(l.Prefixes, p) {
+					l.Prefixes = append(l.Prefixes, p)
+				}
 			}
 			switch {
-			case a.flags&(ifaTentative|ifaDADFailed) != 0:
-			case a.flags&(ifaTemporary|ifaDeprecated) != 0:
-				later = append(later, a.prefix.Addr())
+			case inMesh(netip.PrefixFrom(a.Prefix.Addr(), a.Prefix.Addr().BitLen())):
+			case a.Flags&(ifaTentative|ifaDADFailed) != 0:
+			case a.Flags&(ifaTemporary|ifaDeprecated) != 0 && a.Prefix.Addr().Is6(): // IPv4's 0x01 is "secondary"
+				later = append(later, a.Prefix.Addr())
 			default:
-				l.Addresses = append(l.Addresses, a.prefix.Addr())
+				l.Addresses = append(l.Addresses, a.Prefix.Addr())
 			}
 		}
 	}
 	l.Addresses = append(l.Addresses, later...)
+	for _, m := range mesh {
+		if slices.ContainsFunc(l.Prefixes, m.Overlaps) && !slices.Contains(l.Excluded, m) {
+			l.Excluded = append(l.Excluded, m)
+		}
+	}
 	return l
 }
 
-// OnLink is what the firewall table keeps apps away from: the interfaces that carry the default route, and every
-// prefix on them, private or global (a LAN may use global IPv6 addresses), but link-local, which the table covers
-// whole.
-func OnLink() (interfaces []string, prefixes []netip.Prefix) {
-	interfaces = DefaultRouteInterfaces(os.DirFS("/proc"))
+// OnLink is what the firewall table keeps apps away from: the LAN's interfaces, and every prefix on them, private or
+// global (a LAN may use global IPv6 addresses), but link-local, which the table covers whole. It is a list of what
+// apps never reach, so nothing is left out of it, the mesh's ranges included.
+func (k Kernel) OnLink() (interfaces []string, prefixes []netip.Prefix) {
+	interfaces = k.Interfaces()
 	for _, name := range interfaces {
-		for _, p := range addrs(name) {
-			if !p.Addr().IsLinkLocalUnicast() && !p.Addr().IsLoopback() {
-				prefixes = append(prefixes, p.Masked())
+		for _, a := range k.addrsOf(name) {
+			p := a.Prefix.Masked()
+			if !p.Addr().IsLinkLocalUnicast() && !p.Addr().IsLoopback() && !slices.Contains(prefixes, p) {
+				prefixes = append(prefixes, p)
 			}
 		}
 	}
 	return interfaces, prefixes
+}
+
+func (l Link) tunnel() bool { return l.PointToPoint || slices.Contains(tunnelKinds, l.Kind) }
+
+// links are the links by their index.
+func (k Kernel) links() map[int]Link {
+	m := make(map[int]Link, len(k.Links))
+	for _, l := range k.Links {
+		m[l.Index] = l
+	}
+	return m
+}
+
+func (k Kernel) addrsOf(name string) []Addr {
+	links := k.links()
+	var out []Addr
+	for _, a := range k.Addrs {
+		if l, ok := links[a.Index]; ok && l.Name == name {
+			out = append(out, a)
+		}
+	}
+	return out
+}
+
+// meshPrefixes are the ranges that are never the LAN: the meshes' own, and every network on a tunnel (the mesh's
+// interface, a VPN's), its own end's and its peer's, but link-local, which every interface has.
+func (k Kernel) meshPrefixes() []netip.Prefix {
+	links := k.links()
+	out := slices.Clone(meshRanges)
+	for _, a := range k.Addrs {
+		if l, ok := links[a.Index]; !ok || !l.tunnel() {
+			continue
+		}
+		for _, p := range []netip.Prefix{a.Prefix, a.Peer} {
+			if p.IsValid() && !p.Addr().IsLinkLocalUnicast() && !slices.Contains(out, p.Masked()) {
+				out = append(out, p.Masked())
+			}
+		}
+	}
+	return out
+}
+
+// onLinkPrefixes are the IPv6 prefixes on the link, per interface, from the main table: unicast routes from /64 to
+// /127 with no router in between. Not the default route (::/0) or any route wider than a /64, not the machine's own
+// /128s, which the local table lists, and nothing another table holds.
+func (k Kernel) onLinkPrefixes() map[string][]netip.Prefix {
+	links := k.links()
+	out := map[string][]netip.Prefix{}
+	for _, r := range k.Routes {
+		if r.Table != mainTable || r.Type != unicast || r.Gateway || !r.Dst.Addr().Is6() || r.Dst.Bits() < 64 || r.Dst.Bits() > 127 {
+			continue
+		}
+		if l, ok := links[r.Index]; ok {
+			out[l.Name] = append(out[l.Name], r.Dst.Masked())
+		}
+	}
+	return out
 }
 
 // Address is this machine's address on the LAN, for the links it prints: its IPv4 address if it has one, else its
@@ -171,143 +348,13 @@ func Names(hostname string, l LAN) []string {
 	return names
 }
 
-// ipv4Addrs lists an interface's IPv4 addresses with their prefixes.
-func ipv4Addrs(name string) []netip.Prefix {
-	var out []netip.Prefix
-	for _, p := range addrs(name) {
-		if p.Addr().Is4() {
-			out = append(out, p)
-		}
-	}
-	return out
+// lanAddr is an address with the LAN's prefixes that hold it.
+type lanAddr struct {
+	Addr
+	lan []netip.Prefix
 }
 
-// addrs lists an interface's addresses with their prefixes.
-func addrs(name string) []netip.Prefix {
-	ifc, err := net.InterfaceByName(name)
-	if err != nil {
-		return nil
-	}
-	list, err := ifc.Addrs()
-	if err != nil {
-		return nil
-	}
-	var out []netip.Prefix
-	for _, a := range list {
-		if n, ok := a.(*net.IPNet); ok {
-			if p, err := netip.ParsePrefix(n.String()); err == nil {
-				out = append(out, p)
-			}
-		}
-	}
-	return out
-}
-
-// The flags of an IPv6 address in /proc/net/if_inet6 (linux/if_addr.h).
-const (
-	ifaTemporary  = 0x01
-	ifaDADFailed  = 0x08
-	ifaDeprecated = 0x20
-	ifaTentative  = 0x40
-)
-
-type ipv6Addr struct {
-	prefix netip.Prefix // the address, with its prefix length
-	flags  uint64
-	lan    []netip.Prefix // the LAN's prefixes that hold it
-}
-
-// ipv6Addrs lists the IPv6 addresses per interface from /proc/net/if_inet6: the address, the interface's index, the
-// prefix length, the scope and the flags in hex, then the interface's name.
-func ipv6Addrs(proc fs.FS) map[string][]ipv6Addr {
-	out := map[string][]ipv6Addr{}
-	for _, f := range lines(proc, "net/if_inet6") {
-		if len(f) != 6 {
-			continue
-		}
-		a, ok := hexAddr(f[0])
-		bits, err1 := strconv.ParseUint(f[2], 16, 8)
-		flags, err2 := strconv.ParseUint(f[4], 16, 32)
-		if !ok || err1 != nil || err2 != nil || bits > 128 {
-			continue
-		}
-		out[f[5]] = append(out[f[5]], ipv6Addr{prefix: netip.PrefixFrom(a, int(bits)), flags: flags})
-	}
-	return out
-}
-
-// onLinkPrefixes are the IPv6 prefixes on the link, per interface, from /proc/net/ipv6_route (the destination and its
-// prefix length, the source and its, the next hop, metric, use and reference counts, the flags, and the interface):
-// routes from /64 to /127 with no router in between. Not the default route (::/0) or any route wider than a /64, and
-// not the machine's own /128s, which the local table lists.
-func onLinkPrefixes(proc fs.FS) map[string][]netip.Prefix {
-	const rtfUp, rtfGateway, rtfReject, rtfLocal = 0x0001, 0x0002, 0x0200, 0x80000000
-	out := map[string][]netip.Prefix{}
-	for _, f := range lines(proc, "net/ipv6_route") {
-		if len(f) != 10 {
-			continue
-		}
-		dest, ok1 := hexAddr(f[0])
-		via, ok2 := hexAddr(f[4])
-		bits, err1 := strconv.ParseUint(f[1], 16, 8)
-		flags, err2 := strconv.ParseUint(f[8], 16, 32)
-		if !ok1 || !ok2 || err1 != nil || err2 != nil || bits < 64 || bits > 127 ||
-			flags&rtfUp == 0 || flags&(rtfGateway|rtfReject|rtfLocal) != 0 || !via.IsUnspecified() {
-			continue
-		}
-		out[f[9]] = append(out[f[9]], netip.PrefixFrom(dest, int(bits)).Masked())
-	}
-	return out
-}
-
-// hexAddr is an IPv6 address as /proc writes it: 32 hex digits.
-func hexAddr(s string) (netip.Addr, bool) {
-	b, err := hex.DecodeString(s)
-	if err != nil || len(b) != 16 {
-		return netip.Addr{}, false
-	}
-	return netip.AddrFrom16([16]byte(b)), true
-}
-
-// DefaultRouteInterfaces lists the interfaces that carry a default route, IPv4 or IPv6, from a /proc.
-func DefaultRouteInterfaces(proc fs.FS) []string {
-	seen := map[string]bool{}
-	var out []string
-	add := func(name string) {
-		if name != "" && name != "lo" && !seen[name] {
-			seen[name] = true
-			out = append(out, name)
-		}
-	}
-	// net/route: Iface Destination Gateway Flags ...; the default route's destination and mask are 00000000.
-	for i, f := range lines(proc, "net/route") {
-		if i > 0 && len(f) >= 8 && f[1] == "00000000" && f[7] == "00000000" {
-			add(f[0])
-		}
-	}
-	// net/ipv6_route: destination, its prefix length, ..., the interface last; ::/0 is the default.
-	for _, f := range lines(proc, "net/ipv6_route") {
-		if len(f) == 10 && f[0] == strings.Repeat("0", 32) && f[1] == "00" {
-			add(f[9])
-		}
-	}
-	return out
-}
-
-func lines(proc fs.FS, name string) [][]string {
-	b, err := fs.ReadFile(proc, name)
-	if err != nil {
-		return nil
-	}
-	var out [][]string
-	sc := bufio.NewScanner(bytes.NewReader(b))
-	for sc.Scan() {
-		out = append(out, strings.Fields(sc.Text()))
-	}
-	return out
-}
-
-// Cached remembers what read returns for ttl, so a page's many requests don't each read /proc and the interfaces.
+// Cached remembers what read returns for ttl, so a page's many requests don't each ask the kernel.
 func Cached[T any](read func() T, ttl time.Duration) func() T {
 	var mu sync.Mutex
 	var at time.Time

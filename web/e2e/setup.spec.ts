@@ -128,6 +128,16 @@ test('a full disk when the page opens is said as such', async ({ page, primary }
   await expect(page.getByText('Setup can’t reach HomersLab')).toHaveCount(0);
 });
 
+// The first request is answered, but not with setup (#109): the title doesn't say the manager is silent.
+test('a first request the manager answers 500 says setup didn’t open', async ({ page, primary }) => {
+  await page.route('**/api/v1/setup', (route) =>
+    route.fulfill({ status: 500, contentType: 'application/json', body: '{"error":"internal"}' }));
+  await page.goto((await primary.newLink()).localUrl);
+  await expect(page.getByRole('heading', { level: 1 })).toHaveText('Setup didn’t open');
+  await expect(page.getByText('HomersLab couldn’t open setup. Try again in a moment.')).toBeVisible();
+  await expect(page.getByText('Setup can’t reach HomersLab')).toHaveCount(0);
+});
+
 // Each refused answer says why, in plain words (#69).
 test('a refused answer says why', async ({ page, primary }) => {
   await page.goto((await primary.newLink()).localUrl);
