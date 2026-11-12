@@ -122,7 +122,7 @@ func (m *Manager) domain(ctx context.Context, raw json.RawMessage, earlier map[s
 	}
 	var bad []string
 	d := strings.TrimSuffix(strings.ToLower(strings.TrimSpace(a.Domain)), ".")
-	if len(d) > 200 || !domainName.MatchString(d) {
+	if c, err := dns.Canonical(d); len(d) > 200 || !domainName.MatchString(d) || err != nil || c != d { // its A-labels valid IDNA (#153)
 		bad = append(bad, "domain")
 	}
 	s, err := dns.Settings{Provider: a.Provider, Server: a.Server, KeyName: a.KeyName, KeyAlgorithm: a.KeyAlgorithm}.Check()

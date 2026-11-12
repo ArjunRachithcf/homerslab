@@ -46,6 +46,8 @@ var (
 	ErrNoValue = errors.New("a record needs its value")
 	// ErrNotDeleted is a delete the provider did nothing for: the record stays in the book, so it is found again.
 	ErrNotDeleted = errors.New("the provider deleted nothing")
+	// ErrBadName is a name that isn't valid IDNA: it is refused, never compared in another form (#153).
+	ErrBadName = errors.New("not a valid domain name")
 )
 
 // Drift is a note for the drift report: HomersLab's record and the provider's zone no longer agree, and the manager
@@ -59,9 +61,9 @@ type Drift struct {
 // DriftDeletedByHand is a record of HomersLab's that was deleted at the provider by hand: the book dropped it.
 const DriftDeletedByHand = "record-deleted-at-the-provider"
 
-// DriftValueChanged is a record of HomersLab's whose name and type are still at the provider with another value: kept
-// in the book, because it may be the same record in the provider's own form.
-const DriftValueChanged = "record-value-changed-at-the-provider"
+// DriftReplacedByHand is a record of HomersLab's that the provider no longer has, with another value at its name and
+// type: someone replaced it by hand. The book dropped it, and the other value is left as it is (#153).
+const DriftReplacedByHand = "record-replaced-at-the-provider"
 
 // Inventory is the name, under the domain, of the one TXT record that lists HomersLab's records by name and type, so
 // a restored primary finds them again (#79).
@@ -77,43 +79,101 @@ type Owned struct {
 	Domain   string // the household's domain, at or under the zone
 	Book     Book
 	Log      *slog.Logger // where a delete the provider did nothing for is said; none when nil
-	Drift    func(Drift)  // the drift report's note for a record found deleted at the provider; none when nil
+	Drift    func(Drift)  // the drift report's note for a record found deleted or replaced at the provider; none when nil
 }
 
-func (o *Owned) zone() string { return strings.ToLower(libdns.AbsoluteName("@", o.Zone)) }
+// edit is a zone being changed, its names in their one form (Canonical): the zone and the domain, the names asked for,
+// the book's and the provider's listing, each converted as it comes in (#153).
+type edit struct {
+	*Owned
+	zone   string // with a trailing dot, as libdns and the book name it
+	domain string
+}
+
+func (o *Owned) edit() (*edit, error) {
+	zone, err := Canonical(o.Zone)
+	if err != nil {
+		return nil, fmt.Errorf("the zone: %w", err)
+	}
+	domain, err := Canonical(o.Domain)
+	if err != nil {
+		return nil, fmt.Errorf("the domain: %w", err)
+	}
+	if strings.Contains(zone+"."+domain, "*") || zone == "@" || domain == "@" || domain != zone && !strings.HasSuffix(domain, "."+zone) {
+		return nil, fmt.Errorf("%w: the domain %s in the zone %s", ErrBadName, domain, zone)
+	}
+	return &edit{Owned: o, zone: zone + ".", domain: domain}, nil
+}
 
 // rel is a name under the domain, relative to the zone: "_acme-challenge", or "_acme-challenge.home" when the
 // domain is home.<zone>.
-func (o *Owned) rel(label string) string {
-	return libdns.RelativeName(strings.TrimSuffix(label+"."+o.Domain, ".")+".", o.zone())
+func (e *edit) rel(label string) string {
+	return libdns.RelativeName(label+"."+e.domain+".", e.zone)
 }
 
-// Name is a label under the domain, as a Record names it.
-func (o *Owned) Name(label string) string { return o.rel(label) }
-
-func same(a, b string) bool {
-	return strings.EqualFold(strings.TrimSuffix(a, "."), strings.TrimSuffix(b, "."))
-}
-
-// at lists the zone's records at a name, as the provider has them.
-func (o *Owned) at(ctx context.Context, name string) ([]libdns.RR, error) {
-	all, err := o.Provider.GetRecords(ctx, o.zone())
+// Name is a label under the domain, as a Record names it. It fails when the zone or the domain isn't a valid name.
+func (o *Owned) Name(label string) (string, error) {
+	e, err := o.edit()
 	if err != nil {
-		return nil, fmt.Errorf("listing the zone %s: %w", o.zone(), err)
+		return "", err
 	}
-	var out []libdns.RR
+	return e.rel(label), nil
+}
+
+// canonical is a record as it is asked for, its name in its one form.
+func (r Record) canonical() (Record, error) {
+	n, err := Canonical(r.Name)
+	r.Name = n
+	return r, err
+}
+
+// at lists the zone's records at a name (in its one form): with their names in that form, and as the provider listed
+// them (raw), which is the form its deletes match. A name the provider lists that isn't valid is never at the name:
+// HomersLab's own names are valid, and a name is never compared in another form.
+func (e *edit) at(ctx context.Context, name string) (there, raw []libdns.RR, err error) {
+	all, err := e.Provider.GetRecords(ctx, e.zone)
+	if err != nil {
+		return nil, nil, fmt.Errorf("listing the zone %s: %w", e.zone, err)
+	}
 	for _, r := range all {
-		if rr := r.RR(); same(rr.Name, name) {
-			out = append(out, rr)
+		rr := r.RR()
+		n, err := Canonical(rr.Name)
+		if err != nil || n != name {
+			continue
+		}
+		raw = append(raw, rr)
+		rr.Name = n
+		there = append(there, rr)
+	}
+	return there, raw, nil
+}
+
+// ours is the book's records for the zone: as it keeps them, and with their names in their one form.
+func (e *edit) ours(ctx context.Context) (canon, kept []Record, err error) {
+	kept, err = e.Book.Records(ctx, e.zone)
+	if err != nil {
+		return nil, nil, err
+	}
+	canon = make([]Record, len(kept))
+	for i, r := range kept {
+		if canon[i], err = r.canonical(); err != nil {
+			return nil, nil, fmt.Errorf("the book's record: %w", err)
 		}
 	}
-	return out, nil
+	return canon, kept, nil
 }
 
 // Free says whether a name holds no record at all, read from the provider's listing, never from DNS, where the
 // public wildcard answers every name.
 func (o *Owned) Free(ctx context.Context, name string) (bool, error) {
-	there, err := o.at(ctx, name)
+	e, err := o.edit()
+	if err != nil {
+		return false, err
+	}
+	if name, err = Canonical(name); err != nil {
+		return false, err
+	}
+	there, _, err := e.at(ctx, name)
 	return len(there) == 0, err
 }
 
@@ -121,55 +181,69 @@ func (o *Owned) Free(ctx context.Context, name string) (bool, error) {
 // isn't HomersLab's; only an ACME challenge's TXT records, which several clients may hold at once (RFC 8555 §8.4),
 // share their name.
 func (o *Owned) Create(ctx context.Context, r Record) error {
-	if err := o.create(ctx, r); err != nil {
+	e, err := o.edit()
+	if err != nil {
 		return err
 	}
-	return o.inventory(ctx)
+	if r, err = r.canonical(); err != nil {
+		return err
+	}
+	if err := e.create(ctx, r); err != nil {
+		return err
+	}
+	return e.inventory(ctx)
 }
 
-func (o *Owned) create(ctx context.Context, r Record) error {
+func (e *edit) create(ctx context.Context, r Record) error {
 	if r.Value == "" || r.Type == "" {
 		return fmt.Errorf("%w: %s %s", ErrNoValue, r.Type, r.Name)
 	}
-	there, err := o.at(ctx, r.Name)
+	there, _, err := e.at(ctx, r.Name)
 	if err != nil {
 		return err
 	}
-	ours, err := o.Book.Records(ctx, o.zone())
+	ours, _, err := e.ours(ctx)
 	if err != nil {
 		return err
 	}
-	challenge := strings.EqualFold(r.Type, "TXT") && same(r.Name, o.rel(Challenge))
+	challenge := strings.EqualFold(r.Type, "TXT") && r.Name == e.rel(Challenge)
 	for _, rr := range there {
 		mine := slices.ContainsFunc(ours, func(k Record) bool { return k.matches(rr) })
 		switch {
 		case strings.EqualFold(rr.Type, "CNAME"), strings.EqualFold(r.Type, "CNAME"):
 			return fmt.Errorf("%w: %s holds a %s, and no other data may sit beside a CNAME", ErrTaken, r.Name, rr.Type)
-		case mine && strings.EqualFold(rr.Type, r.Type) && rr.Data == r.Value:
+		case mine && r.matches(rr):
 			return nil // already there, and HomersLab's
 		case !mine && !(challenge && strings.EqualFold(rr.Type, "TXT")):
 			return fmt.Errorf("%w: %s holds a %s record", ErrTaken, r.Name, rr.Type)
 		}
 	}
-	if _, err := o.Provider.AppendRecords(ctx, o.zone(), []libdns.Record{r.libdns()}); err != nil {
+	if _, err := e.Provider.AppendRecords(ctx, e.zone, []libdns.Record{r.libdns()}); err != nil {
 		return fmt.Errorf("adding %s %s: %w", r.Type, r.Name, err)
 	}
-	return o.Book.Keep(ctx, o.zone(), r)
+	return e.Book.Keep(ctx, e.zone, r)
 }
 
 // Delete deletes one of HomersLab's records, and refuses any other.
 func (o *Owned) Delete(ctx context.Context, r Record) error {
-	if err := o.delete(ctx, r); err != nil {
+	e, err := o.edit()
+	if err != nil {
 		return err
 	}
-	return o.inventory(ctx)
+	if r, err = r.canonical(); err != nil {
+		return err
+	}
+	if err := e.delete(ctx, r); err != nil {
+		return err
+	}
+	return e.inventory(ctx)
 }
 
-func (o *Owned) delete(ctx context.Context, r Record) error {
+func (e *edit) delete(ctx context.Context, r Record) error {
 	if r.Value == "" || r.Type == "" {
 		return fmt.Errorf("%w: %s %s", ErrNoValue, r.Type, r.Name)
 	}
-	ours, err := o.Book.Records(ctx, o.zone())
+	ours, kept, err := e.ours(ctx)
 	if err != nil {
 		return err
 	}
@@ -179,74 +253,93 @@ func (o *Owned) delete(ctx context.Context, r Record) error {
 	}
 	// Looked up first: a provider such as RFC 2136's reports every delete as done, so only the listing says whether the
 	// record was still there. Gone means someone deleted it by hand.
-	if there, err := o.at(ctx, r.Name); err == nil && !slices.ContainsFunc(there, ours[i].sameKind) {
-		return o.dropGone(ctx, ours[i])
+	there, raw, err := e.at(ctx, r.Name)
+	if err == nil && !slices.ContainsFunc(there, ours[i].sameKind) {
+		return e.drop(ctx, ours[i], kept[i], DriftDeletedByHand)
 	}
-	// Any TTL: a provider may keep its own (a minimum of its own), and the record is HomersLab's all the same.
-	exact := ours[i]
+	// The record as the provider lists it (its name in Unicode, its value in quotes, it may be), which is what its
+	// delete matches; HomersLab's own form when the listing failed. Any TTL: a provider may keep its own (a minimum of
+	// its own), and the record is HomersLab's all the same. Never without its value, which would delete every value at
+	// the name.
+	exact := ours[i].libdns().RR()
+	if j := slices.IndexFunc(there, ours[i].matches); err == nil && j >= 0 && raw[j].Data != "" {
+		exact = raw[j]
+	}
 	exact.TTL = 0
-	deleted, err := o.Provider.DeleteRecords(ctx, o.zone(), []libdns.Record{exact.libdns()})
+	deleted, err := e.Provider.DeleteRecords(ctx, e.zone, []libdns.Record{exact})
 	if err != nil {
 		return fmt.Errorf("deleting %s %s: %w", r.Type, r.Name, err)
 	}
 	if len(deleted) == 0 {
-		return o.nothingDeleted(ctx, ours[i])
+		return e.nothingDeleted(ctx, ours, i, kept[i])
 	}
-	return o.Book.Forget(ctx, o.zone(), ours[i])
+	return e.Book.Forget(ctx, e.zone, kept[i])
 }
 
 // nothingDeleted handles a delete the provider did nothing for. The name is looked up again in the provider's
-// listing: when the record is not there, someone deleted it by hand, so the book drops it and the drift report says so. While the
-// provider still has it, or when the lookup fails, nothing is known, and the record stays in the book (ErrNotDeleted).
-func (o *Owned) nothingDeleted(ctx context.Context, r Record) error {
-	there, err := o.at(ctx, r.Name)
-	if err != nil {
-		if o.Log != nil {
-			o.Log.Warn("the DNS provider deleted nothing, and the lookup failed: the record stays listed as HomersLab's", "zone", o.zone(), "name", r.Name, "type", r.Type, "err", err)
+// listing:
+//   - our value is still there (in the provider's own form, it may be): the record stays in the book (ErrNotDeleted);
+//   - the lookup fails: nothing is known, and the record stays too;
+//   - nothing of that name and type is left, or only HomersLab's other values (or, at the challenge's name, which other
+//     ACME clients share, anyone's): someone deleted it by hand;
+//   - someone else's value of that name and type is: someone replaced it by hand (#153).
+//
+// The last two drop it from the book, and the drift report says so. The provider's other records are never touched.
+func (e *edit) nothingDeleted(ctx context.Context, ours []Record, i int, kept Record) error {
+	r := ours[i]
+	there, _, err := e.at(ctx, r.Name)
+	foreign := func(rr libdns.RR) bool {
+		return r.sameKind(rr) && !slices.ContainsFunc(ours, func(k Record) bool { return k.matches(rr) })
+	}
+	shared := strings.EqualFold(r.Type, "TXT") && r.Name == e.rel(Challenge)
+	switch {
+	case err != nil:
+		if e.Log != nil {
+			e.Log.Warn("the DNS provider deleted nothing, and the lookup failed: the record stays listed as HomersLab's", "zone", e.zone, "name", r.Name, "type", r.Type, "err", err)
 		}
 		return fmt.Errorf("%w: %s %s (%v)", ErrNotDeleted, r.Type, r.Name, err)
-	}
-	if !slices.ContainsFunc(there, r.sameKind) {
-		return o.dropGone(ctx, r)
-	}
-	// Something of that name and type is left. If its value is not the one HomersLab wrote, the provider may keep
-	// values in its own form (quotes, a trailing dot) or someone changed it: either way it is kept, and said.
-	if !slices.ContainsFunc(there, r.matches) {
-		if o.Drift != nil {
-			o.Drift(Drift{Zone: o.zone(), Record: r, What: DriftValueChanged})
+	case slices.ContainsFunc(there, r.matches):
+		if e.Log != nil {
+			e.Log.Warn("the DNS provider deleted nothing: the record stays listed as HomersLab's", "zone", e.zone, "name", r.Name, "type", r.Type)
 		}
+		return fmt.Errorf("%w: %s %s", ErrNotDeleted, r.Type, r.Name)
+	case !shared && slices.ContainsFunc(there, foreign):
+		return e.drop(ctx, r, kept, DriftReplacedByHand)
+	default:
+		return e.drop(ctx, r, kept, DriftDeletedByHand)
 	}
-	if o.Log != nil {
-		o.Log.Warn("the DNS provider deleted nothing: the record stays listed as HomersLab's", "zone", o.zone(), "name", r.Name, "type", r.Type)
-	}
-	return fmt.Errorf("%w: %s %s", ErrNotDeleted, r.Type, r.Name)
 }
 
-// dropGone drops a record the provider is seen not to have from the book, and says so in the drift report.
-func (o *Owned) dropGone(ctx context.Context, r Record) error {
-	if err := o.Book.Forget(ctx, o.zone(), r); err != nil {
+// drop drops a record the provider is seen not to have from the book (as the book keeps it), and says so in the drift
+// report.
+func (e *edit) drop(ctx context.Context, r, kept Record, what string) error {
+	if err := e.Book.Forget(ctx, e.zone, kept); err != nil {
 		return err
 	}
-	if o.Log != nil {
-		o.Log.Warn("a record of HomersLab's was deleted at the provider by hand: the book dropped it", "zone", o.zone(), "name", r.Name, "type", r.Type)
+	if e.Log != nil {
+		how := "deleted"
+		if what == DriftReplacedByHand {
+			how = "replaced by another value"
+		}
+		e.Log.Warn("a record of HomersLab's was "+how+" at the provider by hand: the book dropped it", "zone", e.zone, "name", r.Name, "type", r.Type)
 	}
-	if o.Drift != nil {
-		o.Drift(Drift{Zone: o.zone(), Record: r, What: DriftDeletedByHand})
+	if e.Drift != nil {
+		e.Drift(Drift{Zone: e.zone, Record: r, What: what})
 	}
 	return nil
 }
 
 // inventory writes the one record that lists HomersLab's records, or deletes it when there are none.
-func (o *Owned) inventory(ctx context.Context) error {
-	ours, err := o.Book.Records(ctx, o.zone())
+func (e *edit) inventory(ctx context.Context) error {
+	ours, _, err := e.ours(ctx)
 	if err != nil {
 		return err
 	}
-	name := o.rel(Inventory)
+	name := e.rel(Inventory)
 	var listed []string
 	var old []Record
 	for _, r := range ours {
-		if same(r.Name, name) && strings.EqualFold(r.Type, "TXT") {
+		if r.Name == name && strings.EqualFold(r.Type, "TXT") {
 			old = append(old, r)
 			continue
 		}
@@ -262,13 +355,13 @@ func (o *Owned) inventory(ctx context.Context) error {
 		return nil
 	}
 	if want != "" {
-		if err := o.create(ctx, Record{Name: name, Type: "TXT", Value: want, TTL: 5 * time.Minute}); err != nil {
+		if err := e.create(ctx, Record{Name: name, Type: "TXT", Value: want, TTL: 5 * time.Minute}); err != nil {
 			return fmt.Errorf("the inventory record: %w", err)
 		}
 	}
 	for _, r := range old {
 		if r.Value != want {
-			if err := o.delete(ctx, r); err != nil {
+			if err := e.delete(ctx, r); err != nil {
 				return fmt.Errorf("the old inventory record: %w", err)
 			}
 		}
@@ -280,15 +373,18 @@ func (r Record) libdns() libdns.Record {
 	return libdns.RR{Name: r.Name, TTL: r.TTL, Type: strings.ToUpper(r.Type), Data: r.Value}
 }
 
+// The comparisons below take names in their one form (Canonical), and compare them as they are.
+
 func (r Record) same(o Record) bool {
-	return same(r.Name, o.Name) && strings.EqualFold(r.Type, o.Type) && r.Value == o.Value
+	return r.Name == o.Name && strings.EqualFold(r.Type, o.Type) && r.Value == o.Value
 }
 
 // sameKind is a record of the same name and type, whatever its value.
 func (r Record) sameKind(rr libdns.RR) bool {
-	return same(r.Name, rr.Name) && strings.EqualFold(r.Type, rr.Type)
+	return r.Name == rr.Name && strings.EqualFold(r.Type, rr.Type)
 }
 
+// matches is a record of the same name and type with its value, in the provider's own form, it may be.
 func (r Record) matches(rr libdns.RR) bool {
-	return same(r.Name, rr.Name) && strings.EqualFold(r.Type, rr.Type) && r.Value == rr.Data
+	return r.sameKind(rr) && sameValue(r.Type, r.Value, rr.Data)
 }
