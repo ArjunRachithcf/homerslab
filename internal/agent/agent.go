@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"log/slog"
 	"maps"
@@ -715,8 +716,8 @@ var (
 	errNoReader    = errors.New("the compose reader didn't start")
 )
 
-// reads runs compose reads one at a time, each in a child process (ReadProjectMain) that the agent kills at the
-// deadline: the deadline really stops the work, and the slot is free again at once. The plain-file rules
+// reads runs compose reads one at a time, each in a child process (ReadProjectMain) that ends at the deadline
+// (childCommand): the deadline really stops the work, and the slot is free again at once. The plain-file rules
 // (engine/compose) bound how long a read can take; the child's own limits and the agent's unit bound the rest.
 type reads struct {
 	slot chan struct{}
@@ -725,19 +726,50 @@ type reads struct {
 
 func newReads(exe string) *reads { return &reads{slot: make(chan struct{}, 1), exe: exe} }
 
-// childCommand is the command that runs one compose read in dir, its own empty folder, for project name. When the
-// agent is root, the child starts as nobody (65534) with no groups: the IDs are set in the fork, before the parent-death
-// signal and the exec, so the child never runs as root and still dies with the agent.
-func childCommand(ctx context.Context, argv []string, dir, name string, cpuSeconds int) *exec.Cmd {
-	cmd := exec.CommandContext(ctx, argv[0], append(argv[1:], "--cpu-seconds", strconv.Itoa(cpuSeconds), "--", name)...)
+// childCommand is the command that runs one compose read in dir, its own empty folder, for project name, and the
+// agent's ends of the child's control pipe, which the caller closes once the child is done. When the agent is root, the child
+// starts as nobody (65534) with no groups: the IDs are set in the fork, before the exec, so the child never runs as
+// root.
+//
+// The child ends itself at what is left of ctx's deadline (readDeadline if it has none), and when the control pipe's
+// write end closes: at ctx's end (cmd.Cancel), or when the agent dies, however it dies, since the kernel closes it then
+// and the agent alone holds it (close-on-exec, so no other child of the agent inherits it). The agent's unit has no
+// CAP_KILL, so a root agent can't signal a child that runs as nobody (#138): the kill at ctx's end and the
+// parent-death signal (set after the IDs, so changing them doesn't clear it) hold only where it may.
+func childCommand(ctx context.Context, argv []string, dir, name string, cpuSeconds int) (*exec.Cmd, io.Closer, error) {
+	deadline := readDeadline
+	if at, ok := ctx.Deadline(); ok {
+		deadline = time.Until(at)
+	}
+	r, w, err := os.Pipe()
+	if err != nil {
+		return nil, nil, err
+	}
+	cmd := exec.CommandContext(ctx, argv[0], append(argv[1:], "--cpu-seconds", strconv.Itoa(cpuSeconds),
+		"--deadline", deadline.String(), "--control-fd", "3", "--", name)...)
 	cmd.Dir = dir
 	cmd.Env = []string{"HOME=" + dir, "TMPDIR=" + dir, "DOCKER_CONFIG=" + filepath.Join(dir, ".docker"), "PATH=/usr/bin:/bin"}
+	cmd.ExtraFiles = []*os.File{r} // fd 3, the read end
 	cmd.SysProcAttr = &syscall.SysProcAttr{Pdeathsig: syscall.SIGKILL, Setpgid: true}
 	if os.Geteuid() == 0 {
 		cmd.SysProcAttr.Credential = &syscall.Credential{Uid: nobody, Gid: nobody, Groups: []uint32{}}
 	}
+	cmd.Cancel = func() error {
+		w.Close()
+		_ = cmd.Process.Kill() // best effort: EPERM under the agent's unit
+		return nil
+	}
 	cmd.WaitDelay = time.Second
-	return cmd
+	return cmd, controlEnds{w, r}, nil
+}
+
+// controlEnds is the agent's two ends of a child's control pipe. The child has its own copy of the read end once it
+// starts; the agent's closes with the write end.
+type controlEnds struct{ w, r *os.File }
+
+func (c controlEnds) Close() error {
+	c.w.Close() // closed already, at the deadline, by cmd.Cancel
+	return c.r.Close()
 }
 
 // childDir is a read's own empty folder, owned by the user its child runs as.
@@ -776,7 +808,11 @@ func (rs *reads) read(ctx context.Context, name string, file []byte) (engine.Pro
 		return engine.Project{}, fmt.Errorf("%w: %w", errNoReader, err)
 	}
 	defer os.RemoveAll(dir)
-	cmd := childCommand(ctx, argv, dir, name, readCPUSeconds())
+	cmd, control, err := childCommand(ctx, argv, dir, name, readCPUSeconds())
+	if err != nil {
+		return engine.Project{}, fmt.Errorf("%w: %w", errNoReader, err)
+	}
+	defer control.Close()
 	cmd.Stdin = bytes.NewReader(file)
 	var out, errOut capped
 	cmd.Stdout, cmd.Stderr = &out, &errOut
@@ -802,7 +838,7 @@ func (rs *reads) read(ctx context.Context, name string, file []byte) (engine.Pro
 		return engine.Project{}, fmt.Errorf("%w: %v (%v) %s", errNoReader, err, runErr, strings.TrimSpace(said))
 	}
 	switch res.Error {
-	case "cpu-limit":
+	case "cpu-limit", "deadline":
 		return engine.Project{}, errReadTimeout
 	case "":
 		return *res.Project, nil

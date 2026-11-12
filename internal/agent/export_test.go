@@ -20,13 +20,15 @@ func ShellReads(t *testing.T, d time.Duration, script string) (real func()) {
 	return func() { readDeadline, readCommand = oldDeadline, oldCommand }
 }
 
-// HostileReads gives reads d, and makes every read's child burn CPU until it is killed.
-func HostileReads(t *testing.T, d time.Duration) (real func()) {
-	return ShellReads(t, d, "cat >/dev/null; while :; do :; done")
+// HostileReads gives reads d, and runs every read's child as this test binary, a real Go child confined as the
+// agent's, burning CPU instead of reading; its CPU limit is far past d, so only the deadline can end it in time.
+func HostileReads(t *testing.T, exe string, d time.Duration) (real func()) {
+	return childReads(t, exe, "read-project-burn", d, 30)
 }
 
-// ChildCommand is the command the agent runs for one read, from the executable exe, in dir.
-func ChildCommand(ctx context.Context, exe, dir, name string, cpuSeconds int) *exec.Cmd {
+// ChildCommand is the command the agent runs for one read, from the executable exe, in dir, and the agent's ends of
+// its control pipe: the child ends when they close.
+func ChildCommand(ctx context.Context, exe, dir, name string, cpuSeconds int) (*exec.Cmd, io.Closer, error) {
 	argv, _ := readCommand(exe)
 	return childCommand(ctx, argv, dir, name, cpuSeconds)
 }
@@ -44,10 +46,16 @@ const CgoOn = cgoOn
 // the given mode (main_test.go): a real Go child that confines itself as the agent's does, then does what the mode
 // says instead of reading.
 func ChildReads(t *testing.T, exe, mode string, d time.Duration, cpu int) {
+	childReads(t, exe, mode, d, cpu)
+}
+
+func childReads(t *testing.T, exe, mode string, d time.Duration, cpu int) (real func()) {
 	oldDeadline, oldCommand, oldCPU := readDeadline, readCommand, readCPUSeconds
 	readDeadline, readCPUSeconds = d, func() int { return cpu }
 	readCommand = func(string) ([]string, error) { return []string{exe, "agent", mode}, nil }
-	t.Cleanup(func() { readDeadline, readCommand, readCPUSeconds = oldDeadline, oldCommand, oldCPU })
+	restore := func() { readDeadline, readCommand, readCPUSeconds = oldDeadline, oldCommand, oldCPU }
+	t.Cleanup(restore)
+	return restore
 }
 
 // ReadProjectWith is the read child's main with read in place of the compose reader.
