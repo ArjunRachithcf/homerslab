@@ -246,8 +246,9 @@ func (a *Agent) setupListener(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			if a.state.Enforcing {
-				if err := a.fw.Apply(r.Context(), a.firewallState(r.Context())); err != nil {
-					a.fw.Want(a.firewallState(r.Context()))
+				want := a.firewallState(r.Context())
+				if err := a.fw.Apply(r.Context(), want); err != nil {
+					a.fw.Want(want)
 					a.log.Error("moving the setup listener in the firewall table", "err", err)
 					fail(w, http.StatusInternalServerError, "firewall-failed")
 					return
@@ -271,8 +272,9 @@ func (a *Agent) setupListener(w http.ResponseWriter, r *http.Request) {
 		a.log.Info("the setup link's LAN listener is closed, for good")
 	}
 	if a.state.Enforcing && (!wasClosed || !a.fw.Applied()) {
-		if err := a.fw.Apply(r.Context(), a.firewallState(r.Context())); err != nil {
-			a.fw.Want(a.firewallState(r.Context()))
+		want := a.firewallState(r.Context())
+		if err := a.fw.Apply(r.Context(), want); err != nil {
+			a.fw.Want(want)
 			a.log.Error("closing the setup listener in the firewall table", "err", err)
 			fail(w, http.StatusInternalServerError, "firewall-failed")
 			return

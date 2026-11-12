@@ -28,7 +28,7 @@ const insideNamespace = "HOMERSLAB_LAN_NETNS"
 //   - wt0, the mesh: a real WireGuard interface with its CGNAT address and its ULA /64;
 //   - tun0, a VPN client's tun device that puts a default route in the main table, behind eth0's;
 //   - tun1, OpenVPN's def1: 0.0.0.0/1 and 128.0.0.0/1 through it instead of a default route, an uplink too (#148);
-//   - tun2, a tunnel with one half only, in a table of its own: a tunnel, not an uplink;
+//   - tun2, a tunnel with one half only, in a table of its own: not an uplink;
 //   - and a rogue router advertisement on the LAN: the mesh's ULA /64 on eth0, with an address from it.
 func TestTheLANInANetworkNamespace(t *testing.T) {
 	testenv.Isolate(t)
@@ -153,9 +153,6 @@ func TestTheLANInANetworkNamespace(t *testing.T) {
 	if got, want := n.Uplinks, []string{"eth0", "wg1", "tun0", "tun1"}; !sameSet(got, want) || got[0] != "eth0" {
 		t.Errorf("uplinks = %v, want %v, the LAN's first: apps reach the internet through the VPNs' tunnels too (OpenVPN's "+
 			"def1 halves on tun1), not the dummy wg0, which is no tunnel, nor tun2, which has one half", got, want)
-	}
-	if got, want := n.Tunnels, []string{"wg1", "wt0", "tun0", "tun1", "tun2"}; !sameSet(got, want) {
-		t.Errorf("tunnels = %v, want %v: every tunnel, with a default route or without", got, want)
 	}
 }
 

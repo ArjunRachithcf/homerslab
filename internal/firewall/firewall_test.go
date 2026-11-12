@@ -218,13 +218,13 @@ func TestAppsLeaveThroughAVPNsTunnelThatIsNotTheLAN(t *testing.T) {
 
 // A tunnel, a VPN's or any other, with a default route or without, is never a local virtual network (#148): it gets
 // no DHCP and no DNS from this machine, only what every interface gets (the machine's basics), and nothing from it is
-// forwarded, the internet included. An engine naming a tunnel as one of its bridges doesn't make it one. Only a bridge,
-// by the kernel's kind of link, is a local virtual network or forwarded at all, so a tunnel the table wasn't told of
-// is neither, whatever the agent knew when it rendered the table. The mesh stays the mesh.
-func TestATunnelIsNeverALocalVirtualNetwork(t *testing.T) {
+// forwarded, the internet included. Only a bridge, by the kernel's kind of link, is a local virtual network, an app
+// network or forwarded at all: so a tunnel the agent hasn't seen yet, one an engine names a bridge, or an interface of
+// no kind (a second NIC, which a match on a kind never matches) is none of them. The mesh stays the mesh.
+func TestOnlyABridgeIsALocalVirtualNetworkOrForwarded(t *testing.T) {
 	testenv.Isolate(t)
 	s := firewall.State{Mesh: []string{"wt0"}, LAN: []string{"eth0"}, Uplinks: []string{"eth0", "wg0"},
-		Tunnels: []string{"wg0", "tun0", "wt0", "eth0", "bad name"}, Bridges: []string{"docker0", "tun0"}}
+		Bridges: []string{"docker0", "tun0"}}
 	r := firewall.Render(s)
 	chain := func(name string) string {
 		_, after, _ := strings.Cut(r, "\tchain "+name+" {\n")
@@ -234,30 +234,23 @@ func TestATunnelIsNeverALocalVirtualNetwork(t *testing.T) {
 	input := chain("input")
 	for _, want := range []string{
 		`iifname { "wt0" } accept`,
-		`iifname { "docker0" } jump apps_in`,
-		`iifname != { "eth0", "tun0", "wg0" } meta iifkind "bridge" jump virtual_in`,
+		`iifname { "docker0", "tun0" } meta iifkind "bridge" jump apps_in`,
+		`iifname != { "eth0", "wg0" } meta iifkind "bridge" jump virtual_in`,
 	} {
 		if !strings.Contains(input, want) {
 			t.Errorf("input lacks %q:\n%s", want, input)
 		}
 	}
 	forward := chain("forward")
-	want := "\t\tiifname { \"docker0\" } jump apps_out\n" +
-		"\t\tiifname { \"eth0\", \"tun0\", \"wg0\" } drop\n" +
-		"\t\tmeta iifkind != \"bridge\" drop\n" +
-		"\t\tjump outbound\n"
-	if !strings.HasSuffix(forward, want) {
-		t.Errorf("forward, want the tunnels and every interface that isn't a bridge dropped before the internet:\n%s", forward)
+	want := "\t\tiifname { \"docker0\", \"tun0\" } meta iifkind \"bridge\" jump apps_out\n" +
+		"\t\tiifname { \"eth0\", \"wg0\" } drop\n" +
+		"\t\tmeta iifkind \"bridge\" jump outbound\n"
+	if !strings.HasSuffix(forward, want) || strings.Count(forward, "jump outbound") != 1 {
+		t.Errorf("forward, want only bridges forwarded to the internet, by a match on their kind:\n%s", forward)
 	}
-	if got := chain("outbound"); !strings.Contains(got, `oifname != { "eth0", "wg0" } drop`) {
-		t.Errorf("a tunnel without a default route is a way out:\n%s", got)
-	}
-	if strings.Contains(r, `"tun0" } jump apps_in`) || strings.Contains(r, `iifname "tun0" oifname "tun0" accept`) {
-		t.Errorf("a tunnel an engine named a bridge is treated as one:\n%s", r)
-	}
-	// With no LAN known (at boot) no interface is a local virtual network, and the tunnels still forward nothing.
-	boot := firewall.Render(firewall.State{Mesh: []string{"wt0"}, Tunnels: []string{"tun0"}})
-	if strings.Contains(boot, "jump virtual_in") || !strings.Contains(boot, "\t\tiifname { \"tun0\" } drop\n\t\tmeta iifkind != \"bridge\" drop\n\t\tjump outbound\n") {
+	// With no LAN known (at boot) no interface is a local virtual network, and still only a bridge is forwarded.
+	boot := firewall.Render(firewall.State{Mesh: []string{"wt0"}})
+	if strings.Contains(boot, "jump virtual_in") || !strings.Contains(boot, "\t\tiifname { \"wt0\" } drop\n\t\tmeta iifkind \"bridge\" jump outbound\n\t}") {
 		t.Errorf("at boot:\n%s", boot)
 	}
 }

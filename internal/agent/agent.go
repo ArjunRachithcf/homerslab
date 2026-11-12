@@ -53,7 +53,7 @@ type Config struct {
 	// Resolve looks a name up through the machine's own resolver; net.DefaultResolver's when nil.
 	Resolve func(ctx context.Context, name string) ([]string, error)
 	// Network is what the firewall table needs of the machine's network, from one reading of the kernel: the LAN's
-	// interfaces and prefixes, the uplinks (a VPN's tunnel too, through which apps reach the internet) and the tunnels;
+	// interfaces and prefixes, and the uplinks (a VPN's tunnel too, through which apps reach the internet);
 	// lan.ReadNetwork when nil. While it can't be read, the table keeps the last reading; before the first, it knows no
 	// LAN and no way out for apps (#148).
 	Network func() (lan.Network, error)
@@ -248,9 +248,10 @@ func New(ctx context.Context, c Config) (*Agent, error) {
 	}
 	if a.state.Enforcing {
 		// An agent that can't apply its table now keeps serving and tries again (Serve: before it says it's ready).
-		if err := a.fw.Apply(ctx, a.firewallState(ctx)); err != nil {
+		want := a.firewallState(ctx)
+		if err := a.fw.Apply(ctx, want); err != nil {
 			a.log.Error("restoring the firewall table; trying again", "err", err)
-			a.fw.Want(a.firewallState(ctx))
+			a.fw.Want(want)
 		} else {
 			a.log.Info("firewall table restored", "setupListener", !a.state.SetupClosed)
 		}
@@ -319,7 +320,7 @@ func (a *Agent) firewallState(context.Context) firewall.State {
 	}
 	n := a.network
 	s := firewall.State{Mesh: a.state.Mesh, WireGuard: a.state.WireGuard, LAN: n.LAN, LANPrefixes: n.Prefixes,
-		Uplinks: n.Uplinks, Tunnels: n.Tunnels, Bridges: a.bridges(), Resolvers: resolvers(a.cfg.Sysroot)}
+		Uplinks: n.Uplinks, Bridges: a.bridges(), Resolvers: resolvers(a.cfg.Sysroot)}
 	if !a.state.SetupClosed {
 		s.SetupPort = a.setupPort()
 	}

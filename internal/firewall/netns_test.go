@@ -282,8 +282,8 @@ func TestTheFirewallTableInNetworkNamespaces(t *testing.T) {
 // A tunnel is never a local virtual network, nor a way in (#148). The box's tun0 leads to a VPN's server (vpn), and its
 // tap0 (an L2 tunnel, Ethernet-like) to another (vpn2), each through a userspace relay as OpenVPN's is: a host there
 // must reach nothing of the box beyond what every interface gets, no DHCP or DNS, and nothing is forwarded from it,
-// with a default route through the tunnel or without, the table told of the tunnel or not, and at boot with no default
-// route at all.
+// with a default route through the tunnel or without, an engine naming it a bridge or not, and at boot with no
+// default route at all. The table names no tunnel: the kernel's kind of link tells them from bridges.
 func TestTunnelsInNetworkNamespaces(t *testing.T) {
 	testenv.Isolate(t)
 	if os.Getenv(insideNamespaces) != "1" {
@@ -332,12 +332,10 @@ func TestTunnelsInNetworkNamespaces(t *testing.T) {
 	}
 	lanPrefixes := []netip.Prefix{netip.MustParsePrefix("192.168.77.0/24"), netip.MustParsePrefix("fd00:77::/64"), netip.MustParsePrefix("2001:db8:77::/64")}
 	split := firewall.State{Mesh: []string{"wt0"}, WireGuard: []int{51820}, SetupPort: 7020, LAN: []string{"br-iot"},
-		LANPrefixes: lanPrefixes, Bridges: []string{"br-test", "br-other", "docker0"}, Tunnels: []string{"tun0", "tap0"},
+		LANPrefixes: lanPrefixes, Bridges: []string{"br-test", "br-other", "docker0"},
 		Resolvers: []netip.Addr{netip.MustParseAddr("192.168.77.50")}}
 	full := split
 	full.Uplinks = []string{"br-iot", "tun0", "tap0"}
-	untold := split
-	untold.Tunnels = nil
 	named := split
 	named.Bridges = append(slices.Clone(split.Bridges), "tun0", "tap0") // an engine naming the tunnels as its bridges
 	for _, c := range []struct {
@@ -346,7 +344,6 @@ func TestTunnelsInNetworkNamespaces(t *testing.T) {
 	}{
 		{"tunnels without a default route", split},
 		{"full tunnels, uplinks", full},
-		{"tunnels the table wasn't told of", untold},
 		{"tunnels an engine named bridges", named},
 	} {
 		apply(c.s)
@@ -354,16 +351,8 @@ func TestTunnelsInNetworkNamespaces(t *testing.T) {
 		n.pingFrom(t, c.when+": the VPN's side still reaches the machine itself (ping), as every interface does", "vpn", "10.8.0.2", true)
 		n.pingFrom(t, c.when+": over the L2 tunnel too", "vpn2", "10.9.0.2", true)
 	}
-	for _, c := range []struct {
-		when string
-		s    firewall.State
-	}{
-		{"at boot, with no default route", firewall.State{Mesh: []string{"wt0"}, WireGuard: []int{51820}, SetupPort: 7020, Tunnels: []string{"tun0", "tap0"}}},
-		{"at boot, the table told of no tunnel", firewall.State{Mesh: []string{"wt0"}, WireGuard: []int{51820}, SetupPort: 7020}},
-	} {
-		apply(c.s)
-		n.together(func() { refused(c.when) })
-	}
+	apply(firewall.State{Mesh: []string{"wt0"}, WireGuard: []int{51820}, SetupPort: 7020})
+	n.together(func() { refused("at boot, with no default route") })
 }
 
 // tunnel makes the box's end of a tunnel (a tun device, or a tap one: L2), named name with the address box, and its
