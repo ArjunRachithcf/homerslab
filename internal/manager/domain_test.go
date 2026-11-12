@@ -176,7 +176,8 @@ func TestTheDomainIsGivenOnceAndItsCertificateEndsTheFirstHalf(t *testing.T) {
 		t.Errorf("a DNS token before the domain: %d %s, want 409 not-waiting", r.Code, r.Body)
 	}
 	for _, bad := range []map[string]string{{"domain": "localhost", "provider": "infomaniak"}, {"domain": "example.test", "provider": "route53"},
-		{"domain": "*.example.test", "provider": "infomaniak"}, {"domain": "example.test", "provider": "rfc2136", "server": "", "keyName": "x y"}} {
+		{"domain": "*.example.test", "provider": "infomaniak"}, {"domain": "example.test", "provider": "rfc2136", "server": "", "keyName": "x y"},
+		{"domain": "xn--zz.example.test", "provider": "infomaniak"}} { // an A-label that isn't valid IDNA (#153)
 		if r := b.answer("domain", bad); r.Code != http.StatusBadRequest {
 			t.Errorf("PUT domain %v: %d, want 400", bad, r.Code)
 		}
