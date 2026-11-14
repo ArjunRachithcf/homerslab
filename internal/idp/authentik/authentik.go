@@ -306,10 +306,8 @@ func (a *Authentik) closeFirstAdmin(ctx context.Context) error {
 	if err != nil || f == nil {
 		return err // no first-admin flow: nothing to close
 	}
-	// Every binding must pass ("all"), and one never does: whatever bindings the flow has, Authentik's own among them.
-	// Authentik's blueprint for the flow (default/flow-oobe.yaml) is applied again whenever its worker likes (at its
-	// start, after an upgrade, hourly): its binding at order 0 is left as it is, so applying it never fails on ours
-	// (#195's CI: a binding of ours at the same order made it fail, and the sign-in never got ready).
+	// Every binding must pass ("all"), and the one there is never does: whatever binding appears on the flow later
+	// (Authentik applies its blueprint for it again at its worker's start, after an upgrade, hourly), it stays closed.
 	if err := a.api.call(ctx, http.MethodPatch, "/flows/instances/"+firstAdminFlow+"/",
 		map[string]any{"authentication": "require_superuser", "policy_engine_mode": "all"}, nil); err != nil {
 		return err
@@ -319,39 +317,7 @@ func (a *Authentik) closeFirstAdmin(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	return a.ensureBinding(ctx, f.PBM, never, firstAdminOrder)
-}
-
-// firstAdminOrder is the order of the never-policy's binding on the first-admin flow: one Authentik's blueprint doesn't
-// use (a target's bindings each need an order of their own).
-const firstAdminOrder = 1000
-
-// ensureBinding binds policy to target at order, enabled and not negated, leaving the target's other bindings as they
-// are.
-func (a *Authentik) ensureBinding(ctx context.Context, target, policy string, order int) error {
-	type pb struct {
-		PK     string `json:"pk"`
-		Policy string `json:"policy"`
-		Negate bool   `json:"negate"`
-		Order  int    `json:"order"`
-		On     bool   `json:"enabled"`
-	}
-	have, err := list[pb](ctx, a.api, "/policies/bindings/?target="+q(target))
-	if err != nil {
-		return err
-	}
-	for _, h := range have {
-		switch {
-		case h.Policy == policy && h.Order == order && h.On && !h.Negate:
-			return nil
-		case h.Policy == policy || h.Order == order:
-			if err := a.api.call(ctx, http.MethodDelete, "/policies/bindings/"+h.PK+"/", nil, nil); err != nil {
-				return err
-			}
-		}
-	}
-	return a.api.call(ctx, http.MethodPost, "/policies/bindings/",
-		map[string]any{"target": target, "policy": policy, "order": order, "enabled": true, "negate": false, "timeout": 30}, nil)
+	return a.bindPolicies(ctx, f.PBM, []binding{{Policy: never}})
 }
 
 // randomPassword is a password nobody knows or keeps: it only makes the account's password usable, so a flow that

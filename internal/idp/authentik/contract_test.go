@@ -175,7 +175,7 @@ func TestTheIdentityProviderContractOnAuthentik(t *testing.T) {
 
 	// Authentik applies its own blueprints again when its worker likes (at its start, after an upgrade, hourly). Its
 	// first-admin blueprint must apply over HomersLab's closing of that flow, and the flow stay closed (#195's CI:
-	// a binding of HomersLab's at the blueprint's order made it fail, and the sign-in never got ready).
+	// the sign-in waited on that blueprint, which had failed at Authentik's first start).
 	t.Run("Authentik applies its first-admin blueprint again: it succeeds, and the flow still applies to nobody (#84)", func(t *testing.T) {
 		var bs struct {
 			Results []struct {
