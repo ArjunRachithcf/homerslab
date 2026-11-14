@@ -100,10 +100,29 @@ const FETCH_RUN = /^sh (\.\.\/)?\.github\/scripts\/stop-commands\.sh go mod (dow
 const GOPROXY_ADDRESS = 'https://proxy.golang.org,direct';
 const isGoJob = (job) => GO_CMD.test(JSON.stringify(job));
 
+// A shell that is not exactly bash or sh could run something else first (`bash -c "go test && bash {0}"`).
+const shellProblems = (defaults) => {
+  const shell = defaults?.run?.shell;
+  return shell === undefined || shell === 'bash' || shell === 'sh' ? [] : ['a default shell other than bash or sh'];
+};
+
+// What is wrong with the workflow's own env: and defaults:, which every job inherits; [] when nothing. Only
+// GOFLAGS: -buildvcs=false may be there, and no GOPROXY (each Go job sets its own).
+function workflowProblems(wf) {
+  const problems = shellProblems(wf.defaults);
+  if (wf.env !== undefined && (typeof wf.env !== 'object' || wf.env === null || Array.isArray(wf.env))) problems.push('an env that is not a map');
+  const text = JSON.stringify({ env: wf.env, defaults: wf.defaults });
+  if (BAN.test(text)) problems.push('a setting that bypasses the proxy, the sums or the shell');
+  if (/GOPROXY/.test(text)) problems.push('GOPROXY set for every job');
+  const flags = wf.env?.GOFLAGS === '-buildvcs=false' ? 1 : 0;
+  if ((text.match(/GOFLAGS/g) ?? []).length !== flags) problems.push('GOFLAGS other than -buildvcs=false');
+  return problems;
+}
+
 // What is wrong with a parsed Go job; [] when nothing. GOPROXY appears only as the job's "off" and as the fetch
 // step's address; the fetch step has exactly a name, that env and the wrapper line as its run, and comes first.
 function goJobProblems(job) {
-  const problems = [];
+  const problems = shellProblems(job.defaults);
   const steps = Array.isArray(job.steps) ? job.steps : [];
   const envs = [job.env, job.container?.env, ...steps.map((step) => step.env)].filter((env) => env !== undefined);
   if (envs.some((env) => typeof env !== 'object' || env === null || Array.isArray(env))) problems.push('an env that is not a map');
@@ -130,9 +149,11 @@ const FETCH_STEP = `      - name: fetch
           GOPROXY: https://proxy.golang.org,direct
         run: sh .github/scripts/stop-commands.sh go mod download
 `;
-const jobOf = ({ env = '      GOPROXY: "off"\n', fetch = FETCH_STEP, steps = '      - run: go test ./...\n' } = {}) =>
-  parseWorkflow(`jobs:\n  j:\n    env:\n${env}    steps:\n${fetch}${steps}`).jobs.j;
-const problemsOf = (parts) => goJobProblems(jobOf(parts));
+// `top` is the workflow's own keys, `defaults` the job's.
+const problemsOf = ({ top = '', env = '      GOPROXY: "off"\n', defaults = '', fetch = FETCH_STEP, steps = '      - run: go test ./...\n' } = {}) => {
+  const wf = parseWorkflow(`${top}jobs:\n  j:\n    env:\n${env}${defaults}    steps:\n${fetch}${steps}`);
+  return [...workflowProblems(wf), ...goJobProblems(wf.jobs.j)];
+};
 
 test('a Go command is found by every verb and form the filter lists, and not by a lookalike', () => {
   for (const verb of ['vet', 'test', 'build', 'run', 'install', 'generate', 'list', 'get', 'tool', 'mod verify'])
@@ -169,6 +190,23 @@ test('a Go job that leaks the proxy setting is caught, in every form', () => {
   assert.deepEqual(problemsOf({ env: '      GOPROXY: "off"\n      GOFLAGS: -buildvcs=false\n' }), []);
 });
 
+test('the workflow-level env and defaults, and the job-level defaults, are checked too', () => {
+  const top = {
+    'GONOPROXY for every job': 'env:\n  GONOPROXY: "*"\n',
+    'BASH_ENV for every job': 'env:\n  BASH_ENV: /tmp/x\n',
+    'GONOSUMDB for every job': 'env:\n  GONOSUMDB: x\n',
+    'GOFLAGS -mod=mod for every job': 'env:\n  GOFLAGS: -mod=mod\n',
+    'GOPROXY for every job': 'env:\n  GOPROXY: https://x\n',
+    'a shell that runs go first': 'defaults:\n  run:\n    shell: bash -c "go test ./... && bash {0}"\n',
+    'a shell with options': 'defaults:\n  run:\n    shell: bash -e {0}\n',
+  };
+  for (const [name, text] of Object.entries(top)) assert.notDeepEqual(problemsOf({ top: text }), [], name);
+  assert.notDeepEqual(problemsOf({ defaults: '    defaults:\n      run:\n        shell: bash -c "go test ./... && bash {0}"\n' }), [], 'a job shell');
+  assert.deepEqual(problemsOf({ top: 'env:\n  GOFLAGS: -buildvcs=false\n' }), []);
+  assert.deepEqual(problemsOf({ top: 'defaults:\n  run:\n    shell: bash\n' }), []);
+  assert.deepEqual(problemsOf({ defaults: '    defaults:\n      run:\n        shell: sh\n' }), []);
+});
+
 test('the fetch step is exactly name, the address and the wrapper line, and comes first', () => {
   const fetch = (run, extra = '') => `      - name: fetch\n        env:\n          GOPROXY: https://proxy.golang.org,direct\n${extra}        run: ${run}\n`;
   const wrapper = 'sh .github/scripts/stop-commands.sh go mod download';
@@ -197,6 +235,9 @@ test('a workflow with an anchor or an alias is refused', () => {
 });
 
 test('every Go job fetches its modules under the wrapper first, then runs with the proxy off', () => {
+  // A text lint: it can't see a value built at run time, or set in a helper script or a Makefile.
+  assert.deepEqual(workflowProblems(parseWorkflow(workflow('ci.yml'))), []);
+  for (const [id, job] of jobs()) assert.deepEqual(shellProblems(job.defaults), [], id);
   const goJobs = jobs().filter(([, job]) => isGoJob(job));
   assert.ok(goJobs.length >= 5, goJobs.map(([id]) => id).join(' '));
   for (const [id, job] of goJobs) {
