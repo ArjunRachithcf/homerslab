@@ -28,6 +28,13 @@ networks:
     ipam:
       config:
         - subnet: 10.216.3.0/24
+  # A guarded app's own network (#19): the edge reaches the app's one upstream there, and nothing else of the edge's
+  # machine may (the firewall table's to_apps).
+  apps:
+    internal: true
+    ipam:
+      config:
+        - subnet: 10.216.4.0/24
 
 x-machine: &machine
   image: alpine:3.22@sha256:49340b346798875b5592e5d420241f2f9cfba5f47e62ebb1446a1b34734e898f
@@ -59,6 +66,8 @@ services:
         ipv4_address: 10.216.2.10
       sign-in:
         ipv4_address: 10.216.3.20
+      apps:
+        ipv4_address: 10.216.4.20
 
   # The agent's side of the edge's machine: its firewall table, applied in the edge's network namespace.
   firewall:
@@ -84,6 +93,13 @@ services:
     networks:
       sign-in:
         ipv4_address: 10.216.3.10
+
+  # A guarded app, as a stub on its own network: it answers with the identity and the cookies that reached it.
+  app:
+    <<: *machine
+    networks:
+      apps:
+        ipv4_address: 10.216.4.10
 
   phone:
     <<: *machine

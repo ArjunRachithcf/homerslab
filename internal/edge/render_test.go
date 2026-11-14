@@ -39,6 +39,7 @@ func TestTheEdgesConfigurationIsItsGoldenRender(t *testing.T) {
 	for name, c := range map[string]edge.Config{
 		"primary":        thePrimary(),
 		"with-sign-in":   withSignIn(),
+		"guarded-app":    withAGuardedApp(),
 		"cloud-port-two": twoAddresses,
 		"before-the-cert": {AdminSocket: "/run/homerslab-edge/admin.sock", Storage: "/var/lib/homerslab-edge",
 			Listen: []netip.Addr{netip.MustParseAddr("100.88.7.186")}, Port: 443},
@@ -254,4 +255,93 @@ func withSignIn() edge.Config {
 	c := thePrimary()
 	c.SignIn = &edge.Site{Name: "auth.example.test", Dial: "172.31.250.10:9000"}
 	return c
+}
+
+// withAGuardedApp is the primary with the sign-in and one guarded app, BentoPDF at pdf.example.test, on its one upstream.
+func withAGuardedApp() edge.Config {
+	c := withSignIn()
+	c.Apps = []edge.App{{Name: "pdf.example.test", Dial: "172.31.240.2:8080", Guard: edge.AuthentikGuard("172.31.250.10:9000")}}
+	return c
+}
+
+// A guarded app's site (#19): the client's identity headers are stripped before anything else; the provider's own
+// paths go to the provider; every other request asks the guard first, and only a 2xx answer lets it on to the app, with
+// the identity the guard names. The guard's own cookie never reaches the app.
+func TestAGuardedAppsSiteAsksTheGuardFirst(t *testing.T) {
+	testenv.Isolate(t)
+	b, err := edge.Render(withAGuardedApp())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var c struct {
+		Apps struct {
+			HTTP struct {
+				Servers map[string]struct {
+					Routes []struct {
+						Match  []struct{ Host []string }
+						Handle []struct {
+							Handler string
+							Routes  []struct {
+								Match  []map[string]any
+								Handle []map[string]any
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+	if err := json.Unmarshal(b, &c); err != nil {
+		t.Fatal(err)
+	}
+	var steps []string
+	for _, r := range c.Apps.HTTP.Servers["mesh"].Routes {
+		if len(r.Match) == 0 || len(r.Match[0].Host) == 0 || r.Match[0].Host[0] != "pdf.example.test" {
+			continue
+		}
+		for _, sub := range r.Handle[0].Routes {
+			for _, h := range sub.Handle {
+				step := h["handler"].(string)
+				if ups, ok := h["upstreams"].([]any); ok {
+					step += " " + ups[0].(map[string]any)["dial"].(string)
+				}
+				if _, ok := h["rewrite"]; ok {
+					step += " (the guard)"
+				}
+				if len(sub.Match) > 0 {
+					step += " if " + fmt_(sub.Match)
+				}
+				steps = append(steps, step)
+			}
+		}
+	}
+	want := []string{
+		"headers",
+		"reverse_proxy 172.31.250.10:9000 if [{path:[/outpost.goauthentik.io/*]}]",
+		"reverse_proxy 172.31.250.10:9000 (the guard)",
+		"headers",
+		"reverse_proxy 172.31.240.2:8080",
+	}
+	if strings.Join(steps, "\n") != strings.Join(want, "\n") {
+		t.Errorf("the guarded app's site:\n%s\nwant\n%s", strings.Join(steps, "\n"), strings.Join(want, "\n"))
+	}
+	for _, h := range []string{"X-Authentik-*", "Remote-*", "X-Remote-*", "X-Forwarded-User", "X-Forwarded-Email", "X-Forwarded-Preferred-Username"} {
+		if !strings.Contains(string(b), `"`+h+`"`) {
+			t.Errorf("the site doesn't strip %s", h)
+		}
+	}
+	// An app without its guard, or a guard without its provider, isn't rendered.
+	for _, bad := range []edge.App{{Name: "pdf.example.test", Dial: "172.31.240.2:8080"}, {Name: "pdf.example.test", Dial: "172.31.240.2:8080", Guard: &edge.Guard{}},
+		{Name: "pdf.example.test", Dial: "nowhere", Guard: edge.AuthentikGuard("172.31.250.10:9000")}, {Dial: "172.31.240.2:8080", Guard: edge.AuthentikGuard("172.31.250.10:9000")}} {
+		c := withSignIn()
+		c.Apps = []edge.App{bad}
+		if _, err := edge.Render(c); err == nil {
+			t.Errorf("rendered %+v", bad)
+		}
+	}
+}
+
+func fmt_(m []map[string]any) string {
+	b, _ := json.Marshal(m)
+	return strings.NewReplacer(`"`, "").Replace(string(b))
 }
