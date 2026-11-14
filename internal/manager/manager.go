@@ -73,6 +73,9 @@ type Config struct {
 	SignInUpstream string
 	SignInWait     time.Duration
 	SignInPoll     time.Duration
+	// BackupWait is the longest one backup run may take before it is ended and the next one is due (13 hours when 0:
+	// a first photo library takes hours, and each item's own run in the agent ends at 12).
+	BackupWait time.Duration
 	// ScheduleEvery is how often the scheduler looks for due jobs.
 	ScheduleEvery time.Duration
 	Web           fs.FS // the built pages; surfaces.Dist() when nil
@@ -98,9 +101,10 @@ type Manager struct {
 	catalogFS fs.FS
 	log       *slog.Logger
 	lanClosed atomic.Bool
-	certMu    sync.Mutex // one issuance or renewal at a time
-	signInMu  sync.Mutex // one setting-up of the household account at a time
-	attempts  attempts   // sign-ins to Admin under way
+	certMu    sync.Mutex  // one issuance or renewal at a time
+	signInMu  sync.Mutex  // one setting-up of the household account at a time
+	attempts  attempts    // sign-ins to Admin under way
+	backingUp atomic.Bool // a backup run is under way
 
 	// given is what the page sees of the secrets the terminal gives (#64): those being checked, and why the last one
 	// given for each was refused. By the secret's name; never the secret.
@@ -156,6 +160,9 @@ func New(c Config) (*Manager, error) {
 	}
 	if c.SignInPoll == 0 {
 		c.SignInPoll = 3 * time.Second
+	}
+	if c.BackupWait == 0 {
+		c.BackupWait = 13 * time.Hour
 	}
 	if c.ScheduleEvery == 0 {
 		c.ScheduleEvery = time.Hour
@@ -251,6 +258,7 @@ func (m *Manager) Control() http.Handler {
 	mux.HandleFunc("GET /api/v1/nodes/primary", m.getPrimary)
 	mux.HandleFunc("GET /api/v1/dns", m.getDNS)
 	mux.HandleFunc("PUT /api/v1/dns/token", m.putDNSToken)
+	mux.HandleFunc("PUT /api/v1/backups/target", m.putBackupTarget)
 	mux.HandleFunc("GET /api/v1/warnings", m.getWarnings)
 	m.catalogRoutes(mux)
 	mux.HandleFunc("/", notFound)

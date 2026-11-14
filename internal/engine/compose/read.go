@@ -135,7 +135,11 @@ func (r *Reader) load(ctx context.Context, name string, file []byte) (engine.Pro
 			if v.Type == "bind" && v.Bind != nil && v.Bind.SELinux != "" {
 				svc.Relabelled = append(svc.Relabelled, v.Source)
 			}
+			if v.Type == "volume" && v.Source != "" && (v.Volume == nil || v.Volume.Subpath == "") {
+				svc.Volumes = append(svc.Volumes, v.Target)
+			}
 		}
+		slices.Sort(svc.Volumes)
 		svc.Loosened = loosened(s)
 		for name := range s.ExtraHosts {
 			svc.Hosts = append(svc.Hosts, strings.ToLower(name))
@@ -156,6 +160,17 @@ func (r *Reader) load(ctx context.Context, name string, file []byte) (engine.Pro
 		out.Networks = append(out.Networks, nw)
 	}
 	slices.SortFunc(out.Networks, func(a, b engine.Network) int { return strings.Compare(a.Name, b.Name) })
+	for key, v := range p.Volumes {
+		vol := engine.Volume{Name: key, Driver: v.Driver, Configured: len(v.DriverOpts) > 0}
+		switch {
+		case bool(v.External):
+			vol.Joined = cmp.Or(v.Name, key)
+		case v.Name != "" && v.Name != p.Name+"_"+key:
+			vol.Joined = v.Name
+		}
+		out.Volumes = append(out.Volumes, vol)
+	}
+	slices.SortFunc(out.Volumes, func(a, b engine.Volume) int { return strings.Compare(a.Name, b.Name) })
 	return out, nil
 }
 

@@ -23,6 +23,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -86,6 +87,10 @@ type Config struct {
 	Engine AppEngine
 	// Users finds a user's uid by name, for the firewall table (the edge's and the manager's): /etc/passwd when nil.
 	Users func(name string) (uint32, bool)
+	// Restic is the pinned restic the node's backups run (backup.Restic when "").
+	Restic string
+	// VolumesDir is where the engine keeps its local volumes, each <name>/_data (DockerVolumes when "").
+	VolumesDir string
 	// Probe asks an app's upstream for a health check's path, as the edge would for the app's name: an HTTP request
 	// when nil.
 	Probe func(ctx context.Context, upstream netip.AddrPort, name, path string) (ok bool, detail string)
@@ -109,6 +114,8 @@ type Agent struct {
 	meshDrift                  []firewall.Drift // what the agent found changed in the mesh client, and put back
 	reads                      *reads           // compose reads, one at a time
 	installs                   sync.Mutex       // apps' installs, one at a time, outside mu
+	backingUp                  sync.Mutex       // the node's backup runs, one at a time, outside mu
+	backupRuns                 atomic.Int64     // restic's runs so far, for their units' names
 	edgeDown                   string           // the edge's last check's error, so a down edge is logged once
 	network                    lan.Network      // the network's last reading, which the table keeps while the kernel can't be asked
 	networkErr                 bool             // the network can't be read, which is logged once
@@ -134,6 +141,8 @@ type state struct {
 	SignIn *signInState `json:"signIn,omitempty"`
 	// Apps are the apps installed on this node, by id (#19).
 	Apps map[string]*appState `json:"apps,omitempty"`
+	// Backup is the node's repository at the household's target, once the manager has given it (#22).
+	Backup *backupState `json:"backup,omitempty"`
 	// Bridges are the engines' bridges as each engine last confirmed them: what the table uses until an engine
 	// answers again (at boot, before any of them runs; while one hangs).
 	Bridges map[string][]string `json:"engineBridges,omitempty"`
@@ -447,6 +456,10 @@ func (a *Agent) Handler() http.Handler {
 	mux.HandleFunc("PUT /v1/apps/{id}", a.putApp)
 	mux.HandleFunc("GET /v1/apps", a.getApps)
 	mux.HandleFunc("GET /v1/apps/{id}/logs", a.getAppLogs)
+	mux.HandleFunc("PUT /v1/backups", a.putBackups)
+	mux.HandleFunc("POST /v1/backups", a.postBackups)
+	mux.HandleFunc("PUT /v1/backups/manager", a.putManagerBackup)
+	mux.HandleFunc("POST /v1/backups/prune", a.postPrune)
 	mux.HandleFunc("/", func(w http.ResponseWriter, _ *http.Request) { fail(w, http.StatusNotFound, "not-found") })
 	return mux
 }

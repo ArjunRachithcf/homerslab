@@ -281,6 +281,36 @@ jobs:
         # The containers' logs, which the suite reads, are third-party text too.
         run: sh .github/scripts/stop-commands.sh go test -count=1 -v -run TestTheContainerEngineContractOnDocker ./internal/engine/compose/
 
+  backup:
+    name: Backup-target contract (a disk, SFTP and S3 in containers, restic's own image)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    # Modules come only from the step that fetches them, as in the Go job.
+    env:
+      GOPROXY: "off"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - name: Fetch the modules
+        env:
+          GOPROXY: https://proxy.golang.org,direct
+        run: sh .github/scripts/stop-commands.sh go mod download
+      # The harness, and only the harness, reaches the runner's Docker (HOMERSLAB_TEST_DOCKER_HOST), for compose project
+      # hltest-22-targets; the code under test points at nowhere. Images are pinned by digest in testdata/compose.yaml.
+      # The suite copies its own test binary into restic's image, so it is built static.
+      - name: The contract suite
+        env:
+          HOMERSLAB_TEST_DOCKER_HOST: unix:///var/run/docker.sock
+          DOCKER_HOST: unix:///nonexistent
+          CONTAINER_HOST: unix:///nonexistent
+          CGO_ENABLED: "0"
+        # The containers' logs, which the suite prints when it fails, are third-party text too.
+        run: sh .github/scripts/stop-commands.sh go test -count=1 -v -run 'TestTheBackupTargetContract$' ./internal/backup/
+
   identity:
     name: Identity provider contract (Authentik in containers, Chromium's virtual authenticator)
     runs-on: ubuntu-24.04

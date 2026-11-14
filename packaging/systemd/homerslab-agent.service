@@ -62,6 +62,10 @@ RestartSec=2s
 # there, `systemctl enable <path>`, so the agent writes nothing else under /etc/systemd), restarts it, asks the engine
 # (Docker's socket, as root) for the apps' containers, health and logs through the Compose SDK, and probes each app's
 # upstream on its network, which its table lets the agent and the edge open, and nobody else.
+# Since #22 it backs up: it seals the node's repository key and the target's credentials in its state directory, asks
+# the engine where apps' volumes are, and runs restic in a transient unit of its own (systemd-run), which loads those
+# credentials, reads apps' folders with CAP_DAC_READ_SEARCH alone, and writes only its cache (StateDirectory
+# homerslab/backup-cache, on the app-data disk) and a disk target: the agent's own sandbox stays as it is.
 # Later tickets loosen this as its contract grows: disks. To check as root at the first package install (#48).
 NoNewPrivileges=yes
 CapabilityBoundingSet=CAP_CHOWN CAP_NET_ADMIN CAP_SETUID CAP_SETGID

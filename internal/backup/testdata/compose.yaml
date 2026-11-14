@@ -1,0 +1,57 @@
+# The backup-target contract suite's world: an SFTP server (OpenSSH) and an S3-compatible service (rclone's, over
+# HTTPS), driven by contract_test.go from a client that is restic's own image at the pinned version, where the suite's
+# test binary runs and the disk target is a folder. Always run as compose project hltest-22-targets (named below); the
+# test brings it up and takes it down with `down -v`.
+#
+# Isolation:
+#   - one internal network, 10.222.0.0/24: no internet, no route to the host's LAN, no published port;
+#   - no bind mounts: the S3 service's certificate and key, and its access key, are made by the test and passed in the
+#     environment; the client's SSH key is made inside the client, and its public half given to the server.
+name: hltest-22-targets
+
+networks:
+  targets:
+    internal: true
+    ipam:
+      config:
+        - subnet: 10.222.0.0/24
+
+configs:
+  s3-cert:
+    content: "${HLTEST22_S3_CERT:?}"
+  s3-key:
+    content: "${HLTEST22_S3_KEY:?}"
+
+services:
+  client:
+    image: docker.io/restic/restic:0.19.1@sha256:136600b6ff6843d61d355f7f71f460a166429f35de6fd11b568fece3c9a4d510
+    entrypoint: ["sleep", "infinity"]
+    hostname: client
+    init: true
+    stop_grace_period: 1s
+    networks:
+      targets:
+        ipv4_address: 10.222.0.10
+
+  # OpenSSH's sftp-server for one user, chrooted at /home/backup; the repositories go in its upload folder.
+  sftp:
+    image: docker.io/atmoz/sftp:alpine@sha256:c5fb9e4beb8b7054a4c0b65c5e11df47cc20da95ad6002e88aecff62bab06372
+    command: ["backup::1001:1001:upload"]
+    stop_grace_period: 1s
+    networks:
+      targets:
+        ipv4_address: 10.222.0.22
+
+  s3:
+    image: docker.io/rclone/rclone:1.75.2@sha256:2687085f718d3c628f7fdfb77c52a1d344332aed543110bb88088f2c70d43eb5
+    command: ["serve", "s3", "--addr", ":443", "--auth-key", "${HLTEST22_S3_ID:?},${HLTEST22_S3_SECRET:?}",
+      "--cert", "/certs/cert.pem", "--key", "/certs/key.pem", "/data"]
+    configs:
+      - source: s3-cert
+        target: /certs/cert.pem
+      - source: s3-key
+        target: /certs/key.pem
+    stop_grace_period: 1s
+    networks:
+      targets:
+        ipv4_address: 10.222.0.30

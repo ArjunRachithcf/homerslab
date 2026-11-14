@@ -18,6 +18,19 @@ type Project struct {
 	Services []Service `json:"services"`
 	Secrets  []string  `json:"secrets,omitempty"`
 	Networks []Network `json:"networks,omitempty"`
+	// Volumes are the project's named volumes, in name order.
+	Volumes []Volume `json:"volumes,omitempty"`
+}
+
+// Volume is one of a project's named volumes, with what installing checks (#205's review): it must be the project's
+// own, as the engine makes it by default. Joined is another volume it names instead (external, or named after one
+// that isn't the project's own, another app's or the sign-in's); Driver and Configured are what it sets of its own (a
+// driver, or its options: a local volume with options can be a bind of any folder of the machine).
+type Volume struct {
+	Name       string `json:"name"`
+	Joined     string `json:"joined,omitempty"`
+	Driver     string `json:"driver,omitempty"`
+	Configured bool   `json:"configured,omitempty"`
 }
 
 // Network is one of a project's networks, with what installing checks before it wires it (#19): the agent names its
@@ -44,7 +57,9 @@ type Service struct {
 	NetworkMode string   `json:"networkMode,omitempty"`
 	Published   []string `json:"published,omitempty"`
 	Relabelled  []string `json:"relabelled,omitempty"`
-	Loosened    []string `json:"loosened,omitempty"`
+	// Volumes are where the service has the project's named volumes, inside it: the only folders backups take (#22).
+	Volumes  []string `json:"volumes,omitempty"`
+	Loosened []string `json:"loosened,omitempty"`
 	// Hosts are the names its extra_hosts give an address to, lowercase and sorted.
 	Hosts []string `json:"hosts,omitempty"`
 }
@@ -64,4 +79,16 @@ type Container struct {
 	Name    string `json:"name"`
 	State   string `json:"state"`
 	Health  string `json:"health,omitempty"`
+}
+
+// Mount is a volume, or a folder of the machine, that one of a service's containers has: Destination inside it, Source
+// on the machine, and whether it is one of the engine's volumes (whose Source the engine made, and no container can
+// change: it sees only what is inside).
+type Mount struct {
+	Destination string `json:"destination"`
+	Source      string `json:"source"`
+	Volume      bool   `json:"volume,omitempty"`
+	// Name and Driver are the volume's, as the engine has it.
+	Name   string `json:"name,omitempty"`
+	Driver string `json:"driver,omitempty"`
 }

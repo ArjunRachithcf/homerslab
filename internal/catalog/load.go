@@ -16,6 +16,7 @@ import (
 
 	"go.yaml.in/yaml/v3"
 
+	"github.com/ArjunRachithcf/homerslab/internal/backup"
 	"github.com/ArjunRachithcf/homerslab/internal/text"
 )
 
@@ -180,6 +181,7 @@ func loadApp(fsys fs.FS, dir string, categories map[string]bool, digestOf func(m
 		checkHost(&p, a.Host)
 	default:
 		a.Compose = compose
+		checkVolumes(&p, a.Data, compose)
 	}
 	a.Digest = digestOf(manifest, a.Compose)
 	return a, p.err()
@@ -272,8 +274,73 @@ func checkData(p *problems, data []Data) {
 		if d.Dump != nil && (len(d.Dump.Command) == 0 || d.Dump.File == "") {
 			p.add("data %q: a dump's command and the file it makes", d.What)
 		}
+		// They reach restic's command line (#22): plain values only.
+		if d.Path != "" && !backup.ValidPath(d.Path) {
+			p.add("data %q: a plain absolute path", d.What)
+		}
+		if d.Dump != nil && len(d.Dump.Command) > 0 && !backup.ValidCommand(d.Dump.Command) {
+			p.add("data %q: a dump's command of plain arguments, no shell", d.What)
+		}
+		if d.Dump != nil && d.Dump.File != "" && !backup.ValidFile(d.Dump.File) {
+			p.add("data %q: a dump's file, a plain name", d.What)
+		}
 		if !d.BackedUp() && d.Why == "" {
 			p.add("data %q: why it isn't backed up", d.What)
+		}
+	}
+}
+
+// checkVolumes says which backed-up folder isn't exactly one of its service's named volumes in the compose file. Only a
+// volume's own root is backed up, never a folder inside it: a folder inside is the app's to replace with a link, which
+// restic, as root, would follow out of the volume (#205's review). The agent checks it again against the project it
+// reads, and against the engine at every run.
+func checkVolumes(p *problems, data []Data, compose []byte) {
+	var f struct {
+		Services map[string]struct {
+			Volumes []yaml.Node `yaml:"volumes"`
+		} `yaml:"services"`
+		Volumes map[string]*struct {
+			Name       string    `yaml:"name"`
+			Driver     string    `yaml:"driver"`
+			DriverOpts yaml.Node `yaml:"driver_opts"`
+			External   yaml.Node `yaml:"external"`
+		} `yaml:"volumes"`
+	}
+	if err := yaml.Unmarshal(compose, &f); err != nil {
+		p.add("compose.yaml: %v", err)
+		return
+	}
+	// Every volume is the app's own, as the engine makes it: not another's (external, or a name of its own, which
+	// could be another app's or the sign-in's), no other driver, no options, which can bind any folder of the machine
+	// (#205's review). The agent checks it again in the project it reads, and the engine's volume at every run.
+	for key, v := range f.Volumes {
+		if v != nil && (v.Name != "" || (v.Driver != "" && v.Driver != "local") || !v.DriverOpts.IsZero() || !v.External.IsZero()) {
+			p.add("compose.yaml: volume %q is the app's own: no name, external, driver or driver_opts", key)
+		}
+	}
+	for _, d := range data {
+		if d.Path == "" || !d.BackedUp() {
+			continue
+		}
+		named := false
+		for _, v := range f.Services[d.Service].Volumes {
+			var source, target string
+			switch v.Kind {
+			case yaml.ScalarNode: // name:/target[:mode]
+				parts := strings.Split(v.Value, ":")
+				if len(parts) >= 2 {
+					source, target = parts[0], parts[1]
+				}
+			case yaml.MappingNode:
+				var long struct{ Type, Source, Target string }
+				if v.Decode(&long) == nil && long.Type == "volume" {
+					source, target = long.Source, long.Target
+				}
+			}
+			named = named || (target == d.Path && source != "" && !strings.ContainsAny(source[:1], "/.~$"))
+		}
+		if !named {
+			p.add("data %q: a backed-up path is exactly one of its service's named volumes", d.What)
 		}
 	}
 }

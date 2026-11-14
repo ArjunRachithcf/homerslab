@@ -71,6 +71,11 @@ services:
       - /srv/b:/b:Z
       - /srv/c:/c:ro
       - data:/data
+      - mine:/m
+      - host:/h
+      - theirs:/t
+      - signin:/s
+      - remote:/r
   db:
     image: docker.io/library/postgres:16@sha256:2222222222222222222222222222222222222222222222222222222222222222
     network_mode: host
@@ -94,7 +99,13 @@ networks:
   own: {name: homerslab-example_own}
   shared: {name: homerslab-authentik_default}
   tuned: {driver: macvlan, driver_opts: {parent: eth0}, ipam: {config: [{subnet: 10.0.0.0/24}]}}
-volumes: {data: {}}
+volumes:
+  data: {}
+  mine: {name: homerslab-example_mine}
+  host: {driver_opts: {type: none, o: bind, device: /etc}}
+  theirs: {external: true, name: homerslab-other_library}
+  signin: {name: homerslab-authentik_database}
+  remote: {driver: rclone}
 `
 	got, err := reader(t).Read(context.Background(), "homerslab-example", []byte(file))
 	if err != nil {
@@ -103,7 +114,7 @@ volumes: {data: {}}
 	want := []engine.Service{
 		{Name: "db", Image: "docker.io/library/postgres:16@sha256:2222222222222222222222222222222222222222222222222222222222222222", NetworkMode: "host"},
 		{Name: "web", Image: "ghcr.io/example/web:1@sha256:1111111111111111111111111111111111111111111111111111111111111111",
-			Networks: []string{"back", "front"}, Published: []string{"127.0.0.1:8080:80/tcp", "9000/tcp"}, Relabelled: []string{"/srv/a", "/srv/b"}},
+			Networks: []string{"back", "front"}, Published: []string{"127.0.0.1:8080:80/tcp", "9000/tcp"}, Relabelled: []string{"/srv/a", "/srv/b"}, Volumes: []string{"/data", "/h", "/m", "/r", "/s", "/t"}},
 	}
 	if !reflect.DeepEqual(got.Services[0], want[0]) || !reflect.DeepEqual(got.Services[3], want[1]) || got.Services[1].Name != "quiet" ||
 		got.Services[1].Loosened != nil || !reflect.DeepEqual(got.Services[1].Hosts, []string{"auth.example.test", "other.test"}) {
@@ -117,6 +128,12 @@ volumes: {data: {}}
 		{Name: "own"}, {Name: "shared", Joined: "homerslab-authentik_default"}, {Name: "tuned", Driver: "macvlan", Configured: true}}
 	if !reflect.DeepEqual(got.Networks, wantNets) {
 		t.Errorf("networks\n %+v\nwant %+v", got.Networks, wantNets)
+	}
+	// A volume is the project's own unless it says otherwise (#205's review): what it says is what installing refuses.
+	wantVols := []engine.Volume{{Name: "data"}, {Name: "host", Configured: true}, {Name: "mine"}, {Name: "remote", Driver: "rclone"},
+		{Name: "signin", Joined: "homerslab-authentik_database"}, {Name: "theirs", Joined: "homerslab-other_library"}}
+	if !reflect.DeepEqual(got.Volumes, wantVols) {
+		t.Errorf("volumes\n %+v\nwant %+v", got.Volumes, wantVols)
 	}
 }
 

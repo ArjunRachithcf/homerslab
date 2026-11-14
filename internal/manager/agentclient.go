@@ -19,7 +19,7 @@ import (
 
 // agentClient asks the primary's agent, over its socket. Compose reads get longer than the agent's own deadline for
 // them, so the manager hears the agent's read-timeout instead of giving up first.
-type agentClient struct{ http, reads, installs, status *http.Client }
+type agentClient struct{ http, reads, installs, status, backups *http.Client }
 
 func newAgentClient(socket string) *agentClient {
 	t := &http.Transport{
@@ -37,6 +37,8 @@ func newAgentClient(socket string) *agentClient {
 		// the apps' status asks the engine and checks every app.
 		installs: &http.Client{Timeout: agent.InstallDeadline + 5*time.Second, Transport: t},
 		status:   &http.Client{Timeout: agent.AppsDeadline + 2*time.Second, Transport: t},
+		// A backup run takes as long as its data does (a first photo library: hours); the scheduler's context ends it.
+		backups: &http.Client{Transport: t},
 	}
 }
 

@@ -4,7 +4,9 @@ package store
 
 import (
 	"context"
+	"crypto/rand"
 	"database/sql"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
@@ -685,4 +687,17 @@ func (s *Store) Apps(ctx context.Context) ([]App, error) {
 		out = append(out, a)
 	}
 	return out, rows.Err()
+}
+
+// Snapshot is a consistent copy of the whole database, as one SQLite file (VACUUM INTO, next to it, then removed), for
+// the hourly backups (#22).
+func (s *Store) Snapshot(ctx context.Context) ([]byte, error) {
+	b := make([]byte, 8)
+	_, _ = rand.Read(b)
+	path := filepath.Join(s.dir, ".snapshot-"+hex.EncodeToString(b))
+	defer os.Remove(path)
+	if _, err := s.db.ExecContext(ctx, `VACUUM INTO ?`, path); err != nil {
+		return nil, err
+	}
+	return os.ReadFile(path)
 }
