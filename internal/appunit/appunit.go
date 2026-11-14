@@ -14,6 +14,7 @@ package appunit
 
 import (
 	"fmt"
+	"maps"
 	"net/netip"
 	"path"
 	"regexp"
@@ -21,6 +22,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/ArjunRachithcf/homerslab/internal/catalog"
 	"github.com/ArjunRachithcf/homerslab/internal/engine"
 	"github.com/ArjunRachithcf/homerslab/internal/storage"
 )
@@ -50,8 +52,34 @@ type App struct {
 	Secrets  []Secret
 	// Mounts are the storage locations the app's services see (#28).
 	Mounts []Mount
+	// OIDC is the OIDC client of an app that signs people in itself (#20), nil for any other.
+	OIDC *OIDC
 	// Dir is where the agent keeps the app's compose files and sealed credentials.
 	Dir string
+}
+
+// OIDC is how an app takes the OIDC client the household account made for it: its settings as environment variables
+// of the upstream's service, none of them secret, and the client's secret as a file only, at ClientSecretPath, which
+// SecretUID reads. The secret is a credential the agent sealed, like the app's own (ADR 0011).
+type OIDC struct {
+	Env       map[string]string `json:"env"`
+	SecretUID int               `json:"secretUid"`
+}
+
+// ClientSecret is the client's secret, as a secret of the app's (the name no manifest may give one of its own);
+// ClientSecretPath where its containers find it.
+const (
+	ClientSecret     = catalog.ClientSecret
+	ClientSecretPath = "/run/secrets/" + ClientSecret
+)
+
+// Handed are every secret the unit hands the app: its own, and its OIDC client's.
+func (a App) Handed() []Secret {
+	s := slices.Clone(a.Secrets)
+	if a.OIDC != nil {
+		s = append(s, Secret{Name: ClientSecret, UID: a.OIDC.SecretUID})
+	}
+	return sortedSecrets(s)
 }
 
 // Secret is one of the app's secrets, and the container user that reads it.
@@ -186,7 +214,8 @@ func Override(a App) []byte {
 	w("#   - the sign-in's name, at the sign-in listener's address: the one thing of this machine's the app may open;")
 	w("#   - its secrets, as files its unit copies from the credentials the agent sealed;")
 	w("#   - its storage locations, each a bind of the location's folder, read-only unless the plan says otherwise; a")
-	w("#     service that writes to one can't make a device.")
+	w("#     service that writes to one can't make a device;")
+	w("#   - for an app that signs people in itself, its OIDC client's settings, and the client's secret as a file.")
 	w("name: %s", q(Project(a.ID)))
 	w("services:")
 	services := slices.Clone(a.Project.Services)
@@ -230,6 +259,14 @@ func Override(a App) []byte {
 		if s.Name != a.Service {
 			continue
 		}
+		if a.OIDC != nil {
+			w("    environment:")
+			for _, k := range slices.Sorted(maps.Keys(a.OIDC.Env)) {
+				w("      %s: %s", q(k), q(a.OIDC.Env[k]))
+			}
+			w("    secrets:")
+			w("      - %s", q(ClientSecret))
+		}
 		w("    networks:")
 		if len(s.Networks) == 0 {
 			w("      \"default\": {}") // the one the service had: adding a network would otherwise replace it
@@ -251,9 +288,9 @@ func Override(a App) []byte {
 	w("      config:")
 	w("        - subnet: %s", q(a.Subnet.String()))
 	w("          gateway: %s", q(a.Subnet.Addr().Next().String()))
-	if len(a.Secrets) > 0 {
+	if secrets := a.Handed(); len(secrets) > 0 {
 		w("secrets:")
-		for _, s := range sortedSecrets(a.Secrets) {
+		for _, s := range secrets {
 			w("  %s:", q(s.Name))
 			w("    file: %s", q(path.Join(RunDir(a.ID), s.Name)))
 		}
@@ -328,7 +365,7 @@ func UnitFile(a App) []byte {
 // into the runtime directory for the one container user that reads it, at the app's own SELinux level.
 func (a App) secretProperties() []string {
 	var out, copies []string
-	secrets := sortedSecrets(a.Secrets)
+	secrets := a.Handed()
 	for _, s := range secrets {
 		out = append(out, fmt.Sprintf("LoadCredentialEncrypted=%s:%s", Credential(a.ID, s.Name), a.CredentialFile(s.Name)))
 	}

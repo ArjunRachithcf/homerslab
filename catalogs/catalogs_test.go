@@ -9,18 +9,19 @@ import (
 	"github.com/ArjunRachithcf/homerslab/internal/testenv"
 )
 
-// The official catalog starts with two apps: Immich, which takes the household account itself, and BentoPDF, which
-// the edge guards. Each has its icon, screenshots, a description and a category.
-func TestTheOfficialCatalogHasAGuardedAppAndANativeOne(t *testing.T) {
+// The official catalog starts with three apps: BentoPDF, which the edge guards; Mealie, which takes the household
+// account itself and is handed its client (#20); and Immich, which takes it too. Each has its icon, screenshots, a
+// description and a category.
+func TestTheOfficialCatalogHasAGuardedAppAndNativeOnes(t *testing.T) {
 	testenv.Isolate(t)
 	c, err := catalog.Load(catalogs.Official())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if c.ID != "official" || len(c.Apps) != 2 {
+	if c.ID != "official" || len(c.Apps) != 3 {
 		t.Fatalf("catalog %s with %d apps", c.ID, len(c.Apps))
 	}
-	want := map[string]catalog.SignInMethod{"immich": catalog.OIDC, "bentopdf": catalog.Guard}
+	want := map[string]catalog.SignInMethod{"immich": catalog.OIDC, "bentopdf": catalog.Guard, "mealie": catalog.OIDC}
 	for _, a := range c.Apps {
 		if m, ok := want[a.ID]; !ok || a.SignIn[0].Method != m {
 			t.Errorf("%s signs in with %v", a.ID, a.SignIn)

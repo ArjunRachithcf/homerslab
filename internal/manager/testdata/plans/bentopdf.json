@@ -1,5 +1,5 @@
 {
-  "id": "p-8c125cd2f9f38dfdd95c9c0ba3cd2663",
+  "id": "p-9b1b74c753d4a47f89eb02107cef67de",
   "kind": "install",
   "madeAt": "2026-11-10T13:30:00Z",
   "app": {
@@ -10,7 +10,7 @@
     "tier": "community",
     "catalog": "official",
     "publisher": "HomersLab",
-    "definition": "sha256:282b9a5ebce1dbc485c504b99e864c25e9147343bf63001957c38d84df437880"
+    "definition": "sha256:42169d3f8570c644d7c622d958fc76cb6372b3e9ba452670490bd7d7a458c344"
   },
   "name": {
     "host": "pdf.ferreira.family",
@@ -35,7 +35,8 @@
       "id": "authentik",
       "name": "Authentik"
     },
-    "creates": "guard"
+    "creates": "guard",
+    "wired": true
   },
   "backups": {
     "every": "hour",

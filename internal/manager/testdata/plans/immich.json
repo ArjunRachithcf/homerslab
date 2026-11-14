@@ -1,5 +1,5 @@
 {
-  "id": "p-496303b9a2cd6360fb400edaa36b8394",
+  "id": "p-9cb8f2b1e087bfa91f373c7956d5c21c",
   "kind": "install",
   "madeAt": "2026-11-10T13:30:00Z",
   "app": {
@@ -10,7 +10,7 @@
     "tier": "verified",
     "catalog": "official",
     "publisher": "HomersLab",
-    "definition": "sha256:7d2004363594f55b5681e4fe5dc7edd957c2070c4d4fc73df8257cf5d2bcb6b4"
+    "definition": "sha256:2916ab866a52db053816d298f2974e1fbdfdda276033a381697f684377f00919"
   },
   "name": {
     "host": "photos.ferreira.family",
@@ -35,7 +35,13 @@
       "id": "authentik",
       "name": "Authentik"
     },
-    "creates": "oidc-client"
+    "creates": "oidc-client",
+    "redirectUris": [
+      "https://photos.ferreira.family/auth/login",
+      "https://photos.ferreira.family/user-settings",
+      "app.immich:///oauth-callback"
+    ],
+    "wired": false
   },
   "backups": {
     "every": "hour",
