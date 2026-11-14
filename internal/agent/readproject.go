@@ -26,6 +26,10 @@ import (
 // nobody, whom many share (#183).
 const readUser = "homerslab-read"
 
+// ReadID is readUser's uid and gid, fixed by the packages (packaging/sysusers.d) outside the ranges app images commonly
+// run as (#190). The agent refuses any other: a uid sysusers handed out before, 999 say, could be an app's.
+const ReadID = 60602
+
 // passwdFile and groupFile are where the agent finds readUser and its group. Tests replace them.
 var passwdFile, groupFile = "/etc/passwd", "/etc/group"
 
@@ -38,8 +42,9 @@ func readIDs() (uid, gid uint32, err error) { return readIDsFrom(passwdFile, gro
 
 // readIDsFrom is readUser's uid and gid from passwd and group files, read directly rather than through NSS, where the
 // packages' sysusers.d writes them. The user must be the reads' own: it refuses a missing or broken entry, root's uid
-// or group, a uid another entry shares (nobody's, say), and a group that isn't readUser's own, with its gid, no
-// members and no other user's as its primary group (nogroup, or docker's, which would open the engine).
+// or group, ids other than the packages' fixed ReadID, a uid another entry shares (nobody's, say), and a group that
+// isn't readUser's own, with its gid, no members and no other user's as its primary group (nogroup, or docker's, which
+// would open the engine).
 func readIDsFrom(passwd, group string) (uid, gid uint32, err error) {
 	users, err := idEntries(passwd)
 	if err != nil {
@@ -57,17 +62,23 @@ func readIDsFrom(passwd, group string) (uid, gid uint32, err error) {
 	if err != nil {
 		return 0, 0, fmt.Errorf("%w: its group in %s, %w", errNoReadUser, group, err)
 	}
-	switch {
+	primary := func(e idEntry) (uint32, bool) {
+		id, err := strconv.ParseUint(e.fields[3], 10, 32)
+		return uint32(id), err == nil
+	}
+	switch gid, ok := primary(u); {
 	case u.id == 0 || g.id == 0:
 		return 0, 0, fmt.Errorf("%w: it is root's uid or group", errNoReadUser)
-	case u.fields[3] != g.fields[2]:
+	case !ok || gid != g.id:
 		return 0, 0, fmt.Errorf("%w: its group isn't %s", errNoReadUser, readUser)
+	case u.id != ReadID || g.id != ReadID:
+		return 0, 0, fmt.Errorf("%w: it is %d:%d, not the packages' fixed %d:%d", errNoReadUser, u.id, g.id, ReadID, ReadID)
 	case g.fields[3] != "":
 		return 0, 0, fmt.Errorf("%w: its group has members", errNoReadUser)
 	}
 	for _, o := range users {
-		if o.fields[0] != readUser && o.fields[3] == g.fields[2] {
-			return 0, 0, fmt.Errorf("%w: its group is %s's too", errNoReadUser, o.fields[0])
+		if gid, ok := primary(o); o.fields[0] != readUser && (!ok || gid == g.id) && !o.broken {
+			return 0, 0, fmt.Errorf("%w: its group is %s's too, or %s's is broken", errNoReadUser, o.fields[0], o.fields[0])
 		}
 	}
 	return u.id, g.id, nil

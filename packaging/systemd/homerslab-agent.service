@@ -24,6 +24,10 @@ RuntimeDirectoryMode=0755
 # The agent's state (agent.json: the firewall table's settings) and the manager's sealed credentials.
 StateDirectory=homerslab-agent
 StateDirectoryMode=0700
+# The exec-only copy of the agent that its compose reads run (agent.execOnly, #190): on disk, where one in /tmp would
+# be held in memory on many distributions. The reads' user may enter it, not list it; the copy is mode 0711.
+CacheDirectory=homerslab-agent
+CacheDirectoryMode=0711
 UMask=0077
 Restart=on-failure
 RestartSec=2s
@@ -44,7 +48,7 @@ RestartSec=2s
 # Since #18 it reads apps' compose files for planning, each in a child of its own (homerslab agent read-project), in
 # an empty folder of its private /tmp that the agent gives to homerslab-read (CAP_CHOWN), the reads' own user
 # (sysusers.d; without it the agent refuses to read); the child starts as that user, its IDs set in the fork
-# (CAP_SETUID, CAP_SETGID), from a copy of the agent in that private /tmp that it may run but not read (mode 0711), so
+# (CAP_SETUID, CAP_SETGID), from a copy of the agent in its CacheDirectory that it may run but not read (mode 0711), so
 # the kernel starts it not dumpable (#190; refused where fs.suid_dumpable is 1), and makes itself so again before it
 # reads (#183). Without CAP_KILL the agent can't
 # signal it, nor send it the parent-death signal, so the child ends itself (#138): at the deadline it was handed, and

@@ -127,3 +127,6 @@ func NoReadCommand(t *testing.T) (real func()) {
 	t.Cleanup(func() { readCommand = old })
 	return func() { readCommand = old }
 }
+
+// ExecOnly is the exec-only copy of src that a root agent's reads run.
+func ExecOnly(src string) (string, error) { return execOnly(src) }

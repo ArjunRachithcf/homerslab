@@ -537,35 +537,40 @@ func TestReadsRunAsAUserOnlyTheyUse(t *testing.T) {
 		}
 		return p
 	}
-	goodGroup := group("good", "homerslab-read:x:979:\n")
-	uid, gid, err := agent.ReadIDsFrom(passwd("good", "homerslab:x:981:981::/var/lib/homerslab:/usr/sbin/nologin\nhomerslab-read:x:980:979:HomersLab compose reads:/:/usr/sbin/nologin\n"), goodGroup)
-	if err != nil || uid != 980 || gid != 979 {
-		t.Errorf("homerslab-read = %d:%d %v, want 980:979", uid, gid, err)
+	goodGroup := group("good", "homerslab-read:x:60602:\n")
+	uid, gid, err := agent.ReadIDsFrom(passwd("good", "homerslab:x:981:981::/var/lib/homerslab:/usr/sbin/nologin\nhomerslab-read:x:60602:60602:HomersLab compose reads:/:/usr/sbin/nologin\n"), goodGroup)
+	if err != nil || uid != 60602 || gid != 60602 {
+		t.Errorf("homerslab-read = %d:%d %v, want 60602:60602", uid, gid, err)
 	}
 	for name, lines := range map[string]string{
 		"missing":          "homerslab:x:981:981::/var/lib/homerslab:/usr/sbin/nologin\n",
-		"root's uid":       "homerslab-read:x:0:979::/:/usr/sbin/nologin\n",
-		"root's group":     "homerslab-read:x:980:0::/:/usr/sbin/nologin\n",
-		"nobody's uid":     "homerslab-read:x:65534:979::/:/usr/sbin/nologin\n",
-		"a shared uid":     "homerslab-read:x:980:979::/:/usr/sbin/nologin\nother:x:980:980::/:/bin/sh\n",
-		"a broken entry":   "homerslab-read:x:nine:979::/:/usr/sbin/nologin\n",
-		"a prefix of ours": "homerslab-reader:x:980:979::/:/usr/sbin/nologin\n",
-		"another's group":  "homerslab-read:x:980:981::/:/usr/sbin/nologin\n",
-		"nogroup":          "homerslab-read:x:980:65534::/:/usr/sbin/nologin\n",
+		"root's uid":       "homerslab-read:x:0:60602::/:/usr/sbin/nologin\n",
+		"root's group":     "homerslab-read:x:60602:0::/:/usr/sbin/nologin\n",
+		"nobody's uid":     "homerslab-read:x:65534:60602::/:/usr/sbin/nologin\n",
+		"a shared uid":     "homerslab-read:x:60602:60602::/:/usr/sbin/nologin\nother:x:60602:60602::/:/bin/sh\n",
+		"a broken entry":   "homerslab-read:x:nine:60602::/:/usr/sbin/nologin\n",
+		"a prefix of ours": "homerslab-reader:x:60602:60602::/:/usr/sbin/nologin\n",
+		"another's group":  "homerslab-read:x:60602:981::/:/usr/sbin/nologin\n",
+		"nogroup":          "homerslab-read:x:60602:65534::/:/usr/sbin/nologin\n",
 		// The group is the reads' alone: no other user has it as its primary group, as none may as a member (#190).
-		"another's primary group is its": "homerslab-read:x:980:979::/:/usr/sbin/nologin\nother:x:990:979::/:/bin/sh\n",
+		"another's primary group is its": "homerslab-read:x:60602:60602::/:/usr/sbin/nologin\nother:x:990:60602::/:/bin/sh\n",
+		"the same, written 060602":       "homerslab-read:x:60602:60602::/:/usr/sbin/nologin\nother:x:990:060602::/:/bin/sh\n",
 	} {
 		if uid, gid, err := agent.ReadIDsFrom(passwd(name, lines), goodGroup); err == nil {
 			t.Errorf("%s: homerslab-read = %d:%d, want it refused", name, uid, gid)
 		}
 	}
+	// Only the packages' fixed ids (#190): sysusers keeps the ids it handed out before, and those may be an app image's.
+	if uid, gid, err := agent.ReadIDsFrom(passwd("old", "homerslab-read:x:980:979::/:/usr/sbin/nologin\n"), group("old", "homerslab-read:x:979:\n")); err == nil {
+		t.Errorf("ids from before #190: homerslab-read = %d:%d, want it refused", uid, gid)
+	}
 	// Its group is its own too: named for it, and no other group has its gid (docker's, say, would open the engine).
-	good := passwd("good", "homerslab-read:x:980:979::/:/usr/sbin/nologin\n")
+	good := passwd("good", "homerslab-read:x:60602:60602::/:/usr/sbin/nologin\n")
 	for name, lines := range map[string]string{
 		"no group":       "",
-		"another name":   "docker:x:979:\n",
-		"a shared gid":   "homerslab-read:x:979:\ndocker:x:979:\n",
-		"members":        "homerslab-read:x:979:arjun\n",
+		"another name":   "docker:x:60602:\n",
+		"a shared gid":   "homerslab-read:x:60602:\ndocker:x:60602:\n",
+		"members":        "homerslab-read:x:60602:arjun\n",
 		"a broken group": "homerslab-read:x:nine:\n",
 	} {
 		if uid, gid, err := agent.ReadIDsFrom(good, group(name, lines)); err == nil {
@@ -628,6 +633,72 @@ func TestAReadThatStartsNoChildGivesItsPlaceBack(t *testing.T) {
 	real()
 	if resp, out := post(t, sock, "/v1/projects/read", body); resp.StatusCode != http.StatusOK {
 		t.Errorf("after reads that started no child: %d %s, want it read", resp.StatusCode, out)
+	}
+}
+
+// The copy a root agent's reads run is root's own (the agent's user's), mode 0711, in a folder no one else may write:
+// systemd's CacheDirectory where the unit gives one, a private temporary folder otherwise. It is made again when it
+// is gone or changed (a cache may be emptied, a temporary folder cleaned), and a folder others may write is refused.
+func TestAReadsExecOnlyCopyStaysExecOnly(t *testing.T) {
+	testenv.Isolate(t)
+	exe := agenttest.Executable(t)
+	check := func(what, p string) {
+		t.Helper()
+		fi, err := os.Lstat(p)
+		if err != nil || !fi.Mode().IsRegular() || fi.Mode().Perm() != 0o711 {
+			t.Errorf("%s: %s %v %v, want a file of mode 0711", what, p, fi, err)
+			return
+		}
+		if di, err := os.Stat(filepath.Dir(p)); err != nil || di.Mode().Perm()&0o022 != 0 {
+			t.Errorf("%s: its folder %v %v, want one only its owner may write", what, di, err)
+		}
+	}
+	for _, cache := range []string{"", t.TempDir()} {
+		if cache != "" {
+			if err := os.Chmod(cache, 0o711); err != nil {
+				t.Fatal(err)
+			}
+		}
+		t.Setenv("CACHE_DIRECTORY", cache)
+		p, err := agent.ExecOnly(exe)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if cache != "" && filepath.Dir(p) != cache {
+			t.Errorf("the copy is %s, want it in the unit's cache %s", p, cache)
+		}
+		check("made", p)
+		if err := os.Remove(p); err != nil {
+			t.Fatal(err)
+		}
+		if p, err = agent.ExecOnly(exe); err != nil {
+			t.Fatal(err)
+		}
+		check("gone, then made again", p)
+		if err := os.Chmod(p, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if p, err = agent.ExecOnly(exe); err != nil {
+			t.Fatal(err)
+		}
+		check("readable, then made again", p)
+		if err := os.WriteFile(p, []byte("#!/bin/sh\n"), 0o711); err != nil {
+			t.Fatal(err)
+		}
+		if p, err = agent.ExecOnly(exe); err != nil {
+			t.Fatal(err)
+		}
+		if fi, err := os.Stat(p); err != nil || fi.Size() < 1<<20 {
+			t.Errorf("changed, then: %v %v, want the program copied again", fi, err)
+		}
+	}
+	open := t.TempDir()
+	if err := os.Chmod(open, 0o777); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CACHE_DIRECTORY", open)
+	if p, err := agent.ExecOnly(exe); err == nil {
+		t.Errorf("a cache others may write: the copy %s, want it refused", p)
 	}
 }
 

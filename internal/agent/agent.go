@@ -733,57 +733,115 @@ func readArgv(exe string, cred *syscall.Credential) ([]string, error) {
 // execOnlies are the exec-only copies the agent has made, by the program they copy.
 var execOnlies = struct {
 	sync.Mutex
-	m map[string]string
-}{m: map[string]string{}}
+	m map[string]execCopy
+}{m: map[string]execCopy{}}
 
-// execOnly is a copy of the program src that a read's child may run but not read: root's, mode 0711, in a folder of
-// root's with the same mode, in the agent's private /tmp. The kernel makes a process that runs a program it can't
-// read not dumpable from the exec on (as it does for set-uid programs), and the child's IDs are set in the fork, which
-// makes it not dumpable until the exec too. So a read's child is never dumpable, and no process of its user (one an
-// earlier read left behind, stopped, even) can attach to it in the moment before it makes itself so, whatever Yama's
-// ptrace_scope (#190). Made once per program; the unit's private /tmp goes with it.
+// execCopy is one exec-only copy: where it is, and its size.
+type execCopy struct {
+	path string
+	size int64
+}
+
+// execOnly is a copy of the program src that a read's child may run but not read: the agent's own (root's), mode 0711,
+// in a folder of its own that no one else may write: the unit's CacheDirectory (on disk, where a copy in /tmp would
+// be held in memory on many distributions), or a temporary folder of mode 0711 where there is none. The kernel makes a
+// process that runs a program it can't read not dumpable from the exec on (as it does for set-uid programs), and the
+// child's IDs are set in the fork, which makes it not dumpable until the exec too. So a read's child is never
+// dumpable, and no process of its user (one an earlier read left behind, stopped, even) can attach to it in the moment
+// before it makes itself so, whatever Yama's ptrace_scope (#190).
+//
+// It is made once per program, and again when it is gone or changed: a cache may be emptied at any time, a temporary
+// folder cleaned.
 func execOnly(src string) (string, error) {
 	execOnlies.Lock()
 	defer execOnlies.Unlock()
-	if p, ok := execOnlies.m[src]; ok {
-		return p, nil
+	key := src + "\x00" + os.Getenv("CACHE_DIRECTORY")
+	c, ok := execOnlies.m[key]
+	if ok && stillExecOnly(c) {
+		return c.path, nil
 	}
-	dir, err := os.MkdirTemp("", "homerslab-reader-")
+	dir, err := execOnlyDir(c.path)
 	if err != nil {
 		return "", err
 	}
-	p := filepath.Join(dir, "homerslab")
-	if err := copyProgram(src, p); err != nil {
-		os.RemoveAll(dir)
+	if c, err = copyProgram(src, dir); err != nil {
 		return "", err
 	}
-	if err := os.Chmod(p, 0o711); err != nil {
-		os.RemoveAll(dir)
+	execOnlies.m[key] = c
+	return c.path, nil
+}
+
+// execOnlyDir is the folder for a copy that was at was (if anywhere): the unit's CacheDirectory, if it is the agent's
+// and no one else may write it, or a temporary folder of mode 0711, the one it was in if it is still so.
+func execOnlyDir(was string) (string, error) {
+	if dir := os.Getenv("CACHE_DIRECTORY"); dir != "" {
+		var st syscall.Stat_t
+		if err := syscall.Stat(dir, &st); err != nil {
+			return "", err
+		}
+		if int(st.Uid) != os.Geteuid() || st.Mode&0o022 != 0 || st.Mode&syscall.S_IFMT != syscall.S_IFDIR {
+			return "", fmt.Errorf("%s isn't a folder only the agent may write", dir)
+		}
+		return dir, nil
+	}
+	if was != "" {
+		var st syscall.Stat_t
+		if dir := filepath.Dir(was); syscall.Lstat(dir, &st) == nil && int(st.Uid) == os.Geteuid() && st.Mode&0o7777 == 0o711 && st.Mode&syscall.S_IFMT == syscall.S_IFDIR {
+			return dir, nil
+		}
+	}
+	dir, err := os.MkdirTemp("", "homerslab-reader-")
+	if err != nil {
 		return "", err
 	}
 	if err := os.Chmod(dir, 0o711); err != nil {
 		os.RemoveAll(dir)
 		return "", err
 	}
-	execOnlies.m[src] = p
-	return p, nil
+	return dir, nil
 }
 
-func copyProgram(src, dst string) error {
+// stillExecOnly says whether c is as the agent made it: a file of its own, mode 0711, of its size.
+func stillExecOnly(c execCopy) bool {
+	var st syscall.Stat_t
+	if err := syscall.Lstat(c.path, &st); err != nil {
+		return false
+	}
+	return st.Mode&syscall.S_IFMT == syscall.S_IFREG && st.Mode&0o7777 == 0o711 && int(st.Uid) == os.Geteuid() && st.Size == c.size
+}
+
+// copyProgram copies src into dir as read-project, mode 0711: written to a new file, then renamed over the old one, so
+// that a child running the old one keeps it, and no file being written is ever run (which fails while it is open).
+func copyProgram(src, dir string) (execCopy, error) {
 	in, err := os.Open(src)
 	if err != nil {
-		return err
+		return execCopy{}, err
 	}
 	defer in.Close()
-	out, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o700)
+	// No fork while the copy is open for writing: a child forked meanwhile would hold it until its own exec, and the
+	// copy's exec would fail (ETXTBSY) while it does. Forks wait for the fork lock's readers.
+	syscall.ForkLock.RLock()
+	defer syscall.ForkLock.RUnlock()
+	out, err := os.CreateTemp(dir, ".read-project-")
 	if err != nil {
-		return err
+		return execCopy{}, err
 	}
-	if _, err := io.Copy(out, in); err != nil {
-		out.Close()
-		return err
+	defer os.Remove(out.Name()) // once renamed, nothing
+	n, err := io.Copy(out, in)
+	if err == nil {
+		err = out.Chmod(0o711)
 	}
-	return out.Close() // before any exec of it: a file open for writing can't be run
+	if cerr := out.Close(); err == nil {
+		err = cerr
+	}
+	p := filepath.Join(dir, "read-project")
+	if err == nil {
+		err = os.Rename(out.Name(), p)
+	}
+	if err != nil {
+		return execCopy{}, err
+	}
+	return execCopy{path: p, size: n}, nil
 }
 
 // suidDumpableFile is fs.suid_dumpable. Tests replace it.
@@ -820,7 +878,9 @@ func startChild(cmd *exec.Cmd) error {
 	if err := os.WriteFile(file, []byte("1000"), 0); err != nil {
 		return fmt.Errorf("oom_score_adj: %w", err)
 	}
-	defer os.WriteFile(file, was, 0) //nolint:errcheck // never lower than it was, which needs no capability
+	// Back to what it was, which can't fail for want of CAP_SYS_RESOURCE: the kernel refuses only a value below the
+	// least one a process with that capability set, and the agent's was never below it.
+	defer os.WriteFile(file, was, 0) //nolint:errcheck
 	return cmd.Start()
 }
 

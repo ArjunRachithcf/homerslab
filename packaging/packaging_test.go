@@ -92,7 +92,9 @@ func TestTheManagerRunsUnprivilegedAndTheAgentAsRoot(t *testing.T) {
 		// It parses compose files as root: a file it is sent can't take the machine with it.
 		"MemoryMax": "512M", "CPUQuota": "100%",
 		// A read's child killed for memory is the child's end, not the agent's.
-		"OOMPolicy": "continue"} {
+		"OOMPolicy": "continue",
+		// The exec-only copy of the agent its reads run, which their user may enter but not list (#190).
+		"CacheDirectory": "homerslab-agent", "CacheDirectoryMode": "0711"} {
 		if got := agent[k]; len(got) != 1 || got[0] != want {
 			t.Errorf("the agent's %s = %v, want %s", k, got, want)
 		}
@@ -280,5 +282,9 @@ func TestThePackagesUsersHaveFixedIDsOutsideAppImages(t *testing.T) {
 			t.Errorf("%s and %s share the id %s", name, other, gid)
 		}
 		seen[gid] = name
+	}
+	// The agent refuses a read user with any other ids than these.
+	if want := strconv.Itoa(agent.ReadID); groups["homerslab-read"] != want {
+		t.Errorf("homerslab-read's gid is %q, the agent's ReadID %s", groups["homerslab-read"], want)
 	}
 }
