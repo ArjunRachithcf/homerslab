@@ -1,11 +1,17 @@
-// Package storage is what HomersLab takes of a storage location (#28; story 48; ADR 0003): a local folder, which apps
-// may use, read-only by default for media. Network shares reached over the mesh come with #28's second part. No free
-// text of an admin's or a catalog's reaches a file the agent writes: a location's id, a folder's path and an app's path
-// in its container are each checked against a pattern first.
+// Package storage is what HomersLab takes of a storage location (#28; story 48; ADR 0003): a local folder, or a network
+// share reached over the mesh, which apps may use, read-only by default for media. No free text of an admin's or a
+// catalog's reaches a file the agent writes: a location's id, a folder's path, a share's server, name and export, and an
+// app's path in its container are each checked against a pattern first.
+//
+// A share is mounted by a unit of its own with the standard mount command (ADR 0014), its credentials a systemd
+// credential the agent sealed (ADR 0011), which systemd decrypts for the mount alone: never in an environment, a log,
+// an answer or a file the agent writes in the clear.
 package storage
 
 import (
 	"errors"
+	"fmt"
+	"net/netip"
 	"os"
 	"path"
 	"path/filepath"
@@ -17,6 +23,14 @@ import (
 
 // ID is a storage location's id, as a unit, a credential and a folder are named after it.
 var ID = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,30}[a-z0-9])?$`)
+
+// Protocol is a network share's: SMB or NFS.
+type Protocol string
+
+const (
+	SMB Protocol = "smb"
+	NFS Protocol = "nfs"
+)
 
 // The ways a folder is refused.
 var (
@@ -105,18 +119,136 @@ func ReadableLabel(label string) bool {
 	return len(f) == 4 && (f[2] == "container_file_t" || f[2] == "container_ro_file_t") && f[3] == "s0"
 }
 
-// targetSegment is one name of an app's path in its container.
-var targetSegment = regexp.MustCompile(`^[A-Za-z0-9_-][A-Za-z0-9._-]{0,63}$`)
+// CheckServer is a share's server: an IPv4 address of a host, never a name, which could resolve elsewhere later.
+func CheckServer(s string) (netip.Addr, error) {
+	a, err := netip.ParseAddr(s)
+	if err != nil || !a.Is4() || a.IsLoopback() || a.IsUnspecified() || a.IsMulticast() || a.IsLinkLocalUnicast() ||
+		a == netip.AddrFrom4([4]byte{255, 255, 255, 255}) {
+		return netip.Addr{}, errors.New("bad-server")
+	}
+	return a, nil
+}
 
-// ValidTarget says whether p is where a service sees a location: an absolute path of plain names in its container.
-func ValidTarget(p string) bool {
-	if !strings.HasPrefix(p, "/") || p == "/" || len(p) > 256 {
+// ShareName is an SMB share's name; Username the account an SMB share is opened with.
+var (
+	ShareName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$`)
+	Username  = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._@-]{0,63}$`)
+)
+
+// exportSegment is one name of an NFS export's path, or of an app's path in its container.
+var exportSegment = regexp.MustCompile(`^[A-Za-z0-9_-][A-Za-z0-9._-]{0,63}$`)
+
+func plainPath(p string, allowRoot bool) bool {
+	if p == "/" {
+		return allowRoot
+	}
+	if !strings.HasPrefix(p, "/") || len(p) > 256 {
 		return false
 	}
 	for _, n := range strings.Split(p[1:], "/") {
-		if n == "." || n == ".." || !targetSegment.MatchString(n) {
+		if n == "." || n == ".." || !exportSegment.MatchString(n) {
 			return false
 		}
 	}
 	return true
+}
+
+// ValidExport says whether p is an NFS export's path: / or a path of plain names.
+func ValidExport(p string) bool { return plainPath(p, true) }
+
+// ValidTarget says whether p is where a service sees a location: an absolute path of plain names in its container.
+func ValidTarget(p string) bool { return plainPath(p, false) }
+
+// ValidPassword says whether p is a password a share's credential file can hold: one line of printable text.
+func ValidPassword(p string) bool { return p != "" && len(p) <= 256 && text.OneLine(p) }
+
+// Share is a network share as the agent mounts it.
+type Share struct {
+	ID       string
+	Protocol Protocol
+	Server   netip.Addr
+	// Share is an SMB share's name, or an NFS export's path.
+	Share string
+	// Credential is where the agent keeps the sealed credential an SMB share is opened with.
+	Credential string
+	// SELinux says whether the machine has SELinux: the mount then labels the share's files for containers, at no
+	// level, so every app given the location reads it at its own (no file on the share is relabelled).
+	SELinux bool
+}
+
+// Valid says whether every field of the share is one its unit may name.
+func (s Share) Valid() bool {
+	switch {
+	case !ID.MatchString(s.ID) || !s.Server.Is4() || strings.ContainsAny(s.Credential, " \t\n\r%,"):
+		return false
+	case s.Protocol == SMB:
+		return ShareName.MatchString(s.Share) && strings.HasPrefix(s.Credential, "/")
+	case s.Protocol == NFS:
+		return ValidExport(s.Share) && s.Credential == ""
+	}
+	return false
+}
+
+// Unit is a share's unit's name; Credential its credential's name; MountPoint where it is mounted, which apps' compose
+// files bind.
+func Unit(id string) string       { return "homerslab-storage-" + id + ".service" }
+func Credential(id string) string { return "storage-" + id }
+func MountPoint(id string) string { return "/var/lib/homerslab-storage/" + id }
+
+// CredentialFile is the SMB credential file's body, as mount.cifs reads it.
+func CredentialFile(user, password string) []byte {
+	return []byte("username=" + user + "\npassword=" + password + "\n")
+}
+
+// ShareUnit is a share's unit: the standard mount command, run once, at boot and when the agent restarts it, until the
+// mesh lets it reach the share. The firewall table lets the machine reach the share's server through the mesh only.
+func ShareUnit(s Share) []byte {
+	var b strings.Builder
+	w := func(f string, args ...any) { fmt.Fprintf(&b, f+"\n", args...) }
+	id := s.ID
+	if !s.Valid() {
+		s, id = Share{Protocol: "refused"}, "unknown"
+	}
+	at := MountPoint(id)
+	opts := "nosuid,nodev,noexec"
+	if s.SELinux {
+		opts += ",context=system_u:object_r:container_file_t:s0"
+	}
+	// No free text: the location's id, the server's address, and the share's name or export, each checked.
+	w("# Written by HomersLab's agent. Never edit by hand.")
+	w("# Storage location %s: a network share on the mesh, mounted by the standard mount command (ADR 0014). The firewall", id)
+	w("# table lets this machine reach its server through the mesh only, never the LAN.")
+	if s.Protocol == SMB {
+		w("# Its credentials are a systemd credential the agent sealed (ADR 0011), decrypted for the mount alone.")
+	}
+	w("[Unit]")
+	w("Description=HomersLab storage location %s", id)
+	w("Documentation=https://github.com/ArjunRachithcf/homerslab")
+	w("After=network-online.target netbird.service homerslab-agent.service")
+	w("Wants=network-online.target")
+	w("")
+	w("[Service]")
+	w("Type=oneshot")
+	w("RemainAfterExit=yes")
+	w("StateDirectory=%s", strings.TrimPrefix(at, "/var/lib/"))
+	w("StateDirectoryMode=0700")
+	switch s.Protocol {
+	case SMB:
+		w("LoadCredentialEncrypted=%s:%s", Credential(id), s.Credential)
+		w("ExecStart=/usr/bin/mount -t cifs -o credentials=%%d/%s,%s //%s/%s %s", Credential(id), opts, s.Server, s.Share, at)
+	case NFS:
+		w("ExecStart=/usr/bin/mount -t nfs -o %s %s:%s %s", opts, s.Server, s.Share, at)
+	default:
+		w("ExecStart=/usr/bin/false") // never a share the agent didn't check
+	}
+	w("# Lazily: a share whose server is gone never holds up a shutdown.")
+	w("ExecStop=/usr/bin/umount -l %s", at)
+	w("TimeoutStartSec=60s")
+	w("# Until the mesh is up at boot, or the share answers again.")
+	w("Restart=on-failure")
+	w("RestartSec=30s")
+	w("")
+	w("[Install]")
+	w("WantedBy=multi-user.target")
+	return []byte(b.String())
 }

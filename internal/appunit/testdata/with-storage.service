@@ -8,14 +8,16 @@
 Description=HomersLab app everything
 Documentation=https://github.com/ArjunRachithcf/homerslab
 Requires=docker.service
-After=docker.service network-online.target homerslab-agent.service
-Wants=network-online.target
+After=docker.service network-online.target homerslab-agent.service homerslab-storage-uploads.service
+Wants=network-online.target homerslab-storage-uploads.service
+PartOf=homerslab-storage-uploads.service
 
 [Service]
 Type=exec
 RuntimeDirectory=homerslab-app-everything
 RuntimeDirectoryMode=0700
 UMask=0077
+ExecStartPre=/usr/bin/mountpoint -q /var/lib/homerslab-storage/uploads
 LoadCredentialEncrypted=everything.db-password:/var/lib/homerslab-agent/apps/everything/credentials/db-password.cred
 LoadCredentialEncrypted=everything.secret-key:/var/lib/homerslab-agent/apps/everything/credentials/secret-key.cred
 ExecStartPre=/usr/bin/install -m 0400 -o 999 -g 999 %d/everything.db-password /run/homerslab-app-everything/db-password

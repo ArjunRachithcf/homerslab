@@ -1,0 +1,26 @@
+# Written by HomersLab's agent. Never edit by hand.
+# Storage location films: a network share on the mesh, mounted by the standard mount command (ADR 0014). The firewall
+# table lets this machine reach its server through the mesh only, never the LAN.
+# Its credentials are a systemd credential the agent sealed (ADR 0011), decrypted for the mount alone.
+[Unit]
+Description=HomersLab storage location films
+Documentation=https://github.com/ArjunRachithcf/homerslab
+After=network-online.target netbird.service homerslab-agent.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+StateDirectory=homerslab-storage/films
+StateDirectoryMode=0700
+LoadCredentialEncrypted=storage-films:/var/lib/homerslab-agent/storage/films.cred
+ExecStart=/usr/bin/mount -t cifs -o credentials=%d/storage-films,nosuid,nodev,noexec,context=system_u:object_r:container_file_t:s0 //100.64.1.2/media /var/lib/homerslab-storage/films
+# Lazily: a share whose server is gone never holds up a shutdown.
+ExecStop=/usr/bin/umount -l /var/lib/homerslab-storage/films
+TimeoutStartSec=60s
+# Until the mesh is up at boot, or the share answers again.
+Restart=on-failure
+RestartSec=30s
+
+[Install]
+WantedBy=multi-user.target

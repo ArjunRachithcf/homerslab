@@ -1,14 +1,20 @@
 package storage_test
 
 import (
+	"bytes"
 	"errors"
+	"flag"
+	"net/netip"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/ArjunRachithcf/homerslab/internal/storage"
 	"github.com/ArjunRachithcf/homerslab/internal/testenv"
 )
+
+var update = flag.Bool("update", false, "write the golden renders anew")
 
 // A local folder is taken only where it is a folder of its own, reached without a symlink, and holds nothing of the
 // machine's or HomersLab's: not /, nor /etc, /proc, /sys, /dev, the engine's socket, HomersLab's state, nor a folder
@@ -106,5 +112,96 @@ func TestOnlyAFolderLabelledForContainersAtNoLevelIsReadByEveryApp(t *testing.T)
 		if storage.ReadableLabel(label) != ok {
 			t.Errorf("%q: %v", label, !ok)
 		}
+	}
+}
+
+// A share's server is an IPv4 address, never a name (which could resolve elsewhere later), and never one no share can
+// be at; its name, its export, the user and the password are what a mount takes, and nothing that ends a line or an
+// option.
+func TestAShareIsTakenOnlyAsPlainValues(t *testing.T) {
+	testenv.Isolate(t)
+	for _, ok := range []string{"100.64.1.2", "100.92.17.5"} {
+		if _, err := storage.CheckServer(ok); err != nil {
+			t.Errorf("%s refused: %v", ok, err)
+		}
+	}
+	for _, bad := range []string{"", "nas.local", "127.0.0.1", "0.0.0.0", "224.0.0.1", "169.254.1.1", "255.255.255.255", "fd7a:115c:a1e0::1", "100.64.1.2:445"} {
+		if _, err := storage.CheckServer(bad); err == nil {
+			t.Errorf("server %q taken", bad)
+		}
+	}
+	for _, ok := range []string{"media", "Films_2", "family.photos"} {
+		if !storage.ShareName.MatchString(ok) {
+			t.Errorf("share %q refused", ok)
+		}
+	}
+	for _, bad := range []string{"", "C$", "a/b", "a,b", "a b", "-media", strings.Repeat("a", 81)} {
+		if storage.ShareName.MatchString(bad) {
+			t.Errorf("share %q taken", bad)
+		}
+	}
+	for _, ok := range []string{"/", "/export/media", "/volume1/Films"} {
+		if !storage.ValidExport(ok) {
+			t.Errorf("export %q refused", ok)
+		}
+	}
+	for _, bad := range []string{"", "export", "/export/../etc", "/a,b", "/a b", "/a/"} {
+		if storage.ValidExport(bad) {
+			t.Errorf("export %q taken", bad)
+		}
+	}
+	for _, bad := range []string{"", "a b", "a,b", "a\nb", "a=b", strings.Repeat("u", 65)} {
+		if storage.Username.MatchString(bad) {
+			t.Errorf("user %q taken", bad)
+		}
+	}
+	if !storage.Username.MatchString("rui.ferreira") || !storage.ValidPassword("correct horse, battery=staple") {
+		t.Error("a plain user or password refused")
+	}
+	for _, bad := range []string{"", "a\nusername=root", "a\rb", "a\x00b", strings.Repeat("p", 257)} {
+		if storage.ValidPassword(bad) {
+			t.Errorf("password %q taken", bad)
+		}
+	}
+}
+
+// Golden renders (spec: Testing Decisions): a share's unit, byte for byte. A deliberate change runs
+// `go test ./internal/storage -update` and explains the diff.
+func TestAShareIsMountedByItsOwnUnitAsItsGoldenRender(t *testing.T) {
+	testenv.Isolate(t)
+	shares := map[string]storage.Share{
+		"smb.service": {ID: "films", Protocol: storage.SMB, Server: netip.MustParseAddr("100.64.1.2"), Share: "media",
+			Credential: "/var/lib/homerslab-agent/storage/films.cred", SELinux: true},
+		"nfs.service": {ID: "music", Protocol: storage.NFS, Server: netip.MustParseAddr("100.64.1.3"), Share: "/volume1/Music"},
+	}
+	for file, s := range shares {
+		t.Run(file, func(t *testing.T) {
+			got := storage.ShareUnit(s)
+			path := filepath.Join("testdata", file)
+			if *update {
+				if err := os.WriteFile(path, got, 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			want, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatalf("%v (run with -update to write it)", err)
+			}
+			if !bytes.Equal(got, want) {
+				t.Errorf("the render differs from %s:\n%s", path, got)
+			}
+		})
+	}
+	// A share no check passed mounts nothing.
+	bad := shares["smb.service"]
+	bad.Share = "media /etc"
+	if u := string(storage.ShareUnit(bad)); strings.Contains(u, "/usr/bin/mount") || !strings.Contains(u, "ExecStart=/usr/bin/false\n") {
+		t.Errorf("an unchecked share's unit:\n%s", u)
+	}
+	// The credentials never reach the unit: it names the sealed file, which systemd decrypts for the mount only.
+	u := string(storage.ShareUnit(shares["smb.service"]))
+	if !strings.Contains(u, "LoadCredentialEncrypted=storage-films:/var/lib/homerslab-agent/storage/films.cred\n") ||
+		!strings.Contains(u, "credentials=%d/storage-films,") {
+		t.Errorf("the unit doesn't mount with the sealed credential:\n%s", u)
 	}
 }

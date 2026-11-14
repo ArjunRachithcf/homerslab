@@ -48,7 +48,7 @@ services:
       - "auth.example.test=172.31.255.241"
     volumes:
       - type: "bind"
-        source: "/srv/uploads"
+        source: "/var/lib/homerslab-storage/uploads"
         target: "/uploads"
         read_only: false
         bind:

@@ -41,12 +41,12 @@ func withSecrets() appunit.App {
 		Secrets: []appunit.Secret{{Name: "secret-key", UID: 1000}, {Name: "db-password", UID: 999}}}
 }
 
-// withStorage is an app given two storage locations (#28): a folder it only reads, and one it writes.
+// withStorage is an app given two storage locations (#28): a folder it only reads, and a share on the mesh it writes.
 func withStorage() appunit.App {
 	a := withSecrets()
 	a.Mounts = []appunit.Mount{
 		{Location: "films", Service: "web", Source: "/srv/media/Films", Target: "/media", ReadOnly: true},
-		{Location: "uploads", Service: "worker", Source: "/srv/uploads", Target: "/uploads"},
+		{Location: "uploads", Service: "worker", Source: "/var/lib/homerslab-storage/uploads", Target: "/uploads", Unit: "homerslab-storage-uploads.service"},
 	}
 	return a
 }
@@ -259,16 +259,17 @@ func TestEveryContainerResolvesTheSignInToItsListener(t *testing.T) {
 	}
 }
 
-// A storage location reaches only the service that asked for it, as a bind of exactly its folder, read-only where the
-// plan says so, and never made where it isn't there (#28).
+// A storage location reaches only the service that asked for it, as a bind of exactly its folder (or its share's mount),
+// read-only where the plan says so, and never made where it isn't there (#28). The unit waits for a share's own unit, and
+// starts the app only once the share is mounted: an app never writes into the empty folder under a share.
 func TestAStorageLocationIsABindOfItsFolderReadOnlyWhereThePlanSays(t *testing.T) {
 	testenv.Isolate(t)
 	a := withStorage()
-	o := string(appunit.Override(a))
+	o, u := string(appunit.Override(a)), string(appunit.UnitFile(a))
 	for _, want := range []string{
 		"  \"web\":\n", "    volumes:\n      - type: \"bind\"\n        source: \"/srv/media/Films\"\n        target: \"/media\"\n        read_only: true\n" +
 			"        bind:\n          create_host_path: false\n",
-		"        source: \"/srv/uploads\"\n        target: \"/uploads\"\n        read_only: false\n",
+		"        source: \"/var/lib/homerslab-storage/uploads\"\n        target: \"/uploads\"\n        read_only: false\n",
 	} {
 		if !strings.Contains(o, want) {
 			t.Errorf("the agent's compose file lacks %q:\n%s", want, o)
@@ -277,13 +278,22 @@ func TestAStorageLocationIsABindOfItsFolderReadOnlyWhereThePlanSays(t *testing.T
 	if db := o[strings.Index(o, "  \"db\":\n"):strings.Index(o, "  \"web\":\n")]; strings.Contains(db, "volumes") {
 		t.Errorf("a service that didn't ask sees a location:\n%s", db)
 	}
+	for _, want := range []string{"\nWants=network-online.target homerslab-storage-uploads.service\n", "\nPartOf=homerslab-storage-uploads.service\n", "homerslab-agent.service homerslab-storage-uploads.service\n",
+		"\nExecStartPre=/usr/bin/mountpoint -q /var/lib/homerslab-storage/uploads\n"} {
+		if !strings.Contains(u, want) {
+			t.Errorf("the unit lacks %q:\n%s", want, u)
+		}
+	}
+	if strings.Contains(u, "mountpoint -q /srv") {
+		t.Error("a folder is waited on as a share")
+	}
 	// A source or a target no check passed is never written (compose would read ${...} as a variable), and the app
 	// doesn't start without it: the engine refuses a bind of a folder that is never there.
 	for _, m := range []appunit.Mount{
 		{Location: "films", Service: "web", Source: "/srv/${HOME}", Target: "/media", ReadOnly: true},
 		{Location: "films", Service: "web", Source: "/etc", Target: "/media", ReadOnly: true},
 		{Location: "films", Service: "web", Source: "/srv/media", Target: "/media/../etc", ReadOnly: true},
-		{Location: "x", Service: "web", Source: "/var/lib/homerslab-storage/y", Target: "/media"},
+		{Location: "x", Service: "web", Source: "/var/lib/homerslab-storage/y", Target: "/media", Unit: "homerslab-storage-y.service"},
 		{Location: "../x", Service: "web", Source: "/srv/media", Target: "/media"},
 	} {
 		b := withSecrets()

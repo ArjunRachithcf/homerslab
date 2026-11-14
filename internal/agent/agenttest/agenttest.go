@@ -180,6 +180,19 @@ type Host struct {
 	sick       map[string]string // a project's health, when not healthy
 	answers    map[string]string // a health probe's answers, by upstream; healthy when not set
 	logs       map[string][]compose.LogLine
+	// routes are the interfaces the kernel routes addresses through, when a test says (Route); otherwise the mesh's
+	// range is wt0's, and everything else the LAN's.
+	routes map[string]string
+}
+
+// Route makes the kernel route an address through an interface (`ip -j route get`).
+func (h *Host) Route(addr, dev string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.routes == nil {
+		h.routes = map[string]string{}
+	}
+	h.routes[addr] = dev
 }
 
 // Project makes the engine run a project, as given.
@@ -518,6 +531,15 @@ func (h *Host) Run(ctx context.Context, c host.Cmd) ([]byte, error) {
 		return nil, nil
 	case line == "netbird status --json":
 		return fmt.Appendf(nil, `{"management":{"connected":true},"netbirdIp":"%s/16","fqdn":"study-pc.netbird.selfhosted"}`, h.NetbirdIP), nil
+	case c.Name == "ip" && len(c.Args) == 4 && line == "ip -j route get "+c.Args[3]:
+		dev := h.routes[c.Args[3]]
+		if a, err := netip.ParseAddr(c.Args[3]); dev == "" && err == nil {
+			dev = "enp5s0"
+			if netip.MustParsePrefix("100.64.0.0/10").Contains(a) {
+				dev = "wt0"
+			}
+		}
+		return fmt.Appendf(nil, `[{"dst":%q,"dev":%q,"prefsrc":"192.0.2.10","flags":[],"uid":0,"cache":[]}]`, c.Args[3], dev), nil
 	case c.Name == "systemd-creds" && len(c.Args) == 5 && c.Args[0] == "encrypt":
 		return nil, os.WriteFile(c.Args[4], []byte("sealed:"+base64.StdEncoding.EncodeToString(c.Stdin)), 0o600)
 	case c.Name == "systemd-creds" && len(c.Args) == 4 && c.Args[0] == "decrypt":

@@ -420,3 +420,25 @@ func TestAppsReachTheSignInListenerAndNothingElseOfTheMachine(t *testing.T) {
 		t.Errorf("without a listener:\n%s", none)
 	}
 }
+
+// This machine reaches a storage location's share through the mesh only, never the LAN (#28): whatever the route to
+// its server says (at boot, before the mesh is up, it may be the LAN's default route), a packet to it that would leave
+// by any other interface is dropped. Without a mesh, nothing reaches it.
+func TestThisMachineReachesASharesServerThroughTheMeshOnly(t *testing.T) {
+	testenv.Isolate(t)
+	s := firewall.State{Mesh: []string{"wt0"}, LAN: []string{"enp5s0"},
+		Shares: []netip.Addr{netip.MustParseAddr("100.64.1.3"), netip.MustParseAddr("100.64.1.2"), netip.MustParseAddr("100.64.1.2"), netip.MustParseAddr("fd7a::1")}}
+	r := firewall.Render(s)
+	if !strings.Contains(r, "\t\tip daddr { 100.64.1.2, 100.64.1.3 } oifname != { \"wt0\" } drop\n\t}\n") || strings.Contains(r, "fd7a::1") {
+		t.Errorf("the shares aren't kept to the mesh:\n%s", r)
+	}
+	if r := firewall.Render(firewall.State{LAN: []string{"enp5s0"}, Shares: s.Shares[:1]}); !strings.Contains(r, "\t\tip daddr { 100.64.1.3 } drop\n") {
+		t.Errorf("with no mesh, a share is reached anyway:\n%s", r)
+	}
+	if r := firewall.Render(firewall.State{Mesh: s.Mesh, LAN: s.LAN}); !strings.Contains(r, "\t\toifname \"hla*\" jump to_apps\n\t}\n") {
+		t.Errorf("no share, and a rule for one:\n%s", r)
+	}
+	if s.Equal(firewall.State{Mesh: s.Mesh, LAN: s.LAN}) {
+		t.Error("the shares don't count in Equal")
+	}
+}
