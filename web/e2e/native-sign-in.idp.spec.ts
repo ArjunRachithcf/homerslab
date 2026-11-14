@@ -50,6 +50,27 @@ async function authenticator(context: BrowserContext, page: Page): Promise<{ cdp
   return { cdp, id: authenticatorId };
 }
 
+// signInAtAdmin is the person's one sign-in, at Admin: what comes before what this file checks. Authentik's passkey
+// stage sometimes issues a new challenge while the page is answering the one before ("Client data challenge was not
+// expected challenge", over and over, in CI and on a desktop alike), so a sign-in that hasn't landed in 20 seconds is
+// started again, from Admin's authorize URL, up to three times. Opening the app afterwards is never retried.
+async function signInAtAdmin(page: Page, w: World): Promise<void> {
+  for (let attempt = 1; ; attempt++) {
+    await page.goto(w.admin);
+    const user = page.getByRole('textbox', { name: 'Email or Username' });
+    if (await user.waitFor({ timeout: 15_000 }).then(() => true, () => false)) {
+      await user.fill(w.username);
+      await page.getByRole('button', { name: 'Log in' }).click();
+    }
+    try {
+      await page.waitForURL((u) => u.href.startsWith(w.landing), { timeout: 20_000 });
+      return;
+    } catch (e) {
+      if (attempt === 3) throw e;
+    }
+  }
+}
+
 async function signCount(cdp: CDPSession, id: string): Promise<number> {
   const { credentials } = await cdp.send('WebAuthn.getCredentials', { authenticatorId: id });
   expect(credentials).toHaveLength(1);
@@ -65,10 +86,7 @@ test('signed in to the household account once, a person opens the app and is in 
   // The person's passkey, from their enrolment link; then they sign in once, at Admin.
   await page.goto(w.enrolment);
   await page.waitForURL((u) => u.href.startsWith(w.landing), { timeout: 60_000 });
-  await page.goto(w.admin);
-  await page.getByRole('textbox', { name: 'Email or Username' }).fill(w.username);
-  await page.getByRole('button', { name: 'Log in' }).click();
-  await page.waitForURL((u) => u.href.startsWith(w.landing), { timeout: 60_000 });
+  await signInAtAdmin(page, w);
   const signedIn = await signCount(cdp, id);
 
   // Then the app: through the sign-in and back, without a page that asks for anything.
