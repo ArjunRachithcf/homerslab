@@ -177,9 +177,16 @@ func TestTheContainerEngineContractOnDocker(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if len(ms["web"]) != 1 || ms["web"][0].Destination != "/data" || !ms["web"][0].Volume || ms["web"][0].Name != "homerslab-contract-a_data" ||
-			ms["web"][0].Driver != "local" || !strings.HasSuffix(ms["web"][0].Source, "/homerslab-contract-a_data/_data") {
+		// Its one volume; its storage locations (#28) are binds, which no backup of the app takes.
+		vols := slices.DeleteFunc(slices.Clone(ms["web"]), func(m engine.Mount) bool { return !m.Volume })
+		if len(vols) != 1 || vols[0].Destination != "/data" || vols[0].Name != "homerslab-contract-a_data" ||
+			vols[0].Driver != "local" || !strings.HasSuffix(vols[0].Source, "/homerslab-contract-a_data/_data") {
 			t.Errorf("contract-a's mounts: %+v", ms)
+		}
+		for _, m := range ms["web"] {
+			if !m.Volume && m.Destination != "/media" && m.Destination != "/uploads" {
+				t.Errorf("contract-a's web has a mount that is neither its volume nor a storage location: %+v", m)
+			}
 		}
 		if _, err := e.Mounts(ctx, "hltest-other"); err == nil {
 			t.Error("the mounts of a project that isn't HomersLab's")
