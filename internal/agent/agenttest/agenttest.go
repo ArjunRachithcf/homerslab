@@ -30,6 +30,9 @@ import (
 	"github.com/ArjunRachithcf/homerslab/internal/engine/compose"
 	"github.com/ArjunRachithcf/homerslab/internal/host"
 	"github.com/ArjunRachithcf/homerslab/internal/lan"
+	"github.com/ArjunRachithcf/homerslab/internal/mesh"
+	"github.com/ArjunRachithcf/homerslab/internal/mesh/netbird"
+	"github.com/ArjunRachithcf/homerslab/internal/mesh/tailscale"
 	"github.com/ArjunRachithcf/homerslab/internal/node"
 )
 
@@ -618,6 +621,9 @@ func (h *Host) Run(ctx context.Context, c host.Cmd) ([]byte, error) {
 			}
 		}
 		return fmt.Appendf(nil, "LoadState=%s\nActiveState=%s\n", load, active), nil
+	case len(c.Args) == 3 && line == "systemctl --no-block try-restart "+c.Args[2]:
+		h.startMeshDaemon(c.Args[2])
+		return nil, nil
 	case c.Name == "systemctl":
 		return nil, nil
 	case c.Name == "docker" && h.docker != nil && len(c.Args) > 1 && c.Args[1] == "ls":
@@ -676,6 +682,24 @@ func (h *Host) Run(ctx context.Context, c host.Cmd) ([]byte, error) {
 		return base64.StdEncoding.DecodeString(strings.TrimPrefix(string(b), "sealed:"))
 	}
 	return nil, &host.Error{Cmd: line, Err: errors.New("not something this test's machine does")}
+}
+
+// startMeshDaemon stands for systemd starting a mesh client's daemon with the agent's drop-in for its control socket,
+// as it is on disk: the socket's folder made with the drop-in's mode, and NetBird's link to the socket.
+func (h *Host) startMeshDaemon(unit string) {
+	for _, c := range []mesh.ControlSocket{netbird.ControlSocket, tailscale.ControlSocket} {
+		b, err := os.ReadFile(filepath.Join(h.Root, c.DropInPath))
+		if c.Unit != unit || err != nil || !strings.Contains(string(b), "\nRuntimeDirectoryMode=0700\n") {
+			continue
+		}
+		dir := filepath.Join(h.Root, c.Dir)
+		_ = os.MkdirAll(dir, 0o700)
+		_ = os.Chmod(dir, 0o700)
+		if c.Link != "" {
+			_ = os.Remove(filepath.Join(h.Root, c.Link))
+			_ = os.Symlink("/"+c.Socket, filepath.Join(h.Root, c.Link))
+		}
+	}
 }
 
 // Loopback are the addresses the agent put on the machine's loopback.

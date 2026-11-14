@@ -118,6 +118,7 @@ type Agent struct {
 	state      state
 	natUnknown bool            // the unknown NAT mapper state was reported, until systemd can say again
 	natAt      time.Time       // when the mesh client's NAT mapper was last checked
+	sockAt     time.Time       // when the mesh clients' control sockets were last checked (zero: not yet)
 	bridgesAt  time.Time       // when the engines were last asked for their bridges
 	refused    map[string]bool // engine bridge names refused, reported once each
 	// listenerUp: the sign-in listener's address is on the loopback; listenerFailed: putting it there failed, and
@@ -505,6 +506,9 @@ func (a *Agent) Watch(ctx context.Context) {
 			a.refreshBridges(ctx, false)
 			if err := a.checkNATMapper(ctx, false); err != nil {
 				a.log.Error("checking NetBird's NAT mapper", "err", err)
+			}
+			if err := a.checkMeshSockets(ctx, false); err != nil {
+				a.log.Error("checking the mesh clients' control sockets", "err", err)
 			}
 			a.check(ctx)
 		}

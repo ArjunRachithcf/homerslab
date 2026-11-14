@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"net/http"
 	"net/netip"
 	"os"
@@ -12,6 +13,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/ArjunRachithcf/homerslab/internal/atomicfile"
@@ -19,6 +21,7 @@ import (
 	"github.com/ArjunRachithcf/homerslab/internal/host"
 	"github.com/ArjunRachithcf/homerslab/internal/mesh"
 	"github.com/ArjunRachithcf/homerslab/internal/mesh/netbird"
+	"github.com/ArjunRachithcf/homerslab/internal/mesh/tailscale"
 	"github.com/ArjunRachithcf/homerslab/internal/node"
 )
 
@@ -74,6 +77,8 @@ func (a *Agent) join(w http.ResponseWriter, r *http.Request) {
 	n := netbird.Node{Run: a.cfg.Run}
 	steps := []func() error{
 		func() error { return a.writeAt(netbird.DropInPath, netbird.DropIn()) },
+		// Its control socket root's alone (#200) from this start on, if the watch loop hasn't put it in place yet.
+		func() error { return a.writeAt(netbird.ControlSocket.DropInPath, netbird.ControlSocket.DropIn) },
 		func() error { return a.run(ctx, "systemctl", "daemon-reload") },
 		func() error { return a.run(ctx, "systemctl", "enable", "netbird.service") },
 		func() error { return a.run(ctx, "systemctl", "restart", "netbird.service") },
@@ -147,10 +152,11 @@ func (a *Agent) run(ctx context.Context, name string, args ...string) error {
 	return err
 }
 
-// RootWrites are the folders, under the machine's root, where the agent writes: systemd drop-ins for the mesh client,
-// the edge and the sign-in, and apps' units (UnitsDir), which systemd links from there. Its unit makes them writable (ReadWritePaths, under ProtectSystem=strict) and tmpfiles.d makes them;
-// writeAt refuses any other.
-var RootWrites = []string{filepath.Dir(netbird.DropInPath), "etc/systemd/system/" + DefaultEdge.Unit + ".d", "etc/systemd/system/" + SignInUnit + ".d", UnitsDir}
+// RootWrites are the folders, under the machine's root, where the agent writes: systemd drop-ins for the mesh clients,
+// the edge and the sign-in, and apps' units (UnitsDir), which systemd links from there. Its unit makes them writable
+// (ReadWritePaths, under ProtectSystem=strict) and tmpfiles.d makes them; writeAt refuses any other.
+var RootWrites = []string{filepath.Dir(netbird.DropInPath), filepath.Dir(tailscale.ControlSocket.DropInPath),
+	"etc/systemd/system/" + DefaultEdge.Unit + ".d", "etc/systemd/system/" + SignInUnit + ".d", UnitsDir}
 
 // writeAt writes a file under the machine's root, in one of RootWrites.
 func (a *Agent) writeAt(rel string, b []byte) error {
@@ -200,6 +206,9 @@ func (a *Agent) checkFirewall(w http.ResponseWriter, r *http.Request) {
 	a.refreshBridges(r.Context(), true)
 	if err := a.checkNATMapper(r.Context(), true); err != nil {
 		a.log.Error("checking NetBird's NAT mapper", "err", err)
+	}
+	if err := a.checkMeshSockets(r.Context(), true); err != nil {
+		a.log.Error("checking the mesh clients' control sockets", "err", err)
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), hostWait)
 	defer cancel()
@@ -492,9 +501,101 @@ func (a *Agent) checkNATMapper(ctx context.Context, force bool) error {
 	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	a.noteMeshDrift(what)
+	return nil
+}
+
+// noteMeshDrift records what the agent found changed in the mesh clients, and put back. The caller holds a.mu.
+func (a *Agent) noteMeshDrift(what string) {
 	a.meshDrift = append(a.meshDrift, firewall.Drift{At: a.cfg.Now(), What: what})
 	if len(a.meshDrift) > 100 {
 		a.meshDrift = a.meshDrift[len(a.meshDrift)-100:]
 	}
-	return nil
+}
+
+// meshSockets are the mesh clients' control sockets, which the agent keeps for root only (#200), whether or not the
+// node has joined a mesh: a client's daemon that runs at all answers on it.
+var meshSockets = []mesh.ControlSocket{netbird.ControlSocket, tailscale.ControlSocket}
+
+// checkMeshSockets keeps each mesh client's control socket where only root may connect to it: it puts the client's
+// drop-in back when it changed, and restarts a client whose socket is open to others (systemd makes the folder again,
+// with the drop-in's mode, at the start). Both are drift, but for the drop-ins written at the agent's first check, as
+// a new install or an upgrade brings them. Like checkNATMapper, it runs outside the agent's lock, each host command
+// for hostWait at most, and queues the restarts; force checks now, otherwise every natEvery.
+func (a *Agent) checkMeshSockets(ctx context.Context, force bool) error {
+	a.mu.Lock()
+	first := a.sockAt.IsZero()
+	due := force || first || a.cfg.Now().Sub(a.sockAt) >= natEvery
+	if due {
+		a.sockAt = a.cfg.Now()
+	}
+	a.mu.Unlock()
+	if !due {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(ctx, hostWait)
+	defer cancel()
+	var drift, restarts []string
+	reload := false
+	var errs []error
+	for _, c := range meshSockets {
+		running, open := a.socketState(c)
+		if b, err := os.ReadFile(filepath.Join(a.cfg.Root, c.DropInPath)); err != nil || string(b) != string(c.DropIn) {
+			if err := a.writeAt(c.DropInPath, c.DropIn); err != nil {
+				errs = append(errs, fmt.Errorf("writing %s's drop-in: %w", c.Unit, err))
+				continue
+			}
+			reload = true
+			if !first {
+				drift = append(drift, c.Unit+"-socket-drop-in")
+			}
+			if running {
+				restarts = append(restarts, c.Unit)
+			}
+			continue
+		}
+		if open {
+			drift = append(drift, c.Unit+"-socket-open")
+			restarts = append(restarts, c.Unit)
+		}
+	}
+	a.mu.Lock()
+	for _, what := range drift {
+		a.log.Warn("a mesh client's control socket could be opened by anyone on the node: putting it back", "what", what)
+		a.noteMeshDrift(what)
+	}
+	a.mu.Unlock()
+	if reload {
+		if err := a.run(ctx, "systemctl", "daemon-reload"); err != nil {
+			return errors.Join(append(errs, err)...)
+		}
+	}
+	for _, u := range restarts {
+		// try-restart: a client that doesn't run stays stopped. Queued, not waited for, as the NAT mapper's.
+		if err := a.run(ctx, "systemctl", "--no-block", "try-restart", u); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// socketState says whether a mesh client's daemon has run since boot (its socket's folder, or the link to the socket,
+// is there), and whether its control socket is open to anyone but root: its folder not root's alone (mode 0700, the
+// agent's own uid), or something other than the link at the CLI's path (the daemon listening there, without the
+// drop-in).
+func (a *Agent) socketState(c mesh.ControlSocket) (running, open bool) {
+	if fi, err := os.Lstat(filepath.Join(a.cfg.Root, c.Dir)); err == nil {
+		running = true
+		st, ok := fi.Sys().(*syscall.Stat_t)
+		open = !fi.IsDir() || fi.Mode().Perm() != 0o700 || !ok || int(st.Uid) != os.Geteuid()
+	}
+	if c.Link != "" {
+		path := filepath.Join(a.cfg.Root, c.Link)
+		if fi, err := os.Lstat(path); err == nil {
+			running = true
+			l, err := os.Readlink(path)
+			open = open || fi.Mode()&fs.ModeSymlink == 0 || err != nil || l != "/"+c.Socket
+		}
+	}
+	return running, open
 }
