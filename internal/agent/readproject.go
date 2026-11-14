@@ -145,6 +145,8 @@ type Confined struct {
 	DeadlineMs  int64 // the deadline it ends itself at, from its start
 	Controlled  bool  // it watches a control pipe, and ends when the pipe's write end closes
 	Dumpable    int   // PR_GET_DUMPABLE: 0, so no process of its user may trace it or read its memory
+	// DumpableAtStart is PR_GET_DUMPABLE as the child started, before it made itself not dumpable.
+	DumpableAtStart int
 }
 
 // ReadProjectMain is the agent's read-project mode (homerslab agent read-project [--cpu-seconds N] [--deadline D]
@@ -156,13 +158,15 @@ type Confined struct {
 //   - act as root: when the agent is root, the child starts as homerslab-read (readUser), a user only the agent's
 //     reads use, with no supplementary groups, set in the fork before it runs any of its own code, so it holds no
 //     capability and reads only what everyone may read; it never starts another program;
-//   - be traced: its first act, before it reads anything, is to make itself not dumpable, so no other process of its
-//     user, its parent even, may trace it or read its memory to read its file or fake its answer, whatever Yama's
-//     ptrace_scope (#183);
+//   - be traced: a root agent's child runs a copy of the agent it can't read (mode 0711), so the kernel starts it
+//     not dumpable (#190), and its first act, before it reads anything, is to make itself so anyway, so no other
+//     process of its user, its parent or one an earlier read left behind even, may trace it or read its memory to
+//     read its file or fake its answer, whatever Yama's ptrace_scope (#183);
 //   - use more than its limits: 384 MiB of data (not under the race detector, whose shadow memory and thread stacks
 //     need more), --cpu-seconds of CPU (soft; hard a second later), 32 open files, files of at most 1 MiB, no core
 //     dump; and it is the first process
-//     the kernel kills when memory runs short (oom_score_adj 1000), with the agent's unit set to carry on (OOMPolicy);
+//     the kernel kills when memory runs short (oom_score_adj 1000, from the agent at its start), with the agent's unit
+//     set to carry on (OOMPolicy);
 //   - outlive the agent's deadline, or the agent: it ends itself at the deadline it was handed (--deadline, on its
 //     own clock, ReadDeadline if none), and when its control pipe's write end closes (--control-fd), which the agent
 //     does at its deadline and the kernel does when the agent dies, however it dies. The agent, root with its unit's
@@ -184,7 +188,8 @@ func ReadProjectMain(args []string, stdin io.Reader, stdout io.Writer) int {
 }
 
 func readProjectMain(args []string, stdin io.Reader, stdout io.Writer, read func(ctx context.Context, name string, file []byte) (engine.Project, error)) int {
-	// First of all, before it reads anything, its flags included: not dumpable, and first in line for the OOM killer.
+	atStart, _ := unix.PrctlRetInt(unix.PR_GET_DUMPABLE, 0, 0, 0, 0)
+	// First of all, before it reads anything, its flags included: not dumpable.
 	if err := undumpable(); err != nil {
 		fmt.Fprintln(os.Stderr, "confining the read:", err)
 		return 1
@@ -198,6 +203,7 @@ func readProjectMain(args []string, stdin io.Reader, stdout io.Writer, read func
 		return 2
 	}
 	var res readResult
+	res.Confined.DumpableAtStart = atStart
 	// The deadline's timer, the signal's goroutine and the main answer all write to stdout: one JSON object, whichever
 	// comes first.
 	var once sync.Once
@@ -289,19 +295,12 @@ func controlPipe(f *os.File) error {
 }
 
 // undumpable makes the child not dumpable, so that only a process with CAP_SYS_PTRACE may trace it or read its
-// memory, and sets its OOM score to 1000. The score's file is opened first: once the child isn't dumpable its /proc
-// files are root's, and it may no longer open the file to write.
+// memory. A root agent's child already is, from its exec (the agent's execOnly); this holds for any other. Its OOM
+// score of 1000 it has from the agent (startChild): once it isn't dumpable, its /proc files are root's, and it may no
+// longer write it.
 func undumpable() error {
-	oom, err := os.OpenFile("/proc/self/oom_score_adj", os.O_WRONLY, 0)
-	if err != nil {
-		return fmt.Errorf("oom_score_adj: %w", err)
-	}
-	defer oom.Close()
 	if err := unix.Prctl(unix.PR_SET_DUMPABLE, 0, 0, 0, 0); err != nil {
 		return fmt.Errorf("PR_SET_DUMPABLE: %w", err)
-	}
-	if _, err := oom.WriteString("1000"); err != nil {
-		return fmt.Errorf("oom_score_adj: %w", err)
 	}
 	return nil
 }

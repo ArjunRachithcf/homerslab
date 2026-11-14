@@ -708,15 +708,120 @@ var readDeadline = ReadDeadline
 // readCPUSeconds is a read child's soft CPU limit: a second past the deadline, as a backstop for it.
 var readCPUSeconds = func() int { return int(readDeadline/time.Second) + 1 }
 
-// readCommand is how the agent starts a compose read: its executable, in its read-project mode. Tests replace it.
+// readCommand is how the agent starts a compose read: its executable (the one it runs, /proc/self/exe, even if a
+// package has replaced the file since), in its read-project mode. Tests replace it.
 var readCommand = func(exe string) ([]string, error) {
 	if exe == "" {
-		var err error
-		if exe, err = os.Executable(); err != nil {
-			return nil, err
-		}
+		exe = "/proc/self/exe"
 	}
 	return []string{exe, "agent", "read-project"}, nil
+}
+
+// readArgv is the command a read's child runs. When it starts as cred (a root agent's read user), its program is an
+// exec-only copy (execOnly), so that the kernel starts it not dumpable.
+func readArgv(exe string, cred *syscall.Credential) ([]string, error) {
+	argv, err := readCommand(exe)
+	if err != nil || cred == nil {
+		return argv, err
+	}
+	if argv[0], err = execOnly(argv[0]); err != nil {
+		return nil, err
+	}
+	return argv, nil
+}
+
+// execOnlies are the exec-only copies the agent has made, by the program they copy.
+var execOnlies = struct {
+	sync.Mutex
+	m map[string]string
+}{m: map[string]string{}}
+
+// execOnly is a copy of the program src that a read's child may run but not read: root's, mode 0711, in a folder of
+// root's with the same mode, in the agent's private /tmp. The kernel makes a process that runs a program it can't
+// read not dumpable from the exec on (as it does for set-uid programs), and the child's IDs are set in the fork, which
+// makes it not dumpable until the exec too. So a read's child is never dumpable, and no process of its user (one an
+// earlier read left behind, stopped, even) can attach to it in the moment before it makes itself so, whatever Yama's
+// ptrace_scope (#190). Made once per program; the unit's private /tmp goes with it.
+func execOnly(src string) (string, error) {
+	execOnlies.Lock()
+	defer execOnlies.Unlock()
+	if p, ok := execOnlies.m[src]; ok {
+		return p, nil
+	}
+	dir, err := os.MkdirTemp("", "homerslab-reader-")
+	if err != nil {
+		return "", err
+	}
+	p := filepath.Join(dir, "homerslab")
+	if err := copyProgram(src, p); err != nil {
+		os.RemoveAll(dir)
+		return "", err
+	}
+	if err := os.Chmod(p, 0o711); err != nil {
+		os.RemoveAll(dir)
+		return "", err
+	}
+	if err := os.Chmod(dir, 0o711); err != nil {
+		os.RemoveAll(dir)
+		return "", err
+	}
+	execOnlies.m[src] = p
+	return p, nil
+}
+
+func copyProgram(src, dst string) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	out, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o700)
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(out, in); err != nil {
+		out.Close()
+		return err
+	}
+	return out.Close() // before any exec of it: a file open for writing can't be run
+}
+
+// suidDumpableFile is fs.suid_dumpable. Tests replace it.
+var suidDumpableFile = "/proc/sys/fs/suid_dumpable"
+
+// execOnlyHolds says whether the kernel starts a program its process can't read not dumpable: with fs.suid_dumpable
+// 0 or 2, not 1 ("debug"), where it leaves it dumpable as any other.
+func execOnlyHolds() error {
+	b, err := os.ReadFile(suidDumpableFile)
+	if err != nil {
+		return err
+	}
+	if v := strings.TrimSpace(string(b)); v != "0" && v != "2" {
+		return fmt.Errorf("fs.suid_dumpable is %q, where a read's child would start dumpable", v)
+	}
+	return nil
+}
+
+// oomMu makes one read's child start at a time first in line for the OOM killer (startChild).
+var oomMu sync.Mutex
+
+// startChild starts a read's child first in line for the OOM killer (oom_score_adj 1000). The child can't set that
+// itself: it starts not dumpable (execOnly), so its /proc files are root's. It inherits the agent's at the fork, so the
+// agent raises its own for as long as the start takes, then puts it back, which needs no capability since it was no
+// lower before. Another child the agent starts in that moment inherits it too, which only makes it the first killed.
+func startChild(cmd *exec.Cmd) error {
+	oomMu.Lock()
+	defer oomMu.Unlock()
+	const file = "/proc/self/oom_score_adj"
+	was, err := os.ReadFile(file)
+	if err != nil {
+		return fmt.Errorf("oom_score_adj: %w", err)
+	}
+	if err := os.WriteFile(file, []byte("1000"), 0); err != nil {
+		return fmt.Errorf("oom_score_adj: %w", err)
+	}
+	defer os.WriteFile(file, was, 0) //nolint:errcheck // never lower than it was, which needs no capability
+	return cmd.Start()
 }
 
 var (
@@ -748,14 +853,17 @@ func newReads(exe string) *reads {
 }
 
 // readCredential is who a read's child runs as: when the agent is root, homerslab-read (readUser) with no groups, or
-// errNoReadUser, so that the agent refuses to read rather than run the child as anyone else; otherwise nil, the
-// agent's own user.
+// errNoReadUser, so that the agent refuses to read rather than run the child as anyone else, and an error where the
+// child would start dumpable (execOnlyHolds); otherwise nil, the agent's own user.
 func readCredential() (*syscall.Credential, error) {
 	if os.Geteuid() != 0 {
 		return nil, nil
 	}
 	uid, gid, err := readIDs()
 	if err != nil {
+		return nil, err
+	}
+	if err := execOnlyHolds(); err != nil {
 		return nil, err
 	}
 	return &syscall.Credential{Uid: uid, Gid: gid, Groups: []uint32{}}, nil
@@ -830,11 +938,11 @@ func (rs *reads) read(ctx context.Context, name string, file []byte) (engine.Pro
 		return engine.Project{}, errBusy
 	}
 	defer func() { <-rs.slot }()
-	argv, err := readCommand(rs.exe)
+	cred, err := readCredential()
 	if err != nil {
 		return engine.Project{}, fmt.Errorf("%w: %w", errNoReader, err)
 	}
-	cred, err := readCredential()
+	argv, err := readArgv(rs.exe, cred)
 	if err != nil {
 		return engine.Project{}, fmt.Errorf("%w: %w", errNoReader, err)
 	}
@@ -856,7 +964,7 @@ func (rs *reads) read(ctx context.Context, name string, file []byte) (engine.Pro
 	default:
 		return engine.Project{}, errBusy // as many children left behind, stopped, as reads may have
 	}
-	if err := cmd.Start(); err != nil {
+	if err := startChild(cmd); err != nil {
 		<-rs.live
 		if ctx.Err() != nil {
 			return engine.Project{}, errReadTimeout

@@ -271,20 +271,32 @@ func TestAReadRunsConfinedAndRefusesWorkFast(t *testing.T) {
 	}
 	defer control.Close()
 	cmd.Stdin = strings.NewReader("services: {web: {image: x}}\n")
-	out, err := cmd.Output()
+	var stdout bytes.Buffer
+	cmd.Stdout = &stdout
+	was, _ := os.ReadFile("/proc/self/oom_score_adj")
+	if err := agent.StartChild(cmd); err != nil {
+		t.Fatal(err)
+	}
+	// The child has its OOM score from the agent, which raises its own only while the child starts.
+	if now, _ := os.ReadFile("/proc/self/oom_score_adj"); string(now) != string(was) {
+		t.Errorf("the agent's own oom_score_adj is %q after a read's start, want %q as before", now, was)
+	}
+	err = cmd.Wait()
+	out := stdout.Bytes()
 	if err != nil {
 		t.Fatalf("%v: %s", err, out)
 	}
 	var res struct {
 		Project  *engine.Project
 		Confined struct {
-			UID, GID    int
-			Groups      string
-			Limits      map[string]uint64
-			OOMScoreAdj string
-			DeadlineMs  int64
-			Controlled  bool
-			Dumpable    int
+			UID, GID        int
+			Groups          string
+			Limits          map[string]uint64
+			OOMScoreAdj     string
+			DeadlineMs      int64
+			Controlled      bool
+			Dumpable        int
+			DumpableAtStart int
 		}
 	}
 	if err := json.Unmarshal(out, &res); err != nil || res.Project == nil {
@@ -298,6 +310,12 @@ func TestAReadRunsConfinedAndRefusesWorkFast(t *testing.T) {
 		}
 		if c.UID != int(uid) || c.GID != int(gid) || c.Groups != "" || uid == 65534 {
 			t.Errorf("the child ran as uid %d, gid %d, groups %q; want homerslab-read (%d:%d) and no groups", c.UID, c.GID, c.Groups, uid, gid)
+		}
+		// Not dumpable from the start, by the kernel's own rule: it runs a copy of the agent its user can't read
+		// (mode 0711), so no process of its user, one left behind by an earlier read even, can attach to it before
+		// it makes itself so (#190).
+		if c.DumpableAtStart == 1 {
+			t.Error("the child was dumpable at its start")
 		}
 	}
 	if c.Dumpable != 0 {
@@ -579,6 +597,49 @@ func TestReadsRunAsAUserOnlyTheyUse(t *testing.T) {
 	started, _ := os.ReadFile(filepath.Join(marker, "started"))
 	if resp.StatusCode != http.StatusInternalServerError || !strings.Contains(string(out), "no-reader") || len(started) != 0 {
 		t.Errorf("a root agent without homerslab-read: %d %s, a child started as %q; want 500 no-reader and none", resp.StatusCode, out, started)
+	}
+}
+
+// A root agent's read runs a copy of the agent that its child's user can't read, so the kernel starts the child not
+// dumpable (#190); that holds only while fs.suid_dumpable isn't 1 ("debug"), where the kernel leaves it dumpable.
+// There, a root agent refuses to read, and starts no child.
+func TestARootAgentRefusesToReadWhereItsChildWouldBeDumpable(t *testing.T) {
+	testenv.Isolate(t)
+	if os.Geteuid() != 0 {
+		t.Skip("not root: the agent's reads run as its own user (CI runs it as root)")
+	}
+	marker, err := os.MkdirTemp("", "homerslab-marker-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(marker)
+	if err := os.Chmod(marker, 0o777); err != nil {
+		t.Fatal(err)
+	}
+	agent.ShellReads(t, 5*time.Second, "cat >/dev/null; id -u >"+filepath.Join(marker, "started")+`; echo '{"error":"deadline"}'`)
+	sysctl := filepath.Join(t.TempDir(), "suid_dumpable")
+	agent.SuidDumpableFrom(t, sysctl)
+	sock := agenttest.Start(t, agenttest.Primary())
+	body := map[string]string{"project": "homerslab-web", "compose": "services: {web: {image: x}}\n"}
+	for _, v := range []string{"1\n", "", "x\n"} {
+		if err := os.WriteFile(sysctl, []byte(v), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		resp, out := post(t, sock, "/v1/projects/read", body)
+		started, _ := os.ReadFile(filepath.Join(marker, "started"))
+		if resp.StatusCode != http.StatusInternalServerError || !strings.Contains(string(out), "no-reader") || len(started) != 0 {
+			t.Errorf("fs.suid_dumpable %q: %d %s, a child started as %q; want 500 no-reader and none", v, resp.StatusCode, out, started)
+		}
+	}
+	for _, v := range []string{"0\n", "2\n"} {
+		if err := os.WriteFile(sysctl, []byte(v), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		os.Remove(filepath.Join(marker, "started"))
+		resp, out := post(t, sock, "/v1/projects/read", body)
+		if started, _ := os.ReadFile(filepath.Join(marker, "started")); resp.StatusCode != http.StatusGatewayTimeout || len(started) == 0 {
+			t.Errorf("fs.suid_dumpable %q: %d %s, a child started as %q; want one started", v, resp.StatusCode, out, started)
+		}
 	}
 }
 

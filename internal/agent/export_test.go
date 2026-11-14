@@ -29,8 +29,11 @@ func HostileReads(t *testing.T, exe string, d time.Duration) (real func()) {
 // ChildCommand is the command the agent runs for one read, from the executable exe, in dir, and the agent's ends of
 // its control pipe: the child ends when they close.
 func ChildCommand(ctx context.Context, exe, dir, name string, cpuSeconds int) (*exec.Cmd, io.Closer, error) {
-	argv, _ := readCommand(exe)
 	cred, err := readCredential()
+	if err != nil {
+		return nil, nil, err
+	}
+	argv, err := readArgv(exe, cred)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -90,3 +93,13 @@ func ReadUsersFrom(t *testing.T, file string) {
 
 // MaxLiveReads is how many read children may be alive at once, those left behind stopped among them.
 const MaxLiveReads = maxLiveReads
+
+// StartChild starts a read's child as the agent does, first in line for the OOM killer.
+func StartChild(cmd *exec.Cmd) error { return startChild(cmd) }
+
+// SuidDumpableFrom makes the agent read fs.suid_dumpable from file.
+func SuidDumpableFrom(t *testing.T, file string) {
+	old := suidDumpableFile
+	suidDumpableFile = file
+	t.Cleanup(func() { suidDumpableFile = old })
+}
