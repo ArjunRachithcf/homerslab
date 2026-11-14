@@ -3,10 +3,14 @@
 // table; story 73; #82).
 //
 // It knows four kinds of interface, each by its exact name: loopback, the mesh (NetBird's wt0), the container
-// engines' bridges (as Docker and Podman list them), and the LAN (the interfaces that carry the default route).
-// Everything else is a local virtual network (libvirt's virbr0, LXD's lxdbr0, a bridge nobody declared): its VMs
-// keep the internet, and nothing more. A name proves nothing: a LAN bridge called br-iot is not a container bridge,
-// and while no engine answers (at boot) no bridge is trusted.
+// engines' bridges (as Docker and Podman list them, and bridges to the kernel too), and the LAN (the interfaces that
+// carry the default route). Any other bridge whose ports are all containers' veths or VMs' taps, as the kernel last
+// said, is a local virtual network (libvirt's virbr0, LXD's lxdbr0, a bridge nobody declared): its VMs keep the
+// internet, and nothing more. Every other interface (a tunnel, a VPN's with a default route or without, one the agent
+// hasn't seen yet; a second NIC, or a bridge with one among its ports) gets the machine's basics and nothing
+// forwarded: no more than the LAN (#148, #169); an engine's bridge with a NIC gets nothing in at all. Apps leave for
+// each address family through that family's uplinks only. A name proves nothing: a LAN bridge called br-iot is not a
+// container bridge, and while no engine answers (at boot) no bridge is trusted.
 //
 //   - From the LAN: the machine itself only, by ICMP (ping, IPv6 neighbour discovery), DHCP and mDNS replies, the
 //     mesh's WireGuard port (so peers at home connect directly), and the setup link's listener while it is open,
@@ -16,10 +20,13 @@
 //     edge, on this machine, reaches an app (#19).
 //   - From the apps (the engines' bridges): this machine's DNS at their bridge's own gateway, the resolvers it uses
 //     out through an uplink (never one at a mesh peer), IPv6 neighbour discovery,
-//     their own bridge, and the internet through an uplink (the LAN's, or a VPN's tunnel, which is never the LAN); never another app's bridge, the LAN, the mesh, a private range or a local
+//     their own bridge, and the internet through an uplink of the packet's address family (the LAN's, or a VPN's
+//     tunnel, which is never the LAN); never another app's bridge, the LAN, the mesh, a private range or a local
 //     virtual network (ADR 0020). Extras that let an app reach the LAN or the mesh come with the install plan (#19).
 //   - From a local virtual network: this machine's DHCP, and its DNS at the network's own gateway (libvirt's and LXD's
 //     dnsmasq), no other listener, and the internet only.
+//   - From a tunnel, or any other interface that isn't a bridge of guests (a second NIC, a bridge with one among its
+//     ports): the machine's basics, as from the LAN, but never the setup listener, and nothing routed (#148, #169).
 //
 // An interface name is rendered only when it is a plain name an interface can have: a wildcard or a quote from an
 // engine never reaches nft.
@@ -65,13 +72,20 @@ type State struct {
 	// addresses). With none (no default route yet), nothing is let in from outside but the machine's own basics.
 	LAN         []string       `json:"lan"`
 	LANPrefixes []netip.Prefix `json:"lanPrefixes"`
-	// Uplinks are the interfaces with a default route in any routing table: the LAN's, and a VPN's tunnel, which is
-	// never the LAN (#108). Apps reach the internet through any of them; nothing is forwarded from them. Never the
-	// mesh or an engine's bridge.
-	Uplinks []string `json:"uplinks,omitempty"`
+	// Uplinks4 and Uplinks6 are the ways to the IPv4 and the IPv6 internet: the LAN's interfaces that carry that
+	// family's default route, and a VPN's tunnel whose routes cover that family's internet, which is never the LAN
+	// (#108, #169). Apps reach each family's internet through its own uplinks only (none: no way out for that family);
+	// nothing is forwarded from any of them. Never the mesh or an engine's bridge.
+	Uplinks4 []string `json:"uplinks4,omitempty"`
+	Uplinks6 []string `json:"uplinks6,omitempty"`
 	// Bridges are the container engines' bridges, by their exact names, as the engines list them. A LAN interface
 	// is never one, whatever the engines say.
 	Bridges []string `json:"bridges"`
+	// Virtual are the bridges whose every port is a container's veth or a VM's tap, or that have none, as the kernel
+	// last said (#169): the only ones that may be a local virtual network or an app network. A bridge with a NIC among
+	// its ports, or one not read yet, is neither: no virtual_in, nothing forwarded, as for that NIC; an engine's bridge
+	// like that lets nothing in.
+	Virtual []string `json:"virtual"`
 	// Resolvers are the DNS servers this machine uses, which an engine hands its containers (Docker's default bridge
 	// copies them): apps may ask those the LAN leads to, on port 53 only.
 	Resolvers []netip.Addr `json:"resolvers"`
@@ -112,9 +126,27 @@ func Render(s State) string {
 	lan := valid(s.LAN)
 	mesh := valid(s.Mesh)
 	bridges := slices.DeleteFunc(valid(s.Bridges), func(n string) bool { return slices.Contains(lan, n) || slices.Contains(mesh, n) })
-	// The ways out: the LAN, and the other uplinks.
-	out := slices.DeleteFunc(valid(append(slices.Clone(lan), s.Uplinks...)), func(n string) bool {
-		return !slices.Contains(lan, n) && (slices.Contains(mesh, n) || slices.Contains(bridges, n))
+	// The ways out, for each family; never the mesh or an engine's bridge unless it is the LAN's.
+	wayOut := func(uplinks []string) []string {
+		return slices.DeleteFunc(valid(uplinks), func(n string) bool {
+			return !slices.Contains(lan, n) && (slices.Contains(mesh, n) || slices.Contains(bridges, n))
+		})
+	}
+	out4, out6 := wayOut(s.Uplinks4), wayOut(s.Uplinks6)
+	// The LAN and every uplink: never a local virtual network, and nothing forwarded from them.
+	out := uniqStrings(slices.Concat(lan, out4, out6))
+	// The bridges that may be an app network or a local virtual network: guests' ports only (#169).
+	guests := valid(s.Virtual)
+	var apps, notApps []string
+	for _, br := range bridges {
+		if slices.Contains(guests, br) {
+			apps = append(apps, br)
+		} else {
+			notApps = append(notApps, br)
+		}
+	}
+	virtual := slices.DeleteFunc(guests, func(n string) bool {
+		return slices.Contains(out, n) || slices.Contains(mesh, n) || slices.Contains(bridges, n)
 	})
 	b.WriteString(header)
 
@@ -126,12 +158,24 @@ func Render(s State) string {
 	if len(mesh) > 0 {
 		w("\t\tiifname %s accept", set(quoted(mesh)))
 	}
-	if len(bridges) > 0 {
-		w("\t\tiifname %s jump apps_in", set(quoted(bridges)))
+	if len(apps) > 0 {
+		// An engine's bridge is a bridge to the kernel too (#148): a tunnel an engine names is no app network. And one
+		// of guests' ports only (#169).
+		w("\t\tiifname %s meta iifkind \"bridge\" jump apps_in", set(quoted(apps)))
 	}
-	if len(lan) > 0 {
-		// What is neither loopback, the mesh, a bridge nor the LAN is a local virtual network.
-		w("\t\tiifname != %s jump virtual_in", set(quoted(lan)))
+	if len(notApps) > 0 {
+		// An engine's bridge with a NIC among its ports, or one not read yet: nothing in, neither as an app network
+		// nor as the NIC (#169).
+		w("\t\tiifname %s meta iifkind \"bridge\" drop", set(quoted(notApps)))
+	}
+	if len(lan) > 0 && len(virtual) > 0 {
+		// A local virtual network is a bridge of guests' ports only (Virtual) that is neither the LAN, an uplink, an
+		// engine's (above) nor the mesh. The kernel's kind of link decides too, so a tunnel (a VPN's, an L2 one, one
+		// the agent hasn't seen yet) never is one, nor an interface of no kind (a second NIC), nor a bridge with a NIC
+		// among its ports: they get the machine's basics below, as the LAN does (#148, #169). The guard is the LAN,
+		// not the ways out: while no LAN is known (no default route in the main table, or a VPN that replaced it), the
+		// LAN may itself be a bridge (a VM host's br0), and no bridge is taken for a local virtual network.
+		w("\t\tiifname %s meta iifkind \"bridge\" jump virtual_in", set(quoted(virtual)))
 	}
 	w("\t\tmeta l4proto { icmp, ipv6-icmp } accept")
 	w("\t\tudp dport { 68, 546, 5353 } accept")
@@ -149,13 +193,20 @@ func Render(s State) string {
 	if len(mesh) > 0 {
 		w("\t\tiifname %s drop", set(quoted(mesh)))
 	}
-	if len(bridges) > 0 {
-		w("\t\tiifname %s jump apps_out", set(quoted(bridges)))
+	if len(apps) > 0 {
+		w("\t\tiifname %s meta iifkind \"bridge\" jump apps_out", set(quoted(apps)))
 	}
 	if len(out) > 0 {
 		w("\t\tiifname %s drop", set(quoted(out)))
 	}
-	w("\t\tjump outbound")
+	// Only a local virtual network, a bridge of guests' ports, is forwarded to the internet: never a tunnel, with a
+	// default route or without, nor an interface of no kind (a match on a kind that a link hasn't fails, so it is the
+	// policy's drop), nor a bridge with a NIC among its ports (#169). And only while the LAN is known, as virtual_in:
+	// otherwise the LAN's own bridge would be forwarded, through a VPN that replaced the main table's default route,
+	// say (#167's review).
+	if len(lan) > 0 && len(virtual) > 0 {
+		w("\t\tiifname %s meta iifkind \"bridge\" jump outbound", set(quoted(virtual)))
+	}
 	w("\t}")
 
 	// Apps to this machine: only the DNS an engine serves on a bridge's gateway (an address of that bridge itself, never
@@ -176,7 +227,7 @@ func Render(s State) string {
 	// Apps out: their own bridge, the machine's resolvers through an uplink (the one DHCP gave it, which Docker's default
 	// bridge copies: on purpose; never one at a mesh peer), the internet.
 	w("\tchain apps_out {")
-	for _, br := range bridges {
+	for _, br := range apps {
 		w("\t\tiifname %q oifname %q accept", br, br)
 	}
 	var r4, r6 []string
@@ -189,21 +240,33 @@ func Render(s State) string {
 			r6 = append(r6, r.String())
 		}
 	}
-	if len(r4) > 0 && len(out) > 0 {
-		w("\t\toifname %s ip daddr %s meta l4proto { tcp, udp } th dport 53 accept", set(quoted(out)), set(uniqStrings(r4)))
+	// A resolver is reached through the LAN, where DHCP or a router's advertisement found it even with no default route
+	// of its family (#169's review), or through an uplink of its family; never through a tunnel that isn't one.
+	if to4 := uniqStrings(slices.Concat(lan, out4)); len(r4) > 0 && len(to4) > 0 {
+		w("\t\toifname %s ip daddr %s meta l4proto { tcp, udp } th dport 53 accept", set(quoted(to4)), set(uniqStrings(r4)))
 	}
-	if len(r6) > 0 && len(out) > 0 {
-		w("\t\toifname %s ip6 daddr %s meta l4proto { tcp, udp } th dport 53 accept", set(quoted(out)), set(uniqStrings(r6)))
+	if to6 := uniqStrings(slices.Concat(lan, out6)); len(r6) > 0 && len(to6) > 0 {
+		w("\t\toifname %s ip6 daddr %s meta l4proto { tcp, udp } th dport 53 accept", set(quoted(to6)), set(uniqStrings(r6)))
 	}
 	w("\t\tjump outbound")
 	w("\t}")
-	// To the internet only: out through an uplink (the LAN's, a VPN's), to an address that is neither private nor the
-	// LAN's.
+	// To the internet only: out through an uplink of the packet's family (the LAN's, a VPN's), to an address that is
+	// neither private nor the LAN's. A family with no uplink has no way out.
 	w("\tchain outbound {")
-	if len(out) > 0 {
-		w("\t\toifname != %s drop", set(quoted(out)))
-	} else {
+	switch {
+	case len(out4) == 0 && len(out6) == 0:
 		w("\t\tdrop")
+	default:
+		for _, f := range []struct {
+			family string
+			out    []string
+		}{{"ipv4", out4}, {"ipv6", out6}} {
+			if len(f.out) > 0 {
+				w("\t\tmeta nfproto %s oifname != %s drop", f.family, set(quoted(f.out)))
+			} else {
+				w("\t\tmeta nfproto %s drop", f.family)
+			}
+		}
 	}
 	var v4, v6 []string
 	for _, p := range disjoint(append(slices.Clone(Private), s.LANPrefixes...)) {

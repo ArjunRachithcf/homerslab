@@ -126,6 +126,9 @@ func laughs(n, levels int) string {
 	return b.String()
 }
 
+// refusalBudget is far above what a loaded runner needs and far below what unbounded work costs.
+const refusalBudget = 10 * time.Second
+
 // The agent reads as root, so a small file can't make it work hard: aliases, deep nesting and big files are refused
 // before anything parses them in full.
 func TestAProjectThatWouldExhaustTheAgentIsRefusedFast(t *testing.T) {
@@ -143,26 +146,37 @@ func TestAProjectThatWouldExhaustTheAgentIsRefusedFast(t *testing.T) {
 		"include /dev/urandom behind a merge key": "<<: {include: [/dev/urandom]}\nservices: {web: {image: x}}\n",
 		"65 services":                             services(65, 0),
 		"a depends_on fan":                        services(64, 40),
+		"129 references, few paths":               hub(129),
+		"more paths than the cap, few references": fib(20),
 		"a links fan":                             fan("links"),
 		"a volumes_from fan":                      fan("volumes_from"),
 		"block nesting":                           "services:\n  web:\n    image: x\n    x-deep:\n" + deepBlock(70),
 	} {
 		start := time.Now()
 		_, err := r.Read(context.Background(), "homerslab-example", []byte(file))
-		if took := time.Since(start); !errors.Is(err, compose.ErrNotPlain) || took > 100*time.Millisecond {
-			t.Errorf("%s: %v after %s, want ErrNotPlain within 100 ms", name, err, took)
+		// The refusal itself is the property: ErrNotPlain, not a parse that finished or failed otherwise. The clock only
+		// catches a file that is expanded or walked before it is refused (a billion laughs takes hours, not seconds),
+		// so it has headroom for a loaded CI runner (a 100 ms bound flaked at 1.7 s under load, #159).
+		if !errors.Is(err, compose.ErrNotPlain) {
+			t.Errorf("%s: %v, want ErrNotPlain", name, err)
+		}
+		if took := time.Since(start); took > refusalBudget {
+			t.Errorf("%s refused after %s, want within %s", name, took, refusalBudget)
 		}
 	}
 	// The longest chains the caps allow read quickly.
 	for _, ref := range []string{"depends_on: [s%d]", "links: [s%d]", "volumes_from: [s%d]", "network_mode: 'service:s%d'", "ipc: 'service:s%d'", "pid: 'service:s%d'"} {
 		start := time.Now()
 		_, err := r.Read(context.Background(), "homerslab-example", []byte(chain(64, ref)))
-		if took := time.Since(start); took > time.Second {
-			t.Errorf("a chain of 64 by %s: %v after %s, want it read within a second", ref, err, took)
+		if err != nil {
+			t.Errorf("a chain of 64 by %s: %v", ref, err)
+		}
+		if took := time.Since(start); took > refusalBudget {
+			t.Errorf("a chain of 64 by %s: read after %s, want within %s", ref, took, refusalBudget)
 		}
 	}
 	// 64 services, a few references each, and 64 levels are still a plain file.
-	for name, file := range map[string]string{"64 services": services(64, 1), "a short chain": chain(16, "links: [s%d]")} {
+	for name, file := range map[string]string{"64 services": services(64, 1), "a short chain": chain(16, "links: [s%d]"), "128 references": hub(128), "2567 paths": fib(14)} {
 		if _, err := r.Read(context.Background(), "homerslab-example", []byte(file)); err != nil {
 			t.Errorf("%s: %v", name, err)
 		}
@@ -189,6 +203,22 @@ func services(n, fan int) string {
 			}
 			b.WriteString("]\n")
 		}
+	}
+	return b.String()
+}
+
+// hub is s0 and 63 services that refer to it (depends_on, links, and for the first few volumes_from) with exactly n
+// references between them, and few paths: n up to 189.
+func hub(n int) string {
+	var b strings.Builder
+	b.WriteString("services:\n  s0: {image: x}\n")
+	extra := n - 126
+	for i := 1; i <= 63; i++ {
+		refs := "depends_on: [s0], links: [s0]"
+		if i <= extra {
+			refs += ", volumes_from: [s0]"
+		}
+		fmt.Fprintf(&b, "  s%d: {image: x, %s}\n", i, refs)
 	}
 	return b.String()
 }
@@ -276,8 +306,14 @@ func TestAProjectThatMultipliesItsWorkIsRefusedFast(t *testing.T) {
 	} {
 		start := time.Now()
 		_, err := r.Read(context.Background(), "homerslab-example", []byte(file))
-		if took := time.Since(start); !errors.Is(err, compose.ErrNotPlain) || took > 100*time.Millisecond {
-			t.Errorf("%s: %v after %s, want ErrNotPlain within 100 ms", name, err, took)
+		// The refusal itself is the property: ErrNotPlain, not a parse that finished or failed otherwise. The clock only
+		// catches a file that is expanded or walked before it is refused (a billion laughs takes hours, not seconds),
+		// so it has headroom for a loaded CI runner (a 100 ms bound flaked at 1.7 s under load, #159).
+		if !errors.Is(err, compose.ErrNotPlain) {
+			t.Errorf("%s: %v, want ErrNotPlain", name, err)
+		}
+		if took := time.Since(start); took > refusalBudget {
+			t.Errorf("%s refused after %s, want within %s", name, took, refusalBudget)
 		}
 	}
 	for name, file := range map[string]string{

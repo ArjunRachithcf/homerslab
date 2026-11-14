@@ -23,7 +23,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/libdns/libdns"
 	"github.com/mholt/acmez/v3"
 	"github.com/mholt/acmez/v3/acme"
 
@@ -223,16 +222,43 @@ type solver struct {
 	zone *dns.Owned
 }
 
-func (s *solver) record(ch acme.Challenge) dns.Record {
-	return dns.Record{Name: libdns.RelativeName(ch.DNS01TXTRecordName()+".", s.zone.Zone), Type: "TXT",
-		Value: ch.DNS01KeyAuthorization(), TTL: time.Minute}
+// challenge is the challenge's record, named in the zone's and the domain's one form as the Book names records, and
+// the zone and the fully qualified name its propagation is checked at, in that form too. The authority asks only for
+// the domain's own challenge (the wildcard's, _acme-challenge.<domain>); any other name is refused, and nothing is
+// written or awaited (#165).
+func (s *solver) challenge(ch acme.Challenge) (r dns.Record, zone, fqdn string, err error) {
+	zone, domain, err := s.zone.Names()
+	if err != nil {
+		return dns.Record{}, "", "", err
+	}
+	asked, err := dns.Canonical(ch.DNS01TXTRecordName())
+	if err != nil {
+		return dns.Record{}, "", "", fmt.Errorf("the challenge's name: %w", err)
+	}
+	if asked != dns.Challenge+"."+domain {
+		return dns.Record{}, "", "", fmt.Errorf("%w: the challenge's name %s isn't the domain's own, %s.%s", dns.ErrBadName, asked,
+			dns.Challenge, domain)
+	}
+	name, err := s.zone.Name(dns.Challenge)
+	if err != nil {
+		return dns.Record{}, "", "", err
+	}
+	return dns.Record{Name: name, Type: "TXT", Value: ch.DNS01KeyAuthorization(), TTL: time.Minute}, zone, asked + ".", nil
 }
 
 func (s *solver) Present(ctx context.Context, ch acme.Challenge) error {
-	return s.zone.Create(ctx, s.record(ch))
+	r, _, _, err := s.challenge(ch)
+	if err != nil {
+		return err
+	}
+	return s.zone.Create(ctx, r)
 }
 
 func (s *solver) Wait(ctx context.Context, ch acme.Challenge) error {
+	r, zone, fqdn, err := s.challenge(ch)
+	if err != nil {
+		return err
+	}
 	timeout, poll := s.a.Propagation, s.a.Poll
 	if timeout == 0 {
 		timeout = 5 * time.Minute
@@ -242,23 +268,26 @@ func (s *solver) Wait(ctx context.Context, ch acme.Challenge) error {
 	}
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	fqdn := ch.DNS01TXTRecordName() + "."
 	for {
-		ok, err := s.a.DNS.HasTXT(ctx, s.zone.Zone, fqdn, ch.DNS01KeyAuthorization())
+		ok, err := s.a.DNS.HasTXT(ctx, zone, fqdn, r.Value)
 		if ok {
 			return nil
 		}
 		select {
 		case <-ctx.Done():
 			if err != nil {
-				return fmt.Errorf("the challenge's record never reached every name server of %s: %w", s.zone.Zone, err)
+				return fmt.Errorf("the challenge's record never reached every name server of %s: %w", zone, err)
 			}
-			return fmt.Errorf("the challenge's record never reached every name server of %s", s.zone.Zone)
+			return fmt.Errorf("the challenge's record never reached every name server of %s", zone)
 		case <-time.After(poll):
 		}
 	}
 }
 
 func (s *solver) CleanUp(ctx context.Context, ch acme.Challenge) error {
-	return s.zone.Delete(ctx, s.record(ch))
+	r, _, _, err := s.challenge(ch)
+	if err != nil {
+		return err
+	}
+	return s.zone.Delete(ctx, r)
 }

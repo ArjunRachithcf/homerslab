@@ -12,6 +12,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/ArjunRachithcf/homerslab/internal/bidi"
 	"github.com/ArjunRachithcf/homerslab/internal/catalog"
 	"github.com/ArjunRachithcf/homerslab/internal/manager/plan"
 )
@@ -151,7 +152,7 @@ func planWords(w io.Writer, p plan.Plan) {
 
 	var people []string
 	for _, x := range p.Audience.People {
-		people = append(people, x.Name)
+		people = append(people, bidi.Isolate(x.Name)) // a right-to-left name can't reorder the words around it
 	}
 	row("Who sees it", fmt.Sprintf("%s: %s", upperFirst(p.Audience.Default), orNone(strings.Join(people, ", "))))
 	if p.Audience.KidView != "" {

@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"syscall"
+	"time"
 
 	"github.com/ArjunRachithcf/homerslab/internal/engine"
 	"github.com/ArjunRachithcf/homerslab/internal/engine/compose"
@@ -33,10 +34,10 @@ const (
 // readResult is what a read's child answers on its standard output.
 type readResult struct {
 	Project *engine.Project `json:"project,omitempty"`
-	Error   string          `json:"error,omitempty"` // not-ours, not-plain, invalid-compose, or cpu-limit
+	Error   string          `json:"error,omitempty"` // not-ours, not-plain, invalid-compose, cpu-limit or deadline
 	Detail  string          `json:"detail,omitempty"`
 	// Confined is how the read ran, as the child read it back from the kernel: its user and groups, its limits and
-	// its OOM score, for the tests.
+	// its OOM score, and the deadline and control pipe it was handed, for the tests.
 	Confined Confined `json:"confined"`
 }
 
@@ -46,11 +47,13 @@ type Confined struct {
 	Groups      string // /proc/self/status's Groups line
 	Limits      map[string]uint64
 	OOMScoreAdj string
+	DeadlineMs  int64 // the deadline it ends itself at, from its start
+	Controlled  bool  // it watches a control pipe, and ends when the pipe's write end closes
 }
 
-// ReadProjectMain is the agent's read-project mode (homerslab agent read-project [--cpu-seconds N] -- PROJECT): the
-// child the agent starts for each compose read, with the file on its standard input and the result, as JSON, on its
-// standard output.
+// ReadProjectMain is the agent's read-project mode (homerslab agent read-project [--cpu-seconds N] [--deadline D]
+// [--control-fd FD] -- PROJECT): the child the agent starts for each compose read, with the file on its standard input
+// and the result, as JSON, on its standard output.
 //
 // What the child can do: read its standard input, and write in its own empty folder (its working directory, HOME
 // and TMPDIR), where the reader puts the compose file it loads. What it can't:
@@ -61,8 +64,11 @@ type Confined struct {
 //     need more), --cpu-seconds of CPU (soft; hard a second later), 32 open files, files of at most 1 MiB, no core
 //     dump; and it is the first process
 //     the kernel kills when memory runs short (oom_score_adj 1000), with the agent's unit set to carry on (OOMPolicy);
-//   - outlive the agent's deadline: the agent kills it then, and when the agent dies it dies too (Pdeathsig, which
-//     the fork sets after the IDs, so changing them doesn't clear it);
+//   - outlive the agent's deadline, or the agent: it ends itself at the deadline it was handed (--deadline, on its
+//     own clock, ReadDeadline if none), and when its control pipe's write end closes (--control-fd), which the agent
+//     does at its deadline and the kernel does when the agent dies, however it dies. The agent, root with its unit's
+//     capabilities, has no CAP_KILL, so it can't signal a child that runs as nobody, nor send it the parent-death
+//     signal (#138): its kill and Pdeathsig hold only where it may; --cpu-seconds is the backstop the kernel enforces;
 //   - reach a container engine: the reader points at none.
 //
 // It doesn't apply Landlock or seccomp: in Go both bind only the thread that asks, not the process.
@@ -79,28 +85,53 @@ func ReadProjectMain(args []string, stdin io.Reader, stdout io.Writer) int {
 func readProjectMain(args []string, stdin io.Reader, stdout io.Writer, read func(ctx context.Context, name string, file []byte) (engine.Project, error)) int {
 	fs := flag.NewFlagSet("homerslab agent read-project", flag.ContinueOnError)
 	cpu := fs.Int("cpu-seconds", 10, "the CPU time the read may use")
+	deadline := fs.Duration("deadline", ReadDeadline, "how long the read may take, from the child's start")
+	controlFD := fs.Int("control-fd", -1, "a pipe whose write end closing ends the read")
 	if err := fs.Parse(args); err != nil || fs.NArg() != 1 {
-		fmt.Fprintln(os.Stderr, "usage: homerslab agent read-project [--cpu-seconds N] -- PROJECT < compose.yaml")
+		fmt.Fprintln(os.Stderr, "usage: homerslab agent read-project [--cpu-seconds N] [--deadline D] [--control-fd FD] -- PROJECT < compose.yaml")
 		return 2
 	}
 	var res readResult
-	// Go ignores SIGXCPU unless asked: asked, the child says it reached its soft CPU limit and ends, before the hard
-	// limit kills it without a word.
-	xcpu := make(chan os.Signal, 1)
-	signal.Notify(xcpu, syscall.SIGXCPU)
-	// The signal's goroutine and the main answer both write to stdout: one JSON object, whichever comes first.
+	// The deadline's timer, the signal's goroutine and the main answer all write to stdout: one JSON object, whichever
+	// comes first.
 	var once sync.Once
 	answer := func(r readResult) (err error) {
 		once.Do(func() { err = json.NewEncoder(stdout).Encode(r) })
 		return err
 	}
+	// First of all, before the read can start: the deadline, on the child's own clock. The timer runs while the read
+	// burns CPU, also on one core: Go preempts the read for it.
+	time.AfterFunc(*deadline, func() {
+		_ = answer(readResult{Error: "deadline"})
+		os.Exit(1)
+	})
+	res.Confined.DeadlineMs = deadline.Milliseconds()
+	// The control pipe: nothing is ever written to it, so a read that returns means its write end closed, or the pipe
+	// broke. Either way, the read is over.
+	if *controlFD >= 0 {
+		control := os.NewFile(uintptr(*controlFD), "control")
+		if err := controlPipe(control); err != nil {
+			fmt.Fprintln(os.Stderr, "the read's control pipe:", err)
+			return 1
+		}
+		go func() {
+			_, _ = io.Copy(io.Discard, control)
+			once.Do(func() {}) // an answer being written ends first; none is written after
+			os.Exit(1)
+		}()
+		res.Confined.Controlled = true
+	}
+	// Go ignores SIGXCPU unless asked: asked, the child says it reached its soft CPU limit and ends, before the hard
+	// limit kills it without a word.
+	xcpu := make(chan os.Signal, 1)
+	signal.Notify(xcpu, syscall.SIGXCPU)
 	go func() {
 		<-xcpu
 		_ = answer(readResult{Error: "cpu-limit"})
 		os.Exit(1)
 	}()
 	var err error
-	if res.Confined, err = confine(*cpu); err != nil {
+	if res.Confined, err = confine(*cpu, res.Confined); err != nil {
 		fmt.Fprintln(os.Stderr, "confining the read:", err)
 		return 1
 	}
@@ -126,10 +157,25 @@ func readProjectMain(args []string, stdin io.Reader, stdout io.Writer, read func
 	return 0
 }
 
-// confine sets the child's limits and OOM score, and reads back how it runs.
-func confine(cpuSeconds int) (Confined, error) {
+// controlPipe checks that f is the read end of a pipe: anything else could stay open after the agent is gone.
+func controlPipe(f *os.File) error {
+	if f == nil {
+		return errors.New("no such file")
+	}
+	fi, err := f.Stat()
+	if err != nil {
+		return err
+	}
+	if fi.Mode()&os.ModeNamedPipe == 0 {
+		return fmt.Errorf("%s is not a pipe", fi.Mode())
+	}
+	return nil
+}
+
+// confine sets the child's limits and OOM score, and reads back how it runs, into c.
+func confine(cpuSeconds int, c Confined) (Confined, error) {
 	if err := os.WriteFile("/proc/self/oom_score_adj", []byte("1000"), 0); err != nil {
-		return Confined{}, fmt.Errorf("oom_score_adj: %w", err)
+		return c, fmt.Errorf("oom_score_adj: %w", err)
 	}
 	set := map[string]struct {
 		resource int
@@ -145,7 +191,7 @@ func confine(cpuSeconds int) (Confined, error) {
 			value    uint64
 		}{syscall.RLIMIT_DATA, childData}
 	}
-	c := Confined{UID: os.Getuid(), GID: os.Getgid(), Limits: map[string]uint64{}}
+	c.UID, c.GID, c.Limits = os.Getuid(), os.Getgid(), map[string]uint64{}
 	// The CPU limit is soft at cpuSeconds and hard a second later: the kernel tells the child (SIGXCPU, which Go
 	// ignores unless notified, as readProjectMain does) before it kills it.
 	cpu := uint64(cpuSeconds)

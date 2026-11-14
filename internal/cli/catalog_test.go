@@ -44,7 +44,7 @@ func TestTheCLIShowsAPlanByItsID(t *testing.T) {
 		t.Fatalf("homerslab plan show: %d %s", code, errOut)
 	}
 	for _, want := range []string{"Install Immich v3.3.5, from the official catalog", "Verified, published by HomersLab", "Plan " + p.ID,
-		"photos.ferreira.family", "on NetBird", "Adults: Inês Ferreira", "an OIDC client in Authentik",
+		"photos.ferreira.family", "on NetBird", "Adults: \u2068Inês Ferreira\u2069", "an OIDC client in Authentik",
 		"Every hour: the photo library, its database (a dump)", "A restore test every week",
 		"Not the database's own files: the dump holds them", "Not machine-learning models: Immich downloads them again", "study-pc", "4 containers", "None",
 		"sealed to study-pc's TPM: the database password", "Memory: needs 6 GB", "Nothing happens until"} {

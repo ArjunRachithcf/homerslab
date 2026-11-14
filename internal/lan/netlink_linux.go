@@ -13,11 +13,15 @@ import (
 // ReadKernel asks the kernel over netlink for this machine's links, addresses and routes: every routing table, with
 // each route's own table, so the LAN can keep to the main one (#108). A dump that fails or that a change interrupted
 // (the kernel's buffer full, or routes changing while they were read) is asked again, up to five times in all.
-func ReadKernel() (Kernel, error) {
+func ReadKernel() (Kernel, error) { return retried(readKernel) }
+
+// retried is read's first whole reading, asking up to five times in all; or, after the fifth failure, that failure
+// and no reading.
+func retried(read func() (Kernel, error)) (Kernel, error) {
 	var err error
 	for range 5 {
 		var k Kernel
-		if k, err = readKernel(); err == nil {
+		if k, err = read(); err == nil {
 			return k, nil
 		}
 	}
@@ -84,10 +88,21 @@ func readLinks() ([]Link, error) {
 			continue
 		}
 		l := Link{Index: int(index), PointToPoint: flags&syscall.IFF_POINTOPOINT != 0, Loopback: flags&syscall.IFF_LOOPBACK != 0}
+		elsewhere := false // IFLA_LINK is a link of another namespace
 		for _, a := range attrs {
 			switch a.Attr.Type {
 			case syscall.IFLA_IFNAME:
 				l.Name = cString(a.Value)
+			case syscall.IFLA_MASTER:
+				if len(a.Value) == 4 {
+					l.Master = int(int32(binary.NativeEndian.Uint32(a.Value)))
+				}
+			case syscall.IFLA_LINK:
+				if len(a.Value) == 4 {
+					l.Lower = int(int32(binary.NativeEndian.Uint32(a.Value)))
+				}
+			case unix.IFLA_LINK_NETNSID:
+				elsewhere = true
 			case unix.IFLA_LINKINFO:
 				for _, n := range nested(a.Value) {
 					if n.typ == unix.IFLA_INFO_KIND {
@@ -95,6 +110,9 @@ func readLinks() ([]Link, error) {
 					}
 				}
 			}
+		}
+		if elsewhere || l.Lower == l.Index {
+			l.Lower = 0
 		}
 		out = append(out, l)
 	}
