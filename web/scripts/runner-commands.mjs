@@ -1,12 +1,18 @@
 // What the Actions runner takes as workflow commands in a step's output, after actions/runner's ActionCommandManager
 // and ActionCommand (#115), for the tests: lines split at \n, \r\n and a lone \r (StreamReader.ReadLine); the v2 form
 // `::name args::data` after TrimStart, then the v1 form `##[name args]data` anywhere in the line, each only for a
-// registered command; while commands are stopped, only the stop token is registered, and it resumes them.
+// registered command. While commands are stopped, the runner takes no command but the stop token, which resumes them;
+// the model registers only that name then. TrimStart is .NET's: it strips U+0085 (JS's doesn't) and leaves U+FEFF
+// (JS's \s has it). The model is looser than the runner while stopped: the runner never falls back to `##[` on a
+// line whose `::` form parsed, the model does, so it may resume where the runner wouldn't (the safe direction).
 const REGISTERED = ['add-mask', 'add-matcher', 'add-path', 'debug', 'echo', 'endgroup', 'error', 'group', 'notice',
   'remove-matcher', 'save-state', 'set-env', 'set-output', 'stop-commands', 'warning', 'internal-set-repo-path'];
 
+// .NET's Char.IsWhiteSpace: JS's \s plus U+0085, minus U+FEFF.
+const TRIM_START = /^(?:(?!\uFEFF)[\s\u0085])+/;
+
 function v2(line, registered) {
-  const s = line.trimStart();
+  const s = line.replace(TRIM_START, '');
   if (!s.startsWith('::')) return null;
   const end = s.indexOf('::', 2);
   if (end < 0) return null;
