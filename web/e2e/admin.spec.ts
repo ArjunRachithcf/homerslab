@@ -79,7 +79,53 @@ test('an app that signs people in itself, or one with an extra, can’t be insta
 test('before first-time setup, Get says what’s missing', async ({ page, primary }) => {
   primary.withDomain();
   await page.goto(await primary.adminURL());
+  const store = primary.url('admin', '/'); // where the sign-in leaves the admin: Admin's start, the Store
+  await expect(page).toHaveURL(store);
+  await expect(page.getByRole('heading', { level: 1 })).toHaveText('Store');
   await page.getByRole('button', { name: 'Get Immich: see its install plan' }).click();
   await expect(page.getByRole('alert')).toContainText('Finish first-time setup first');
-  await expect(page).toHaveURL(/\/store$/);
+  await expect(page).toHaveURL(store);
+});
+
+test('the admin’s cookie comes from the sign-in, and Admin’s calls carry it', async ({ page, primary }) => {
+  await primary.setUp();
+  await page.goto(await primary.adminURL());
+  await expect(page.getByRole('heading', { level: 1 })).toHaveText('Store');
+  const [cookie] = (await page.context().cookies()).filter((c) => c.name === '__Host-homerslab-session');
+  expect(cookie).toMatchObject({ domain: 'admin.ferreira.family', path: '/', secure: true, httpOnly: true, sameSite: 'Lax' });
+  const catalog = primary.seen.filter((r) => r.path === '/api/v1/catalog');
+  expect(catalog.length).toBeGreaterThan(0);
+  expect(catalog.every((r) => r.session && r.status === 200)).toBe(true);
+});
+
+test('another of the household’s names can’t make a change in Admin, though the browser sends the admin’s cookie with it', async ({ page, primary }) => {
+  await primary.setUp();
+  const admin = await primary.adminURL();
+  await page.goto(admin);
+  await expect(page.getByRole('heading', { level: 1 })).toHaveText('Store');
+  const plans = new URL('/api/v1/plans', admin).href;
+  const body = JSON.stringify({ app: 'bentopdf' });
+
+  // One of the household's apps is the same site as Admin, so SameSite=Lax lets the cookie go: Admin's own checks
+  // (the page's Origin, Sec-Fetch-Site) must refuse the change. A fetch that needs no preflight, then a form.
+  await page.goto(primary.url('pdf'));
+  await page.evaluate(async ({ to, b }) => {
+    await fetch(to, { method: 'POST', mode: 'no-cors', credentials: 'include', headers: { 'Content-Type': 'text/plain' }, body: b });
+  }, { to: plans, b: body });
+  const answer = page.waitForResponse(plans);
+  await page.evaluate(({ to, b }) => {
+    const form = Object.assign(document.createElement('form'), { action: to, method: 'post', enctype: 'text/plain' });
+    // text/plain sends name=value: the body is {"app":"bentopdf","x":"="}, JSON that a form can forge
+    form.append(Object.assign(document.createElement('input'), { name: `${b.slice(0, -1)},"x":"`, value: '"}' }));
+    document.body.append(form);
+    form.submit();
+  }, { to: plans, b: body });
+  expect((await answer).status()).toBe(403);
+
+  const posts = primary.seen.filter((r) => r.method === 'POST' && r.path === '/api/v1/plans');
+  expect(posts).toEqual([
+    { host: 'admin.ferreira.family', method: 'POST', path: '/api/v1/plans', session: true, status: 403 },
+    { host: 'admin.ferreira.family', method: 'POST', path: '/api/v1/plans', session: true, status: 403 },
+  ]);
+  expect(primary.plans()).toBe(0);
 });
