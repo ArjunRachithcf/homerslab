@@ -195,6 +195,9 @@ func (a *Agent) applySignIn(ctx context.Context, next signInState) error {
 		a.state.SignIn = prev
 		return err
 	}
+	if prev == nil {
+		a.appsFollowSignIn(ctx) // served here now: the apps' containers resolve it to its listener
+	}
 	for _, step := range []func() error{
 		func() error { return a.writeAt(a.signInDropIn(), a.signInCredentials(next.Bootstrapping)) },
 		func() error { return a.run(ctx, "systemctl", "daemon-reload") },

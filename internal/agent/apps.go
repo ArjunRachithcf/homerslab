@@ -176,6 +176,33 @@ func (a *Agent) appUnit(id string, s *appState) appunit.App {
 		SignIn: a.signInName(), SignInAt: SignInListen}
 }
 
+// appsFollowSignIn writes every app's compose file again where the sign-in's name or its listener changed what it says
+// (the sign-in served now, or renamed), and has systemd restart those apps, so their containers resolve it to the
+// listener. The caller holds a.mu.
+func (a *Agent) appsFollowSignIn(ctx context.Context) {
+	for _, id := range slices.Sorted(maps.Keys(a.state.Apps)) {
+		u := a.appUnit(id, a.state.Apps[id])
+		want := appunit.Override(u)
+		have, err := os.ReadFile(u.OverrideFile())
+		switch {
+		case err == nil && bytes.Equal(have, want):
+			continue
+		case err != nil && !errors.Is(err, os.ErrNotExist):
+			a.log.Error("reading an app's compose file", "app", id, "err", err)
+			continue
+		}
+		if err := atomicfile.Write(u.OverrideFile(), want); err != nil {
+			a.log.Error("writing an app's compose file for the sign-in", "app", id, "err", err)
+			continue
+		}
+		if err := a.run(ctx, "systemctl", "--no-block", "restart", appunit.Unit(id)); err != nil {
+			a.log.Error("restarting an app for the sign-in", "app", id, "err", err)
+			continue
+		}
+		a.log.Info("an app follows the sign-in: its containers resolve it to the listener", "app", id)
+	}
+}
+
 // signInName is the sign-in's name where this node serves it, or "". The caller holds a.mu.
 func (a *Agent) signInName() string {
 	if e := a.state.Edge; e != nil && a.state.SignIn != nil {
@@ -324,7 +351,10 @@ func (a *Agent) putApp(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.mu.Lock()
-	signIn := a.signInName()
+	signIn := ""
+	if e := a.state.Edge; e != nil {
+		signIn = e.SignIn // whether this node serves it yet or not
+	}
 	a.mu.Unlock()
 	if code, detail := checkProject(p, req, signIn); code != "" {
 		a.log.Warn("refused an app's compose project", "app", id, "why", code, "service", detail)
@@ -401,6 +431,7 @@ func (a *Agent) putApp(w http.ResponseWriter, r *http.Request) {
 	// so, and the edge serves the name after; what doesn't take now, the watch puts right (both fail closed), and the
 	// answer says so, so the household keeps the app it has.
 	st := a.appStatusLocked(id, next)
+	a.listen(ctx) // the first app: the sign-in listener's address, which the table opens to the apps
 	if err := a.reconcile(ctx, true); err != nil {
 		a.log.Error("letting the edge reach the app; the watch tries again", "app", id, "err", err)
 		st.Pending = append(st.Pending, "firewall")

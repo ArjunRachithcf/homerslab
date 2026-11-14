@@ -45,7 +45,7 @@ type Service struct {
 	Published   []string `json:"published,omitempty"`
 	Relabelled  []string `json:"relabelled,omitempty"`
 	Loosened    []string `json:"loosened,omitempty"`
-	// Hosts are the names its extra_hosts give an address to, in order.
+	// Hosts are the names its extra_hosts give an address to, lowercase and sorted.
 	Hosts []string `json:"hosts,omitempty"`
 }
 

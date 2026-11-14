@@ -177,6 +177,54 @@ func TestAppsReachTheSignInThroughItsListener(t *testing.T) {
 	}
 }
 
+// An app installed before the sign-in is served follows it once it is: its compose file is written again, so its
+// containers resolve the sign-in to the listener, and systemd restarts it.
+func TestAnAppInstalledBeforeTheSignInFollowsIt(t *testing.T) {
+	testenv.Isolate(t)
+	sock, h, state := joined(t, agent.Config{})
+	chain, key := wildcard(t, "example.test")
+	call(t, sock, "PUT", "/v1/edge/certificates/example.test", map[string]string{"chain": chain, "key": key})
+	call(t, sock, "PUT", "/v1/edge", agent.EdgeSites{Port: 443, Admin: "admin.example.test"})
+	install(t, sock, "bentopdf", bentoPDF(t))
+	file := filepath.Join(state, "apps", "bentopdf", "homerslab.yaml")
+	if o, _ := os.ReadFile(file); strings.Contains(string(o), "extra_hosts") {
+		t.Fatalf("before the sign-in:\n%s", o)
+	}
+	restarts := h.Times("systemctl --no-block restart homerslab-app-bentopdf.service")
+	call(t, sock, "PUT", "/v1/sign-in", map[string]string{"provider": "authentik", "bootstrapToken": bootstrap})
+	if code, body := call(t, sock, "PUT", "/v1/edge", agent.EdgeSites{Port: 443, Admin: "admin.example.test", SignIn: "auth.example.test"}); code != http.StatusOK {
+		t.Fatalf("the edge: %d %s", code, body)
+	}
+	if o, _ := os.ReadFile(file); !strings.Contains(string(o), "extra_hosts:\n      - \"auth.example.test=172.31.255.241\"\n") {
+		t.Errorf("after the sign-in:\n%s", o)
+	}
+	if got := h.Times("systemctl --no-block restart homerslab-app-bentopdf.service"); got != restarts+1 {
+		t.Errorf("restarts: %d, then %d", restarts, got)
+	}
+	if !bytes.Contains(h.Edge.Config(), []byte(`"172.31.255.241:443"`)) {
+		t.Errorf("no listener:\n%s", h.Edge.Config())
+	}
+}
+
+// Where the listener's address can't be put on the loopback, the edge serves everything else, without the listener;
+// the table doesn't open it either.
+func TestTheEdgeServesWithoutTheListenerWhenItsAddressFails(t *testing.T) {
+	testenv.Isolate(t)
+	sock, h, _ := signedIn(t, agent.Config{})
+	h.Fail("ip -4 address replace")
+	s := install(t, sock, "bentopdf", bentoPDF(t))
+	if len(s.Pending) != 0 {
+		t.Errorf("pending: %q", s.Pending)
+	}
+	cfg := h.Edge.Config()
+	if !bytes.Contains(cfg, []byte("pdf.example.test")) || bytes.Contains(cfg, []byte("172.31.255.241")) {
+		t.Errorf("the edge:\n%s", cfg)
+	}
+	if table, _ := h.Table(); strings.Contains(table, "172.31.255.241") {
+		t.Errorf("the table opens the listener:\n%s", table)
+	}
+}
+
 // Without the sign-in served, the app's name isn't served at all: never unguarded.
 func TestAGuardedAppIsNeverServedWithoutItsGuard(t *testing.T) {
 	testenv.Isolate(t)
