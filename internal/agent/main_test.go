@@ -90,7 +90,7 @@ func parent() int {
 // peek starts a read's child of its own, waits until the child reads its file, then tries to open the child's memory
 // and to attach to it with ptrace, and says how each went: "ok", "denied" or the error.
 func peek() int {
-	child := exec.Command(os.Args[0], "agent", "read-project-hold", "--deadline", "1m", "--", "homerslab-web")
+	child := exec.Command(os.Args[0], "agent", "read-project-hold", "--deadline", "10s", "--", "homerslab-web")
 	child.Stdin = strings.NewReader("services: {web: {image: x}}\n")
 	child.Env = []string{"PATH=/usr/bin:/bin"} // as the agent gives a read's child; not HOMERSLAB_TEST_PEEK
 	stderr, err := child.StderrPipe()

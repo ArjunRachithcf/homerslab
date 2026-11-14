@@ -262,7 +262,7 @@ func TestAnAppsProjectIsRefusedWhenItCantBeWired(t *testing.T) {
 		}), 422, "loosens-confinement"},
 		"the machine's process namespace": {"ledger", edit(func(r *agent.AppRequest) {
 			r.Compose = strings.Replace(r.Compose, "  db:\n", "  db:\n    pid: host\n", 1)
-		}), 422, "loosens-confinement"},
+		}), 422, "off-floor"},
 		"the sign-in's network, as external": {"ledger", edit(func(r *agent.AppRequest) {
 			r.Compose = strings.Replace(r.Compose, "  db:\n", "  db:\n    networks: [ak]\n", 1) +
 				"networks:\n  ak: {external: true, name: homerslab-authentik_default}\n"

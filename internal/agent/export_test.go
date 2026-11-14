@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"io"
 	"os/exec"
 	"testing"
@@ -29,8 +30,11 @@ func HostileReads(t *testing.T, exe string, d time.Duration) (real func()) {
 // ChildCommand is the command the agent runs for one read, from the executable exe, in dir, and the agent's ends of
 // its control pipe: the child ends when they close.
 func ChildCommand(ctx context.Context, exe, dir, name string, cpuSeconds int) (*exec.Cmd, io.Closer, error) {
-	argv, _ := readCommand(exe)
 	cred, err := readCredential()
+	if err != nil {
+		return nil, nil, err
+	}
+	argv, err := readArgv(exe, cred)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -90,3 +94,39 @@ func ReadUsersFrom(t *testing.T, file string) {
 
 // MaxLiveReads is how many read children may be alive at once, those left behind stopped among them.
 const MaxLiveReads = maxLiveReads
+
+// StartChild starts a read's child as the agent does, first in line for the OOM killer.
+func StartChild(cmd *exec.Cmd) error { return startChild(cmd) }
+
+// SuidDumpableFrom makes the agent read fs.suid_dumpable from file.
+func SuidDumpableFrom(t *testing.T, file string) {
+	old := suidDumpableFile
+	suidDumpableFile = file
+	t.Cleanup(func() { suidDumpableFile = old })
+}
+
+// ReadWithEveryChildAlive reads with as many children alive as reads may have, and says whether it was refused as busy
+// and whether it went on to make its child's command.
+func ReadWithEveryChildAlive(t *testing.T) (busy, made bool) {
+	rs := newReads("")
+	for range maxLiveReads {
+		rs.live <- struct{}{}
+	}
+	old := readCommand
+	readCommand = func(string) ([]string, error) { made = true; return nil, errors.New("no command in this test") }
+	t.Cleanup(func() { readCommand = old })
+	_, err := rs.read(context.Background(), "homerslab-web", []byte("services: {web: {image: x}}\n"))
+	return errors.Is(err, errBusy), made
+}
+
+// NoReadCommand makes every read fail before its child starts: the agent finds no command for it. It returns a
+// function that puts the real command back.
+func NoReadCommand(t *testing.T) (real func()) {
+	old := readCommand
+	readCommand = func(string) ([]string, error) { return nil, errors.New("no command in this test") }
+	t.Cleanup(func() { readCommand = old })
+	return func() { readCommand = old }
+}
+
+// ExecOnly is the exec-only copy of src that a root agent's reads run.
+func ExecOnly(src string) (string, error) { return execOnly(src) }

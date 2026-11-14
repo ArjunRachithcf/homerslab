@@ -208,6 +208,7 @@ func TestAgentReadsAComposeProjectForPlanning(t *testing.T) {
 		"another project's name": {"homelab", compose, http.StatusBadRequest, "not-ours"},
 		"a file naming another":  {"homerslab-web", "include: [/etc/shadow]\n" + compose, http.StatusUnprocessableEntity, "not-plain"},
 		"a broken file":          {"homerslab-web", "services: {web: {imagee: x}}\n", http.StatusUnprocessableEntity, "invalid-compose"},
+		"the host's processes":   {"homerslab-web", "services: {web: {image: x, pid: host}}\n", http.StatusUnprocessableEntity, "off-floor"},
 	} {
 		resp, body := post(t, sock, "/v1/projects/read", map[string]string{"project": c.project, "compose": c.compose})
 		var e struct{ Error string }
@@ -270,20 +271,32 @@ func TestAReadRunsConfinedAndRefusesWorkFast(t *testing.T) {
 	}
 	defer control.Close()
 	cmd.Stdin = strings.NewReader("services: {web: {image: x}}\n")
-	out, err := cmd.Output()
+	var stdout bytes.Buffer
+	cmd.Stdout = &stdout
+	was, _ := os.ReadFile("/proc/self/oom_score_adj")
+	if err := agent.StartChild(cmd); err != nil {
+		t.Fatal(err)
+	}
+	// The child has its OOM score from the agent, which raises its own only while the child starts.
+	if now, _ := os.ReadFile("/proc/self/oom_score_adj"); string(now) != string(was) {
+		t.Errorf("the agent's own oom_score_adj is %q after a read's start, want %q as before", now, was)
+	}
+	err = cmd.Wait()
+	out := stdout.Bytes()
 	if err != nil {
 		t.Fatalf("%v: %s", err, out)
 	}
 	var res struct {
 		Project  *engine.Project
 		Confined struct {
-			UID, GID    int
-			Groups      string
-			Limits      map[string]uint64
-			OOMScoreAdj string
-			DeadlineMs  int64
-			Controlled  bool
-			Dumpable    int
+			UID, GID        int
+			Groups          string
+			Limits          map[string]uint64
+			OOMScoreAdj     string
+			DeadlineMs      int64
+			Controlled      bool
+			Dumpable        int
+			DumpableAtStart int
 		}
 	}
 	if err := json.Unmarshal(out, &res); err != nil || res.Project == nil {
@@ -297,6 +310,12 @@ func TestAReadRunsConfinedAndRefusesWorkFast(t *testing.T) {
 		}
 		if c.UID != int(uid) || c.GID != int(gid) || c.Groups != "" || uid == 65534 {
 			t.Errorf("the child ran as uid %d, gid %d, groups %q; want homerslab-read (%d:%d) and no groups", c.UID, c.GID, c.Groups, uid, gid)
+		}
+		// Not dumpable from the start, by the kernel's own rule: it runs a copy of the agent its user can't read
+		// (mode 0711), so no process of its user, one left behind by an earlier read even, can attach to it before
+		// it makes itself so (#190).
+		if c.DumpableAtStart == 1 {
+			t.Error("the child was dumpable at its start")
 		}
 	}
 	if c.Dumpable != 0 {
@@ -518,33 +537,40 @@ func TestReadsRunAsAUserOnlyTheyUse(t *testing.T) {
 		}
 		return p
 	}
-	goodGroup := group("good", "homerslab-read:x:979:\n")
-	uid, gid, err := agent.ReadIDsFrom(passwd("good", "homerslab:x:981:981::/var/lib/homerslab:/usr/sbin/nologin\nhomerslab-read:x:980:979:HomersLab compose reads:/:/usr/sbin/nologin\n"), goodGroup)
-	if err != nil || uid != 980 || gid != 979 {
-		t.Errorf("homerslab-read = %d:%d %v, want 980:979", uid, gid, err)
+	goodGroup := group("good", "homerslab-read:x:60602:\n")
+	uid, gid, err := agent.ReadIDsFrom(passwd("good", "homerslab:x:981:981::/var/lib/homerslab:/usr/sbin/nologin\nhomerslab-read:x:60602:60602:HomersLab compose reads:/:/usr/sbin/nologin\n"), goodGroup)
+	if err != nil || uid != 60602 || gid != 60602 {
+		t.Errorf("homerslab-read = %d:%d %v, want 60602:60602", uid, gid, err)
 	}
 	for name, lines := range map[string]string{
 		"missing":          "homerslab:x:981:981::/var/lib/homerslab:/usr/sbin/nologin\n",
-		"root's uid":       "homerslab-read:x:0:979::/:/usr/sbin/nologin\n",
-		"root's group":     "homerslab-read:x:980:0::/:/usr/sbin/nologin\n",
-		"nobody's uid":     "homerslab-read:x:65534:979::/:/usr/sbin/nologin\n",
-		"a shared uid":     "homerslab-read:x:980:979::/:/usr/sbin/nologin\nother:x:980:980::/:/bin/sh\n",
-		"a broken entry":   "homerslab-read:x:nine:979::/:/usr/sbin/nologin\n",
-		"a prefix of ours": "homerslab-reader:x:980:979::/:/usr/sbin/nologin\n",
-		"another's group":  "homerslab-read:x:980:981::/:/usr/sbin/nologin\n",
-		"nogroup":          "homerslab-read:x:980:65534::/:/usr/sbin/nologin\n",
+		"root's uid":       "homerslab-read:x:0:60602::/:/usr/sbin/nologin\n",
+		"root's group":     "homerslab-read:x:60602:0::/:/usr/sbin/nologin\n",
+		"nobody's uid":     "homerslab-read:x:65534:60602::/:/usr/sbin/nologin\n",
+		"a shared uid":     "homerslab-read:x:60602:60602::/:/usr/sbin/nologin\nother:x:60602:60602::/:/bin/sh\n",
+		"a broken entry":   "homerslab-read:x:nine:60602::/:/usr/sbin/nologin\n",
+		"a prefix of ours": "homerslab-reader:x:60602:60602::/:/usr/sbin/nologin\n",
+		"another's group":  "homerslab-read:x:60602:981::/:/usr/sbin/nologin\n",
+		"nogroup":          "homerslab-read:x:60602:65534::/:/usr/sbin/nologin\n",
+		// The group is the reads' alone: no other user has it as its primary group, as none may as a member (#190).
+		"another's primary group is its": "homerslab-read:x:60602:60602::/:/usr/sbin/nologin\nother:x:990:60602::/:/bin/sh\n",
+		"the same, written 060602":       "homerslab-read:x:60602:60602::/:/usr/sbin/nologin\nother:x:990:060602::/:/bin/sh\n",
 	} {
 		if uid, gid, err := agent.ReadIDsFrom(passwd(name, lines), goodGroup); err == nil {
 			t.Errorf("%s: homerslab-read = %d:%d, want it refused", name, uid, gid)
 		}
 	}
+	// Only the packages' fixed ids (#190): sysusers keeps the ids it handed out before, and those may be an app image's.
+	if uid, gid, err := agent.ReadIDsFrom(passwd("old", "homerslab-read:x:980:979::/:/usr/sbin/nologin\n"), group("old", "homerslab-read:x:979:\n")); err == nil {
+		t.Errorf("ids from before #190: homerslab-read = %d:%d, want it refused", uid, gid)
+	}
 	// Its group is its own too: named for it, and no other group has its gid (docker's, say, would open the engine).
-	good := passwd("good", "homerslab-read:x:980:979::/:/usr/sbin/nologin\n")
+	good := passwd("good", "homerslab-read:x:60602:60602::/:/usr/sbin/nologin\n")
 	for name, lines := range map[string]string{
 		"no group":       "",
-		"another name":   "docker:x:979:\n",
-		"a shared gid":   "homerslab-read:x:979:\ndocker:x:979:\n",
-		"members":        "homerslab-read:x:979:arjun\n",
+		"another name":   "docker:x:60602:\n",
+		"a shared gid":   "homerslab-read:x:60602:\ndocker:x:60602:\n",
+		"members":        "homerslab-read:x:60602:arjun\n",
 		"a broken group": "homerslab-read:x:nine:\n",
 	} {
 		if uid, gid, err := agent.ReadIDsFrom(good, group(name, lines)); err == nil {
@@ -578,6 +604,144 @@ func TestReadsRunAsAUserOnlyTheyUse(t *testing.T) {
 	started, _ := os.ReadFile(filepath.Join(marker, "started"))
 	if resp.StatusCode != http.StatusInternalServerError || !strings.Contains(string(out), "no-reader") || len(started) != 0 {
 		t.Errorf("a root agent without homerslab-read: %d %s, a child started as %q; want 500 no-reader and none", resp.StatusCode, out, started)
+	}
+}
+
+// With as many children alive as reads may have (those left behind, stopped), a read is refused as busy before it does
+// anything else: it finds no user for its child, makes no folder, no command and no pipe (#190).
+func TestAReadWithEveryChildAliveDoesNothingElse(t *testing.T) {
+	testenv.Isolate(t)
+	agent.ReadUsersFrom(t, filepath.Join(t.TempDir(), "none")) // a root agent that looked for its read user would fail
+	busy, made := agent.ReadWithEveryChildAlive(t)
+	if !busy || made {
+		t.Errorf("a read with every child alive: busy %v, made its child's command %v; want busy, and nothing made", busy, made)
+	}
+}
+
+// A read that fails before its child starts gives its place among the children alive back: however many fail so, the
+// next one reads.
+func TestAReadThatStartsNoChildGivesItsPlaceBack(t *testing.T) {
+	testenv.Isolate(t)
+	real := agent.NoReadCommand(t)
+	sock := agenttest.Start(t, agenttest.Primary())
+	body := map[string]string{"project": "homerslab-web", "compose": "services: {web: {image: x}}\n"}
+	for i := range agent.MaxLiveReads + 1 {
+		if resp, out := post(t, sock, "/v1/projects/read", body); resp.StatusCode != http.StatusInternalServerError || !strings.Contains(string(out), "no-reader") {
+			t.Fatalf("read %d with no command: %d %s, want 500 no-reader", i, resp.StatusCode, out)
+		}
+	}
+	real()
+	if resp, out := post(t, sock, "/v1/projects/read", body); resp.StatusCode != http.StatusOK {
+		t.Errorf("after reads that started no child: %d %s, want it read", resp.StatusCode, out)
+	}
+}
+
+// The copy a root agent's reads run is root's own (the agent's user's), mode 0711, in a folder no one else may write:
+// systemd's CacheDirectory where the unit gives one, a private temporary folder otherwise. It is made again when it
+// is gone or changed (a cache may be emptied, a temporary folder cleaned), and a folder others may write is refused.
+func TestAReadsExecOnlyCopyStaysExecOnly(t *testing.T) {
+	testenv.Isolate(t)
+	exe := agenttest.Executable(t)
+	check := func(what, p string) {
+		t.Helper()
+		fi, err := os.Lstat(p)
+		if err != nil || !fi.Mode().IsRegular() || fi.Mode().Perm() != 0o711 {
+			t.Errorf("%s: %s %v %v, want a file of mode 0711", what, p, fi, err)
+			return
+		}
+		if di, err := os.Stat(filepath.Dir(p)); err != nil || di.Mode().Perm()&0o022 != 0 {
+			t.Errorf("%s: its folder %v %v, want one only its owner may write", what, di, err)
+		}
+	}
+	for _, cache := range []string{"", t.TempDir()} {
+		if cache != "" {
+			if err := os.Chmod(cache, 0o711); err != nil {
+				t.Fatal(err)
+			}
+		}
+		t.Setenv("CACHE_DIRECTORY", cache)
+		p, err := agent.ExecOnly(exe)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if cache != "" && filepath.Dir(p) != cache {
+			t.Errorf("the copy is %s, want it in the unit's cache %s", p, cache)
+		}
+		check("made", p)
+		if err := os.Remove(p); err != nil {
+			t.Fatal(err)
+		}
+		if p, err = agent.ExecOnly(exe); err != nil {
+			t.Fatal(err)
+		}
+		check("gone, then made again", p)
+		if err := os.Chmod(p, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if p, err = agent.ExecOnly(exe); err != nil {
+			t.Fatal(err)
+		}
+		check("readable, then made again", p)
+		if err := os.WriteFile(p, []byte("#!/bin/sh\n"), 0o711); err != nil {
+			t.Fatal(err)
+		}
+		if p, err = agent.ExecOnly(exe); err != nil {
+			t.Fatal(err)
+		}
+		if fi, err := os.Stat(p); err != nil || fi.Size() < 1<<20 {
+			t.Errorf("changed, then: %v %v, want the program copied again", fi, err)
+		}
+	}
+	open := t.TempDir()
+	if err := os.Chmod(open, 0o777); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CACHE_DIRECTORY", open)
+	if p, err := agent.ExecOnly(exe); err == nil {
+		t.Errorf("a cache others may write: the copy %s, want it refused", p)
+	}
+}
+
+// A root agent's read runs a copy of the agent that its child's user can't read, so the kernel starts the child not
+// dumpable (#190); that holds only while fs.suid_dumpable isn't 1 ("debug"), where the kernel leaves it dumpable.
+// There, a root agent refuses to read, and starts no child.
+func TestARootAgentRefusesToReadWhereItsChildWouldBeDumpable(t *testing.T) {
+	testenv.Isolate(t)
+	if os.Geteuid() != 0 {
+		t.Skip("not root: the agent's reads run as its own user (CI runs it as root)")
+	}
+	marker, err := os.MkdirTemp("", "homerslab-marker-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(marker)
+	if err := os.Chmod(marker, 0o777); err != nil {
+		t.Fatal(err)
+	}
+	agent.ShellReads(t, 5*time.Second, "cat >/dev/null; id -u >"+filepath.Join(marker, "started")+`; echo '{"error":"deadline"}'`)
+	sysctl := filepath.Join(t.TempDir(), "suid_dumpable")
+	agent.SuidDumpableFrom(t, sysctl)
+	sock := agenttest.Start(t, agenttest.Primary())
+	body := map[string]string{"project": "homerslab-web", "compose": "services: {web: {image: x}}\n"}
+	for _, v := range []string{"1\n", "", "x\n"} {
+		if err := os.WriteFile(sysctl, []byte(v), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		resp, out := post(t, sock, "/v1/projects/read", body)
+		started, _ := os.ReadFile(filepath.Join(marker, "started"))
+		if resp.StatusCode != http.StatusInternalServerError || !strings.Contains(string(out), "no-reader") || len(started) != 0 {
+			t.Errorf("fs.suid_dumpable %q: %d %s, a child started as %q; want 500 no-reader and none", v, resp.StatusCode, out, started)
+		}
+	}
+	for _, v := range []string{"0\n", "2\n"} {
+		if err := os.WriteFile(sysctl, []byte(v), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		os.Remove(filepath.Join(marker, "started"))
+		resp, out := post(t, sock, "/v1/projects/read", body)
+		if started, _ := os.ReadFile(filepath.Join(marker, "started")); resp.StatusCode != http.StatusGatewayTimeout || len(started) == 0 {
+			t.Errorf("fs.suid_dumpable %q: %d %s, a child started as %q; want one started", v, resp.StatusCode, out, started)
+		}
 	}
 }
 

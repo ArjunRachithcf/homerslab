@@ -29,6 +29,8 @@ var projectName = regexp.MustCompile(`^` + engine.ProjectPrefix + `[a-z0-9]([a-z
 var (
 	ErrNotOurs  = errors.New("not one of HomersLab's compose project names (homerslab-<app>)")
 	ErrNotPlain = errors.New("an app's compose file is one plain file: no include, extends, env_file, label_file, profiles, aliases or merge keys; at most 64 KiB, nested at most 64 deep, 64 services and 128 references between them")
+	// ErrOffFloor is a project the floor refuses outright (spec: The floor): one that shares the host's namespaces.
+	ErrOffFloor = errors.New("not allowed for an app")
 )
 
 // OurName says whether name is one of HomersLab's compose project names, homerslab-<app>.
@@ -105,6 +107,9 @@ func (r *Reader) load(ctx context.Context, name string, file []byte) (engine.Pro
 		if s.Extends != nil {
 			return engine.Project{}, fmt.Errorf("%w: %s extends another service", ErrNotPlain, s.Name)
 		}
+		if err := ownNamespaces(s); err != nil {
+			return engine.Project{}, err
+		}
 		svc := engine.Service{Name: s.Name, Image: s.Image, NetworkMode: s.NetworkMode}
 		if s.NetworkMode == "" {
 			for n := range s.Networks {
@@ -160,7 +165,9 @@ func tightens(o string) bool {
 	return false
 }
 
-// loosened is what a service asks for that loosens its container's confinement, each as its compose key says it.
+// loosened is what a service asks for that loosens its container's confinement, each as its compose key says it: what
+// the floor and the extras speak of (privileged; a device or a capability, until extras are approved) and what would
+// undo the app's own level or limits. The namespaces are the floor's, refused as the project is read (ownNamespaces).
 func loosened(s types.ServiceConfig) []string {
 	var out []string
 	add := func(on bool, what string) {
@@ -174,16 +181,43 @@ func loosened(s types.ServiceConfig) []string {
 	add(s.Deploy != nil && s.Deploy.Resources.Reservations != nil && len(s.Deploy.Resources.Reservations.Devices) > 0, "deploy.resources.reservations.devices")
 	add(len(s.Gpus) > 0, "gpus")
 	add(slices.ContainsFunc(s.SecurityOpt, func(o string) bool { return !tightens(o) }), "security_opt")
-	add(s.Pid != "", "pid")
-	add(s.Ipc != "" && s.Ipc != "private" && s.Ipc != "shareable", "ipc")
-	add(s.Uts != "", "uts")
-	add(s.UserNSMode != "", "userns_mode")
-	add(s.Cgroup == "host", "cgroup")
 	add(s.CgroupParent != "", "cgroup_parent")
 	add(s.Runtime != "", "runtime")
 	add(len(s.Sysctls) > 0, "sysctls")
 	add(slices.ContainsFunc(s.VolumesFrom, func(v string) bool { return strings.HasPrefix(v, "container:") }), "volumes_from")
 	return out
+}
+
+// namespaces are the values a service's namespace keys may have, each a namespace of the app's own: its own
+// (Compose's default, ""), or for some keys a named kind of its own, or a service's of the same project ("service:",
+// sharing), which is held to the same rule. Anything else is refused, the host's above all: with pid: host an app sees
+// the node's processes and, at a uid it shares with one, signals or traces it; ipc: host gives it the node's shared
+// memory, uts: host its host name, userns_mode: host its users where the engine remaps them, cgroup: host its cgroups.
+// So is a container's by name (container:), which may be the host's, and Podman's paths (ns:), which may be too. The
+// spec's extras are the machine's network, a device and a capability: these are none of them, so no extra allows
+// them (#190).
+var namespaces = map[string]struct {
+	own     []string
+	service bool
+}{
+	"pid":         {own: []string{""}, service: true},
+	"ipc":         {own: []string{"", "private", "shareable", "none"}, service: true},
+	"uts":         {own: []string{""}},
+	"userns_mode": {own: []string{""}},
+	"cgroup":      {own: []string{"", "private"}},
+}
+
+// ownNamespaces refuses a service that shares a namespace that isn't the app's own (namespaces).
+func ownNamespaces(s types.ServiceConfig) error {
+	for _, n := range []struct{ key, v string }{{"pid", s.Pid}, {"ipc", s.Ipc}, {"uts", s.Uts}, {"userns_mode", s.UserNSMode}, {"cgroup", s.Cgroup}} {
+		key, v := n.key, n.v
+		allowed := namespaces[key]
+		if slices.Contains(allowed.own, v) || (allowed.service && strings.HasPrefix(v, types.ServicePrefix)) {
+			continue
+		}
+		return fmt.Errorf("%w: %s's %s is %q, a namespace that isn't the app's own", ErrOffFloor, s.Name, key, v)
+	}
+	return nil
 }
 
 // The bounds of a plain compose file: the agent parses it as root, so a small file must not make it work hard. Size,
@@ -244,6 +278,11 @@ func plain(file []byte) error {
 			for _, k := range []string{"extends", "env_file", "label_file", "profiles"} {
 				if value(s, k) != nil {
 					return fmt.Errorf("%w: %s", ErrNotPlain, k)
+				}
+			}
+			for k := range namespaces {
+				if v := value(s, k); v != nil && (v.Kind != yaml.ScalarNode || v.ShortTag() != "!!str") {
+					return fmt.Errorf("%w: %s that isn't a string", ErrNotPlain, k)
 				}
 			}
 			for _, k := range []string{"ports", "expose"} {

@@ -294,7 +294,11 @@ func (a *Agent) putApp(w http.ResponseWriter, r *http.Request) {
 	p, err := a.reads.read(ctx, project, []byte(req.Compose))
 	if err != nil {
 		a.log.Warn("reading an app's compose file", "app", id, "err", err)
-		writeJSON(w, http.StatusUnprocessableEntity, map[string]string{"error": "invalid-compose"})
+		code := "invalid-compose"
+		if errors.Is(err, compose.ErrOffFloor) {
+			code = "off-floor"
+		}
+		writeJSON(w, http.StatusUnprocessableEntity, map[string]string{"error": code})
 		return
 	}
 	if code, detail := checkProject(p, req); code != "" {

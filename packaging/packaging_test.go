@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"os"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -91,7 +92,9 @@ func TestTheManagerRunsUnprivilegedAndTheAgentAsRoot(t *testing.T) {
 		// It parses compose files as root: a file it is sent can't take the machine with it.
 		"MemoryMax": "512M", "CPUQuota": "100%",
 		// A read's child killed for memory is the child's end, not the agent's.
-		"OOMPolicy": "continue"} {
+		"OOMPolicy": "continue",
+		// The exec-only copy of the agent its reads run, which their user may enter but not list (#190).
+		"CacheDirectory": "homerslab-agent", "CacheDirectoryMode": "0711"} {
 		if got := agent[k]; len(got) != 1 || got[0] != want {
 			t.Errorf("the agent's %s = %v, want %s", k, got, want)
 		}
@@ -136,7 +139,7 @@ func TestTheManagerRunsUnprivilegedAndTheAgentAsRoot(t *testing.T) {
 		t.Errorf("sysusers.d/homerslab.conf should create the homerslab user: %v %q", err, sysusers)
 	}
 	// The agent's compose reads run as a user of their own, never the shared nobody (#183): no home, no login.
-	if !strings.Contains(string(sysusers), "\nu homerslab-read - \"HomersLab compose reads\" / /usr/sbin/nologin\n") {
+	if !strings.Contains(string(sysusers), "\nu homerslab-read 60602:homerslab-read \"HomersLab compose reads\" / /usr/sbin/nologin\n") {
 		t.Errorf("sysusers.d doesn't make the reads' own user:\n%s", sysusers)
 	}
 }
@@ -239,5 +242,49 @@ func TestTheSignInIsOneUnitRunningTheStandardComposeCommand(t *testing.T) {
 	}
 	if !slices.Contains(agent.RootWrites, "etc/systemd/system/homerslab-authentik.service.d") {
 		t.Error("agent.RootWrites lacks the sign-in's drop-in folder")
+	}
+}
+
+// The packages' users and groups have fixed IDs of their own, outside the ranges app images commonly run as (999, 1000
+// and the like, which sysusers' dynamic system range would hand out): a container that runs as a uid one of them
+// shares could signal or trace its processes, or own its files (#190). They are in 60578–61183, which systemd's
+// UID/GID map leaves unused: above normal users (≤ 60000), systemd-homed's and its mapped host users', below
+// DynamicUser's (61184–65519), nobody, and the ranges rootless engines map containers to.
+func TestThePackagesUsersHaveFixedIDsOutsideAppImages(t *testing.T) {
+	testenv.Isolate(t)
+	b, err := os.ReadFile("sysusers.d/homerslab.conf")
+	if err != nil {
+		t.Fatal(err)
+	}
+	groups, users := map[string]string{}, map[string]string{}
+	for line := range strings.Lines(string(b)) {
+		f := strings.Fields(line)
+		switch {
+		case len(f) >= 3 && f[0] == "g":
+			groups[f[1]] = f[2]
+		case len(f) >= 3 && f[0] == "u":
+			users[f[1]] = f[2]
+		}
+	}
+	seen := map[string]string{}
+	for _, name := range []string{"homerslab", "homerslab-edge", "homerslab-read"} {
+		gid, id := groups[name], users[name]
+		// A user's own group, made first with the same fixed ID: "uid:group", so sysusers never picks another gid.
+		if id != gid+":"+name {
+			t.Errorf("%s: u %q, g %q; want a fixed uid, and its own group of the same fixed gid", name, id, gid)
+			continue
+		}
+		n, err := strconv.Atoi(gid)
+		if err != nil || n < 60578 || n > 61183 {
+			t.Errorf("%s: id %q, want one in 60578–61183", name, gid)
+		}
+		if other, ok := seen[gid]; ok {
+			t.Errorf("%s and %s share the id %s", name, other, gid)
+		}
+		seen[gid] = name
+	}
+	// The agent refuses a read user with any other ids than these.
+	if want := strconv.Itoa(agent.ReadID); groups["homerslab-read"] != want {
+		t.Errorf("homerslab-read's gid is %q, the agent's ReadID %s", groups["homerslab-read"], want)
 	}
 }
