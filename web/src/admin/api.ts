@@ -48,7 +48,7 @@ export class Refused extends Error {
 async function call<T>(method: string, path: string, body?: unknown): Promise<T> {
   const resp = await fetch(path, {
     method,
-    credentials: 'same-origin', // Admin's session cookie: every call wants it (#137, #199)
+    credentials: 'omit',
     headers: body === undefined ? {} : { 'Content-Type': 'application/json' },
     body: body === undefined ? undefined : JSON.stringify(body),
   });

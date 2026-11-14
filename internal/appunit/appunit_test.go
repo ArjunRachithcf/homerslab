@@ -248,3 +248,27 @@ func TestEveryContainerResolvesTheSignInToItsListener(t *testing.T) {
 		t.Error("an app on a node without the sign-in resolves it")
 	}
 }
+
+// Some of an app's services run on their own (a restore's database, #22) exactly as the app's unit runs them: the same
+// compose command and secrets, the same runtime directory, its services without the others (--no-deps).
+func TestSomeServicesRunAsTheUnitRunsThem(t *testing.T) {
+	testenv.Isolate(t)
+	a := withSecrets()
+	args := a.ServicesRun("homerslab-restore-1", []string{"db"})
+	at := slices.Index(args, "--")
+	if at < 0 || args[0] != "--unit=homerslab-restore-1" {
+		t.Fatalf("%q", args)
+	}
+	props := strings.Join(args[:at], "\n") + "\n"
+	for _, line := range strings.Split(string(appunit.UnitFile(a)), "\n") {
+		for _, key := range []string{"LoadCredentialEncrypted=", "ExecStartPre=", "RuntimeDirectory=", "RuntimeDirectoryMode=", "UMask="} {
+			if strings.HasPrefix(line, key) && !strings.Contains(props, "\n"+line+"\n") {
+				t.Errorf("the unit has %q, the services' run doesn't:\n%s", line, props)
+			}
+		}
+	}
+	want := append(a.Compose(), "up", "--no-log-prefix", "--no-deps", "--abort-on-container-exit", "db")
+	if got := args[at+1:]; !slices.Equal(got, want) {
+		t.Errorf("the services' command:\n got %q\nwant %q", got, want)
+	}
+}

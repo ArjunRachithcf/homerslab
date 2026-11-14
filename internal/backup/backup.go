@@ -267,7 +267,7 @@ func (r Repo) runWith(ctx context.Context, stdin []byte, args ...string) ([]byte
 	} else {
 		argv = append(argv, "--no-cache")
 	}
-	var env []string
+	env := []string{"TZ=UTC"} // the times restic reads and writes
 	switch r.Target.Kind {
 	case SFTP:
 		port := r.Target.Port
@@ -326,8 +326,11 @@ func (r Repo) Unlock(ctx context.Context) error {
 }
 
 // Item is one thing to back up: folders, or as a file, a command's output (a database dump) or what the caller hands
-// over (Stdin), with the tags that say whose it is.
+// over (Stdin), with the tags that say whose it is and the time it is of.
 type Item struct {
+	// Time is the snapshot's time, to the second: every item of one run has the run's, so a run's snapshots are one
+	// point to restore to (#22). Now when zero.
+	Time    time.Time
 	Tags    []string
 	Paths   []string
 	Command []string
@@ -338,6 +341,9 @@ type Item struct {
 // Backup saves one snapshot of the item, and returns its id. A run clears stale locks first (Unlock), once.
 func (r Repo) Backup(ctx context.Context, it Item) (string, error) {
 	args := []string{"backup", "--host", r.Node}
+	if !it.Time.IsZero() {
+		args = append(args, "--time", it.Time.UTC().Format(time.DateTime)) // restic reads it in TZ, which is UTC
+	}
 	for _, t := range it.Tags {
 		if !validTag(t) {
 			return "", fmt.Errorf("backup: tag %q", t)
@@ -389,6 +395,18 @@ type Snapshot struct {
 	Host  string    `json:"hostname"`
 	Paths []string  `json:"paths"`
 	Tags  []string  `json:"tags"`
+	// Summary is what the run that made it said of it (restic 0.17 and later keep it in the snapshot).
+	Summary *struct {
+		Bytes uint64 `json:"total_bytes_processed"`
+	} `json:"summary,omitempty"`
+}
+
+// Size is how much data the snapshot holds, in bytes (0 when its run kept no summary).
+func (s Snapshot) Size() uint64 {
+	if s.Summary == nil {
+		return 0
+	}
+	return s.Summary.Bytes
 }
 
 // Snapshots are the repository's snapshots that carry every one of tags, oldest first.
@@ -427,5 +445,30 @@ func (r Repo) Prune(ctx context.Context, k Retention) error {
 	_, err := r.run(ctx, "forget", "--prune", "--max-repack-size", maxRepack, "--group-by", "host,tags",
 		"--keep-hourly", strconv.Itoa(k.Hourly), "--keep-daily", strconv.Itoa(k.Daily),
 		"--keep-weekly", strconv.Itoa(k.Weekly), "--keep-monthly", strconv.Itoa(k.Monthly))
+	return err
+}
+
+var snapshotID = regexp.MustCompile(`^[0-9a-f]{8,64}$`)
+
+// ValidSnapshot says whether id is a snapshot's id, as restic writes it.
+func ValidSnapshot(id string) bool { return snapshotID.MatchString(id) }
+
+// Restore makes the folder into exactly what the snapshot holds of from (the folder it backed up): files the snapshot
+// doesn't hold are deleted, and a link is put back as a link. into is a folder restic may write: the caller has made
+// sure it is the volume's own, and restic's unit can write nowhere else. It is standard restic, as a restore by hand is.
+func (r Repo) Restore(ctx context.Context, snapshot, from, into string) error {
+	if !ValidSnapshot(snapshot) || !ValidPath(from) || !ValidPath(into) {
+		return errors.New("backup: a snapshot, the folder it holds and the folder to restore into")
+	}
+	_, err := r.run(ctx, "restore", "--target", into, "--delete", "--", snapshot+":"+from)
+	return err
+}
+
+// Dump writes the snapshot's one file (a database dump) into the file into, for the app's own restore command to read.
+func (r Repo) Dump(ctx context.Context, snapshot, file, into string) error {
+	if !ValidSnapshot(snapshot) || !ValidFile(file) || !ValidPath(into) {
+		return errors.New("backup: a snapshot, its file and where to write it")
+	}
+	_, err := r.run(ctx, "dump", "--target", into, "--", snapshot, "/"+file)
 	return err
 }

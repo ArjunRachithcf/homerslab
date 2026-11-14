@@ -4,8 +4,8 @@
 // issuer that signs in whoever the test says; and the household's apps, as pages of their own. No container engine
 // anywhere, its own HOME, nothing of the manager's or the agent's.
 import { test as base } from '@playwright/test';
-import { type ChildProcess, spawn } from 'node:child_process';
-import { createHash, generateKeyPairSync, randomBytes, sign, type KeyObject } from 'node:crypto';
+import { type ChildProcess, execFile, spawn } from 'node:child_process';
+import { createHash, generateKeyPairSync, randomBytes, sign, X509Certificate, type KeyObject } from 'node:crypto';
 import { mkdtemp, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import http from 'node:http';
 import https from 'node:https';
@@ -13,10 +13,12 @@ import net from 'node:net';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { edgeArgs, edgeCertificate, type EdgeTLS } from './edge';
+import { promisify } from 'node:util';
 import { bin } from './paths';
 
 const catalog = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', '..', 'catalogs', 'official');
+
+const run = promisify(execFile);
 
 export const domain = 'ferreira.family';
 export type Person = { username: string; name: string; groups: string[] };
@@ -47,15 +49,14 @@ export class HomeWorld {
   /** Who the sign-in signs in next. */
   person: Person = rui;
   port = 0;
-  private tls?: EdgeTLS;
+  spki = '';
   private issuerPort = 0;
 
   private constructor(readonly dir: string) {}
 
   static async start(): Promise<HomeWorld> {
     const w = new HomeWorld(await mkdtemp(path.join(tmpdir(), 'homerslab-home-')));
-    const tls = await edgeCertificate(domain);
-    w.tls = tls;
+    const tls = await w.certificate();
     w.issuer = http.createServer((req, res) => w.serveIssuer(req, res));
     w.issuerPort = await listen(w.issuer);
     w.edge = https.createServer({ key: tls.key, cert: tls.cert }, (req, res) => w.serveEdge(req, res));
@@ -85,8 +86,17 @@ export class HomeWorld {
 
   /** Chromium's flags: the household's names lead to the edge's stand-in, whose certificate it trusts. */
   args(): string[] {
-    if (!this.tls) throw new Error('the edge’s stand-in isn’t started');
-    return edgeArgs(domain, this.tls);
+    return [`--host-resolver-rules=MAP *.${domain} 127.0.0.1`, `--ignore-certificate-errors-spki-list=${this.spki}`];
+  }
+
+  /** The edge's certificate for the household's names, and its key: Chromium trusts it by its public key's hash. */
+  private async certificate(): Promise<{ key: Buffer; cert: Buffer }> {
+    const [key, cert] = [this.at('tls.key'), this.at('tls.crt')];
+    await run('openssl', ['req', '-x509', '-newkey', 'ec', '-pkeyopt', 'ec_paramgen_curve:P-256', '-nodes', '-keyout', key, '-out', cert,
+      '-days', '1', '-subj', `/CN=*.${domain}`, '-addext', `subjectAltName=DNS:*.${domain}`]);
+    const [k, c] = await Promise.all([readFile(key), readFile(cert)]);
+    this.spki = createHash('sha256').update(new X509Certificate(c).publicKey.export({ type: 'spki', format: 'der' })).digest('base64');
+    return { key: k, cert: c };
   }
 
   /** The projection, as the manager writes it: whole, by a rename. */

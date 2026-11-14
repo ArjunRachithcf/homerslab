@@ -91,6 +91,8 @@ type Config struct {
 	Restic string
 	// VolumesDir is where the engine keeps its local volumes, each <name>/_data (DockerVolumes when "").
 	VolumesDir string
+	// HealthWait is how long a restore waits for the app to be healthy again (five minutes when 0).
+	HealthWait time.Duration
 	// Probe asks an app's upstream for a health check's path, as the edge would for the app's name: an HTTP request
 	// when nil.
 	Probe func(ctx context.Context, upstream netip.AddrPort, name, path string) (ok bool, detail string)
@@ -116,6 +118,7 @@ type Agent struct {
 	installs                   sync.Mutex       // apps' installs, one at a time, outside mu
 	backingUp                  sync.Mutex       // the node's backup runs, one at a time, outside mu
 	backupRuns                 atomic.Int64     // restic's runs so far, for their units' names
+	restoringApps              map[string]bool  // apps being restored, under mu: never installed meanwhile
 	edgeDown                   string           // the edge's last check's error, so a down edge is logged once
 	network                    lan.Network      // the network's last reading, which the table keeps while the kernel can't be asked
 	networkErr                 bool             // the network can't be read, which is logged once
@@ -229,6 +232,9 @@ func New(ctx context.Context, c Config) (*Agent, error) {
 	}
 	if c.Users == nil {
 		c.Users = passwdUsers(passwdFile)
+	}
+	if c.HealthWait == 0 {
+		c.HealthWait = healthWait
 	}
 	if c.Probe == nil {
 		c.Probe = probe
@@ -456,6 +462,8 @@ func (a *Agent) Handler() http.Handler {
 	mux.HandleFunc("PUT /v1/apps/{id}", a.putApp)
 	mux.HandleFunc("GET /v1/apps", a.getApps)
 	mux.HandleFunc("GET /v1/apps/{id}/logs", a.getAppLogs)
+	mux.HandleFunc("GET /v1/apps/{id}/backups", a.getAppBackups)
+	mux.HandleFunc("POST /v1/apps/{id}/restore", a.postRestore)
 	mux.HandleFunc("PUT /v1/backups", a.putBackups)
 	mux.HandleFunc("POST /v1/backups", a.postBackups)
 	mux.HandleFunc("PUT /v1/backups/manager", a.putManagerBackup)

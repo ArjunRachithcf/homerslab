@@ -243,3 +243,43 @@ func TestTheContractSuitesResticIsThePinnedOne(t *testing.T) {
 		}
 	}
 }
+
+// A restore is standard restic, on plain values only: a snapshot's id, the folder it backed up and the folder to make
+// exactly like it (--delete), or a dump's one file. Nothing with `..`, a flag or a relative path reaches restic.
+func TestARestoreTakesOnlyASnapshotAndPlainFolders(t *testing.T) {
+	testenv.Isolate(t)
+	rec := &recorder{}
+	r := backup.Repo{Restic: "restic", Target: targets["disk"], Node: "primary", Dir: "/run/credentials/u", Run: rec.run}
+	ctx := context.Background()
+	const snap = "0123abcd4567ef890123abcd4567ef890123abcd4567ef890123abcd4567ef89"
+	vol := "/var/lib/docker/volumes/homerslab-immich_library/_data"
+	if err := r.Restore(ctx, snap, vol, vol); err != nil {
+		t.Fatal(err)
+	}
+	if got := rec.sub("restore"); len(got) != 1 || !slices.Equal(got[0][slices.Index(got[0], "restore"):], []string{"restore", "--target", vol, "--delete", "--", snap + ":" + vol}) {
+		t.Errorf("restore: %q", got)
+	}
+	if err := r.Dump(ctx, snap, "immich.sql", "/var/lib/homerslab/restore/immich.sql"); err != nil {
+		t.Fatal(err)
+	}
+	if got := rec.sub("dump"); len(got) != 1 || !slices.Equal(got[0][slices.Index(got[0], "dump"):], []string{"dump", "--target", "/var/lib/homerslab/restore/immich.sql", "--", snap, "/immich.sql"}) {
+		t.Errorf("dump: %q", got)
+	}
+	before := len(rec.sub("restore")) + len(rec.sub("dump"))
+	for _, bad := range [][3]string{
+		{"latest", vol, vol}, {"--target=/etc", vol, vol}, {snap + ":/etc", vol, vol}, {snap, vol + "/../../etc", vol},
+		{snap, vol, vol + "/../../../../etc"}, {snap, vol, "relative"}, {snap, "..", vol}, {snap, vol, "/"},
+	} {
+		if err := r.Restore(ctx, bad[0], bad[1], bad[2]); err == nil {
+			t.Errorf("restore %q was run", bad)
+		}
+	}
+	for _, bad := range [][3]string{{snap, "../shadow", "/x/y"}, {snap, "a/b.sql", "/x/y"}, {"latest", "immich.sql", "/x/y"}, {snap, "immich.sql", "/x/../y"}} {
+		if err := r.Dump(ctx, bad[0], bad[1], bad[2]); err == nil {
+			t.Errorf("dump %q was run", bad)
+		}
+	}
+	if n := len(rec.sub("restore")) + len(rec.sub("dump")); n != before {
+		t.Errorf("restic ran %d times for bad values", n-before)
+	}
+}

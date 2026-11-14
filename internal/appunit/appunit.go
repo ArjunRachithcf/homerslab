@@ -211,18 +211,8 @@ func UnitFile(a App) []byte {
 	w("RuntimeDirectory=%s", path.Base(run))
 	w("RuntimeDirectoryMode=0700")
 	w("UMask=0077")
-	secrets := sortedSecrets(a.Secrets)
-	for _, s := range secrets {
-		w("LoadCredentialEncrypted=%s:%s", Credential(a.ID, s.Name), a.CredentialFile(s.Name))
-	}
-	var copies []string
-	for _, s := range secrets {
-		to := path.Join(run, s.Name)
-		w("ExecStartPre=/usr/bin/install -m 0400 -o %d -g %d %%d/%s %s", s.UID, s.UID, Credential(a.ID, s.Name), to)
-		copies = append(copies, to)
-	}
-	if a.SELinux && len(copies) > 0 {
-		w("ExecStartPre=/usr/bin/chcon -t container_file_t -l %s %s", a.Level, strings.Join(copies, " "))
+	for _, p := range a.secretProperties() {
+		w("%s", p)
 	}
 	w("ExecStart=%s up --no-log-prefix --quiet-pull --abort-on-container-exit", compose)
 	w("# Not into the journal: compose writes the containers' output there, secrets and all; the agent reads the app's")
@@ -240,6 +230,40 @@ func UnitFile(a App) []byte {
 	w("[Install]")
 	w("WantedBy=multi-user.target")
 	return []byte(b.String())
+}
+
+// secretProperties are the unit's lines that hand the app's secrets to its containers: each credential loaded, copied
+// into the runtime directory for the one container user that reads it, at the app's own SELinux level.
+func (a App) secretProperties() []string {
+	var out, copies []string
+	secrets := sortedSecrets(a.Secrets)
+	for _, s := range secrets {
+		out = append(out, fmt.Sprintf("LoadCredentialEncrypted=%s:%s", Credential(a.ID, s.Name), a.CredentialFile(s.Name)))
+	}
+	for _, s := range secrets {
+		to := path.Join(RunDir(a.ID), s.Name)
+		out = append(out, fmt.Sprintf("ExecStartPre=/usr/bin/install -m 0400 -o %d -g %d %%d/%s %s", s.UID, s.UID, Credential(a.ID, s.Name), to))
+		copies = append(copies, to)
+	}
+	if a.SELinux && len(copies) > 0 {
+		out = append(out, fmt.Sprintf("ExecStartPre=/usr/bin/chcon -t container_file_t -l %s %s", a.Level, strings.Join(copies, " ")))
+	}
+	return out
+}
+
+// ServicesRun is systemd-run's arguments for running only some of the app's services, as its unit runs them all (the
+// same compose command, the same secrets in the same runtime directory), while the app's own unit is stopped: a
+// restore hands a dump to its database with nothing else of the app running (#22). Its unit's name is unit.
+func (a App) ServicesRun(unit string, services []string) []string {
+	args := []string{"--unit=" + unit, "--quiet", "--collect", "--service-type=exec",
+		"-p", "RuntimeDirectory=" + path.Base(RunDir(a.ID)), "-p", "RuntimeDirectoryMode=0700", "-p", "UMask=0077",
+		"-p", "StandardOutput=null", "-p", "StandardError=null", "-p", "Requires=docker.service", "-p", "After=docker.service"}
+	for _, p := range a.secretProperties() {
+		args = append(args, "-p", p)
+	}
+	args = append(args, "-p", "ExecStopPost="+strings.Join(append(a.Compose(), "stop"), " "), "--")
+	args = append(args, a.Compose()...)
+	return append(append(args, "up", "--no-log-prefix", "--no-deps", "--abort-on-container-exit"), services...)
 }
 
 func sortedSecrets(s []Secret) []Secret {

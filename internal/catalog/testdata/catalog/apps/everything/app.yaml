@@ -37,7 +37,7 @@ data:
   - {what: The library, service: web, path: /data}
   - what: Its database
     service: web
-    dump: {command: [pg_dump, --username=postgres, everything], file: everything.sql}
+    dump: {command: [pg_dump, --username=postgres, everything], file: everything.sql, restore: [psql, --username=postgres, everything]}
   - {what: Thumbnails, service: web, path: /cache, backup: false, why: They are made again from the library}
 secrets:
   - {name: db-password, what: the database password, uid: 999}

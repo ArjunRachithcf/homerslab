@@ -277,6 +277,98 @@ func contract(t *testing.T, target backup.Target, creds backup.Credentials, secr
 		}
 	})
 
+	t.Run("a restore makes the folder what the snapshot held, and never writes through a link or out of it", func(t *testing.T) {
+		vol := filepath.Join(t.TempDir(), "_data")
+		outside := t.TempDir()
+		write := func(name, body string) {
+			t.Helper()
+			if err := os.MkdirAll(filepath.Dir(filepath.Join(vol, name)), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(vol, name), []byte(body), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+		write("photo.jpg", "the photo")
+		write("albums/shadow", "an album")
+		if err := os.Symlink("/etc", filepath.Join(vol, "etc")); err != nil {
+			t.Fatal(err)
+		}
+		// A run's items carry the run's time, to the second, as restic keeps it: one point to restore the app to.
+		run := time.Date(2026, 11, 13, 9, 0, 7, 0, time.UTC)
+		item := backup.Item{Time: run, Tags: []string{"app=restored", "data=server:/library"}, Paths: []string{vol}}
+		snap, err := primary.Backup(ctx, item)
+		if err != nil {
+			t.Fatal(err)
+		}
+		// Since then the app edited a photo, added one, and (compromised) made its albums folder a link out of the
+		// volume, hoping a restore, as root, writes the album through it.
+		write("photo.jpg", "edited")
+		write("new.jpg", "new")
+		if err := os.RemoveAll(filepath.Join(vol, "albums")); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(outside, filepath.Join(vol, "albums")); err != nil {
+			t.Fatal(err)
+		}
+		if err := primary.Restore(ctx, snap, vol, vol); err != nil {
+			t.Fatal(err)
+		}
+		if b, _ := os.ReadFile(filepath.Join(vol, "photo.jpg")); string(b) != "the photo" {
+			t.Errorf("the photo after the restore: %q", b)
+		}
+		if _, err := os.Lstat(filepath.Join(vol, "new.jpg")); !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("a file the snapshot doesn't hold is still there: %v", err)
+		}
+		if fi, err := os.Lstat(filepath.Join(vol, "albums")); err != nil || !fi.IsDir() {
+			t.Errorf("the albums folder after the restore: %v %v, want a folder again", fi, err)
+		}
+		if left, _ := os.ReadDir(outside); len(left) != 0 {
+			t.Errorf("the restore wrote through the app's link, outside the volume: %v", left)
+		}
+		if fi, err := os.Lstat(filepath.Join(vol, "etc")); err != nil || fi.Mode()&os.ModeSymlink == 0 {
+			t.Errorf("the snapshot's link restored as %v %v, not a link", fi, err)
+		}
+		if _, err := os.Lstat("/etc/photo.jpg"); !errors.Is(err, os.ErrNotExist) {
+			t.Error("the restore followed the snapshot's link into /etc")
+		}
+		// (A file made from a command has no SELinux label to put back; a volume's files keep theirs.)
+		// A file whose name climbs out (`..`) is one restic never stores as such: it lands inside the folder restored
+		// into, and a restore of anything but a plain folder is never run.
+		if _, err := backup.Raw(ctx, primary, "backup", "--host", "primary", "--stdin-from-command", "--stdin-filename", "../../climbed/evil", "--", "printf", "x"); err != nil {
+			t.Fatal(err)
+		}
+		climbed, err := primary.Snapshots(ctx)
+		if err != nil || len(climbed) == 0 {
+			t.Fatalf("the snapshots: %v", err)
+		}
+		last := climbed[len(climbed)-1]
+		base := t.TempDir()
+		into := filepath.Join(base, "a", "b")
+		if err := os.MkdirAll(into, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := backup.Raw(ctx, primary, "restore", "--target", into, "--exclude-xattr", "security.*", "--", last.ID); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := os.Lstat(filepath.Join(base, "climbed")); !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("a `..` name left the folder restored into: %v", err)
+		}
+		if b, _ := os.ReadFile(filepath.Join(into, "climbed", "evil")); string(b) != "x" || !slices.Equal(last.Paths, []string{"/climbed/evil"}) {
+			t.Errorf("the climbing name was stored as %q, restored as %q", last.Paths, b)
+		}
+		if err := primary.Restore(ctx, last.ID, "/climbed/..", into); err == nil {
+			t.Error("a restore of a path with `..` was run")
+		}
+		if _, err := backup.Raw(ctx, primary, "forget", last.ID); err != nil {
+			t.Fatal(err)
+		}
+		kept, err := primary.Snapshots(ctx, "app=restored")
+		if err != nil || len(kept) != 1 || kept[0].Size() != uint64(len("the photo")+len("an album")) || !kept[0].Time.Equal(run) {
+			t.Errorf("the snapshot: %+v %v, want its size and the run's time", kept, err)
+		}
+	})
+
 	t.Run("a dump whose command fails saves nothing", func(t *testing.T) {
 		failing := backup.Item{Tags: []string{"app=immich", "data=database:broken.sql"}, Command: []string{"false"}, File: "broken.sql"}
 		if _, err := primary.Backup(ctx, failing); err == nil {

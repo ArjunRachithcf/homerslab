@@ -1,5 +1,5 @@
 {
-  "id": "p-0438f7911a8f4029a88e32a74f0c1555",
+  "id": "p-496303b9a2cd6360fb400edaa36b8394",
   "kind": "install",
   "madeAt": "2026-11-10T13:30:00Z",
   "app": {
@@ -10,7 +10,7 @@
     "tier": "verified",
     "catalog": "official",
     "publisher": "HomersLab",
-    "definition": "sha256:055302683ab949f9333bed35de7554b87f1f34e8183e1b33ad7a5cc1c7a08fe2"
+    "definition": "sha256:7d2004363594f55b5681e4fe5dc7edd957c2070c4d4fc73df8257cf5d2bcb6b4"
   },
   "name": {
     "host": "photos.ferreira.family",
@@ -43,11 +43,13 @@
     "data": [
       {
         "what": "The photo library",
-        "kind": "folder"
+        "kind": "folder",
+        "data": "server:/data"
       },
       {
         "what": "Its database",
-        "kind": "dump"
+        "kind": "dump",
+        "data": "database:immich.sql"
       }
     ],
     "left": [

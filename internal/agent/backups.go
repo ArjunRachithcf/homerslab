@@ -51,6 +51,16 @@ type AppData struct {
 	Path    string   `json:"path,omitempty"`
 	Dump    []string `json:"dump,omitempty"`
 	File    string   `json:"file,omitempty"`
+	// Restore is the dump's own way back: a command in the same service that reads the dump on its standard input.
+	Restore []string `json:"restore,omitempty"`
+}
+
+// key is the data's name among its app's: its service and its folder, or its dump's file.
+func (d AppData) key() string {
+	if d.Path != "" {
+		return d.Service + ":" + d.Path
+	}
+	return d.Service + ":" + d.File
 }
 
 // backupState is the node's target and repository, as the agent keeps them in agent.json. None of it is secret.
@@ -59,6 +69,28 @@ type backupState struct {
 	Target backup.Target `json:"target"`
 	// Files are the credential IDs sealed for it, in the backup folder.
 	Files []string `json:"files"`
+	// Incomplete are the latest snapshots restic saved without some of their files: never a point to restore to.
+	Incomplete []string `json:"incomplete,omitempty"`
+}
+
+// maxIncomplete is how many incomplete snapshots the agent remembers; prune forgets older ones long before.
+const maxIncomplete = 2000
+
+// incomplete remembers that restic saved a snapshot without some of its files.
+func (a *Agent) incomplete(id string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.state.Backup == nil || !backup.ValidSnapshot(id) {
+		return
+	}
+	b := a.state.Backup
+	b.Incomplete = append(b.Incomplete, id)
+	if n := len(b.Incomplete); n > maxIncomplete {
+		b.Incomplete = slices.Clone(b.Incomplete[n-maxIncomplete:])
+	}
+	if err := a.save(); err != nil {
+		a.log.Error("saving the agent's state", "err", err)
+	}
 }
 
 // BackupResult is one item of a run: whose (an app, or the platform's), which data, and its snapshot or why not.
@@ -82,7 +114,7 @@ func validData(data []AppData) bool {
 	for _, d := range data {
 		folder := d.Path != "" && d.Dump == nil && d.File == "" && backup.ValidPath(d.Path)
 		dump := d.Path == "" && backup.ValidCommand(d.Dump) && backup.ValidFile(d.File)
-		if !serviceName.MatchString(d.Service) || folder == dump {
+		if !serviceName.MatchString(d.Service) || folder == dump || d.Restore != nil && (!dump || !backup.ValidCommand(d.Restore)) {
 			return false
 		}
 	}
@@ -101,9 +133,26 @@ func (a *Agent) backupDir() string { return filepath.Join(a.cfg.StateDir, "backu
 // The longest the agent waits for one restic run: a first backup of a photo library takes hours.
 const backupWait = 12 * time.Hour
 
+// writes are what a run of restic may write besides its cache and a disk target: nothing for a backup; for a restore,
+// the one volume's folder it restores into, or the folder a dump is written to for its app's restore command.
+type writes struct {
+	into  string // a volume's folder on the machine
+	dumps bool   // restoreDir
+}
+
+// restoreDir is where a dump waits for its app's restore command: a state folder of the unit's, on the app-data disk,
+// for root alone.
+var restoreDir = filepath.Join(node.DataPath, "restore")
+
 // repo is the node's repository for one run of restic, in a unit of its own, with the credentials sealed in dir: a
-// new unit's name, and the credentials folder systemd makes for it, each time.
-func (a *Agent) repo(st backupState, dir string) backup.Repo {
+// new unit's name, and the credentials folder systemd makes for it, each time. The unit reads everything and writes
+// only its cache and a disk target.
+func (a *Agent) repo(st backupState, dir string) backup.Repo { return a.repoWriting(st, dir, writes{}) }
+
+// repoWriting is repo, for a restore: the unit may also write w, and nothing else. Whatever a snapshot holds and
+// whatever restic made of it, the rest of the machine is read-only to the run (ProtectSystem=strict; no device, no
+// kernel setting), so no link and no name in a snapshot leads a restore out of the volume it restores.
+func (a *Agent) repoWriting(st backupState, dir string, w writes) backup.Repo {
 	restic := a.cfg.Restic
 	if restic == "" {
 		restic = backup.Restic
@@ -116,11 +165,26 @@ func (a *Agent) repo(st backupState, dir string) backup.Repo {
 			return nil, errors.New("backup: one run of restic per unit")
 		}
 		ran = true
+		state, caps := strings.TrimPrefix(backupCache, "/var/lib/"), "CAP_DAC_READ_SEARCH"
+		if w.dumps {
+			state += " " + strings.TrimPrefix(restoreDir, "/var/lib/")
+		}
+		if w.into != "" {
+			// A volume's files are the app's users': the run may write them, and give them their owners and modes back.
+			caps += " CAP_DAC_OVERRIDE CAP_CHOWN CAP_FOWNER CAP_FSETID"
+		}
 		args := []string{"--unit=" + unit, "--quiet", "--wait", "--pipe", "--collect", "--service-type=exec",
-			"-p", "StateDirectory=" + strings.TrimPrefix(backupCache, "/var/lib/"), "-p", "ProtectSystem=strict", "-p", "PrivateTmp=yes",
-			"-p", "NoNewPrivileges=yes", "-p", "CapabilityBoundingSet=CAP_DAC_READ_SEARCH"}
+			"-p", "StateDirectory=" + state, "-p", "ProtectSystem=strict", "-p", "PrivateTmp=yes",
+			"-p", "NoNewPrivileges=yes", "-p", "CapabilityBoundingSet=" + caps}
 		if st.Target.Kind == backup.Disk {
 			args = append(args, "-p", "ReadWritePaths="+st.Target.Path)
+		}
+		if w.into != "" || w.dumps {
+			args = append(args, "-p", "StateDirectoryMode=0700", "-p", "PrivateDevices=yes", "-p", "ProtectKernelTunables=yes",
+				"-p", "ProtectControlGroups=yes", "-p", "ProtectKernelModules=yes")
+		}
+		if w.into != "" {
+			args = append(args, "-p", "ReadWritePaths="+w.into)
 		}
 		for _, f := range st.Files {
 			args = append(args, "-p", "LoadCredentialEncrypted="+f+":"+filepath.Join(dir, f+".cred"))
@@ -286,31 +350,10 @@ func (a *Agent) postBackups(w http.ResponseWriter, r *http.Request) {
 	a.unlock(ctx, *st)
 	out := Backups{Results: []BackupResult{}}
 	for _, id := range ids {
-		var mounts map[string][]engine.Mount
-		var mountsErr error
+		m := &appMounts{}
+		at := a.cfg.Now() // each app's items are one point to restore it to
 		for _, d := range data[id] {
-			res := BackupResult{App: id, Data: d.Service + ":" + d.Path}
-			it := backup.Item{Tags: []string{"app=" + id}}
-			if d.Path != "" {
-				if mounts == nil && mountsErr == nil {
-					asked, cancel := context.WithTimeout(ctx, engineWait)
-					mounts, mountsErr = a.cfg.Engine.Mounts(asked, appunit.Project(id))
-					cancel()
-				}
-				src, why := a.onMachine(id, mounts, mountsErr, d)
-				if why != "" {
-					res.Error = why
-					a.log.Error("backing up an app's folder", "app", id, "data", res.Data, "why", why, "err", mountsErr)
-					out.Results = append(out.Results, res)
-					continue
-				}
-				it.Paths = []string{src}
-			} else {
-				res.Data = d.Service + ":" + d.File
-				it.Command, it.File = slices.Concat(apps[id].Compose(), []string{"exec", "-T", d.Service}, d.Dump), d.File
-			}
-			it.Tags = append(it.Tags, "data="+res.Data)
-			out.Results = append(out.Results, a.backUp(ctx, *st, it, res))
+			out.Results = append(out.Results, a.backUpData(ctx, *st, id, apps[id], d, m, at))
 		}
 	}
 	if signIn {
@@ -318,6 +361,43 @@ func (a *Agent) postBackups(w http.ResponseWriter, r *http.Request) {
 		out.Results = append(out.Results, a.backUp(ctx, *st, it, BackupResult{Platform: "sign-in", Data: "postgresql:authentik.sql"}))
 	}
 	writeJSON(w, http.StatusOK, out)
+}
+
+// appMounts are an app's volumes as the engine has them, asked once for a run's items.
+type appMounts struct {
+	asked  bool
+	mounts map[string][]engine.Mount
+	err    error
+}
+
+func (a *Agent) mountsOf(ctx context.Context, id string, m *appMounts) {
+	if m.asked {
+		return
+	}
+	asked, cancel := context.WithTimeout(ctx, engineWait)
+	defer cancel()
+	m.mounts, m.err = a.cfg.Engine.Mounts(asked, appunit.Project(id))
+	m.asked = true
+}
+
+// backUpData backs up one thing of an app's, as of at, as its plan said: a folder, where its volume is on the machine, or a dump,
+// run in its service through the app's own compose command.
+func (a *Agent) backUpData(ctx context.Context, st backupState, id string, u appunit.App, d AppData, m *appMounts, at time.Time) BackupResult {
+	res := BackupResult{App: id, Data: d.key()}
+	it := backup.Item{Time: at, Tags: []string{"app=" + id, "data=" + res.Data}}
+	if d.Path != "" {
+		a.mountsOf(ctx, id, m)
+		src, why := a.onMachine(id, m.mounts, m.err, d)
+		if why != "" {
+			res.Error = why
+			a.log.Error("backing up an app's folder", "app", id, "data", res.Data, "why", why, "err", m.err)
+			return res
+		}
+		it.Paths = []string{src}
+	} else {
+		it.Command, it.File = slices.Concat(u.Compose(), []string{"exec", "-T", d.Service}, d.Dump), d.File
+	}
+	return a.backUp(ctx, st, it, res)
 }
 
 // DockerVolumes is where Docker keeps its local volumes.
@@ -395,6 +475,7 @@ func (a *Agent) backUp(ctx context.Context, st backupState, it backup.Item, res 
 		return res
 	case errors.Is(err, backup.ErrIncomplete):
 		res.Snapshot, res.Error = id, "incomplete"
+		a.incomplete(id)
 	case errors.Is(err, backup.ErrLocked):
 		res.Error = "locked"
 	case errors.Is(err, backup.ErrWrongKey):

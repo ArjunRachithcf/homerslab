@@ -25,3 +25,6 @@ func IssuanceZone(i Issuance, p dns.Provider, b dns.Book) *dns.Owned {
 func ReconcileZone(ctx context.Context, i Issuance, p dns.Provider, b dns.Book) error {
 	return realDomains{book: b}.reconcile(ctx, i, p)
 }
+
+// WaitRestores waits until every restore under way has ended.
+func (m *Manager) WaitRestores() { m.restores.Wait() }

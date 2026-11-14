@@ -58,7 +58,10 @@ data:
   - {what: The photo library, service: server, path: /data}
   - what: Its database
     service: database
-    dump: {command: [pg_dump, --clean, --if-exists, --username=postgres, immich], file: immich.sql}
+    dump:
+      command: [pg_dump, --clean, --if-exists, --username=postgres, immich]
+      file: immich.sql
+      restore: [psql, --set=ON_ERROR_STOP=1, --single-transaction, --username=postgres, --dbname=immich]
   - {what: The database's own files, service: database, path: /var/lib/postgresql/data, backup: false, why: The dump holds them}
   - {what: Machine-learning models, service: machine-learning, path: /cache, backup: false, why: Immich downloads them again}
 

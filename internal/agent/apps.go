@@ -359,8 +359,12 @@ func (a *Agent) putApp(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.mu.Lock()
-	prev := a.state.Apps[id]
+	prev, restoring := a.state.Apps[id], a.restoringApps[id]
 	a.mu.Unlock()
+	if restoring {
+		fail(w, http.StatusConflict, "restore-running")
+		return
+	}
 	if _, there := states[project]; there && prev == nil {
 		a.log.Warn("refused to install over a compose project HomersLab didn't create", "project", project)
 		fail(w, http.StatusConflict, "not-ours")
