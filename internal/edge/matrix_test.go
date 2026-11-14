@@ -54,6 +54,7 @@ const (
 	adminFile  = "/run/homerslab-edge/admin.sock"
 	credDir    = "/run/credentials/homerslab-edge.service"
 	helperBin  = "/hl.test"
+	signInStub = "10.216.3.10:9000"
 	helperMode = "HLTEST16_HELPER"
 )
 
@@ -78,6 +79,10 @@ func helper(mode, arg string) int {
 		_ = os.Chmod(adminSock, 0o660)
 		_ = http.Serve(ln, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			fmt.Fprintf(w, "Admin, at %s", r.Host)
+		}))
+	case "authentik": // the sign-in's server, on the sign-in network: it says what reached it
+		_ = http.ListenAndServe(signInStub, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			fmt.Fprintf(w, "Authentik, at %s %s", r.Host, r.URL.RequestURI())
 		}))
 	case "load", "config": // the agent, on the edge's admin socket
 		c := edge.NewClient(adminFile)
@@ -119,7 +124,8 @@ func helper(mode, arg string) int {
 // request is one request a browser makes: to an address, with a TLS server name and a Host.
 type request struct {
 	Addr, SNI, Host string
-	Plain           bool // plain HTTP, no TLS
+	Path            string // as sent, escapes and all; "/" when empty
+	Plain           bool   // plain HTTP, no TLS
 	CA              string
 }
 
@@ -137,6 +143,9 @@ func (q request) do(ctx context.Context) string {
 		scheme = "http"
 	}
 	req, _ := http.NewRequestWithContext(ctx, "GET", scheme+"://"+q.Host+"/", nil)
+	if q.Path != "" {
+		req.URL.Opaque = "//" + q.Host + q.Path // sent exactly as written
+	}
 	req.Host = q.Host
 	resp, err := (&http.Client{Transport: tr, Timeout: 8 * time.Second}).Do(req)
 	if err != nil {
@@ -158,7 +167,7 @@ func TestTheEdgesRequestMatrix(t *testing.T) {
 
 	cfg := edge.Config{AdminSocket: adminFile, Storage: "/var/lib/homerslab-edge", Listen: []netip.Addr{netip.MustParseAddr(edgeMesh)},
 		Port: 443, Certificates: []edge.Certificate{{Domain: "example.test", CertFile: credDir + "/tls-example.test.crt", KeyFile: credDir + "/tls-example.test.key"}},
-		Admin: &edge.Site{Name: "admin.example.test", Upstream: adminSock}}
+		Admin: &edge.Site{Name: "admin.example.test", Upstream: adminSock}, SignIn: &edge.Site{Name: "auth.example.test", Dial: signInStub}}
 	want, err := edge.Render(cfg)
 	if err != nil {
 		t.Fatal(err)
@@ -230,11 +239,33 @@ func TestTheEdgesRequestMatrix(t *testing.T) {
 			q: request{Addr: edgeLAN + ":443", SNI: "admin.example.test", Host: "admin.example.test"}, want: "error: ", notWants: "Admin"},
 		{name: "Admin's name, from the LAN, at the mesh address routed through the edge's machine: the firewall table drops it",
 			from: "laptop-on-the-lan", q: toMesh, want: "error: ", notWants: "Admin"},
+		{name: "the sign-in, from the mesh: the provider, at its own name", from: "phone",
+			q:    request{Addr: edgeMesh + ":443", SNI: "auth.example.test", Host: "auth.example.test", Path: "/if/flow/homerslab-sign-in/"},
+			want: "200 Authentik, at auth.example.test /if/flow/homerslab-sign-in/"},
+		{name: "the sign-in, from the LAN at the mesh address: dropped", from: "laptop-on-the-lan",
+			q: request{Addr: edgeMesh + ":443", SNI: "auth.example.test", Host: "auth.example.test"}, want: "error: ", notWants: "Authentik"},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			got := ask(row.from, row.q)
 			if !strings.HasPrefix(got, row.want) || (row.notWants != "" && strings.Contains(got, row.notWants)) {
 				t.Errorf("%s asks %+v: %q, want %q…", row.from, row.q.Host, got, row.want)
+			}
+		})
+	}
+
+	// Authentik's first-admin flow is refused on every listener before the provider sees it, its page and its executor
+	// API alike, however the path is written (#84). Today the edge has one listener for the sign-in, the mesh one; the
+	// sign-in listener (#19) and the public listener (#32) take the same rows.
+	for _, path := range []string{
+		"/if/flow/initial-setup/", "/if/flow/initial-setup", "/if/flow/initial-setup/?next=/",
+		"/api/v3/flows/executor/initial-setup/", "/api/v3/flows/executor/initial-setup/?query=", "/api/v3/flows/executor/initial-setup",
+		"/api/v3/flows/instances/initial-setup/execute/", "/IF/FLOW/Initial-Setup/", "/if/flow/initial%2Dsetup/",
+		"/api/v3/flows/executor/initial%2dsetup/", "/if/flow/initial-setup%2F",
+	} {
+		t.Run("the first-admin flow at "+path+": 403, never the provider", func(t *testing.T) {
+			got := ask("phone", request{Addr: edgeMesh + ":443", SNI: "auth.example.test", Host: "auth.example.test", Path: path})
+			if !strings.HasPrefix(got, "403 ") || strings.Contains(got, "Authentik") {
+				t.Errorf("%s: %q", path, got)
 			}
 		})
 	}
@@ -373,12 +404,13 @@ func up(t *testing.T, engine, chain, key string) *world {
 		{path: strings.TrimPrefix(credDir, "/") + "/tls-example.test.key", body: []byte(key), mode: 0o400, uid: 4100},
 		{path: strings.TrimPrefix(helperBin, "/"), body: bin, mode: 0o755},
 	})
-	for _, m := range []string{"admin", "phone", "laptop-on-the-lan"} {
+	for _, m := range []string{"admin", "authentik", "phone", "laptop-on-the-lan"} {
 		w.copy(t, m, []file{{path: strings.TrimPrefix(helperBin, "/"), body: bin, mode: 0o755}})
 	}
 	w.compose(t, "start")
 	w.docker(t, nil, "exec", "-u", "0", container("admin"), "sh", "-c", "chown 4200:4100 /run/homerslab-admin && chmod 0750 /run/homerslab-admin")
 	w.docker(t, nil, "exec", "-d", "-u", "4200:4100", "-e", helperMode+"=admin", container("admin"), helperBin, "-")
+	w.docker(t, nil, "exec", "-d", "-e", helperMode+"=authentik", container("authentik"), helperBin, "-")
 	for range 100 {
 		if _, err := w.helperErr("edge", "0:"+edgeUID, "config", nil, ""); err == nil {
 			return w

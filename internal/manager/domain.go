@@ -306,7 +306,11 @@ func (m *Manager) installCertificate(ctx context.Context, ans map[string]string,
 	if err := m.agent.edgeCertificate(ctx, domain, c.Chain, c.Key); err != nil {
 		return fmt.Errorf("%w: %v", errEdge, err)
 	}
-	if err := m.agent.edgeSites(ctx, agent.EdgeSites{Port: householdPort(ans), Admin: AdminName(domain)}); err != nil {
+	sites := agent.EdgeSites{Port: householdPort(ans), Admin: AdminName(domain)}
+	if ans[ansServed] != "" {
+		sites.SignIn = household(ans).SignIn() // served since the household account was set up: kept
+	}
+	if err := m.agent.edgeSites(ctx, sites); err != nil {
 		return fmt.Errorf("%w: %v", errEdge, err)
 	}
 	if err := m.ensureNames(ctx, ans); err != nil {

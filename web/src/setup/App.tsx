@@ -14,7 +14,7 @@ import { diskSize, memory } from './format';
 type Phase = { kind: 'loading' } | { kind: 'refused' } | { kind: 'error'; says?: Key; title?: Key } | { kind: 'full' }
   | { kind: 'ready'; setup: Setup; facts: Facts | null };
 
-const BUILT = new Set(['welcome', 'you', 'household', 'network', 'domain']);
+const BUILT = new Set(['welcome', 'you', 'household', 'signin', 'network', 'domain']);
 const validMail = (m: string) => /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(m.trim());
 
 export function App() {
@@ -234,6 +234,8 @@ function useStep(id: string, setup: Setup, facts: Facts | null, next: () => void
   // A step that waits for a secret, which arrives in this machine's terminal (#64).
   const waiting = (id === 'network' || id === 'domain') && step?.state === 'waiting' && !!step.secret;
   const confirming = id === 'network' && network?.state === 'waiting' && network.confirm === 'mesh-policies';
+  const atMesh = id === 'join' || id === 'passkey' || id === 'done';
+  const [moved, setMoved] = useState(false);
   const latest = useRef({ onAnswered, next });
   useEffect(() => {
     latest.current = { onAnswered, next };
@@ -249,6 +251,17 @@ function useStep(id: string, setup: Setup, facts: Facts | null, next: () => void
     }, 2000);
     return () => window.clearInterval(timer);
   }, [waiting, id]);
+
+  useEffect(() => {
+    // The admin's first sign-in to Admin, over the mesh, closes this page's listener for good: it answers 410.
+    if (!atMesh) return;
+    const timer = window.setInterval(() => {
+      void getSetup().then((s) => latest.current.onAnswered(s)).catch((e: unknown) => {
+        if (e instanceof Refused && e.status === 410) setMoved(true);
+      });
+    }, 3000);
+    return () => window.clearInterval(timer);
+  }, [atMesh]);
 
   const send = async (body: Record<string, string | boolean>) => {
     setBusy(true);
@@ -438,12 +451,51 @@ function useStep(id: string, setup: Setup, facts: Facts | null, next: () => void
         onPrimary: () => send(body),
       };
     }
+    case 'signin': {
+      const small = !!facts && facts.memoryBytes < 3.5 * 2 ** 30;
+      return {
+        illo: 'signin', title: t('step.signin.title'), lead: t('step.signin.lead'),
+        body: <>
+          <div className="group" role="radiogroup" aria-label={t('step.signin.choose')}>
+            <label className="row row-choice">
+              <input type="radio" name="provider" value="authentik" checked readOnly />
+              <span className="row-main"><span className="row-label">{t('step.signin.authentik')}</span><span className="row-sub wrap">{t('step.signin.authentikSub')}</span></span>
+              <span className="row-trail"><Icon name="check2" cls="icon checkmark" /></span>
+            </label>
+            <label className="row row-choice">
+              <input type="radio" name="provider" value="kanidm" disabled />
+              <span className="row-main"><span className="row-label">{t('step.signin.kanidm')}</span><span className="row-sub wrap">{t('step.signin.kanidmSub')}</span></span>
+              <span className="row-trail"><Icon name="check2" cls="icon checkmark" /></span>
+            </label>
+          </div>
+          {small && <div className="notice notice-warn" role="status"><Icon name="alert" /><span className="notice-body">
+            {t('step.signin.small', { memory: memory(facts.memoryBytes) })}</span></div>}
+        </>,
+        more: <p className="hint">{t('step.signin.later')}</p>,
+        notice,
+        primary: { label: t('setup.continue'), busy },
+        onPrimary: () => send({ provider: 'authentik' }),
+      };
+    }
     case 'join':
     case 'passkey':
     case 'done':
+      if (moved) {
+        const admin = a.adminUrl ?? '';
+        return {
+          illo: 'join', title: t('step.join.movedTitle'), lead: t('step.join.movedLead'),
+          body: admin ? <p><a className="btn" href={admin}>{t('step.join.open')}</a> <span className="host">{admin}</span></p> : undefined,
+        };
+      }
       return {
         illo: 'join', title: t('step.join.title'), lead: t('step.join.lead'),
-        body: <div className="as-check"><Icon name="check" /><span><b>{t('step.join.milestone')}</b> {t('step.join.milestoneSub')}</span></div>,
+        body: <>
+          <div className="as-check"><Icon name="check" /><span><b>{t('step.join.milestone')}</b> {t('step.join.milestoneSub')}</span></div>
+          <p>{t('step.join.command')}</p>
+          <div className="cmd"><code>{t('step.join.commandLine')}</code></div>
+          <p className="hint as-waiting" role="status"><span className="spinner" aria-hidden="true" />{t('step.join.waiting')}</p>
+        </>,
+        more: <p className="hint">{t('step.join.once')}</p>,
         primary: { label: t('step.join.continue'), ok: false, why: t('step.join.why') },
       };
     default:

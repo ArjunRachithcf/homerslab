@@ -154,6 +154,11 @@ type Mesh interface {
 	Disable(ctx context.Context, ids []string) error
 	// NewJoinKey makes a one-time key for one node, named so the mesh's dashboard says what it is for.
 	NewJoinKey(ctx context.Context, node string) (JoinKey, error)
+	// NewDeviceKey makes a one-time key that puts one of a person's devices in their role's group: the admin's first
+	// device, in first-time setup's second half (#17). It lasts JoinKeyLife at most.
+	NewDeviceKey(ctx context.Context, r Role, device string) (JoinKey, error)
+	// RevokeKey ends a join or device key that hasn't been used, by its ID: one that a newer key replaced.
+	RevokeKey(ctx context.Context, id string) error
 	// Rotate makes HomersLab's next token, which the caller keeps before calling Revoke on the current one.
 	Rotate(ctx context.Context) (Token, error)
 	// Revoke revokes one of HomersLab's own tokens.

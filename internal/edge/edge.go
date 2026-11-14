@@ -30,6 +30,8 @@ type Config struct {
 	Certificates []Certificate
 	// Admin is Admin's site, on the primary only.
 	Admin *Site
+	// SignIn is the sign-in, auth.<main domain>, on the primary only: the identity provider's server.
+	SignIn *Site
 }
 
 // Certificate is one domain's wildcard certificate, loaded from files.
@@ -38,10 +40,19 @@ type Certificate struct {
 	CertFile, KeyFile string
 }
 
-// Site is one name the edge serves, proxied to a Unix socket.
+// Site is one name the edge serves, proxied to a Unix socket (Upstream) or a TCP address on a bridge (Dial).
 type Site struct {
 	Name     string
 	Upstream string
+	Dial     string
+}
+
+// FirstAdminPaths are Authentik's own first-admin flow, its page and its API, which the edge refuses on every
+// listener, before the provider sees them (#84). Caddy matches paths case-insensitively and after unescaping.
+var FirstAdminPaths = []string{
+	"/if/flow/initial-setup", "/if/flow/initial-setup/*",
+	"/api/v3/flows/executor/initial-setup", "/api/v3/flows/executor/initial-setup/*",
+	"/api/v3/flows/instances/initial-setup", "/api/v3/flows/instances/initial-setup/*",
 }
 
 // AdminListen is Caddy's admin address for a socket: group members (the agent) may connect, nobody else.
@@ -83,6 +94,19 @@ func Render(c Config) ([]byte, error) {
 		routes = append(routes, obj{
 			"match":    []obj{{"host": []string{c.Admin.Name}}},
 			"handle":   []obj{{"handler": "reverse_proxy", "upstreams": []obj{{"dial": "unix/" + c.Admin.Upstream}}}},
+			"terminal": true,
+		})
+	}
+	if c.SignIn != nil {
+		if _, err := netip.ParseAddrPort(c.SignIn.Dial); err != nil || c.SignIn.Name == "" {
+			return nil, errors.New("the sign-in needs its name and its upstream's address and port")
+		}
+		routes = append(routes, obj{
+			"match": []obj{{"host": []string{c.SignIn.Name}}},
+			"handle": []obj{{"handler": "subroute", "routes": []obj{
+				{"match": []obj{{"path": FirstAdminPaths}}, "handle": []obj{{"handler": "static_response", "status_code": 403}}, "terminal": true},
+				{"handle": []obj{{"handler": "reverse_proxy", "upstreams": []obj{{"dial": c.SignIn.Dial}}}}},
+			}}},
 			"terminal": true,
 		})
 	}

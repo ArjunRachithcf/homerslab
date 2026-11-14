@@ -42,6 +42,10 @@ const usage = `Usage:
   homerslab setup secret mesh|dns
                        give first-time setup the mesh's or the DNS provider's token, from this machine's terminal
                        (read from stdin, never shown)
+  homerslab setup join show, in this machine's terminal only, a key for your device and a one-time link to your first
+                       passkey, as QR codes: first-time setup's second half
+  homerslab setup passkey
+                       a one-time link to a second passkey, until first-time setup is done
   homerslab dns token  replace the DNS provider's token, from this machine's console, and renew the certificate if it
                        is due
   homerslab node       show this primary as its agent reports it
@@ -73,6 +77,10 @@ func Main(ctx context.Context, args []string, env Env) int {
 		err = showPlanByID(ctx, args[2:], env)
 	case "setup secret":
 		err = setupSecret(ctx, args[2:], env)
+	case "setup join":
+		err = setupJoin(ctx, args[2:], env)
+	case "setup passkey":
+		err = setupPasskey(ctx, args[2:], env)
 	case "dns token":
 		err = dnsToken(ctx, args[2:], env)
 	case "firewall restore":

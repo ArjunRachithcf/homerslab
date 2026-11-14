@@ -2,6 +2,7 @@ package manager_test
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"database/sql"
 	"encoding/json"
 	"flag"
@@ -12,6 +13,7 @@ import (
 	"strings"
 	"testing"
 	"testing/fstest"
+	"time"
 
 	"github.com/ArjunRachithcf/homerslab/catalogs"
 	"github.com/ArjunRachithcf/homerslab/internal/testenv"
@@ -19,11 +21,13 @@ import (
 
 var rewrite = flag.Bool("rewrite-golden", false, "write the golden plans from what the manager makes")
 
-// admin is a request to Admin's socket, as the edge forwards it from Admin's own page at admin.<domain>. Admin answers
-// only once the domain is chosen (withDomain).
+// admin is a request to Admin's socket, as the edge forwards it from Admin's own page at admin.<domain>, signed in as
+// an admin (an Admin session, as a sign-in with the household account opens it: #17). Admin answers only once the
+// domain is chosen (withDomain).
 func (p *primary) admin(method, path string, body any, edit ...func(*http.Request)) response {
 	req := newRequest(method, path, body, "@")
 	req.Host = "admin.ferreira.family"
+	req.AddCookie(&http.Cookie{Name: "__Host-homerslab-session", Value: p.adminSession()})
 	if method != http.MethodGet {
 		req.Header.Set("Origin", "https://admin.ferreira.family")
 		req.Header.Set("Sec-Fetch-Site", "same-origin")
@@ -32,6 +36,24 @@ func (p *primary) admin(method, path string, body any, edit ...func(*http.Reques
 		e(req)
 	}
 	return serve(p.m.Admin(), req)
+}
+
+// adminSession is an Admin session's token, opened for ines as a sign-in would.
+func (p *primary) adminSession() string {
+	p.t.Helper()
+	db, err := sql.Open("sqlite", p.db)
+	if err != nil {
+		p.t.Fatal(err)
+	}
+	defer db.Close()
+	const token = "admin-session-PLACEHOLDER"
+	sum := sha256.Sum256([]byte(token))
+	now := p.clock.Now()
+	if _, err := db.Exec(`INSERT INTO admin_session (token_hash, username, created_at, expires_at) VALUES (?, 'ines', ?, ?)
+		ON CONFLICT (token_hash) DO NOTHING`, sum[:], now.Add(-time.Minute).UnixMilli(), now.Add(time.Hour).UnixMilli()); err != nil {
+		p.t.Fatal(err)
+	}
+	return token
 }
 
 // withDomain stands in for setup's domain step, ferreira.family, which setup reaches only after the sign-in step
@@ -319,5 +341,37 @@ func TestAPlanCoversItsDefinition(t *testing.T) {
 	}
 	if plans["as shipped"] == plans["another time zone"] {
 		t.Errorf("a changed compose file kept plan %s", plans["as shipped"])
+	}
+}
+
+// Admin's Store and plans want an Admin session, as the rest of Admin does: signed out, a page goes to the household
+// account's sign-in and an API call is refused (#17).
+func TestTheStoreWantsAnAdminSession(t *testing.T) {
+	testenv.Isolate(t)
+	p := newPrimary(t, withPages)
+	p.setUp()
+	signedOut := func(method, path string, body any) response {
+		req := newRequest(method, path, body, "@")
+		req.Host = "admin.ferreira.family"
+		req.Header.Set("Origin", "https://admin.ferreira.family")
+		req.Header.Set("Sec-Fetch-Site", "same-origin")
+		return serve(p.m.Admin(), req)
+	}
+	for _, path := range []string{"/", "/store", "/store/apps/immich", "/plans/p-0123"} {
+		if r := signedOut("GET", path, nil); r.Code != http.StatusSeeOther || r.Header.Get("Location") != "/auth/sign-in" {
+			t.Errorf("GET %s signed out: %d %s", path, r.Code, r.Header.Get("Location"))
+		}
+	}
+	for _, c := range []struct {
+		method, path string
+		body         any
+	}{{"GET", "/api/v1/catalog", nil}, {"GET", "/api/v1/catalog/apps/immich", nil}, {"GET", "/api/v1/catalog/apps/immich/icon", nil},
+		{"POST", "/api/v1/plans", map[string]string{"app": "immich"}}, {"GET", "/api/v1/plans/p-0123", nil}} {
+		if r := signedOut(c.method, c.path, c.body); r.Code != http.StatusUnauthorized {
+			t.Errorf("%s %s signed out: %d %s", c.method, c.path, r.Code, r.Body)
+		}
+	}
+	if r := p.control("GET", "/api/v1/catalog", nil); r.Code != http.StatusOK {
+		t.Errorf("the control socket's catalog: %d", r.Code)
 	}
 }

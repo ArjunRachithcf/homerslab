@@ -158,6 +158,8 @@ type Host struct {
 	hang          []string          // commands, by prefix, that never answer
 	dockerActive  string            // docker.service's ActiveState and LoadState, when set; else from Engines
 	dockerLoad    string
+	// Journal, when set, is what journalctl prints instead of the stub's few lines.
+	Journal []byte
 }
 
 // IsBridge says whether the kernel would show a name as a bridge: every name an engine gives, but those NotABridge
@@ -273,6 +275,9 @@ func (h *Host) Mend() {
 }
 
 // Run is the agent's host.Runner.
+// JournalToken is the enrolment link's token in the stub's journal of the sign-in.
+const JournalToken = "9d3afc7b-58ba-4c1e-9f0e-2b6a1c0d7e11"
+
 func (h *Host) Run(ctx context.Context, c host.Cmd) ([]byte, error) {
 	h.mu.Lock()
 	if h.block && (c.Name == "docker" || c.Name == "systemctl") || slices.ContainsFunc(h.hang, func(p string) bool { return strings.HasPrefix(c.String(), p) }) {
@@ -345,6 +350,14 @@ func (h *Host) Run(ctx context.Context, c host.Cmd) ([]byte, error) {
 		return []byte(strings.Join(out, "\n") + "\n"), nil
 	case strings.HasPrefix(line, "netbird up"):
 		return nil, nil
+	case c.Name == "journalctl" && h.Journal != nil:
+		return h.Journal, nil
+	case c.Name == "journalctl":
+		// The unit's journal, with request lines as an Authentik logging at info writes them: an enrolment link's
+		// token in the URL, plain and URL-encoded.
+		return []byte("2026-11-11T10:00:00+0000 primary docker[812]: server-1 | {\"event\": \"Starting authentik server\"}\n" +
+			"2026-11-11T10:01:00+0000 primary docker[812]: server-1 | {\"event\": \"/if/flow/homerslab-passkey-enrolment/?itoken=" + JournalToken + "\"}\n" +
+			"2026-11-11T10:01:01+0000 primary docker[812]: server-1 | {\"event\": \"/api/v3/flows/executor/homerslab-passkey-enrolment/?query=itoken%3D" + JournalToken + "&x=1\"}\n"), nil
 	case line == "netbird status --json":
 		return fmt.Appendf(nil, `{"management":{"connected":true},"netbirdIp":"%s/16","fqdn":"study-pc.netbird.selfhosted"}`, h.NetbirdIP), nil
 	case c.Name == "systemd-creds" && len(c.Args) == 5 && c.Args[0] == "encrypt":
@@ -390,6 +403,17 @@ func (h *Host) Cmds() []host.Cmd {
 }
 
 // Ran says whether the agent ran a command line, and at which position (or -1).
+// Times is how many times a command ran.
+func (h *Host) Times(line string) int {
+	n := 0
+	for _, c := range h.Cmds() {
+		if c.String() == line {
+			n++
+		}
+	}
+	return n
+}
+
 func (h *Host) Ran(line string) int {
 	for i, c := range h.Cmds() {
 		if c.String() == line || strings.HasPrefix(c.String(), line+" ") {

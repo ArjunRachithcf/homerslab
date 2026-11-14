@@ -206,6 +206,49 @@ jobs:
         # The containers' logs, which the suites print when they fail, are third-party text too.
         run: sh .github/scripts/stop-commands.sh go test -count=1 -v -run 'TestTheDNSProviderContract$|TestTheEdgesRequestMatrix' ./internal/certs/ ./internal/edge/
 
+  identity:
+    name: Identity provider contract (Authentik in containers, Chromium's virtual authenticator)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    # Modules come only from the step that fetches them, as in the Go job.
+    env:
+      GOPROXY: "off"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Fetch the modules
+        env:
+          GOPROXY: https://proxy.golang.org,direct
+        run: sh .github/scripts/stop-commands.sh go mod download
+      - name: The browser, for the passkeys in a real browser
+        working-directory: web
+        env:
+          PLAYWRIGHT_BROWSERS_PATH: /home/runner/ms-playwright
+        run: |
+          sh ../.github/scripts/stop-commands.sh npm ci --ignore-scripts
+          sh ../.github/scripts/stop-commands.sh npx playwright install --with-deps chromium
+      # The harness, and only the harness, reaches the runner's Docker (HOMERSLAB_TEST_DOCKER_HOST), for compose project
+      # hltest-17; the code under test points at nowhere. Images are pinned by digest in packaging/sign-in. The suite
+      # runs web/e2e/passkey.idp.spec.ts against the Authentik it set up (HOMERSLAB_TEST_BROWSER).
+      - name: The contract suite
+        env:
+          HOMERSLAB_TEST_DOCKER_HOST: unix:///var/run/docker.sock
+          HOMERSLAB_TEST_BROWSER: "1"
+          PLAYWRIGHT_BROWSERS_PATH: /home/runner/ms-playwright
+          DOCKER_HOST: unix:///nonexistent
+          CONTAINER_HOST: unix:///nonexistent
+        # The containers' logs and the browser's output, which the suite prints, are third-party text too.
+        run: sh .github/scripts/stop-commands.sh go test -count=1 -v -timeout 30m -run TestTheIdentityProviderContractOnAuthentik ./internal/idp/authentik/
+
   web:
     name: Web app (lint, types, build)
     runs-on: ubuntu-24.04
