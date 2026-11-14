@@ -4,8 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"image"
-	"image/color"
 	"net"
 	"net/http"
 	"net/netip"
@@ -15,11 +13,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/makiuchi-d/gozxing"
-	"github.com/makiuchi-d/gozxing/qrcode"
-
 	"github.com/ArjunRachithcf/homerslab/internal/agent/agenttest"
 	"github.com/ArjunRachithcf/homerslab/internal/cli"
+	"github.com/ArjunRachithcf/homerslab/internal/cli/qrterm/qrtermtest"
 	"github.com/ArjunRachithcf/homerslab/internal/lan"
 	"github.com/ArjunRachithcf/homerslab/internal/manager"
 	"github.com/ArjunRachithcf/homerslab/internal/manager/setup"
@@ -51,7 +47,7 @@ func running(t *testing.T, options ...any) string {
 			id      string
 			answers map[string]string
 		}{{"welcome", nil}, {"you", map[string]string{"name": "Inês Ferreira", "mail": "ines@ferreira.family"}}, {"household", map[string]string{"household": "The Ferreira household"}}} {
-			if err := db.CompleteStep(context.Background(), st.id, st.answers, time.Now()); err != nil {
+			if err := db.CompleteStep(context.Background(), st.id, st.answers, time.Now(), store.AnyRevision); err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -190,47 +186,11 @@ func TestUnknownCommandsShowTheUsage(t *testing.T) {
 // decodeQR reads the QR code drawn in half blocks back into an image, and decodes it as a phone would.
 func decodeQR(t *testing.T, out string) string {
 	t.Helper()
-	out = regexp.MustCompile("\x1b\\[[0-9;]*m").ReplaceAllString(out, "")
-	var rows [][]rune
-	for line := range strings.SplitSeq(out, "\n") {
-		if strings.ContainsAny(line, "█▀▄") {
-			rows = append(rows, []rune(strings.TrimRight(line, "\n")))
-		}
-	}
-	if len(rows) == 0 {
-		t.Fatal("no QR code in the output")
-	}
-	const scale, border = 6, 8
-	width := 0
-	for _, r := range rows {
-		width = max(width, len(r))
-	}
-	img := image.NewGray(image.Rect(0, 0, width*scale+2*border*scale, 2*len(rows)*scale+2*border*scale))
-	for i := range img.Pix {
-		img.Pix[i] = 0xff
-	}
-	for y, r := range rows {
-		for x, c := range r {
-			top, bottom := c == '█' || c == '▀', c == '█' || c == '▄'
-			for dy := range 2 * scale {
-				if dy < scale && !top || dy >= scale && !bottom {
-					continue
-				}
-				for dx := range scale {
-					img.SetGray(border*scale+x*scale+dx, border*scale+2*y*scale+dy, color.Gray{})
-				}
-			}
-		}
-	}
-	bmp, err := gozxing.NewBinaryBitmapFromImage(img)
-	if err != nil {
-		t.Fatal(err)
-	}
-	res, err := qrcode.NewQRCodeReader().Decode(bmp, nil)
+	text, err := qrtermtest.Decode(out)
 	if err != nil {
 		t.Fatalf("decoding the QR code: %v\n%s", err, out)
 	}
-	return res.GetText()
+	return text
 }
 
 func TestSetupLinkGivesTheLinkAsJSONForScripts(t *testing.T) {

@@ -267,7 +267,8 @@ function useStep(id: string, setup: Setup, facts: Facts | null, next: () => void
     setBusy(true);
     setFailed(null); // a failure that happens again is a new notice, read out again
     try {
-      const s = await answer(id, body);
+      if (!step) throw new Refused(404, 'unknown-step');
+      const s = await answer(step, body);
       onAnswered(s);
       // The manager keeps what it was given in its normal form (spaces collapsed, full-width letters made plain, and
       // so on): show that.
@@ -313,9 +314,9 @@ function useStep(id: string, setup: Setup, facts: Facts | null, next: () => void
       return {
         illo: 'you', title: t('step.you.title'), lead: t('step.you.lead'), illoFacts: { name, mail },
         body: <>
-          <Field id="name" label={t('step.you.name')} value={name} onChange={setName} autoComplete="name"
-            error={refusal(bad.name, { 'too-long': 'step.you.nameTooLong', 'hidden-characters': 'step.you.nameHidden' }, 'step.you.nameInvalid')} />
-          <Field id="mail" label={t('step.you.mail')} value={mail} onChange={setMail} type="email" autoComplete="email"
+          <Field id="name" label={t('step.you.name')} value={name} onChange={setName} autoComplete="name" dir="auto"
+            error={refusal(bad.name, { 'too-long': 'step.you.nameTooLong', 'hidden-characters': 'step.you.nameHidden', 'too-many-marks': 'step.you.nameMarks' }, 'step.you.nameInvalid')} />
+          <Field id="mail" label={t('step.you.mail')} value={mail} onChange={setMail} type="email" autoComplete="email" dir="auto"
             hint={t('step.you.mailHint')}
             error={refusal(bad.mail, { 'too-long': 'step.you.mailTooLong', 'hidden-characters': 'step.you.mailHidden' }, 'step.you.mailInvalid')} />
         </>,
@@ -327,9 +328,9 @@ function useStep(id: string, setup: Setup, facts: Facts | null, next: () => void
     case 'household':
       return {
         illo: 'household', title: t('step.household.title'), lead: t('step.household.lead'), illoFacts: { name: householdValue },
-        body: <Field id="household" label={t('step.household.name')} value={householdValue}
+        body: <Field id="household" dir="auto" label={t('step.household.name')} value={householdValue}
           onChange={(v) => { setTouched(true); setHousehold(v); }}
-          error={refusal(bad.name, { 'too-long': 'step.household.tooLong', 'hidden-characters': 'step.household.hidden' }, 'step.household.invalid')} />,
+          error={refusal(bad.name, { 'too-long': 'step.household.tooLong', 'hidden-characters': 'step.household.hidden', 'too-many-marks': 'step.household.marks' }, 'step.household.invalid')} />,
         notice,
         primary: { label: t('setup.continue'), ok: !!householdValue.trim(), why: t('step.household.why'), busy },
         onPrimary: () => send({ name: householdValue }),
@@ -346,7 +347,7 @@ function useStep(id: string, setup: Setup, facts: Facts | null, next: () => void
           illo: 'network', title: t('step.network.conflictsTitle'), lead: t('step.network.conflictsLead'),
           body: <ul className="group" aria-label={t('step.network.conflictsList')}>
             {names.map((n) => (
-              <li className="row" key={n}><span className="row-main"><span className="row-label wrap">{n}</span></span></li>
+              <li className="row" key={n}><span className="row-main"><span className="row-label wrap"><bdi>{n}</bdi></span></span></li>
             ))}
           </ul>,
           more: <p className="hint">{t('step.network.conflictsKept')}</p>,
@@ -516,6 +517,7 @@ function failure(e: unknown): Failure {
   if (!(e instanceof Refused)) return { says: 'setup.fail.server' };
   if (diskFull(e)) return { says: 'setup.full.answer' };
   if (e.code === 'lan-half-done') return { says: 'setup.fail.lanDone', reload: true };
+  if (e.code === 'stale' || e.code === 'step-done') return { says: 'setup.fail.stale', reload: true }; // another tab changed it
   if (e.code === 'over-the-mesh') return { says: 'setup.fail.mesh' };
   if (e.status === 409) return { says: 'setup.fail.moved', reload: true }; // earlier-step-open
   if (e.status === 501) return { says: 'setup.error.unbuilt' }; // not-built

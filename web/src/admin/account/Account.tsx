@@ -5,7 +5,10 @@ import { useCallback, useEffect, useState } from 'react';
 import { t } from '../../i18n/t';
 import { Assistant, Icon } from '../../setup/Assistant';
 
-type AccountSetup = { current: string; passkeys?: number; twoWaysIn?: boolean; command: string; household: string };
+type AccountSetup = {
+  current: string; passkeys?: number; twoWaysIn?: boolean; command: string; household: string;
+  steps: { id: string; revision: number }[];
+};
 
 async function getAccount(): Promise<AccountSetup> {
   const r = await fetch('/api/v1/account/setup', { credentials: 'same-origin', headers: { Accept: 'application/json' } });
@@ -41,9 +44,13 @@ export function Account() {
     setBusy(true);
     setFailed(false);
     try {
+      // From the revision of the step this page last read, as every answer is (#110).
+      const revision = s?.steps.find((x) => x.id === 'done')?.revision ?? 0;
       const r = await fetch('/api/v1/account/setup/steps/done', {
-        method: 'PUT', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: '{}',
+        method: 'PUT', credentials: 'same-origin', body: '{}',
+        headers: { 'Content-Type': 'application/json', 'If-Match': `"${revision}"` },
       });
+      if (r.status === 409) load(); // the step changed since: read it again
       if (r.ok) setDone(true);
       else setFailed(true);
     } catch {

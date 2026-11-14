@@ -50,7 +50,7 @@ export function newNonce(): string {
 }
 
 export type Half = 'lan' | 'mesh';
-export type StepState = { id: string; half: Half; state: 'todo' | 'waiting' | 'done'; secret?: string; command?: string; confirm?: string };
+export type StepState = { id: string; half: Half; state: 'todo' | 'waiting' | 'done'; revision: number; secret?: string; command?: string; confirm?: string };
 export type Setup = { half: Half; current: string; steps: StepState[]; answers: Record<string, string> };
 
 export type Facts = {
@@ -64,7 +64,7 @@ export type Facts = {
 };
 
 /** Why the manager refused a field's answer. */
-export type Reason = 'missing' | 'too-long' | 'hidden-characters' | 'not-a-mail';
+export type Reason = 'missing' | 'too-long' | 'hidden-characters' | 'too-many-marks' | 'not-a-mail';
 
 /** The request got no answer: the network dropped it, or the manager isn't listening. */
 export class Unreachable extends Error {
@@ -80,8 +80,8 @@ export class Refused extends Error {
   }
 }
 
-async function call<T>(method: string, path: string, body?: unknown): Promise<T> {
-  const headers: Record<string, string> = {};
+async function call<T>(method: string, path: string, body?: unknown, extra: Record<string, string> = {}): Promise<T> {
+  const headers: Record<string, string> = { ...extra };
   if (body !== undefined) headers['Content-Type'] = 'application/json';
   const t = token();
   if (t) headers.Authorization = `Bearer ${t}`;
@@ -124,4 +124,11 @@ export function claim({ key, nonce }: Link): Promise<string> {
 export const keepSession = (token: string) => write(TOKEN, token);
 export const getSetup = () => call<Setup>('GET', '/api/v1/setup');
 export const getPrimary = () => call<Facts>('GET', '/api/v1/nodes/primary');
-export const answer = (step: string, body: Record<string, string | boolean>) => call<Setup>('PUT', `/api/v1/setup/steps/${encodeURIComponent(step)}`, body);
+
+/**
+ * Answers a step from the revision this page last saw of it (the manager refuses with 409 `stale` if the step changed
+ * since, in another tab say), and as an edit when the step is done (409 `step-done` otherwise): #110.
+ */
+export const answer = (step: StepState, body: Record<string, string | boolean>) =>
+  call<Setup>('PUT', `/api/v1/setup/steps/${encodeURIComponent(step.id)}${step.state === 'done' ? '?edit=true' : ''}`, body,
+    { 'If-Match': `"${step.revision}"` });

@@ -242,7 +242,7 @@ func (m *Manager) firstSignIn(ctx context.Context, ans map[string]string) error 
 	}
 	now := m.cfg.Now()
 	for _, id := range []string{"join", "passkey"} {
-		if err := m.db.CompleteStep(ctx, id, nil, now); err != nil {
+		if err := m.db.CompleteStep(ctx, id, nil, now, store.AnyRevision); err != nil {
 			return err
 		}
 	}
@@ -313,14 +313,24 @@ func (m *Manager) accountStep(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusNotFound, "unknown-step")
 		return
 	}
-	st, err := m.setup.Answer(r.Context(), id, setup.Mesh, []byte(`{}`))
+	// Like every answer, from the view of the step the page last read (#110).
+	basis, bad := stepBasis(r)
+	if bad != "" {
+		status := http.StatusBadRequest
+		if bad == "revision-required" {
+			status = http.StatusPreconditionRequired
+		}
+		fail(w, status, bad)
+		return
+	}
+	st, err := m.setup.Answer(r.Context(), id, setup.Mesh, []byte(`{}`), basis)
 	switch {
 	case err == nil:
 		m.log.Info("first-time setup is done", "by", r.Context().Value(ctxUser{}))
 		writeJSON(w, http.StatusOK, st)
 	case errors.Is(err, ErrOneWayIn):
 		fail(w, http.StatusConflict, ErrOneWayIn.Error())
-	case errors.Is(err, setup.ErrEarlierStepOpen):
+	case errors.Is(err, setup.ErrEarlierStepOpen), errors.Is(err, setup.ErrStale), errors.Is(err, setup.ErrStepDone):
 		fail(w, http.StatusConflict, err.Error())
 	default:
 		m.internal(w, "finishing setup", err)

@@ -184,7 +184,8 @@ _Avoid_: tunnel, port forward
 
 **Uplink**:
 A way a node reaches the internet: its link to the home network, or a private tunnel it sends its traffic through.
-Apps reach the internet only through an uplink, and a tunnel that is an uplink is never the home network.
+Apps reach the internet only through an uplink, and a tunnel that is an uplink is never the home network. A link is an
+uplink for each address family whose internet its routes cover: a tunnel for IPv6 alone is none for IPv4.
 _Avoid_: gateway, WAN
 
 ### Sign-in

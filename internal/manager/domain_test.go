@@ -47,6 +47,13 @@ type fakeDomains struct {
 	issued int
 	zones  []string // the zones it was asked for, and with which token: "zone token"
 	last   manager.Issuance
+	drift  []dns.Drift // the dns package's drift notes, given to the issuance's Drift at every Ensure
+	fail   error       // what an issuance fails with, when it isn't nil
+	// reconciled are the zones whose inventory the manager had put right, as their issuances; reconcileDrift the
+	// drift notes, and reconcileFail the failure, of each.
+	reconciled     []manager.Issuance
+	reconcileDrift []dns.Drift
+	reconcileFail  error
 }
 
 func newFakeDomains() *fakeDomains { return &fakeDomains{token: dnsToken, life: 90 * 24 * time.Hour} }
@@ -80,6 +87,14 @@ func (f *fakeDomains) Ensure(_ context.Context, i manager.Issuance, have *certs.
 	if have != nil && !have.Due(now) {
 		return *have, false, nil
 	}
+	for _, d := range f.drift {
+		if i.Drift != nil {
+			i.Drift(d)
+		}
+	}
+	if f.fail != nil {
+		return certs.Certificate{}, false, f.fail
+	}
 	if i.Token.Reveal() != f.token {
 		return certs.Certificate{}, false, manager.ErrDNSRefused
 	}
@@ -90,6 +105,24 @@ func (f *fakeDomains) Ensure(_ context.Context, i manager.Issuance, have *certs.
 	chain, key := issue(i.Domain, int64(f.issued), now, f.life)
 	c, err := certs.Parse(i.Domain, chain, key)
 	return c, err == nil, err
+}
+
+func (f *fakeDomains) Reconcile(_ context.Context, i manager.Issuance) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.reconciled = append(f.reconciled, i)
+	for _, d := range f.reconcileDrift {
+		if i.Drift != nil {
+			i.Drift(d)
+		}
+	}
+	return f.reconcileFail
+}
+
+func (f *fakeDomains) reconciles() []manager.Issuance {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return slices.Clone(f.reconciled)
 }
 
 func (f *fakeDomains) Authority() string { return "Let's Encrypt" }
@@ -176,7 +209,8 @@ func TestTheDomainIsGivenOnceAndItsCertificateEndsTheFirstHalf(t *testing.T) {
 		t.Errorf("a DNS token before the domain: %d %s, want 409 not-waiting", r.Code, r.Body)
 	}
 	for _, bad := range []map[string]string{{"domain": "localhost", "provider": "infomaniak"}, {"domain": "example.test", "provider": "route53"},
-		{"domain": "*.example.test", "provider": "infomaniak"}, {"domain": "example.test", "provider": "rfc2136", "server": "", "keyName": "x y"}} {
+		{"domain": "*.example.test", "provider": "infomaniak"}, {"domain": "example.test", "provider": "rfc2136", "server": "", "keyName": "x y"},
+		{"domain": "xn--zz.example.test", "provider": "infomaniak"}} { // an A-label that isn't valid IDNA (#153)
 		if r := b.answer("domain", bad); r.Code != http.StatusBadRequest {
 			t.Errorf("PUT domain %v: %d, want 400", bad, r.Code)
 		}

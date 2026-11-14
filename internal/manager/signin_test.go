@@ -317,6 +317,27 @@ func (a *admin) signIn(fs *fakeSignIn, username string, groups ...string) *httpt
 	return a.do("GET", "/auth/callback?state="+url.QueryEscape(state)+"&code="+url.QueryEscape(code))
 }
 
+// finish answers setup's last step from Admin's page, as the page does: from the step's revision it last read.
+func (a *admin) finish() *httptest.ResponseRecorder {
+	a.t.Helper()
+	var s struct {
+		Steps []struct {
+			ID       string
+			Revision int64
+		}
+	}
+	if err := json.Unmarshal(a.do("GET", "/api/v1/account/setup").Body.Bytes(), &s); err != nil {
+		a.t.Fatal(err)
+	}
+	rev := int64(-1)
+	for _, st := range s.Steps {
+		if st.ID == "done" {
+			rev = st.Revision
+		}
+	}
+	return a.do("PUT", "/api/v1/account/setup/steps/done", sameOrigin, func(r *http.Request) { r.Header.Set("If-Match", fmt.Sprintf(`"%d"`, rev)) })
+}
+
 // sameOrigin is a change from Admin's own page: JSON, from Admin's origin.
 func sameOrigin(r *http.Request) {
 	r.Header.Set("Sec-Fetch-Site", "same-origin")
@@ -502,7 +523,7 @@ func TestTheSecondHalfEndsAtTheAdminsFirstSignInOverTheMesh(t *testing.T) {
 	})
 
 	t.Run("setup finishes only with two ways in (#87)", func(t *testing.T) {
-		if rec := a.do("PUT", "/api/v1/account/setup/steps/done", sameOrigin); rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "one-way-in") {
+		if rec := a.finish(); rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "one-way-in") {
 			t.Errorf("done with one passkey: %d %s", rec.Code, rec.Body)
 		}
 		r := p.control("POST", "/api/v1/setup/passkey", nil)
@@ -512,7 +533,14 @@ func TestTheSecondHalfEndsAtTheAdminsFirstSignInOverTheMesh(t *testing.T) {
 			t.Errorf("a second passkey's link: %d %+v", r.Code, again)
 		}
 		fs.passkeys["ines"] = 2
-		if rec := a.do("PUT", "/api/v1/account/setup/steps/done", sameOrigin); rec.Code != http.StatusOK {
+		// Like every answer, from the view of the step it was made from (#110).
+		if rec := a.do("PUT", "/api/v1/account/setup/steps/done", sameOrigin); rec.Code != http.StatusPreconditionRequired {
+			t.Errorf("done without the step's revision: %d %s, want 428", rec.Code, rec.Body)
+		}
+		if rec := a.do("PUT", "/api/v1/account/setup/steps/done", sameOrigin, func(r *http.Request) { r.Header.Set("If-Match", `"99"`) }); rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "stale") {
+			t.Errorf("done from an older view of the step: %d %s, want 409 stale", rec.Code, rec.Body)
+		}
+		if rec := a.finish(); rec.Code != http.StatusOK {
 			t.Errorf("done with two passkeys: %d %s", rec.Code, rec.Body)
 		}
 		if r := p.control("POST", "/api/v1/setup/join", nil); r.Code != http.StatusConflict {
@@ -596,11 +624,11 @@ func TestASecondAdminWithAPasskeyIsTheOtherWayIn(t *testing.T) {
 	a := p.adminBrowser(t)
 	a.signIn(fs, "ines", "homerslab-admins")
 	fs.people["rui"] = idp.Person{Username: "rui", Role: idp.Admin}
-	if rec := a.do("PUT", "/api/v1/account/setup/steps/done", sameOrigin); rec.Code != http.StatusConflict {
+	if rec := a.finish(); rec.Code != http.StatusConflict {
 		t.Errorf("a second admin without a passkey: %d", rec.Code)
 	}
 	fs.passkeys["rui"] = 1
-	if rec := a.do("PUT", "/api/v1/account/setup/steps/done", sameOrigin); rec.Code != http.StatusOK {
+	if rec := a.finish(); rec.Code != http.StatusOK {
 		t.Errorf("a second admin with a passkey: %d %s", rec.Code, rec.Body)
 	}
 }

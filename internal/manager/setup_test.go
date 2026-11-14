@@ -388,7 +388,11 @@ func TestSetupChangesRefuseCrossSiteRequests(t *testing.T) {
 			t.Errorf("Sec-Fetch-Site %s: %d %s, want 403", site, r.Code, r.Body)
 		}
 	}
-	if r := b.do("PUT", "/api/v1/setup/steps/welcome", map[string]string{}, func(r *http.Request) { r.Header.Set("Sec-Fetch-Site", "same-origin") }); r.Code != http.StatusOK {
+	sameOrigin := func(r *http.Request) {
+		r.Header.Set("Sec-Fetch-Site", "same-origin")
+		r.Header.Set("If-Match", `"0"`) // the welcome step as the page first read it (#110)
+	}
+	if r := b.do("PUT", "/api/v1/setup/steps/welcome", map[string]string{}, sameOrigin); r.Code != http.StatusOK {
 		t.Errorf("same-origin: %d %s", r.Code, r.Body)
 	}
 }

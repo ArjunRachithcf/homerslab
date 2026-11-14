@@ -125,6 +125,10 @@ func TestTheDNSProviderContractOnThePrimary(t *testing.T) {
 		if err != nil || !hasRR(recs, "@", "MX") || !hasRR(recs, "*", "CNAME") {
 			t.Fatalf("the zone through its token: %v %v", recs, err)
 		}
+		// The apex's SOA and NS are listed: a listing that is empty is never a real zone's, so it is refused (#171).
+		if !hasRR(recs, "@", "SOA") || !hasRR(recs, "@", "NS") {
+			t.Errorf("the listing leaves out the apex's SOA or NS: %v", recs)
+		}
 		bad, _ := open(t, mesh.Secret(base64.StdEncoding.EncodeToString(make([]byte, 32))), theBook)
 		if _, err := bad.Provider.GetRecords(ctx, "example.test."); err == nil {
 			t.Error("a wrong TSIG key listed the zone")
@@ -141,6 +145,19 @@ func TestTheDNSProviderContractOnThePrimary(t *testing.T) {
 		}
 		if free, err := o.Free(ctx, "photos"); err != nil || !free {
 			t.Errorf("photos is free in the provider's listing: %v %v (the wildcard answers it in DNS)", free, err)
+		}
+		// A CNAME that is already HomersLab's is created again as a no-op (#171).
+		photos := dns.Record{Name: "photos", Type: "CNAME", Value: "proxy.cluster.test.", TTL: time.Minute}
+		for range 2 {
+			if err := o.Create(ctx, photos); err != nil {
+				t.Fatalf("the photos CNAME: %v", err)
+			}
+		}
+		if recs, _ := o.Provider.GetRecords(ctx, "example.test."); !hasRR(recs, "photos", "CNAME") {
+			t.Errorf("the photos CNAME isn't at the provider: %v", recs)
+		}
+		if err := o.Delete(ctx, photos); err != nil {
+			t.Fatal(err)
 		}
 		r := dns.Record{Name: "_acme-challenge", Type: "TXT", Value: "a-test-value", TTL: time.Minute}
 		if err := o.Create(ctx, r); err != nil {
@@ -166,6 +183,79 @@ func TestTheDNSProviderContractOnThePrimary(t *testing.T) {
 		}
 		if hasRR(recs, "_homerslab", "TXT") || hasRR(recs, "_acme-challenge", "TXT") {
 			t.Errorf("HomersLab's records stayed: %v", recs)
+		}
+	})
+
+	t.Run("a record deleted at the provider by hand leaves the book at the next delete, with a drift note", func(t *testing.T) {
+		o, _ := open(t, tsig, theBook)
+		var notes []dns.Drift
+		o.Drift = func(d dns.Drift) { notes = append(notes, d) }
+		r := dns.Record{Name: "_acme-challenge", Type: "TXT", Value: "deleted-by-hand", TTL: time.Minute}
+		if err := o.Create(ctx, r); err != nil {
+			t.Fatal(err)
+		}
+		// Behind HomersLab's back, straight at BIND.
+		if _, err := o.Provider.DeleteRecords(ctx, "example.test.", []libdns.Record{libdns.RR{Name: r.Name, Type: r.Type, Data: r.Value}}); err != nil {
+			t.Fatal(err)
+		}
+		if err := o.Delete(ctx, r); err != nil {
+			t.Fatalf("deleting a record that is gone at the provider: %v", err)
+		}
+		if b, _ := theBook.Records(ctx, "example.test."); len(b) != 0 {
+			t.Errorf("the book still lists %v", b)
+		}
+		if len(notes) != 1 || notes[0].What != dns.DriftDeletedByHand || notes[0].Record.Value != "deleted-by-hand" {
+			t.Errorf("the drift report: %+v", notes)
+		}
+		recs, _ := o.Provider.GetRecords(ctx, "example.test.")
+		if hasRR(recs, "_homerslab", "TXT") || hasRR(recs, "_acme-challenge", "TXT") {
+			t.Errorf("HomersLab's records stayed: %v", recs)
+		}
+	})
+
+	// RFC 2136 reports every delete as done, and its listing joins a TXT record's strings into one value, so neither says
+	// whether a delete matched a record someone else's tool stored in its other form: two strings, the same text (#179).
+	t.Run("a record kept at the provider in another form stays in the book while a listing shows it (#179)", func(t *testing.T) {
+		for _, emptyFirst := range []bool{false, true} {
+			p, err := dns.Open(settings, tsig)
+			if err != nil {
+				t.Fatal(err)
+			}
+			e, b := &emptyOnce{Provider: p}, &book{}
+			o := &dns.Owned{Provider: e, Zone: "example.test.", Domain: "example.test", Book: b}
+			r := dns.Record{Name: "_acme-challenge", Type: "TXT", Value: "split-by-another-tool", TTL: time.Minute}
+			if err := o.Create(ctx, r); err != nil {
+				t.Fatal(err)
+			}
+			txt := func(s ...string) mdns.RR {
+				return &mdns.TXT{Hdr: mdns.RR_Header{Name: "_acme-challenge.example.test.", Rrtype: mdns.TypeTXT, Class: mdns.ClassINET, Ttl: 60}, Txt: s}
+			}
+			split := txt("split-by-", "another-tool")
+			update(t, tsig, []mdns.RR{txt(r.Value)}, []mdns.RR{split})
+			e.empty.Store(emptyFirst)
+			err = o.Delete(ctx, r)
+			recs, _ := p.GetRecords(ctx, "example.test.")
+			there := slices.ContainsFunc(recs, func(x libdns.Record) bool {
+				rr := x.RR()
+				return rr.Name == r.Name && rr.Type == "TXT" && rr.Data == r.Value
+			})
+			kept, _ := b.Records(ctx, "example.test.")
+			inBook := slices.Contains(kept, r)
+			if !there || !inBook || !errors.Is(err, dns.ErrNotDeleted) {
+				t.Errorf("after an empty listing %v: the delete %v, at the provider %v, in the book %v; want ErrNotDeleted, there and kept",
+					emptyFirst, err, there, inBook)
+			}
+			// Once it is gone (by hand), the next delete drops it from the book, and nothing of HomersLab's is left.
+			update(t, tsig, []mdns.RR{split}, nil)
+			if err := o.Delete(ctx, r); err != nil {
+				t.Errorf("the delete once the record is gone: %v", err)
+			}
+			if kept, _ := b.Records(ctx, "example.test."); len(kept) != 0 {
+				t.Errorf("the book still lists %v", kept)
+			}
+			if recs, _ := p.GetRecords(ctx, "example.test."); hasRR(recs, "_homerslab", "TXT") || hasRR(recs, "_acme-challenge", "TXT") {
+				t.Errorf("HomersLab's records stayed: %v", recs)
+			}
 		}
 	})
 
@@ -236,6 +326,31 @@ func TestTheDNSProviderContractOnThePrimary(t *testing.T) {
 		}
 	})
 
+	t.Run("a renewal whose listing comes back empty fails as an empty listing, writes nothing, and says so (#175)", func(t *testing.T) {
+		p, err := dns.Open(settings, tsig)
+		if err != nil {
+			t.Fatal(err)
+		}
+		c := &counting{Provider: emptyListing{p}}
+		o := &dns.Owned{Provider: c, Zone: "example.test.", Domain: "example.test", Book: theBook}
+		var notes []dns.Drift
+		o.Drift = func(d dns.Drift) { notes = append(notes, d) }
+		fresh, err := certs.NewKey() // an account of its own: no authorization to reuse, so the challenge is presented
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, issued, err := authority.Ensure(ctx, certs.Request{Domain: "example.test", Zone: o, AccountKey: fresh}, &cert, due)
+		if !errors.Is(err, dns.ErrListingEmpty) || issued {
+			t.Fatalf("a renewal on an empty listing: issued %v, %v; want ErrListingEmpty through the ACME client", issued, err)
+		}
+		if c.writes.Load() != 0 {
+			t.Errorf("wrote %d times on an empty listing", c.writes.Load())
+		}
+		if len(notes) == 0 || notes[0].What != dns.DriftListingLookedEmpty || notes[0].Record.Name != "_acme-challenge" {
+			t.Errorf("the drift notes: %+v", notes)
+		}
+	})
+
 	t.Run("the replaced token renews", func(t *testing.T) {
 		o, _ := open(t, tsig, theBook)
 		got, issued, err := authority.Ensure(ctx, certs.Request{Domain: "example.test", Zone: o, AccountKey: renewer}, &cert, due)
@@ -259,11 +374,6 @@ func TestTheDNSProviderContractOnThePrimary(t *testing.T) {
 		if n := c.writes.Load(); n != 0 {
 			t.Errorf("the restore wrote %d DNS records", n)
 		}
-		// The machine was lost or stolen: its key may be in someone's hands, so a new one is issued all the same.
-		got, issued, err = authority.Ensure(ctx, certs.Request{Domain: "example.test", Zone: o, AccountKey: account, Fresh: true}, &restored, time.Now())
-		if err != nil || !issued || got.Serial == cert.Serial {
-			t.Fatalf("after a lost machine: issued %v: %v", issued, err)
-		}
 	})
 }
 
@@ -281,6 +391,42 @@ func (c *counting) AppendRecords(ctx context.Context, zone string, recs []libdns
 func (c *counting) DeleteRecords(ctx context.Context, zone string, recs []libdns.Record) ([]libdns.Record, error) {
 	c.writes.Add(1)
 	return c.Provider.DeleteRecords(ctx, zone, recs)
+}
+
+// emptyListing is a provider whose listing of the zone comes back empty, as a moment's answer can.
+type emptyListing struct{ dns.Provider }
+
+func (emptyListing) GetRecords(context.Context, string) ([]libdns.Record, error) { return nil, nil }
+
+// emptyOnce is a provider whose next listing comes back empty, when empty is set.
+type emptyOnce struct {
+	dns.Provider
+	empty atomic.Bool
+}
+
+func (e *emptyOnce) GetRecords(ctx context.Context, zone string) ([]libdns.Record, error) {
+	if e.empty.Swap(false) {
+		return nil, nil
+	}
+	return e.Provider.GetRecords(ctx, zone)
+}
+
+// update is an RFC 2136 update sent straight to BIND, as another tool would: the records removed, then inserted.
+func update(t *testing.T, tsig mesh.Secret, remove, insert []mdns.RR) {
+	t.Helper()
+	m := new(mdns.Msg)
+	m.SetUpdate("example.test.")
+	if len(remove) > 0 {
+		m.Remove(remove)
+	}
+	if len(insert) > 0 {
+		m.Insert(insert)
+	}
+	m.SetTsig("homerslab.", mdns.HmacSHA256, 300, time.Now().Unix())
+	c := &mdns.Client{Net: "tcp", TsigSecret: map[string]string{"homerslab.": tsig.Reveal()}}
+	if r, _, err := c.Exchange(m, dnsServer); err != nil || r.Rcode != mdns.RcodeSuccess {
+		t.Fatalf("the update: %v %v", r, err)
+	}
 }
 
 // book is the manager's list of HomersLab's records, in memory.

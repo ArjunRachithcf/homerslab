@@ -25,6 +25,7 @@ import (
 
 	"github.com/ArjunRachithcf/homerslab/internal/agent"
 	"github.com/ArjunRachithcf/homerslab/internal/host"
+	"github.com/ArjunRachithcf/homerslab/internal/lan"
 	"github.com/ArjunRachithcf/homerslab/internal/node"
 )
 
@@ -84,13 +85,12 @@ func StartWith(t testing.TB, c agent.Config) (string, *Host) {
 	if c.Resolve == nil {
 		c.Resolve = func(context.Context, string) ([]string, error) { return []string{"192.0.2.1"}, nil }
 	}
-	if c.LAN == nil {
-		c.LAN = func() ([]string, []netip.Prefix) {
-			return []string{"enp5s0"}, []netip.Prefix{netip.MustParsePrefix("192.168.1.0/24"), netip.MustParsePrefix("2001:db8:1::/64")}
+	if c.Network == nil {
+		c.Network = func() (lan.Network, error) { // the LAN's uplink only: never this machine's own
+			return lan.Network{LAN: []string{"enp5s0"},
+				Prefixes: []netip.Prefix{netip.MustParsePrefix("192.168.1.0/24"), netip.MustParsePrefix("2001:db8:1::/64")},
+				Uplinks4: []string{"enp5s0"}, Uplinks6: []string{"enp5s0"}, Virtual: h.Guests()}, nil
 		}
-	}
-	if c.Uplinks == nil {
-		c.Uplinks = func() []string { return nil } // the LAN's only: never this machine's own
 	}
 	if c.SetupPort == 0 {
 		c.SetupPort = 7020
@@ -168,6 +168,24 @@ func (h *Host) IsBridge(name string) bool {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	return !h.notBridges[name] && !h.absent[name]
+}
+
+// guestBridges are the bridges the tests' engines name, each of guests' ports only while the kernel shows it.
+var guestBridges = []string{"docker0", "br-abcdef012345", "br-compose", "podman0", "podman1"}
+
+// Guests are the bridges the kernel would read as of guests' ports only (lan.Network.Virtual): the tests' engines'
+// bridges it shows as bridges. None on a nil Host, for a test's network read before StartWith returned it.
+func (h *Host) Guests() []string {
+	if h == nil {
+		return nil
+	}
+	var out []string
+	for _, n := range guestBridges {
+		if h.IsBridge(n) {
+			out = append(out, n)
+		}
+	}
+	return out
 }
 
 // NotABridge makes an engine's name one the kernel doesn't show as a bridge (a NIC, say).

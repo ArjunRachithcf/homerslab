@@ -79,7 +79,17 @@ type Step struct {
 	DoneAt   time.Time
 	// WaitKind is what a step waits for (secret or confirm), and WaitName which; "" when it doesn't.
 	WaitKind, WaitName string
+	// Revision counts the changes to the step (an answer kept, a wait begun or ended): a request that carries an older
+	// one was made from a view of the step that is out of date.
+	Revision int64
 }
+
+// ErrStale is a change made from an out-of-date view of a step: the step's revision is not the one the request carried.
+var ErrStale = errors.New("stale")
+
+// AnyRevision is the revision of a change that doesn't answer from a view of the step: a secret given in the
+// terminal, which finishes whatever step is waiting for it.
+const AnyRevision int64 = -1
 
 // Drift is one thing HomersLab found changed behind its back.
 type Drift struct {
@@ -92,6 +102,23 @@ type Drift struct {
 func (s *Store) AddDrift(ctx context.Context, d Drift) error {
 	_, err := s.db.ExecContext(ctx, `INSERT INTO drift (at, source, what) VALUES (?, ?, ?)`, d.At.UnixMilli(), d.Source, d.What)
 	return err
+}
+
+// AddDriftUnlessLast records drift, unless the source's last drift report after since says the same.
+func (s *Store) AddDriftUnlessLast(ctx context.Context, d Drift, since time.Time) error {
+	return s.tx(ctx, func(tx *sql.Tx) error {
+		var last string
+		err := tx.QueryRowContext(ctx, `SELECT what FROM drift WHERE source = ? AND at > ? ORDER BY at DESC, rowid DESC LIMIT 1`,
+			d.Source, since.UnixMilli()).Scan(&last)
+		if err == nil && last == d.What {
+			return nil
+		}
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return err
+		}
+		_, err = tx.ExecContext(ctx, `INSERT INTO drift (at, source, what) VALUES (?, ?, ?)`, d.At.UnixMilli(), d.Source, d.What)
+		return err
+	})
 }
 
 // Drifts are the drift reports, newest first, at most limit.
@@ -207,6 +234,9 @@ var migrations = []string{
 	// Links claimed before have neither, and are never answered again.
 	`ALTER TABLE setup_link ADD COLUMN nonce_hash BLOB;
 	ALTER TABLE setup_link ADD COLUMN session_hash BLOB;`,
+	// A step's revision: how many times it changed, so an answer made from a view of the step that is out of date (a
+	// tab opened before another changed it) is refused instead of overwriting the newer one (#110).
+	`ALTER TABLE setup_step ADD COLUMN revision INTEGER NOT NULL DEFAULT 0;`,
 	// Admin's sessions, after a sign-in with the household account (#17): only their tokens' hashes.
 	`CREATE TABLE admin_session (
 		token_hash BLOB PRIMARY KEY,
@@ -313,7 +343,7 @@ func (s *Store) tx(ctx context.Context, fn func(*sql.Tx) error) error {
 
 // Steps lists setup's steps in order, with their state.
 func (s *Store) Steps(ctx context.Context) ([]Step, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id, position, half, state, done_at, coalesce(w.kind, ''), coalesce(w.name, '')
+	rows, err := s.db.QueryContext(ctx, `SELECT id, position, half, state, done_at, coalesce(w.kind, ''), coalesce(w.name, ''), revision
 		FROM setup_step LEFT JOIN setup_wait w ON w.step = setup_step.id ORDER BY position`)
 	if err != nil {
 		return nil, err
@@ -324,7 +354,7 @@ func (s *Store) Steps(ctx context.Context) ([]Step, error) {
 		var st Step
 		var state string
 		var doneAt sql.NullInt64
-		if err := rows.Scan(&st.ID, &st.Position, &st.Half, &state, &doneAt, &st.WaitKind, &st.WaitName); err != nil {
+		if err := rows.Scan(&st.ID, &st.Position, &st.Half, &state, &doneAt, &st.WaitKind, &st.WaitName, &st.Revision); err != nil {
 			return nil, err
 		}
 		st.Done = state == "done"
@@ -352,8 +382,12 @@ func (s *Store) SaveAnswers(ctx context.Context, answers map[string]string) erro
 }
 
 // Wait keeps a step's answers so far and marks it waiting, for a secret or a confirmation, by name.
-func (s *Store) Wait(ctx context.Context, id, kind, name string, answers map[string]string) error {
+// It is refused with ErrStale unless the step is at revision (AnyRevision: whatever it is), and then moves to the next.
+func (s *Store) Wait(ctx context.Context, id, kind, name string, answers map[string]string, revision int64) error {
 	return s.tx(ctx, func(tx *sql.Tx) error {
+		if err := bump(ctx, tx, id, revision); err != nil {
+			return err
+		}
 		if err := saveAnswers(ctx, tx, answers); err != nil {
 			return err
 		}
@@ -366,9 +400,30 @@ func (s *Store) Wait(ctx context.Context, id, kind, name string, answers map[str
 	})
 }
 
-// CompleteStep saves a step's answers and marks it done, and no longer waiting, in one transaction.
-func (s *Store) CompleteStep(ctx context.Context, id string, answers map[string]string, at time.Time) error {
+// bump moves a step to its next revision, if it is at revision (any when AnyRevision), in the transaction that keeps
+// the change: of two requests from the same view of a step, one is refused, whatever the order they were checked in.
+func bump(ctx context.Context, tx *sql.Tx, id string, revision int64) error {
+	res, err := tx.ExecContext(ctx, `UPDATE setup_step SET revision = revision + 1 WHERE id = ? AND (? < 0 OR revision = ?)`, id, revision, revision)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n != 1 {
+		var one int
+		if tx.QueryRowContext(ctx, `SELECT 1 FROM setup_step WHERE id = ?`, id).Scan(&one) != nil {
+			return ErrNotFound
+		}
+		return ErrStale
+	}
+	return nil
+}
+
+// CompleteStep saves a step's answers and marks it done, and no longer waiting, in one transaction. It is refused
+// with ErrStale unless the step is at revision (AnyRevision: whatever it is).
+func (s *Store) CompleteStep(ctx context.Context, id string, answers map[string]string, at time.Time, revision int64) error {
 	return s.tx(ctx, func(tx *sql.Tx) error {
+		if err := bump(ctx, tx, id, revision); err != nil {
+			return err
+		}
 		if err := saveAnswers(ctx, tx, answers); err != nil {
 			return err
 		}

@@ -29,6 +29,9 @@ type Domains interface {
 	CAA(ctx context.Context, domain string) error
 	// Ensure keeps have while it is valid, and otherwise issues the domain's wildcard certificate.
 	Ensure(ctx context.Context, i Issuance, have *certs.Certificate, now time.Time) (certs.Certificate, bool, error)
+	// Reconcile puts the zone's inventory record right from the book of HomersLab's records, and writes no other record
+	// (dns.Owned.Reconcile). Of the issuance it takes the settings, the token, the zone, the domain and Drift.
+	Reconcile(ctx context.Context, i Issuance) error
 	// Authority names the certificate authority.
 	Authority() string
 }
@@ -40,6 +43,9 @@ type Issuance struct {
 	Zone, Domain string
 	Account      mesh.Secret
 	Contact      string
+	// Drift takes the zone's drift notes, for the drift report: records found deleted or replaced at the provider by
+	// hand, and listings that looked empty. Called while the issuance runs; none when nil.
+	Drift func(dns.Drift)
 }
 
 type realDomains struct {
@@ -72,8 +78,25 @@ func (d realDomains) Ensure(ctx context.Context, i Issuance, have *certs.Certifi
 	if err != nil {
 		return certs.Certificate{}, false, err
 	}
-	zone := &dns.Owned{Provider: p, Zone: i.Zone, Domain: i.Domain, Book: d.book, Log: d.a.Log}
-	return d.a.Ensure(ctx, certs.Request{Domain: i.Domain, Zone: zone, AccountKey: i.Account, Contact: i.Contact}, have, now)
+	return d.a.Ensure(ctx, certs.Request{Domain: i.Domain, Zone: d.owned(i, p), AccountKey: i.Account, Contact: i.Contact}, have, now)
+}
+
+// owned is the issuance's zone on the provider, as HomersLab may change it, saying its drift to the issuance.
+func (d realDomains) owned(i Issuance, p dns.Provider) *dns.Owned {
+	return &dns.Owned{Provider: p, Zone: i.Zone, Domain: i.Domain, Book: d.book, Log: d.a.Log, Drift: i.Drift}
+}
+
+func (d realDomains) Reconcile(ctx context.Context, i Issuance) error {
+	p, err := dns.Open(i.Settings, i.Token)
+	if err != nil {
+		return err
+	}
+	return d.reconcile(ctx, i, p)
+}
+
+// reconcile is Reconcile on provider p.
+func (d realDomains) reconcile(ctx context.Context, i Issuance, p dns.Provider) error {
+	return d.owned(i, p).Reconcile(ctx)
 }
 
 func (d realDomains) Authority() string { return d.a.Name }
@@ -91,6 +114,12 @@ const (
 	ansDNSKeyAlg   = "dnsKeyAlgorithm"
 	ansZone        = "dnsZone"
 	ansAdminURL    = "adminUrl"
+	// ansEmptySince is when renewals began to stop on the DNS provider's empty listings, since the last certificate
+	// kept or issued, RFC 3339; empty when none has (#175).
+	ansEmptySince = "dnsListingEmptySince"
+	// ansRenewedAt is when the domain's certificate was last issued, RFC 3339: a DNS drift note collapses only into
+	// the same note since then (#175).
+	ansRenewedAt = "dnsRenewedAt"
 	// ansPort is the household's port, chosen once at the network step (ADR 0021).
 	ansPort = "householdPort"
 )
@@ -122,7 +151,7 @@ func (m *Manager) domain(ctx context.Context, raw json.RawMessage, earlier map[s
 	}
 	var bad []string
 	d := strings.TrimSuffix(strings.ToLower(strings.TrimSpace(a.Domain)), ".")
-	if len(d) > 200 || !domainName.MatchString(d) {
+	if c, err := dns.Canonical(d); len(d) > 200 || !domainName.MatchString(d) || err != nil || c != d { // its A-labels valid IDNA (#153)
 		bad = append(bad, "domain")
 	}
 	s, err := dns.Settings{Provider: a.Provider, Server: a.Server, KeyName: a.KeyName, KeyAlgorithm: a.KeyAlgorithm}.Check()
@@ -209,10 +238,13 @@ func (m *Manager) ensureCertificate(ctx context.Context, ans map[string]string, 
 		return false, err // never a new certificate because the agent didn't answer
 	}
 	c, issued, err := m.domains.Ensure(ctx, Issuance{Settings: settingsOf(ans), Token: token, Zone: ans[ansZone], Domain: domain,
-		Account: account, Contact: ans["mail"]}, have, m.cfg.Now())
+		Account: account, Contact: ans["mail"], Drift: m.dnsDrift(ctx, ans[ansRenewedAt])}, have, m.cfg.Now())
 	if err != nil {
 		m.log.Warn("the domain's certificate", "domain", domain, "err", err)
-		return false, fmt.Errorf("%w: %v", errIssue, err)
+		if errors.Is(err, dns.ErrListingEmpty) {
+			return false, fmt.Errorf("%w: %w", errIssue, err) // tried again on the schedule: secretFailed and renewalFailed tell it apart
+		}
+		return false, fmt.Errorf("%w: %v", errIssue, err) // the other failures keep their code (#175)
 	}
 	if issued {
 		if err := m.agent.seal(ctx, credTLSKey, c.Key); err != nil {
@@ -223,8 +255,17 @@ func (m *Manager) ensureCertificate(ctx context.Context, ans map[string]string, 
 			return false, err
 		}
 		m.log.Info("issued the domain's certificate", "domain", domain, "serial", c.Serial, "notAfter", c.NotAfter, "renewAt", c.RenewAt())
+		// The empty listings are over, and the drift notes since start again.
+		if err := m.db.SaveAnswers(ctx, map[string]string{ansEmptySince: "", ansRenewedAt: m.cfg.Now().UTC().Format(time.RFC3339Nano)}); err != nil {
+			return false, err
+		}
 	} else {
 		m.log.Info("kept the domain's certificate: still valid", "domain", domain, "serial", c.Serial, "renewAt", c.RenewAt())
+		if ans[ansEmptySince] != "" { // the empty listings are over
+			if err := m.db.SaveAnswers(ctx, map[string]string{ansEmptySince: ""}); err != nil {
+				return false, err
+			}
+		}
 	}
 	if err := m.installCertificate(ctx, ans, c); err != nil {
 		return issued, err
@@ -368,19 +409,111 @@ func (m *Manager) reinstall(ctx context.Context, ans map[string]string, row stor
 
 const warnCertificate = "certificate:"
 
-func (m *Manager) renewalFailed(ctx context.Context, row store.Certificate, why error) error {
-	first, err := m.db.RenewalFailed(ctx, row.Domain, m.cfg.Now(), why.Error())
+// reconcile puts the zone's inventory record right from the book, writing no other record: an inventory a create or a
+// delete left stale (its update failed, or met an empty listing) is rewritten at the scheduler's next run, and costs no
+// listing while it is right (#176, #179). It runs from the scheduler, once the domain's certificate is issued. An empty
+// listing writes nothing and is tried again at the next run, without a warning, and the drift report says so once, as
+// for a renewal (#175); any other failure is tried again too, and the scheduler logs it.
+func (m *Manager) reconcile(ctx context.Context) error {
+	m.certMu.Lock() // the zone's writes never interleave
+	defer m.certMu.Unlock()
+	ans, err := m.db.Answers(ctx)
 	if err != nil {
 		return err
 	}
-	if first {
-		what := fmt.Sprintf("The certificate for *.%s couldn't be renewed, and it expires on %s. If the DNS token no longer "+
-			"works, give a new one on the primary: sudo homerslab dns token", row.Domain, row.NotAfter.UTC().Format("2 January 2006"))
-		if err := m.db.AddWarning(ctx, store.Warning{At: m.cfg.Now(), Source: warnCertificate + row.Domain, What: what}); err != nil {
-			return err
+	domain := ans[ansDomain]
+	if _, err := m.db.Certificate(ctx, domain); errors.Is(err, store.ErrNotFound) || domain == "" {
+		return nil
+	} else if err != nil {
+		return err
+	}
+	token, err := m.agent.unseal(ctx, credDNSToken)
+	if err != nil {
+		return fmt.Errorf("the DNS token: %w", err)
+	}
+	err = m.domains.Reconcile(ctx, Issuance{Settings: settingsOf(ans), Token: token, Zone: ans[ansZone], Domain: domain,
+		Drift: m.dnsDrift(ctx, ans[ansRenewedAt])})
+	if errors.Is(err, dns.ErrListingEmpty) {
+		m.log.Debug("the DNS zone's inventory record waits for a listing that isn't empty: tried again at the next run", "domain", domain)
+		return nil
+	}
+	return err
+}
+
+// emptyListingGrace is how long renewals may fail on the DNS provider's empty listings, tried again at every run of
+// the scheduler, before the admins are warned: an empty listing is most often a moment's answer (#175).
+const emptyListingGrace = 24 * time.Hour
+
+// renewalFailed counts a failed renewal, and warns the admins of its cause unless that warning is open already. A
+// renewal that the DNS provider's empty listing stopped warns only once such failures have gone on for
+// emptyListingGrace since the first of them after the last renewal; until then the scheduler tries again at its next
+// run (#175).
+func (m *Manager) renewalFailed(ctx context.Context, row store.Certificate, why error) error {
+	now := m.cfg.Now()
+	if err := m.db.RenewalFailed(ctx, row.Domain, now, why.Error()); err != nil {
+		return err
+	}
+	failed := fmt.Errorf("renewing the certificate for *.%s: %w", row.Domain, why)
+	ans, err := m.db.Answers(ctx)
+	if err != nil {
+		return errors.Join(failed, err)
+	}
+	empty := errors.Is(why, dns.ErrListingEmpty)
+	since, _ := time.Parse(time.RFC3339Nano, ans[ansEmptySince])
+	switch {
+	case empty && since.IsZero():
+		return errors.Join(failed, m.db.SaveAnswers(ctx, map[string]string{ansEmptySince: now.UTC().Format(time.RFC3339Nano)}))
+	case empty && now.Sub(since) < emptyListingGrace:
+		return failed
+	}
+	expires := row.NotAfter.UTC().Format("2 January 2006")
+	what := fmt.Sprintf("The certificate for *.%s couldn't be renewed, and it expires on %s. If the DNS token no longer "+
+		"works, give a new one on the primary: sudo homerslab dns token", row.Domain, expires)
+	if empty {
+		what = fmt.Sprintf("The certificate for *.%s hasn't been renewed for a day: the DNS provider's listing of its zone keeps "+
+			"coming back empty, which proves nothing, so HomersLab wrote no record. It keeps trying on its schedule, and the "+
+			"certificate expires on %s. If the DNS token can no longer read the zone's records, give a new one on the primary: "+
+			"sudo homerslab dns token", row.Domain, expires)
+	}
+	open, err := m.db.OpenWarning(ctx, warnCertificate+row.Domain, what)
+	if err != nil || open {
+		return errors.Join(failed, err)
+	}
+	if err := m.db.AddWarning(ctx, store.Warning{At: now, Source: warnCertificate + row.Domain, What: what}); err != nil {
+		return err
+	}
+	return failed
+}
+
+// driftDNS is the drift report's source for the DNS provider's zone.
+const driftDNS = "dns"
+
+// dnsDrift records the zone's drift notes in the drift report, beside the mesh's: each record by its type and name, and
+// never its value. A note the same as the report's last DNS note since the certificate was last issued (renewed, RFC
+// 3339; the beginning when empty) isn't added again: a listing that stays empty is one note, not one at every run of
+// the scheduler, and the same note at a later renewal is one of its own (#175).
+func (m *Manager) dnsDrift(ctx context.Context, renewed string) func(dns.Drift) {
+	ctx = context.WithoutCancel(ctx) // a note is kept even when the request that issued has gone
+	since, _ := time.Parse(time.RFC3339Nano, renewed)
+	return func(d dns.Drift) {
+		zone, rec := strings.TrimSuffix(d.Zone, "."), d.Record.Type+" "+d.Record.Name
+		var what string
+		switch d.What {
+		case dns.DriftDeletedByHand:
+			what = fmt.Sprintf("HomersLab's %s in %s was deleted at the DNS provider by hand: HomersLab no longer counts it as its own", rec, zone)
+		case dns.DriftReplacedByHand:
+			what = fmt.Sprintf("HomersLab's %s in %s was replaced at the DNS provider by another value, by hand: that value was left "+
+				"as it is, and HomersLab no longer counts the record as its own", rec, zone)
+		case dns.DriftListingLookedEmpty:
+			what = fmt.Sprintf("The DNS provider's listing of %s came back empty, which proves nothing: HomersLab left %s as it "+
+				"was and wrote nothing", zone, rec)
+		default:
+			what = fmt.Sprintf("%s: %s in %s", d.What, rec, zone)
+		}
+		if err := m.db.AddDriftUnlessLast(ctx, store.Drift{At: m.cfg.Now(), Source: driftDNS, What: what}, since); err != nil {
+			m.log.Error("recording the DNS provider's drift", "zone", zone, "record", rec, "what", d.What, "err", err)
 		}
 	}
-	return fmt.Errorf("renewing the certificate for *.%s: %w", row.Domain, why)
 }
 
 // DNSStatus is the main domain, its DNS provider and its certificate, for `homerslab dns token` to show before it reads
@@ -469,6 +602,9 @@ func (m *Manager) secretFailed(w http.ResponseWriter, err error) {
 		fail(w, http.StatusBadGateway, "mesh-unreachable")
 	case errors.Is(err, errJoin):
 		fail(w, http.StatusBadGateway, "join-failed")
+	case errors.Is(err, dns.ErrListingEmpty):
+		w.Header().Set("Retry-After", "300") // a moment's answer, most often: nothing was written
+		fail(w, http.StatusServiceUnavailable, "dns-listing-empty")
 	case errors.Is(err, errIssue):
 		fail(w, http.StatusBadGateway, "issuance-failed")
 	case errors.Is(err, errEdge):
