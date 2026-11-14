@@ -18,14 +18,14 @@ import (
 	"github.com/ArjunRachithcf/homerslab/internal/testenv"
 )
 
-// at is setup as the control socket shows it, with the step waiting for secret, at revision 17, claimed from the LAN.
+// at is setup as the control socket shows it, with the step waiting for secret, at revision 17, answered from the LAN.
 func at(step, secret string, answers string) string {
-	return `{"revision":17,"claim":{"from":"192.168.1.42","at":"2026-11-10T13:30:00Z"},` +
-		`"steps":[{"id":"` + step + `","state":"waiting","secret":"` + secret + `"}],"answers":{"household":"The Ferreira household"` + answers + `}}`
+	return `{"revision":17,"steps":[{"id":"` + step + `","state":"waiting","secret":"` + secret + `"}],` +
+		`"answers":{"household":"The Ferreira household","answeredFrom:` + step + `":"192.168.1.42","answeredAt:` + step + `":"2026-11-10T13:30:00Z"` + answers + `}}`
 }
 
-// claimedAt is how the terminal says when the setup was claimed: in this machine's time.
-var claimedAt = time.Date(2026, 11, 10, 13, 30, 0, 0, time.UTC).Local().Format("15:04 MST on 2 January 2006")
+// answeredAt is how the terminal says when the step was answered: in this machine's time.
+var answeredAt = time.Date(2026, 11, 10, 13, 30, 0, 0, time.UTC).Local().Format("15:04 MST on 2 January 2006")
 
 // headerControl is routedControl that also records each request's If-Match.
 func headerControl(t *testing.T, answers map[string][2]string) (string, *[]string) {
@@ -56,9 +56,9 @@ func headerControl(t *testing.T, answers map[string][2]string) (string, *[]strin
 	return sock, &got
 }
 
-// Before it reads a secret, the terminal says where it goes, for which household, and who claimed the setup whose
-// answers decide that; then it sends the secret bound to those answers (#64).
-func TestSetupSecretSaysWhereTheSecretGoesAndWhoseSetupItIs(t *testing.T) {
+// Before it reads a secret, the terminal says where it goes, for which household, and which device gave the answers
+// that decide that, and when; then it sends the secret bound to those answers (#64).
+func TestSetupSecretSaysWhereTheSecretGoesAndWhoseAnswersSayIt(t *testing.T) {
 	testenv.Isolate(t)
 	for _, c := range []struct {
 		name, step, answers string
@@ -77,7 +77,7 @@ func TestSetupSecretSaysWhereTheSecretGoesAndWhoseSetupItIs(t *testing.T) {
 		if code != 0 {
 			t.Fatalf("%s: exit %d: %s", c.name, code, errOut)
 		}
-		for _, want := range []string{c.where, "for The Ferreira household,", "in the setup claimed from 192.168.1.42 at " + claimedAt + "."} {
+		for _, want := range []string{c.where, "for The Ferreira household,", "as the setup page answered from 192.168.1.42 at " + answeredAt + "."} {
 			if !strings.Contains(errOut, want) {
 				t.Errorf("%s: the context lacks %q:\n%s", c.name, want, errOut)
 			}
@@ -93,7 +93,8 @@ func TestSetupSecretSaysWhereTheSecretGoesAndWhoseSetupItIs(t *testing.T) {
 	}
 }
 
-// A secret no step waits for is never read: the terminal says what to do on the setup page first.
+// A secret no step waits for is never read: the terminal says what to do on the setup page first. Nor is one while
+// another for the same step is being checked.
 func TestSetupSecretReadsNothingNoStepWaitsFor(t *testing.T) {
 	testenv.Isolate(t)
 	for name, want := range map[string]string{
@@ -109,6 +110,10 @@ func TestSetupSecretReadsNothingNoStepWaitsFor(t *testing.T) {
 		if len(*got) != 1 {
 			t.Errorf("%s: requests %q", name, *got)
 		}
+	}
+	sock, got := headerControl(t, map[string][2]string{"GET /api/v1/setup": {"", `{"revision":3,"steps":[{"id":"domain","state":"checking","secret":"dns"}],"answers":{}}`}})
+	if code, _, errOut := runWith(t, token+"\n", "setup", "secret", "dns", "--control-socket", sock); code != 1 || !strings.Contains(errOut, "being checked now") || len(*got) != 1 {
+		t.Errorf("while another is checked: exit %d %q, requests %q", code, errOut, *got)
 	}
 }
 

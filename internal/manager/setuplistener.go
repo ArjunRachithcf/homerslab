@@ -72,7 +72,11 @@ func (m *Manager) noSecrets(next http.Handler) http.Handler {
 			return
 		}
 		b, err := io.ReadAll(io.LimitReader(r.Body, bodyMax+1))
-		if err != nil || len(b) > bodyMax {
+		if err != nil {
+			fail(w, http.StatusBadRequest, "unreadable")
+			return
+		}
+		if len(b) > bodyMax {
 			fail(w, http.StatusRequestEntityTooLarge, "too-large")
 			return
 		}

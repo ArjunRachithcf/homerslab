@@ -123,6 +123,7 @@
   "step.network.switchOff": "Switch them off and continue",
   "step.secret.checked": "Received and checked.",
   "step.secret.refused": "That token didn’t work, and nothing was kept: the terminal says why. Run the command again.",
+  "step.secret.failed": "That didn’t finish, and nothing was kept: the terminal says why. Run the command again.",
   "step.network.done": "Checked: this machine is on the mesh, and the LAN no longer reaches any app.",
   "step.domain.title": "Your domain",
   "step.domain.lead": "Every app gets a name under it, like {example}, with one certificate for them all. The names answer only on the mesh.",

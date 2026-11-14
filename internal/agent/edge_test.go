@@ -192,7 +192,8 @@ func TestTheEdgeWaitsForTheMesh(t *testing.T) {
 	if h.Edge.Loads() != 0 {
 		t.Error("the edge was loaded with nowhere to listen")
 	}
-	for _, bad := range []agent.EdgeSites{{Port: 0}, {Port: 70000}, {Port: 443, Admin: "admin..example.test"}} {
+	// Port 80 only redirects to the household's port (#64): it is never the household's port.
+	for _, bad := range []agent.EdgeSites{{Port: 0}, {Port: 70000}, {Port: 80}, {Port: 443, Admin: "admin..example.test"}} {
 		if code, _ := call(t, sock, "PUT", "/v1/edge", bad); code != http.StatusBadRequest {
 			t.Errorf("sites %+v: %d, want 400", bad, code)
 		}

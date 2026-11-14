@@ -368,17 +368,17 @@ func (m *Manager) putSecret(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	name := r.PathValue("name")
-	m.given(name, true, "")
+	m.checkingSecret(name)
 	st, err := m.setup.Secret(r.Context(), name, body.Value, basis.Revision)
 	if err != nil {
 		why := m.secretFailed(w, err)
 		if errors.Is(err, setup.ErrStale) || errors.Is(err, setup.ErrNotWaiting) {
 			why = "" // it was never checked
 		}
-		m.given(name, false, why)
+		m.checkedSecret(name, why)
 		return
 	}
-	m.given(name, false, "")
+	m.checkedSecret(name, "")
 	writeJSON(w, http.StatusOK, m.withGiven(st))
 }
 

@@ -23,8 +23,8 @@ import (
 // (#64), so they come from this machine's terminal, over the control socket. The secret is read from stdin without
 // echo, sent once, and never printed, logged or kept by the CLI.
 //
-// Before it reads one, it says where the secret will go, for which household, and who claimed the setup session whose
-// answers decide that, and on a terminal it asks for a yes: a stranger who claimed the link first can't send it
+// Before it reads one, it says where the secret will go, for which household, and which device gave the answers that
+// decide that, and when; on a terminal it asks for a yes: a stranger who claimed the link first can't send it
 // somewhere else unseen. The secret is sent bound to the answers it showed (their revision): if the page changed them
 // meanwhile, the manager refuses it before anything sees it.
 func setupSecret(ctx context.Context, args []string, env Env) error {
@@ -51,8 +51,12 @@ func setupSecret(ctx context.Context, args []string, env Env) error {
 	if _, err := c.do(ctx, "GET", "/api/v1/setup", 0, &st); err != nil {
 		return refused(name, err)
 	}
-	if !st.waitingFor(name) {
+	step := st.waitingFor(name)
+	if step == "" {
 		return errors.New(refusal(name, "not-waiting"))
+	}
+	if step == "checking" {
+		return errors.New(refusal(name, "checking"))
 	}
 	fmt.Fprintln(env.Stderr, context64(name, st))
 	in := lines(env)
@@ -92,11 +96,7 @@ func setupSecret(ctx context.Context, args []string, env Env) error {
 // setupState is setup as the control socket shows it to the terminal.
 type setupState struct {
 	Revision int64 `json:"revision"`
-	Claim    *struct {
-		From string    `json:"from"`
-		At   time.Time `json:"at"`
-	} `json:"claim"`
-	Steps []struct {
+	Steps    []struct {
 		ID     string `json:"id"`
 		State  string `json:"state"`
 		Secret string `json:"secret"`
@@ -104,18 +104,29 @@ type setupState struct {
 	Answers map[string]string `json:"answers"`
 }
 
-// waitingFor says whether a step waits for the secret name.
-func (s setupState) waitingFor(name string) bool {
+// waitingFor is the state of the step that waits for the secret name: waiting, or checking one given already; "" when
+// none does.
+func (s setupState) waitingFor(name string) string {
 	for _, st := range s.Steps {
-		if st.State == "waiting" && st.Secret == name {
-			return true
+		if (st.State == "waiting" || st.State == "checking") && st.Secret == name {
+			return st.State
 		}
 	}
-	return false
+	return ""
 }
 
-// context64 is what the terminal says before it reads a secret: where it goes, for which household, and who claimed
-// the setup session whose answers decide that (#64).
+// waitingStep is the id of the step that waits for the secret name.
+func (s setupState) waitingStep(name string) string {
+	for _, st := range s.Steps {
+		if st.Secret == name {
+			return st.ID
+		}
+	}
+	return ""
+}
+
+// context64 is what the terminal says before it reads a secret: where it goes, for which household, and which device
+// gave the answers that decide that, and when (#64).
 func context64(name string, st setupState) string {
 	a := st.Answers
 	var where string
@@ -130,9 +141,13 @@ func context64(name string, st setupState) string {
 	case "mail":
 		where = fmt.Sprintf("This password is for %s, and goes to the mail server %s,", a["mailFrom"], a["mailServer"])
 	}
-	who := "and no setup session is open now"
-	if c := st.Claim; c != nil {
-		who = fmt.Sprintf("in the setup claimed from %s at %s", c.From, c.At.Local().Format("15:04 MST on 2 January 2006"))
+	step := st.waitingStep(name)
+	who := "as the setup page answered"
+	if from := a["answeredFrom:"+step]; from != "" {
+		who = "as the setup page answered from " + from
+		if at, err := time.Parse(time.RFC3339, a["answeredAt:"+step]); err == nil {
+			who += " at " + at.Local().Format("15:04 MST on 2 January 2006")
+		}
 	}
 	return fmt.Sprintf("%s for %s, %s.\nIf that isn't your setup, press Ctrl-C, and make a new link with sudo homerslab setup link.", where, a["household"], who)
 }
@@ -235,6 +250,8 @@ var secretRefusals = map[string]string{
 	"not-waiting":           "no step of first-time setup is waiting for this: choose your mesh on the setup page first",
 	"dns:not-waiting":       "no step of first-time setup is waiting for this: give your domain on the setup page first",
 	"mail:not-waiting":      "no step of first-time setup is waiting for this: give the mail server on the setup page first",
+	"mail:secret-refused":   "the mail server refused this password: check it, then run the command again",
+	"checking":              "a secret given for this step is being checked now: wait for the setup page to say how it went",
 	"stale":                 "the answers on the setup page changed after this command showed them, so nothing was sent: run it again, and check where the secret goes",
 	"secret-refused":        "the mesh refused this token: check it, then run the command again",
 	"dns:secret-refused":    "the DNS provider refused this token: check that it may edit the domain's records, then run the command again",

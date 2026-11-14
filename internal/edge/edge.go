@@ -27,15 +27,25 @@ const HSTS = "max-age=31536000"
 
 // Every cookie the edge passes on is Secure (#64): Caddy runs these on each Set-Cookie value, in order. The first takes
 // out a Secure attribute the cookie may have, in any case or spacing; the second puts one at its end.
-var secureCookie = []struct{ search, replace string }{
-	{`(?i);\s*secure\s*(;|$)`, "$1"},
-	{`$`, "; Secure"},
+var secureCookie = []struct {
+	search, replace string
+	re              *regexp.Regexp
+}{
+	{`(?i);\s*secure\s*(;|$)`, "$1", nil},
+	{`$`, "; Secure", nil},
 }
 
-// SecureCookie is a Set-Cookie value as the edge passes it on.
+func init() {
+	for i := range secureCookie {
+		secureCookie[i].re = regexp.MustCompile(secureCookie[i].search)
+	}
+}
+
+// SecureCookie is a Set-Cookie value as the edge passes it on, by Go's regexp as Caddy's are (the request matrix
+// checks Caddy itself).
 func SecureCookie(v string) string {
 	for _, r := range secureCookie {
-		v = regexp.MustCompile(r.search).ReplaceAllString(v, r.replace)
+		v = r.re.ReplaceAllString(v, r.replace)
 	}
 	return v
 }

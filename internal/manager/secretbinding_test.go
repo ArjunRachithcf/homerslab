@@ -10,15 +10,10 @@ import (
 	"github.com/ArjunRachithcf/homerslab/internal/testenv"
 )
 
-// controlState is setup as the control socket shows it to `homerslab setup secret`: the page's state, plus who claimed
-// the setup session and when.
+// controlState is setup as the control socket shows it to `homerslab setup secret`.
 type controlState struct {
 	Revision int64 `json:"revision"`
-	Claim    *struct {
-		From string    `json:"from"`
-		At   time.Time `json:"at"`
-	} `json:"claim"`
-	Steps []struct {
+	Steps    []struct {
 		ID, State, Secret, Refused string
 	} `json:"steps"`
 	Answers map[string]string `json:"answers"`
@@ -44,8 +39,8 @@ func (p *primary) secretAt(name, value string, revision int64) response {
 	return serve(p.m.Control(), req)
 }
 
-// The terminal shows where a secret goes and who claimed the setup session, then sends the secret bound to the
-// answers it showed (#64): if the LAN page changed them in between, the secret is refused and goes nowhere.
+// The terminal shows where a secret goes and which device gave the answers that decide it, then sends the secret bound
+// to the answers it showed (#64): if the LAN page changed them in between, the secret is refused and goes nowhere.
 func TestASecretIsBoundToTheAnswersTheTerminalShowed(t *testing.T) {
 	testenv.Isolate(t)
 	nb := &fakeNetBird{}
@@ -53,12 +48,20 @@ func TestASecretIsBoundToTheAnswersTheTerminalShowed(t *testing.T) {
 	b.mustAnswer("network", map[string]string{"mesh": "netbird", "controlPlane": "cloud"})
 
 	shown := p.controlState()
-	if shown.Claim == nil || shown.Claim.From != onTheLAN || !shown.Claim.At.Equal(p.clock.Now()) {
-		t.Errorf("the control socket's state names the claim as %+v, want from %s at %v", shown.Claim, onTheLAN, p.clock.Now())
+	if from, at := shown.Answers["answeredFrom:network"], shown.Answers["answeredAt:network"]; from != onTheLAN || at != p.clock.Now().Format(time.RFC3339) {
+		t.Errorf("the network step was answered from %q at %q, want %s at %v", from, at, onTheLAN, p.clock.Now())
 	}
-	if r := b.do("GET", "/api/v1/setup", nil); strings.Contains(string(r.Body), `"claim"`) {
-		t.Errorf("the LAN page is shown the claim: %s", r.Body)
+	// Who answered is the step's own: a new link, claimed from elsewhere, doesn't make the answers that device's.
+	p.clock.Add(time.Minute)
+	admin := p.browser(thisMachine)
+	if r := admin.claim(p.newLink()); r.Code != http.StatusOK {
+		t.Fatalf("a new link: %d %s", r.Code, r.Body)
 	}
+	if from := p.controlState().Answers["answeredFrom:network"]; from != onTheLAN {
+		t.Errorf("after a new claim, the network step was answered from %q, want still %s", from, onTheLAN)
+	}
+	b = admin
+	shown = p.controlState()
 
 	if r := p.secretAt("mesh", givenToken, -1); r.Code != http.StatusPreconditionRequired || r.errorCode(t) != "revision-required" {
 		t.Errorf("a secret without the revision it was shown at: %d %s, want 428 revision-required", r.Code, r.Body)

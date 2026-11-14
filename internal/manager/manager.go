@@ -101,7 +101,7 @@ type Manager struct {
 	// given is what the page sees of the secrets the terminal gives (#64): those being checked, and why the last one
 	// given for each was refused. By the secret's name; never the secret.
 	givenMu  sync.Mutex
-	checking map[string]bool
+	checking map[string]int // how many are being checked
 	refusals map[string]string
 }
 
@@ -239,7 +239,7 @@ func (m *Manager) Control() http.Handler {
 	mux.HandleFunc("GET /api/v1/drift", m.getDrift)
 	mux.HandleFunc("GET /api/v1/mesh", m.getMesh)
 	mux.HandleFunc("GET /api/v1/mesh/owner-password", m.getOwnerPassword)
-	mux.HandleFunc("GET /api/v1/setup", m.getControlSetup)
+	mux.HandleFunc("GET /api/v1/setup", m.getSetup)
 	mux.HandleFunc("GET /api/v1/nodes/primary", m.getPrimary)
 	mux.HandleFunc("GET /api/v1/dns", m.getDNS)
 	mux.HandleFunc("PUT /api/v1/dns/token", m.putDNSToken)
@@ -295,25 +295,6 @@ func (m *Manager) getSetup(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, m.withGiven(st))
 }
 
-// getControlSetup is setup for the terminal: the page's state, and who claimed the setup session that is open, so
-// `homerslab setup secret` can say whose answers decide where a secret goes (#64).
-func (m *Manager) getControlSetup(w http.ResponseWriter, r *http.Request) {
-	st, err := m.setup.State(r.Context())
-	if err != nil {
-		m.internal(w, "reading setup", err)
-		return
-	}
-	c, err := m.setup.Claimed(r.Context())
-	if err != nil {
-		m.internal(w, "reading setup's claim", err)
-		return
-	}
-	writeJSON(w, http.StatusOK, struct {
-		setup.State
-		Claim *setup.Claimant `json:"claim,omitempty"`
-	}{m.withGiven(st), c})
-}
-
 // withGiven shows a waiting step's secret as the terminal gives it: checking while it is checked, and why the last one
 // was refused.
 func (m *Manager) withGiven(st setup.State) setup.State {
@@ -323,7 +304,7 @@ func (m *Manager) withGiven(st setup.State) setup.State {
 		if s.State != "waiting" || s.Secret == "" {
 			continue
 		}
-		if m.checking[s.Secret] {
+		if m.checking[s.Secret] > 0 {
 			st.Steps[i].State = "checking"
 		} else {
 			st.Steps[i].Refused = m.refusals[s.Secret]
@@ -332,17 +313,33 @@ func (m *Manager) withGiven(st setup.State) setup.State {
 	return st
 }
 
-// given records a secret's progress: checking it, then done with it, refused for why ("" when it was taken).
-func (m *Manager) given(name string, checking bool, why string) {
+// checkingSecret records that a secret arrived and is being checked; done, that its check ended, refused for why (""
+// when it was taken).
+func (m *Manager) checkingSecret(name string) {
 	m.givenMu.Lock()
 	defer m.givenMu.Unlock()
 	if m.checking == nil {
-		m.checking, m.refusals = map[string]bool{}, map[string]string{}
+		m.checking, m.refusals = map[string]int{}, map[string]string{}
 	}
-	m.checking[name] = checking
-	if !checking {
-		m.refusals[name] = why
+	m.checking[name]++
+}
+
+func (m *Manager) forgetRefusal(name string) {
+	m.givenMu.Lock()
+	defer m.givenMu.Unlock()
+	delete(m.refusals, name)
+}
+
+func (m *Manager) checkedSecret(name, why string) {
+	m.givenMu.Lock()
+	defer m.givenMu.Unlock()
+	if m.checking == nil {
+		m.checking, m.refusals = map[string]int{}, map[string]string{}
 	}
+	if m.checking[name] > 0 {
+		m.checking[name]--
+	}
+	m.refusals[name] = why
 }
 
 func (m *Manager) getPrimary(w http.ResponseWriter, r *http.Request) {
@@ -390,13 +387,16 @@ func (m *Manager) putStep(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusBadRequest, "not-json")
 		return
 	}
+	if from, ok := client(r); ok {
+		basis.From = from.String()
+	}
 	st, err := m.setup.Answer(r.Context(), r.PathValue("id"), setup.LAN, raw, basis)
 	var invalid *setup.Invalid
 	var overHTTP *setup.SecretOverHTTP
 	switch {
 	case err == nil:
 		if secret := setup.Secrets[r.PathValue("id")]; secret != "" {
-			m.given(secret, false, "") // a new answer: a new wait for its secret
+			m.forgetRefusal(secret) // a new answer: a new wait for its secret, nothing refused yet
 		}
 		writeJSON(w, http.StatusOK, m.withGiven(st))
 	case errors.As(err, &overHTTP):

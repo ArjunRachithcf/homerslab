@@ -71,6 +71,9 @@ test('on NetBird’s cloud the page asks no token, shows the command for the ter
   await accessible(page, 'the token, received and checked');
   await page.getByRole('button', { name: 'Continue' }).click();
   await expect(page.getByRole('heading', { level: 1 })).toContainText('Your domain');
+  await page.getByRole('button', { name: 'Back' }).click(); // the step's own answer, to change it
+  await expect(page.getByRole('heading', { level: 1 })).toContainText('Your private network');
+  await expect(page.getByRole('radio', { name: /NetBird’s cloud/ })).toBeChecked();
 });
 
 test('a self-hosted NetBird needs its https address, and only that', async ({ page, primary }) => {

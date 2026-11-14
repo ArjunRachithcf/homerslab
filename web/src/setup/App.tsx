@@ -282,7 +282,8 @@ function useStep(id: string, setup: Setup, facts: Facts | null, next: () => void
         </div>
       </>,
       notice: !done && !checking && step?.refused
-        ? <div className="notice notice-warn" role="alert"><Icon name="alert" /><span className="notice-body">{t('step.secret.refused')}</span></div>
+        ? <div className="notice notice-warn" role="alert"><Icon name="alert" />
+          <span className="notice-body">{t(step.refused === 'secret-refused' ? 'step.secret.refused' : 'step.secret.failed')}</span></div>
         : undefined,
       moreLabel: done ? undefined : t(k('help')),
       more: done ? undefined : <>
@@ -290,7 +291,7 @@ function useStep(id: string, setup: Setup, facts: Facts | null, next: () => void
         <p className="subhead">{t(k('helpWhy'))}</p>
       </>,
       primary: done ? { label: t('setup.continue') } : { label: t('setup.continue'), ok: false, why: t(k('waitWhy')) },
-      onPrimary: done ? next : undefined,
+      onPrimary: done ? () => { setChecked(null); next(); } : undefined, // back here later: the step's own answer
     };
   };
 

@@ -318,7 +318,14 @@ func (s *Setup) LANHalfDone(ctx context.Context) (bool, error) {
 type Basis struct {
 	Revision int64
 	Edit     bool
+	// From is the device the answer came from, kept with the step's answers: the terminal says whose answers decide
+	// where a secret goes (#64).
+	From string
 }
+
+// AnsweredFrom and AnsweredAt are the answers' keys for where and when a step was last answered from.
+func AnsweredFrom(step string) string { return "answeredFrom:" + step }
+func AnsweredAt(step string) string   { return "answeredAt:" + step }
 
 // Answer takes a step's answer, given over the half "over", and returns the new state. It changes nothing unless the
 // step is still at basis.Revision (ErrStale), and a step that is done only when basis says it is an edit (ErrStepDone).
@@ -361,6 +368,19 @@ func (s *Setup) Answer(ctx context.Context, id string, over Half, answer json.Ra
 		return State{}, ErrNotBuilt
 	}
 	keep, err := h(ctx, answer, st.Answers)
+	if basis.From != "" && Secrets[id] != "" { // a step whose answers decide where its secret goes
+		at := s.clock.Now().UTC().Format(time.RFC3339)
+		var secret *NeedsSecret
+		var confirm *NeedsConfirm
+		switch {
+		case errors.As(err, &secret):
+			secret.Keep = withAnswer(secret.Keep, id, basis.From, at)
+		case errors.As(err, &confirm):
+			confirm.Keep = withAnswer(confirm.Keep, id, basis.From, at)
+		case err == nil:
+			keep = withAnswer(keep, id, basis.From, at)
+		}
+	}
 	return s.settle(ctx, id, keep, err, basis.Revision)
 }
 
@@ -384,6 +404,16 @@ func (s *Setup) settle(ctx context.Context, id string, keep map[string]string, e
 		return State{}, err
 	}
 	return s.State(ctx)
+}
+
+// withAnswer is what a step keeps, with where and when it was answered from.
+func withAnswer(keep map[string]string, id, from, at string) map[string]string {
+	out := make(map[string]string, len(keep)+2)
+	for k, v := range keep {
+		out[k] = v
+	}
+	out[AnsweredFrom(id)], out[AnsweredAt(id)] = from, at
+	return out
 }
 
 // CarriesSecret says whether a JSON body has a field named like a secret, at any depth. The top-level fields named in
@@ -448,24 +478,6 @@ func index(id string) int {
 		}
 	}
 	return -1
-}
-
-// Claimant is who claimed the setup session that is open, from where and when.
-type Claimant struct {
-	From string    `json:"from"`
-	At   time.Time `json:"at"`
-}
-
-// Claimed is who claimed the setup session that is open, if one is.
-func (s *Setup) Claimed(ctx context.Context) (*Claimant, error) {
-	c, err := s.db.OpenSession(ctx)
-	if errors.Is(err, store.ErrNotFound) {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, err
-	}
-	return &Claimant{From: c.Client, At: c.Opened.Wall}, nil
 }
 
 // Link is a new one-time link's key, which only its URL carries, and when it stops working.
