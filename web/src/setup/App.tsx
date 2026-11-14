@@ -4,14 +4,17 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { flushSync } from 'react-dom';
 import { rich, t, type Key } from '../i18n/t';
-import { answer, claim, dropKey, getPrimary, getSetup, heldKey, holdKey, keepSession, Refused, Unreachable, type Facts, type Setup } from './api';
+import { answer, claim, dropLink, getPrimary, getSetup, goodNonce, heldLink, holdLink, keepSession, newNonce, Refused, Unreachable, type Facts, type Link, type Reason, type Setup } from './api';
 import { Assistant, Field, Icon, stepTitle, type Screen } from './Assistant';
 import { diskSize, memory } from './format';
 
-// An error says the manager didn't answer, unless it said why: then `says` holds that.
-type Phase = { kind: 'loading' } | { kind: 'refused' } | { kind: 'error'; says?: Key } | { kind: 'ready'; setup: Setup; facts: Facts | null };
+// An error says the manager didn't answer, unless it did: then `title` is the neutral one and `says` holds what it said
+// (it answered, so the screen never claims it didn't, #109). Full: the disk under the
+// manager's database is full, so nothing can be kept until there is room.
+type Phase = { kind: 'loading' } | { kind: 'refused' } | { kind: 'error'; says?: Key; title?: Key } | { kind: 'full' }
+  | { kind: 'ready'; setup: Setup; facts: Facts | null };
 
-const BUILT = new Set(['welcome', 'you', 'household']);
+const BUILT = new Set(['welcome', 'you', 'household', 'signin', 'network', 'domain']);
 const validMail = (m: string) => /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(m.trim());
 
 export function App() {
@@ -31,25 +34,27 @@ export function App() {
     }
   }, []);
 
-  // The key rides in the fragment, which never reaches a server or a log. It stays there, and in this tab, until the
-  // manager has answered its claim: a claim the network lost is sent again, by itself and then from "Try again", and a
-  // reload finds the key where it was. A link can also arrive in a tab that already shows setup: then only the fragment
-  // changes. Each opening supersedes the one before: a late answer to an earlier one changes nothing.
+  // The key rides in the fragment, which never reaches a server or a log, and so does this tab's nonce for its claim.
+  // Both stay there, and in this page's memory (never in storage), until the manager has answered the claim: a claim
+  // the network lost, or whose answer it lost, is sent again with the same nonce, by itself and then from "Try again",
+  // and a reload finds both where they were. A link can also arrive in a tab that already shows setup: then only the
+  // fragment changes. Each opening supersedes the one before: a late answer to an earlier one changes nothing.
   const opening = useRef(0);
   const open = useCallback(async () => {
     const run = ++opening.current;
     const stale = () => run !== opening.current;
-    const key = new URLSearchParams(location.hash.slice(1)).get('k') ?? heldKey();
-    if (key) {
-      holdKey(key);
-      const answer = await claimed(key, stale);
+    const link = fromAddress() ?? heldLink();
+    if (link) {
+      holdLink(link);
+      history.replaceState(null, '', `${location.pathname}#${new URLSearchParams({ k: link.key, n: link.nonce })}`);
+      const answer = await claimed(link, stale);
       if (stale()) return;
       if (answer.kind === 'unanswered') {
         setPhase(problem(answer.error));
         return;
       }
       if (answer.kind === 'claimed') keepSession(answer.token);
-      dropKey();
+      dropLink();
       history.replaceState(null, '', `${location.pathname}#/welcome`);
       setView('welcome');
     }
@@ -82,9 +87,9 @@ export function App() {
   }, [phase, view]);
 
   let screen: React.ReactNode = null;
-  if (phase.kind === 'refused' || phase.kind === 'error') {
-    const refused = phase.kind === 'refused';
-    screen = <Problem refused={refused} says={phase.kind === 'error' ? phase.says : undefined} onRetry={retry} />;
+  if (phase.kind === 'refused' || phase.kind === 'error' || phase.kind === 'full') {
+    screen = <Problem kind={phase.kind} says={phase.kind === 'error' ? phase.says : undefined}
+      title={phase.kind === 'error' ? phase.title : undefined} onRetry={retry} />;
   } else if (phase.kind === 'ready') {
     screen = <StepScreen phase={phase} view={view} go={go} onAnswered={(setup) => setPhase({ ...phase, setup })} />;
   }
@@ -109,13 +114,14 @@ export function App() {
   );
 }
 
-/** The link was refused, or the manager can't be reached. */
-function Problem({ refused, says, onRetry }: { refused: boolean; says?: Key; onRetry: () => void }) {
-  const title = t(refused ? 'setup.refused.title' : 'setup.error.title');
+/** The link was refused, the manager can't be reached, or the machine's disk is full. */
+function Problem({ kind, says, title: said, onRetry }: { kind: 'refused' | 'error' | 'full'; says?: Key; title?: Key; onRetry: () => void }) {
+  const refused = kind === 'refused';
+  const title = t(refused ? 'setup.refused.title' : kind === 'full' ? 'setup.full.title' : said ?? 'setup.error.title');
   useTitle(title);
   return (
     <Assistant steps={[]} now="" illoFacts={{}} illo="welcome" title={title}
-      lead={t(refused ? 'setup.refused.lead' : says ?? 'setup.error.lead')}
+      lead={t(refused ? 'setup.refused.lead' : kind === 'full' ? 'setup.full.lead' : says ?? 'setup.error.lead')}
       body={refused ? <div className="cmd"><code>{t('setup.refused.command')}</code></div> : undefined}
       primary={refused ? undefined : { label: t('setup.error.retry') }} onPrimary={onRetry} />
   );
@@ -125,6 +131,19 @@ function useTitle(title: string) {
   useEffect(() => {
     document.title = t('setup.title', { title });
   }, [title]);
+}
+
+/**
+ * The link in the address's fragment, with the nonce this tab claims it with: the one the fragment carries (a reload
+ * while the claim was out), the one this page holds for the same key, or a new one.
+ */
+function fromAddress(): Link | null {
+  const f = new URLSearchParams(location.hash.slice(1));
+  const key = f.get('k');
+  if (!key) return null;
+  const nonce = f.get('n');
+  const held = heldLink();
+  return { key, nonce: goodNonce(nonce) ? nonce : held?.key === key ? held.nonce : newNonce() };
 }
 
 // A claim that got no answer is sent again after each of these pauses, then left to "Try again".
@@ -137,10 +156,10 @@ type Claim = { kind: 'claimed'; token: string } | { kind: 'refused' } | { kind: 
  * this tab's own, opened again: its session carries on, and load() says if not. Any other answer, or none, leaves the
  * key to be tried again.
  */
-async function claimed(key: string, superseded: () => boolean): Promise<Claim> {
+async function claimed(link: Link, superseded: () => boolean): Promise<Claim> {
   for (let i = 0; ; i++) {
     try {
-      return { kind: 'claimed', token: await claim(key) };
+      return { kind: 'claimed', token: await claim(link) };
     } catch (e) {
       if (e instanceof Refused && e.code === 'link-refused') return { kind: 'refused' };
       if (!(e instanceof Unreachable) || i >= CLAIM_RETRIES.length || superseded()) return { kind: 'unanswered', error: e };
@@ -153,7 +172,15 @@ async function claimed(key: string, superseded: () => boolean): Promise<Claim> {
 /** The manager refused this browser, not its link or answer: it isn't on this machine or its LAN, or not on its page. */
 const fromElsewhere = (e: unknown) => e instanceof Refused && (e.status === 403 || e.status === 421);
 
-const problem = (e: unknown): Phase => ({ kind: 'error', says: fromElsewhere(e) ? 'setup.fail.here' : undefined });
+/** The disk under the manager's database is full (#70). */
+const diskFull = (e: unknown) => e instanceof Refused && e.code === 'disk-full';
+
+/** Any answer at all is neutral about it: a 5xx says to try again, a refusal from elsewhere says where to open setup. */
+const problem = (e: unknown): Phase => {
+  if (diskFull(e)) return { kind: 'full' };
+  if (!(e instanceof Refused)) return { kind: 'error' }; // no answer
+  return { kind: 'error', title: 'setup.error.answeredTitle', says: fromElsewhere(e) ? 'setup.fail.here' : 'setup.error.answered' };
+};
 
 /** A step can be shown when every step before it is done. */
 function reachable(setup: Setup, id: string): boolean {
@@ -192,20 +219,103 @@ function useStep(id: string, setup: Setup, facts: Facts | null, next: () => void
   const surname = name.trim().split(/\s+/).pop() ?? '';
   const [household, setHousehold] = useState(a.household ?? '');
   const [touched, setTouched] = useState(!!a.household);
-  const [bad, setBad] = useState<string[]>([]);
+  const [bad, setBad] = useState<Record<string, Reason>>({});
   const [busy, setBusy] = useState(false);
   const [failed, setFailed] = useState<{ step: string; why: Failure } | null>(null);
-  const householdValue = touched || !surname ? household : t('step.household.default', { surname });
+  const householdValue = touched || !surname ? household : defaultHousehold(surname);
+  const [plane, setPlane] = useState<'cloud' | 'self-hosted'>(a.meshControlPlane === 'self-hosted' ? 'self-hosted' : 'cloud');
+  const [url, setUrl] = useState(a.meshControlPlane === 'self-hosted' ? (a.meshUrl ?? '') : '');
+  const [domain, setDomain] = useState(a.domain ?? (a.mail ?? '').split('@')[1] ?? '');
+  const [provider, setProvider] = useState<'infomaniak' | 'rfc2136'>(a.dnsProvider === 'rfc2136' ? 'rfc2136' : 'infomaniak');
+  const [server, setServer] = useState(a.dnsServer ?? '');
+  const [keyName, setKeyName] = useState(a.dnsKeyName ?? '');
+  const network = setup.steps.find((s) => s.id === 'network');
+  const step = setup.steps.find((s) => s.id === id);
+  // A step that waits for a secret, which arrives in this machine's terminal (#64): waiting for it, then checking it.
+  // Checked is the step whose secret this page saw arrive and be checked: it stays on screen, done, until Continue.
+  const waiting = (id === 'network' || id === 'domain') && (step?.state === 'waiting' || step?.state === 'checking') && !!step.secret;
+  const [checked, setChecked] = useState<string | null>(null);
+  const confirming = id === 'network' && network?.state === 'waiting' && network.confirm === 'mesh-policies';
+  const atMesh = id === 'join' || id === 'passkey' || id === 'done';
+  const [moved, setMoved] = useState(false);
+  const latest = useRef({ onAnswered, next });
+  useEffect(() => {
+    latest.current = { onAnswered, next };
+  });
+  useEffect(() => {
+    // The token arrives in this machine's terminal, never through this page: follow the step as it is received,
+    // checked, and done (or refused, and waiting again).
+    if (!waiting) return;
+    const timer = window.setInterval(() => {
+      void getSetup().then((s) => {
+        if (s.steps.find((x) => x.id === id)?.state === 'done') setChecked(id);
+        latest.current.onAnswered(s);
+      }).catch(() => undefined);
+    }, 2000);
+    return () => window.clearInterval(timer);
+  }, [waiting, id]);
 
-  const send = async (body: Record<string, string>) => {
+  useEffect(() => {
+    // The admin's first sign-in to Admin, over the mesh, closes this page's listener for good: it answers 410.
+    if (!atMesh) return;
+    const timer = window.setInterval(() => {
+      void getSetup().then((s) => latest.current.onAnswered(s)).catch((e: unknown) => {
+        if (e instanceof Refused && e.status === 410) setMoved(true);
+      });
+    }, 3000);
+    return () => window.clearInterval(timer);
+  }, [atMesh]);
+
+  /** The screen of a step whose secret is given in the terminal: the command, then the secret's progress, live. */
+  const secretWait = (prefix: 'step.network' | 'step.domain', fallback: string, doneText: string, help: Key[]): StepView => {
+    const done = checked === id && step?.state === 'done';
+    const checking = step?.state === 'checking';
+    const k = (suffix: string) => `${prefix}.${suffix}` as Key;
+    return {
+      illo: id, title: t(k('waitTitle')), lead: done ? undefined : t(k('waitLead')),
+      body: <>
+        {!done && <div className="cmd"><code>{step?.command ?? fallback}</code></div>}
+        <div role="status">
+          {done
+            ? <div className="as-check"><Icon name="check" /><span><b>{t('step.secret.checked')}</b> {doneText}</span></div>
+            : <p className="hint as-waiting"><span className="spinner" aria-hidden="true" />{t(k(checking ? 'checking' : 'waiting'))}</p>}
+        </div>
+      </>,
+      notice: !done && !checking && step?.refused
+        ? <div className="notice notice-warn" role="alert"><Icon name="alert" />
+          <span className="notice-body">{t(step.refused === 'secret-refused' ? 'step.secret.refused' : 'step.secret.failed')}</span></div>
+        : undefined,
+      moreLabel: done ? undefined : t(k('help')),
+      more: done ? undefined : <>
+        <ol className="group help-steps">{help.map((h) => <li key={h}><span>{t(h)}</span></li>)}</ol>
+        <p className="subhead">{t(k('helpWhy'))}</p>
+      </>,
+      primary: done ? { label: t('setup.continue') } : { label: t('setup.continue'), ok: false, why: t(k('waitWhy')) },
+      onPrimary: done ? () => { setChecked(null); next(); } : undefined, // back here later: the step's own answer
+    };
+  };
+
+  const send = async (body: Record<string, string | boolean>) => {
     setBusy(true);
     setFailed(null); // a failure that happens again is a new notice, read out again
     try {
-      onAnswered(await answer(id, body));
-      setBad([]);
-      next();
+      if (!step) throw new Refused(404, 'unknown-step');
+      const s = await answer(step, body);
+      onAnswered(s);
+      // The manager keeps what it was given in its normal form (spaces collapsed, full-width letters made plain, and
+      // so on): show that.
+      if (id === 'you') {
+        setName(s.answers.name ?? name);
+        setMail(s.answers.mail ?? mail);
+      } else if (id === 'household' && s.answers.household !== undefined) {
+        setHousehold(s.answers.household);
+        setTouched(true);
+      }
+      setBad({});
+      if (s.steps.find((x) => x.id === id)?.state === 'done') next(); // a step waiting for a secret stays
+
     } catch (e) {
-      if (e instanceof Refused && e.code === 'invalid') setBad(e.fields);
+      if (e instanceof Refused && e.code === 'invalid') setBad(e.reasons);
       else if (e instanceof Refused && e.status === 401) location.reload();
       else setFailed({ step: id, why: failure(e) });
     } finally {
@@ -236,10 +346,11 @@ function useStep(id: string, setup: Setup, facts: Facts | null, next: () => void
       return {
         illo: 'you', title: t('step.you.title'), lead: t('step.you.lead'), illoFacts: { name, mail },
         body: <>
-          <Field id="name" label={t('step.you.name')} value={name} onChange={setName} autoComplete="name"
-            error={bad.includes('name') ? t('step.you.nameInvalid') : undefined} />
-          <Field id="mail" label={t('step.you.mail')} value={mail} onChange={setMail} type="email" autoComplete="email"
-            hint={t('step.you.mailHint')} error={bad.includes('mail') ? t('step.you.mailInvalid') : undefined} />
+          <Field id="name" label={t('step.you.name')} value={name} onChange={setName} autoComplete="name" dir="auto"
+            error={refusal(bad.name, { 'too-long': 'step.you.nameTooLong', 'hidden-characters': 'step.you.nameHidden', 'too-many-marks': 'step.you.nameMarks' }, 'step.you.nameInvalid')} />
+          <Field id="mail" label={t('step.you.mail')} value={mail} onChange={setMail} type="email" autoComplete="email" dir="auto"
+            hint={t('step.you.mailHint')}
+            error={refusal(bad.mail, { 'too-long': 'step.you.mailTooLong', 'hidden-characters': 'step.you.mailHidden' }, 'step.you.mailInvalid')} />
         </>,
         notice,
         primary: { label: t('setup.continue'), ok, why: t('step.you.why'), busy },
@@ -249,19 +360,150 @@ function useStep(id: string, setup: Setup, facts: Facts | null, next: () => void
     case 'household':
       return {
         illo: 'household', title: t('step.household.title'), lead: t('step.household.lead'), illoFacts: { name: householdValue },
-        body: <Field id="household" label={t('step.household.name')} value={householdValue}
+        body: <Field id="household" dir="auto" label={t('step.household.name')} value={householdValue}
           onChange={(v) => { setTouched(true); setHousehold(v); }}
-          error={bad.includes('name') ? t('step.household.invalid') : undefined} />,
+          error={refusal(bad.name, { 'too-long': 'step.household.tooLong', 'hidden-characters': 'step.household.hidden', 'too-many-marks': 'step.household.marks' }, 'step.household.invalid')} />,
         notice,
         primary: { label: t('setup.continue'), ok: !!householdValue.trim(), why: t('step.household.why'), busy },
         onPrimary: () => send({ name: householdValue }),
       };
+    case 'network': {
+      const own = plane === 'self-hosted';
+      const choices: ['cloud' | 'self-hosted', Key, Key][] = [
+        ['cloud', 'step.network.cloud', 'step.network.cloudSub'], ['self-hosted', 'step.network.own', 'step.network.ownSub'],
+      ];
+      const answerNow: Record<string, string> = own ? { mesh: 'netbird', controlPlane: plane, url: url.trim() } : { mesh: 'netbird', controlPlane: plane };
+      if (confirming) {
+        const names = (a.meshConflicts ?? '').split('\n').filter(Boolean);
+        return {
+          illo: 'network', title: t('step.network.conflictsTitle'), lead: t('step.network.conflictsLead'),
+          body: <ul className="group" aria-label={t('step.network.conflictsList')}>
+            {names.map((n) => (
+              <li className="row" key={n}><span className="row-main"><span className="row-label wrap"><bdi>{n}</bdi></span></span></li>
+            ))}
+          </ul>,
+          more: <p className="hint">{t('step.network.conflictsKept')}</p>,
+          primary: { label: t('step.network.switchOff'), busy },
+          onPrimary: () => send({ ...answerNow, switchOff: true }),
+        };
+      }
+      if (waiting || checked === id) {
+        return secretWait('step.network', 'sudo homerslab setup secret mesh', t('step.network.done'),
+          ['step.network.help1', 'step.network.help2', 'step.network.help3']);
+      }
+      return {
+        illo: 'network', title: t('step.network.title'), lead: t('step.network.lead'),
+        body: <>
+          <div className="group" role="radiogroup" aria-label={t('step.network.where')}>
+            {choices.map(([v, label, sub]) => (
+              <label className="row row-choice" key={v}>
+                <input type="radio" name="plane" value={v} checked={plane === v} onChange={() => setPlane(v)} />
+                <span className="row-main"><span className="row-label">{t(label)}</span><span className="row-sub wrap">{t(sub)}</span></span>
+                <span className="row-trail"><Icon name="check2" cls="icon checkmark" /></span>
+              </label>
+            ))}
+          </div>
+          {own && <Field id="url" label={t('step.network.url')} value={url} onChange={setUrl} type="url" hint={t('step.network.urlHint')}
+            error={bad.url ? t('step.network.urlInvalid') : undefined} />}
+          {network?.state === 'done' && <div className="as-check"><Icon name="check" /><span>{t('step.network.done')}</span></div>}
+        </>,
+        more: <p className="hint">{t('step.network.later')}</p>,
+        primary: { label: t('setup.continue'), ok: !own || /^https:\/\/\S+$/.test(url.trim()), why: t('step.network.why'), busy },
+        onPrimary: () => send(answerNow),
+      };
+    }
+    case 'domain': {
+      const example = <span className="host">{`photos.${domain.trim() || 'ferreira.family'}`}</span>;
+      const lead = rich('step.domain.lead', { example });
+      const port = a.householdPort && a.householdPort !== '443' ? `:${a.householdPort}` : '';
+      if (waiting || checked === id) {
+        const help: Key[] = provider === 'rfc2136'
+          ? ['step.domain.helpRfc21361', 'step.domain.helpRfc21362']
+          : ['step.domain.helpInfomaniak1', 'step.domain.helpInfomaniak2', 'step.domain.helpInfomaniak3'];
+        return secretWait('step.domain', 'sudo homerslab setup secret dns',
+          t('step.domain.done', { domain: a.domain ?? '', admin: `https://admin.${a.domain ?? ''}${port}` }), help);
+      }
+      const own = provider === 'rfc2136';
+      const choices: ['infomaniak' | 'rfc2136', Key, Key][] = [
+        ['infomaniak', 'step.domain.infomaniak', 'step.domain.infomaniakSub'], ['rfc2136', 'step.domain.rfc2136', 'step.domain.rfc2136Sub'],
+      ];
+      const body: Record<string, string> = own
+        ? { domain: domain.trim(), provider, server: server.trim(), keyName: keyName.trim() }
+        : { domain: domain.trim(), provider };
+      return {
+        illo: 'domain', title: t('step.domain.title'), lead,
+        body: <>
+          <Field id="domain" label={t('step.domain.domain')} value={domain} onChange={setDomain} hint={t('step.domain.domainHint')}
+            error={bad.domain ? t('step.domain.domainInvalid') : undefined} />
+          <div className="group" role="radiogroup" aria-label={t('step.domain.provider')}>
+            {choices.map(([v, label, sub]) => (
+              <label className="row row-choice" key={v}>
+                <input type="radio" name="provider" value={v} checked={provider === v} onChange={() => setProvider(v)} />
+                <span className="row-main"><span className="row-label">{t(label)}</span><span className="row-sub wrap">{t(sub)}</span></span>
+                <span className="row-trail"><Icon name="check2" cls="icon checkmark" /></span>
+              </label>
+            ))}
+          </div>
+          {own && <>
+            <Field id="server" label={t('step.domain.server')} value={server} onChange={setServer} hint={t('step.domain.serverHint')}
+              error={bad.server ? t('step.domain.serverInvalid') : undefined} />
+            <Field id="keyName" label={t('step.domain.keyName')} value={keyName} onChange={setKeyName}
+              error={bad.keyName ? t('step.domain.keyNameInvalid') : undefined} />
+          </>}
+          {step?.state === 'done' && <div className="as-check"><Icon name="check" /><span>
+            {t('step.domain.done', { domain: a.domain ?? '', admin: `https://admin.${a.domain ?? ''}${port}` })}</span></div>}
+        </>,
+        more: <p className="subhead">{t('step.domain.only')}</p>,
+        primary: { label: t('setup.continue'), ok: /^[^\s.]+(\.[^\s.]+)+$/.test(domain.trim()) && (!own || (!!server.trim() && !!keyName.trim())),
+          why: t('step.domain.why'), busy },
+        onPrimary: () => send(body),
+      };
+    }
+    case 'signin': {
+      const small = !!facts && facts.memoryBytes < 3.5 * 2 ** 30;
+      return {
+        illo: 'signin', title: t('step.signin.title'), lead: t('step.signin.lead'),
+        body: <>
+          <div className="group" role="radiogroup" aria-label={t('step.signin.choose')}>
+            <label className="row row-choice">
+              <input type="radio" name="provider" value="authentik" checked readOnly />
+              <span className="row-main"><span className="row-label">{t('step.signin.authentik')}</span><span className="row-sub wrap">{t('step.signin.authentikSub')}</span></span>
+              <span className="row-trail"><Icon name="check2" cls="icon checkmark" /></span>
+            </label>
+            <label className="row row-choice">
+              <input type="radio" name="provider" value="kanidm" disabled />
+              <span className="row-main"><span className="row-label">{t('step.signin.kanidm')}</span><span className="row-sub wrap">{t('step.signin.kanidmSub')}</span></span>
+              <span className="row-trail"><Icon name="check2" cls="icon checkmark" /></span>
+            </label>
+          </div>
+          {small && <div className="notice notice-warn" role="status"><Icon name="alert" /><span className="notice-body">
+            {t('step.signin.small', { memory: memory(facts.memoryBytes) })}</span></div>}
+        </>,
+        more: <p className="hint">{t('step.signin.later')}</p>,
+        notice,
+        primary: { label: t('setup.continue'), busy },
+        onPrimary: () => send({ provider: 'authentik' }),
+      };
+    }
     case 'join':
     case 'passkey':
     case 'done':
+      if (moved) {
+        const admin = a.adminUrl ?? '';
+        return {
+          illo: 'join', title: t('step.join.movedTitle'), lead: t('step.join.movedLead'),
+          body: admin ? <p><a className="btn" href={admin}>{t('step.join.open')}</a> <span className="host">{admin}</span></p> : undefined,
+        };
+      }
       return {
         illo: 'join', title: t('step.join.title'), lead: t('step.join.lead'),
-        body: <div className="as-check"><Icon name="check" /><span><b>{t('step.join.milestone')}</b> {t('step.join.milestoneSub')}</span></div>,
+        body: <>
+          <div className="as-check"><Icon name="check" /><span><b>{t('step.join.milestone')}</b> {t('step.join.milestoneSub')}</span></div>
+          <p>{t('step.join.command')}</p>
+          <div className="cmd"><code>{t('step.join.commandLine')}</code></div>
+          <p className="hint as-waiting" role="status"><span className="spinner" aria-hidden="true" />{t('step.join.waiting')}</p>
+        </>,
+        more: <p className="hint">{t('step.join.once')}</p>,
         primary: { label: t('step.join.continue'), ok: false, why: t('step.join.why') },
       };
     default:
@@ -281,13 +523,42 @@ type Failure = { says: Key; reload?: boolean };
 function failure(e: unknown): Failure {
   if (e instanceof Unreachable) return { says: 'setup.fail.offline' };
   if (!(e instanceof Refused)) return { says: 'setup.fail.server' };
+  if (diskFull(e)) return { says: 'setup.full.answer' };
   if (e.code === 'lan-half-done') return { says: 'setup.fail.lanDone', reload: true };
+  if (e.code === 'stale' || e.code === 'step-done') return { says: 'setup.fail.stale', reload: true }; // another tab changed it
   if (e.code === 'over-the-mesh') return { says: 'setup.fail.mesh' };
   if (e.status === 409) return { says: 'setup.fail.moved', reload: true }; // earlier-step-open
   if (e.status === 501) return { says: 'setup.error.unbuilt' }; // not-built
   if (fromElsewhere(e)) return { says: 'setup.fail.here' }; // not-from-lan, cross-origin, wrong-host
   if (e.status >= 400 && e.status < 500) return { says: 'setup.fail.refused', reload: true }; // unknown-step, not-json
   return { says: 'setup.fail.server' };
+}
+
+/** The longest name the manager keeps, in code points (internal/manager/setup: NameMax). */
+const NAME_MAX = 64;
+
+/**
+ * The household's name, made from the admin's surname: "The {surname} household", with the surname cut short to fit
+ * when it is long, so the page never offers a name the manager refuses. It is cut between grapheme clusters, so an
+ * accent, an emoji sequence or a flag stays whole or goes whole; and a tatweel, ZWNJ or ZWJ left at the end goes too.
+ */
+function defaultHousehold(surname: string): string {
+  const whole = t('step.household.default', { surname });
+  let room = NAME_MAX - ([...whole].length - [...surname].length);
+  if (room >= [...surname].length) return whole;
+  let kept = '';
+  for (const { segment } of new Intl.Segmenter(undefined, { granularity: 'grapheme' }).segment(surname)) {
+    room -= [...segment].length;
+    if (room < 0) break;
+    kept += segment;
+  }
+  kept = kept.replace(/[\u0640\u200C\u200D]+$/u, '');
+  return kept ? t('step.household.default', { surname: kept }) : '';
+}
+
+/** What a field's refusal says: the words for its reason, or the field's own when it is missing or malformed. */
+function refusal(reason: Reason | undefined, words: Partial<Record<Reason, Key>>, otherwise: Key): string | undefined {
+  return reason && t(words[reason] ?? otherwise);
 }
 
 /** A notice that is read out as it appears. */

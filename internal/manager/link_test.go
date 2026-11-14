@@ -48,10 +48,12 @@ func TestALinkIsClaimedOnce(t *testing.T) {
 			if s := first.state(); s.Current != "welcome" {
 				t.Errorf("after the claim, setup is at %q, want welcome", s.Current)
 			}
-			for _, again := range []*browser{p.browser(from), first} {
-				if r := again.claim(l); r.Code != http.StatusForbidden || r.errorCode(t) != "link-refused" {
-					t.Errorf("second claim: %d %s, want 403 link-refused", r.Code, r.Body)
-				}
+			if r := p.browser(from).claim(l); r.Code != http.StatusForbidden || r.errorCode(t) != "link-refused" {
+				t.Errorf("another tab's claim: %d %s, want 403 link-refused", r.Code, r.Body)
+			}
+			p.clock.Add(time.Minute) // the same tab may send its claim again for a minute (claim_test.go), no longer
+			if r := first.claim(l); r.Code != http.StatusForbidden || r.errorCode(t) != "link-refused" {
+				t.Errorf("the same tab's claim a minute later: %d %s, want 403 link-refused", r.Code, r.Body)
 			}
 		})
 	}
@@ -91,7 +93,7 @@ func TestAWrongKeyIsRefused(t *testing.T) {
 	testenv.Isolate(t)
 	p := newPrimary(t)
 	p.newLink()
-	for _, body := range []any{map[string]string{"key": "not-the-key"}, map[string]string{}, map[string]int{"key": 1}} {
+	for _, body := range []any{map[string]string{"key": "not-the-key", "nonce": newNonce()}, map[string]string{}, map[string]int{"key": 1}} {
 		if r := p.browser(onTheLAN).do("POST", "/api/v1/setup/claim", body); r.Code != http.StatusForbidden || r.errorCode(t) != "link-refused" {
 			t.Errorf("claim with %v: %d %s, want 403 link-refused", body, r.Code, r.Body)
 		}
@@ -178,7 +180,7 @@ func TestALinkIsClaimedOnceWhenManyTryAtOnce(t *testing.T) {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				codes[i] = serve(p.m.Setup(), newRequest("POST", "/api/v1/setup/claim", map[string]string{"key": key}, onTheLAN)).Code
+				codes[i] = serve(p.m.Setup(), newRequest("POST", "/api/v1/setup/claim", map[string]string{"key": key, "nonce": newNonce()}, onTheLAN)).Code
 			}()
 		}
 		wg.Wait()
@@ -248,7 +250,10 @@ func TestStateChangesComeFromTheSetupPageItself(t *testing.T) {
 	if r := b.do("PUT", "/api/v1/setup/steps/welcome", map[string]string{}, form); r.Code != http.StatusUnsupportedMediaType {
 		t.Errorf("a PUT that isn't JSON: %d %s, want 415", r.Code, r.Body)
 	}
-	same := func(r *http.Request) { r.Header.Set("Origin", "http://192.168.1.20:7020") }
+	same := func(r *http.Request) {
+		r.Header.Set("Origin", "http://192.168.1.20:7020")
+		r.Header.Set("If-Match", `"0"`)
+	}
 	if r := b.do("PUT", "/api/v1/setup/steps/welcome", map[string]string{}, same); r.Code != http.StatusOK {
 		t.Errorf("a PUT from the setup page: %d %s, want 200", r.Code, r.Body)
 	}
@@ -429,5 +434,48 @@ func TestTheLinksOwnAddressesAlwaysAnswer(t *testing.T) {
 	}
 	if r := b.do("GET", "/api/v1/setup", nil, func(r *http.Request) { r.Host = "192.168.1.20:7020" }); r.Code != http.StatusMisdirectedRequest {
 		t.Errorf("another port: %d, want 421", r.Code)
+	}
+}
+
+// On an IPv6-only home network the link carries the machine's IPv6 address on it, in brackets (#68, #73).
+func TestALinkCarriesTheLANsIPv6AddressWhenThereIsNoIPv4(t *testing.T) {
+	testenv.Isolate(t)
+	for _, a := range []string{"fd00:1::20", "2001:db8:1::20"} {
+		p := newPrimary(t, func(p *primary) { p.lanAddress = netip.MustParseAddr(a) })
+		l := p.newLink()
+		if want := "http://[" + a + "]:7020/setup#k="; !strings.HasPrefix(l.URL, want) {
+			t.Errorf("url = %s, want %s…", l.URL, want)
+		}
+		b := p.browser(lanV6)
+		host := func(r *http.Request) { r.Host = "[" + a + "]:7020" }
+		if r := b.do("POST", "/api/v1/setup/claim", map[string]string{"key": l.key(t), "nonce": b.nonce}, host); r.Code != http.StatusOK {
+			t.Errorf("claiming at the link's own address %s: %d %s", a, r.Code, r.Body)
+		}
+	}
+}
+
+// With no address on a home network, the link is this machine's own, and says so.
+func TestALinkIsOnlyLocalWhenTheMachineIsOnNoLAN(t *testing.T) {
+	testenv.Isolate(t)
+	p := newPrimary(t, func(p *primary) { p.lanAddress = netip.Addr{} })
+	if l := p.newLink(); !strings.HasPrefix(l.URL, "http://127.0.0.1:7020/setup#k=") || l.URL != l.LocalURL {
+		t.Errorf("url = %s, localUrl = %s: want this machine's own link", l.URL, l.LocalURL)
+	}
+}
+
+// The database says whether a session was ended, whoever ended it: here a second manager on the same database.
+func TestASessionEndedInTheDatabaseEnds(t *testing.T) {
+	testenv.Isolate(t)
+	p := newPrimary(t)
+	b := p.claimed()
+	first := p.m
+	p.open() // another manager on the same database makes a new link
+	p.newLink()
+	if r := serve(first.Setup(), func() *http.Request {
+		req := newRequest("GET", "/api/v1/setup", nil, b.from)
+		req.Header.Set("Authorization", "Bearer "+b.token)
+		return req
+	}()); r.Code != http.StatusUnauthorized {
+		t.Errorf("a session another manager ended, at the first manager: %d, want 401", r.Code)
 	}
 }

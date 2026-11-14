@@ -49,3 +49,29 @@ event, so:
 - at boot, a credential that fails to decrypt is reported once, as "this machine's TPM no longer opens HomersLab's
   secrets", with the restore-from-archive command, instead of a dozen failing units;
 - a restore plan says when an app's secrets in the archive are older than its data.
+
+## Amended again (2026-11-11), as the systemd credentials spike found
+
+Proposed in #17, for the maintainer's acceptance. The first unit built this way is the sign-in's
+(`homerslab-authentik.service`, with the agent's drop-in):
+- **Sealing.** The agent seals as root, always naming the key: `--with-key=host+tpm2` where a TPM 2.0 works, `host`
+  otherwise. Without a TPM, the host key protects no better than files only root can read, unless the disk is
+  encrypted; Admin says so.
+- **When they are in the clear.** "Decrypted when the app's service starts" means: decrypted at service start, kept in
+  memory, never in an engine's configuration (`inspect`, `compose config`, `systemctl show`). A container that outlives
+  its unit keeps them, so systemd owns the containers: engine restart policies are off (`restart: "no"`), and the
+  unit restarts the app.
+- **Who reads them.** Docker hands a credential file to the container as it is, and Compose's `uid`, `gid` and `mode`
+  don't apply to files. So the unit copies each credential, in `ExecStartPre=`, into its own runtime directory (0700,
+  gone when the unit stops), owned by the one container user that reads it, mode 0400, and labelled
+  `container_file_t` at the app's own MCS level; the containers run at that level and get the copies through Compose
+  `secrets:`. A system unit's credentials directory is read-only, so it can't be relabelled in place (to be confirmed
+  as root in a VM, #19).
+- **Not in the environment.** A secret is never an environment variable of a container (the plaintext would reach the
+  container's configuration and its writable layer). A program that reads a value only from its environment gets it
+  from the file inside its own entrypoint (Authentik's bootstrap token).
+- **No mount sandboxing** in an app's unit for Docker: the daemon must see the files.
+- **Swap.** The runtime directory is tmpfs, which can swap: hosts without encrypted swap or zram are told so (a later
+  ticket's check).
+- **The embedded name** is the unit's credential ID, `<app>.<name>`, so one app's file can't stand in for another's.
+

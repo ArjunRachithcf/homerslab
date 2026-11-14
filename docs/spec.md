@@ -871,29 +871,51 @@ point. Nothing needs replacing for:
 - **The installer** prints the command `sudo homerslab setup link`, never the link itself: package managers keep a
   post-install script's output in readable logs (#74).
 - **The LAN** is the private networks and the on-link global IPv6 prefixes of the interfaces that carry the default
-  route, plus IPv6 link-local on those interfaces; never container bridges, VPNs or the mesh (#14 Q5, #73).
+  route, plus IPv6 link-local on those interfaces; never container bridges, VPNs or the mesh (#14 Q5, #73). Only the
+  main routing table's default routes count, through interfaces that may be a home network (a NIC, or a VLAN, a bond
+  or a bridge on one: never a tunnel, nor a kind of link the agent doesn't know, #169), and no prefix that overlaps the
+  mesh's ranges is the LAN, whatever a router advertises (#108).
 - **The one-time link** works on the machine or its LAN for 30 minutes. It covers everything up to "mesh connected,
   certificate issued": the household, the identity provider, the mesh and its token, the domain and its DNS token,
   mail, and the recovery kit.
 - **Then the admin joins this device to the mesh** (a QR code) and finishes at the sign-in's own address, where the
   admin's passkey is created. The passkey is bound to the name the household will use every day.
   - It comes from a one-time enrolment link for the admin's account, which the manager mints (30 minutes, once) and
-    the claimed setup session hands over, as a QR code beside the mesh one. No other path creates the first admin
-    (#84).
+    shows only in the machine's terminal (`sudo homerslab setup join`), as a QR code beside the device's mesh key: no
+    secret travels over the LAN page's plain HTTP (#64). No other path creates the first admin (#84).
 - **The LAN listener closes for good** at the admin's first sign-in over the mesh.
 - **Headscale households** also make one guided change in Headscale's configuration: its base domain.
-- **The first half travels over plain HTTP on the LAN**, including the mesh token, the DNS token and the mail
-  password. The threat model accepts this, because the window is narrow:
+- **Only non-secret answers travel over plain HTTP on the LAN** (#64), with the setup session's token, until the
+  hand-off to the mesh closes the listener. The secrets are typed in the machine's terminal:
+  - the page asks for the mesh token, the DNS token and the mail password by showing a one-line command, such as
+    `sudo homerslab setup secret dns`, and then follows the secret live: waiting, received and checking, then checked,
+    or refused with the terminal saying why;
+  - the command reads the secret from stdin without echo and sends it over the manager's 0600 control socket; it never
+    prints, logs or keeps it, and the manager keeps it only sealed (ADR 0011), never in its database;
+  - before it reads the secret, the command shows where it goes (the mesh's control plane, the DNS provider or server,
+    the mail server), for which household, and who claimed the setup session and when, and on a terminal it asks for a
+    yes. The secret is sent bound to the revision of the answers it showed, so the page can't change where it goes in
+    between;
+  - every API on the LAN listener refuses a request that carries a field named like a secret, in its body or its
+    query, before anything else is checked, and names the command instead.
+
+  What still crosses the LAN in clear is accepted by the threat model, because the window is narrow:
   - the link works only from this machine or the LAN, for 30 minutes, and once;
   - one claimer holds it, and a new link ends every earlier link and session;
+  - a claim whose answer was lost is answered again only for the tab that sent it: the page sends a random nonce with
+    the key, the manager keeps its hash, and for 60 seconds the same key, nonce and address get the same session back,
+    with a new token, until that session is first used (#101);
   - the listener answers only the machine's own names and addresses;
   - the listener closes for good after the hand-off to the mesh.
 
-  A self-signed certificate was considered and refused: browser warnings teach the admin to click through them.
-
-  This is temporary. **HTTPS is enforced eventually** (the maintainer, 2026-11-11; #64):
-  - setup's secrets are typed in the machine's terminal, so plain HTTP carries only non-secret answers;
-  - once the certificate exists, every name answers HTTPS only, with HSTS and `Secure` cookies.
+  A self-signed certificate was considered and refused: browser warnings teach the admin to click through them, and a
+  browser can't pin a fingerprint from the QR code. So was issuing the real certificate first and serving setup at
+  `setup.<domain>` on the LAN: the DNS token would still cross HTTP, and many routers' rebinding protection refuses a
+  public record that points at a private address.
+- **Once the certificate exists, HTTPS only** (#64): every name the edge serves answers HTTPS only, with HSTS (a year,
+  no `includeSubDomains`, no `preload`: the household's domain may carry sites that aren't HomersLab's), replacing any
+  HSTS an app sends. Port 80 only redirects to HTTPS on the same name, and proxies nothing; a name the edge doesn't
+  serve gets 421 there too. Every cookie HomersLab or the edge sets is `Secure`, whatever an app sent.
 - **The setup session is a bearer token**, not a cookie:
   - the page keeps it in `sessionStorage`, so one tab holds it;
   - it is bound to the address that claimed the link, ends after 30 minutes idle and 2 hours at most, and is stored
@@ -904,7 +926,7 @@ point. Nothing needs replacing for:
 
 - No router ports, ever, and no router port mapping by the mesh clients.
 - TLS ends on the household's machines.
-- HTTPS only once the certificate exists, with HSTS; no secret ever crosses plain HTTP (#64).
+- HTTPS only once the certificate exists, with HSTS and `Secure` cookies; no secret ever crosses plain HTTP (#64).
 - The LAN sees the machines, not the apps.
 - Only the edge reaches an app, and apps reach only the internet unless an extra says so (decided in #82).
 - Admin is reachable over the mesh only.

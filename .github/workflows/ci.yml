@@ -1,5 +1,6 @@
 # Go tests, the web app's checks and build, and the flow tests of first-time setup in a real browser.
-# Actions and images are pinned by digest; the comments name the versions. Nothing here holds a secret.
+# Actions and images are pinned by digest; the comments name the versions. Nothing here holds a secret. Every command
+# that prints third-party text runs through .github/scripts/stop-commands.sh, so that text can't be a workflow command.
 name: ci
 
 on:
@@ -19,7 +20,9 @@ jobs:
     name: Go (as root, so the primary's two processes are tested)
     runs-on: ubuntu-24.04
     container:
-      image: golang:1.27.3@sha256:e519d3b0a5b285e5aa53ab9eef02bc6bbb9cb04608389b743a136a9ce75f0d1e
+      # The index digest; per architecture, linux/amd64 is sha256:2cd7e1ebf475c6208122d2b9cefc638d98fcc8dfd8554c8872c9dd0c21f4ac61
+      # and linux/arm64/v8 sha256:96335ac31f35abde9f40cbb1032e06d8571fc43c51230e9a90e14145debc6199.
+      image: golang:1.27.4@sha256:08bcb99a38f85a265f9a93d1d3323e2440eec333380f3ea26ee0dec9264bb41c
       # Test isolation: any container engine a test reaches points at nowhere. Set inside the container only:
       # the runner itself reaches the job's container through DOCKER_HOST, so a job-wide value breaks checkout.
       env:
@@ -27,18 +30,329 @@ jobs:
         CONTAINER_HOST: unix:///nonexistent
     env:
       GOFLAGS: -buildvcs=false
+      # Modules come only from the first step, under stop-commands.sh: a proxy's error body (Go keeps a CR in it) is
+      # third-party text. Every later step finds them in the cache. go mod tidy -diff fetches the whole graph it needs
+      # and changes nothing, where downloading "all" would add sums to go.sum.
+      GOPROXY: "off"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: go mod tidy, fetching the modules
+        env:
+          GOPROXY: https://proxy.golang.org,direct
+        run: sh .github/scripts/stop-commands.sh go mod tidy -diff
+      # A root agent's compose reads run as homerslab-read, which the packages make (packaging/sysusers.d), and it
+      # refuses to read without it (#183), with its fixed uid and gid (#190). The container has no systemd-sysusers:
+      # these are that file's lines, which the step checks are still the file's, so the two can't drift.
+      - name: The reads' own user, as the packages make it
+        run: |
+          grep -qxF 'g homerslab-read 60602' packaging/sysusers.d/homerslab.conf
+          grep -qxF 'u homerslab-read 60602:homerslab-read "HomersLab compose reads" / /usr/sbin/nologin' packaging/sysusers.d/homerslab.conf
+          groupadd --system --gid 60602 homerslab-read
+          useradd --system --uid 60602 --gid homerslab-read --no-create-home --home-dir / --shell /usr/sbin/nologin --comment "HomersLab compose reads" homerslab-read
       - name: gofmt
         run: test -z "$(gofmt -l . | tee /dev/stderr)"
       - name: go vet
         run: go vet ./...
-      - name: go mod tidy
-        run: go mod tidy -diff
       - name: go test
         run: go test -race -count=1 ./...
+      # The race detector leaves out a compose read's memory limit (its shadow memory needs more), so the agent's
+      # tests run once more as the release is built, without cgo or the race detector, with the limit on.
+      - name: go test, the agent as released
+        env:
+          CGO_ENABLED: "0"
+        run: go test -count=1 ./internal/agent/...
+
+  agent-unit-caps:
+    name: Agent reads (as root, with only the agent unit's capabilities)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    # Modules come only from the step that fetches them, as in the Go job.
+    env:
+      GOPROXY: "off"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - name: Fetch the modules
+        env:
+          GOPROXY: https://proxy.golang.org,direct
+        run: sh .github/scripts/stop-commands.sh go mod download
+      # Root without CAP_DAC_OVERRIDE reads only what everyone may, and the runner's home may not be: the tests are
+      # built from a copy of the checkout in a folder everyone may read (they find their testdata by its source path).
+      - name: Build the agent's tests, as released
+        run: |
+          src=$(mktemp -d /tmp/homerslab-XXXXXX)
+          chmod 755 "$src"
+          cp -a . "$src"
+          cd "$src" && CGO_ENABLED=0 go test -c -o agent.test ./internal/agent
+          echo "SRC=$src" >> "$GITHUB_ENV"
+      # The packages' users, from their own sysusers.d file: a root agent's reads run as homerslab-read (#183).
+      - name: The packages' users
+        run: sudo systemd-sysusers "$PWD/packaging/sysusers.d/homerslab.conf"
+      # The Go job's root holds Docker's capabilities (CAP_KILL among them, not CAP_NET_ADMIN); the agent's unit gives
+      # it far fewer. As root on the runner with exactly the unit's set, read from the unit file (#138), the agent's
+      # tests run again: a read's child, which runs as homerslab-read, must still end at its deadline and with the
+      # agent, and a stopped one must not hold the read slot (#183).
+      - name: The agent's tests, under the agent unit's capabilities
+        env:
+          DOCKER_HOST: unix:///nonexistent
+          CONTAINER_HOST: unix:///nonexistent
+        run: |
+          cd "$SRC"
+          sudo --preserve-env=DOCKER_HOST,CONTAINER_HOST \
+            sh .github/scripts/as-unit.sh packaging/systemd/homerslab-agent.service \
+            "$SRC/agent.test" -test.v -test.count=1 -test.timeout=5m
+
+  home-unit:
+    name: Home's unit, as systemd runs it (as root)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    # Modules come only from the step that fetches them, as in the Go job.
+    env:
+      GOPROXY: "off"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - name: Fetch the modules
+        env:
+          GOPROXY: https://proxy.golang.org,direct
+        run: sh .github/scripts/stop-commands.sh go mod download
+      - name: Build HomersLab and the packaging tests
+        env:
+          CGO_ENABLED: "0"
+        run: |
+          go build -trimpath -o homerslab ./cmd/homerslab
+          go test -c -o packaging.test ./packaging
+      # Where Home's unit finds them: HomersLab where its ExecStart says, the test (which is also the probe it runs in
+      # Home's unit) under /usr, which the unit sees; and the packages' users, from their own sysusers.d file.
+      - name: Install them, and the packages' users
+        run: |
+          sudo install -m 0755 homerslab /usr/bin/homerslab
+          sudo install -D -m 0755 packaging.test /usr/local/libexec/homerslab-test/packaging.test
+          sudo systemd-sysusers "$PWD/packaging/sysusers.d/homerslab.conf"
+      # A probe in Home's unit can't connect to a world-writable Unix socket in /run, under /var/lib or in the abstract
+      # namespace, each of the unit's two fences alone holds, and Home answers on its activated socket (#21).
+      - name: Home's unit reaches no Unix socket
+        env:
+          HOMERSLAB_TEST_HOME_UNIT: "1"
+          DOCKER_HOST: unix:///nonexistent
+          CONTAINER_HOST: unix:///nonexistent
+        working-directory: packaging
+        run: |
+          sudo --preserve-env=HOMERSLAB_TEST_HOME_UNIT,DOCKER_HOST,CONTAINER_HOST \
+            /usr/local/libexec/homerslab-test/packaging.test -test.v -test.count=1 -test.run '^TestHomesUnitReachesNoUnixSocket$'
+
+  firewall:
+    name: Firewall table (network namespaces)
+    runs-on: ubuntu-24.04
+    # Modules come only from the step that fetches them, as in the Go job.
+    env:
+      GOPROXY: "off"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - name: Fetch the modules
+        env:
+          GOPROXY: https://proxy.golang.org,direct
+        run: sh .github/scripts/stop-commands.sh go mod download
+      - name: The tools the test drives
+        run: sh .github/scripts/stop-commands.sh sudo apt-get install -y --no-install-recommends nftables iproute2 iputils-ping
+      - name: Build the test
+        run: CGO_ENABLED=0 go test -c -o fw.test ./internal/firewall
+      # As root, the test puts itself in a fresh network namespace (unshare -n) before it touches anything, and refuses
+      # one that holds more than loopback: the runner's own firewall stays as it is.
+      - name: The table in throwaway namespaces
+        env:
+          HOMERSLAB_REQUIRE_NETNS: "1"
+          DOCKER_HOST: unix:///nonexistent
+          CONTAINER_HOST: unix:///nonexistent
+        run: sudo --preserve-env=HOMERSLAB_REQUIRE_NETNS,DOCKER_HOST,CONTAINER_HOST ./fw.test -test.v -test.count=1
+      # The LAN as the kernel reports it over netlink (#108), in a fresh namespace the same way: a full-tunnel VPN, the
+      # mesh's WireGuard interface and a rogue router advertisement.
+      - name: Build the LAN's test
+        run: CGO_ENABLED=0 go test -c -o lan.test ./internal/lan
+      - name: The LAN in throwaway namespaces
+        env:
+          HOMERSLAB_REQUIRE_NETNS: "1"
+          DOCKER_HOST: unix:///nonexistent
+          CONTAINER_HOST: unix:///nonexistent
+        run: sudo --preserve-env=HOMERSLAB_REQUIRE_NETNS,DOCKER_HOST,CONTAINER_HOST ./lan.test -test.v -test.count=1
+
+  mesh:
+    name: Mesh contract (self-hosted NetBird in containers)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    # Modules come only from the step that fetches them, as in the Go job.
+    env:
+      GOPROXY: "off"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - name: Fetch the modules
+        env:
+          GOPROXY: https://proxy.golang.org,direct
+        run: sh .github/scripts/stop-commands.sh go mod download
+      - name: Kernel WireGuard, for the clients in their containers
+        run: sudo modprobe wireguard
+      # The harness, and only the harness, reaches the runner's Docker (HOMERSLAB_TEST_DOCKER_HOST), for compose project
+      # hltest-15; the code under test points at nowhere. Images are pinned by digest in testdata/compose.yaml.
+      - name: The contract suite
+        env:
+          HOMERSLAB_TEST_DOCKER_HOST: unix:///var/run/docker.sock
+          DOCKER_HOST: unix:///nonexistent
+          CONTAINER_HOST: unix:///nonexistent
+        # The containers' logs, which the suite prints when it fails, are third-party text too.
+        run: sh .github/scripts/stop-commands.sh go test -count=1 -v -run TestTheMeshContract ./internal/mesh/netbird/
+
+  domain:
+    name: Certificates and the edge (Pebble, BIND and Caddy in containers)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    # Modules come only from the step that fetches them, as in the Go job.
+    env:
+      GOPROXY: "off"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - name: Fetch the modules
+        env:
+          GOPROXY: https://proxy.golang.org,direct
+        run: sh .github/scripts/stop-commands.sh go mod download
+      # The harness, and only the harness, reaches the runner's Docker (HOMERSLAB_TEST_DOCKER_HOST), for compose projects
+      # hltest-16 and hltest-16-edge; the code under test points at nowhere. Images are pinned by digest in each suite's
+      # testdata/compose.yaml. The suites copy their own test binary into the containers, so it is built static.
+      - name: The DNS provider contract suite and the edge's request matrix
+        env:
+          HOMERSLAB_TEST_DOCKER_HOST: unix:///var/run/docker.sock
+          DOCKER_HOST: unix:///nonexistent
+          CONTAINER_HOST: unix:///nonexistent
+          CGO_ENABLED: "0"
+        # The containers' logs, which the suites print when they fail, are third-party text too.
+        run: sh .github/scripts/stop-commands.sh go test -count=1 -v -run 'TestTheDNSProviderContract$|TestTheEdgesRequestMatrix' ./internal/certs/ ./internal/edge/
+
+  engine:
+    name: Container-engine contract (Docker, the runner's own, a throwaway engine)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    # Modules come only from the step that fetches them, as in the Go job.
+    env:
+      GOPROXY: "off"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - name: Fetch the modules
+        env:
+          GOPROXY: https://proxy.golang.org,direct
+        run: sh .github/scripts/stop-commands.sh go mod download
+      # Apps' compose projects run as their units run them (the standard compose command on the catalog's file and the
+      # agent's), on the runner's Docker, which nothing else uses; the adapter reads their state, health and logs through
+      # the Compose SDK (#19). Only the harness and the adapter under test reach that engine, by its endpoint
+      # (HOMERSLAB_TEST_DOCKER_HOST); DOCKER_HOST points at nowhere. The image is pinned by digest in the test.
+      - name: The contract suite
+        env:
+          HOMERSLAB_TEST_DOCKER_HOST: unix:///var/run/docker.sock
+          DOCKER_HOST: unix:///nonexistent
+          CONTAINER_HOST: unix:///nonexistent
+        # The containers' logs, which the suite reads, are third-party text too.
+        run: sh .github/scripts/stop-commands.sh go test -count=1 -v -run TestTheContainerEngineContractOnDocker ./internal/engine/compose/
+
+  backup:
+    name: Backup-target contract (a disk, SFTP and S3 in containers, restic's own image)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    # Modules come only from the step that fetches them, as in the Go job.
+    env:
+      GOPROXY: "off"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - name: Fetch the modules
+        env:
+          GOPROXY: https://proxy.golang.org,direct
+        run: sh .github/scripts/stop-commands.sh go mod download
+      # The harness, and only the harness, reaches the runner's Docker (HOMERSLAB_TEST_DOCKER_HOST), for compose project
+      # hltest-22-targets; the code under test points at nowhere. Images are pinned by digest in testdata/compose.yaml.
+      # The suite copies its own test binary into restic's image, so it is built static.
+      - name: The contract suite
+        env:
+          HOMERSLAB_TEST_DOCKER_HOST: unix:///var/run/docker.sock
+          DOCKER_HOST: unix:///nonexistent
+          CONTAINER_HOST: unix:///nonexistent
+          CGO_ENABLED: "0"
+        # The containers' logs, which the suite prints when it fails, are third-party text too.
+        run: sh .github/scripts/stop-commands.sh go test -count=1 -v -run 'TestTheBackupTargetContract$' ./internal/backup/
+
+  identity:
+    name: Identity provider contract (Authentik in containers, Chromium's virtual authenticator)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    # Modules come only from the step that fetches them, as in the Go job.
+    env:
+      GOPROXY: "off"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Fetch the modules
+        env:
+          GOPROXY: https://proxy.golang.org,direct
+        run: sh .github/scripts/stop-commands.sh go mod download
+      - name: The browser, for the passkeys in a real browser
+        working-directory: web
+        env:
+          PLAYWRIGHT_BROWSERS_PATH: /home/runner/ms-playwright
+        run: |
+          sh ../.github/scripts/stop-commands.sh npm ci --ignore-scripts
+          sh ../.github/scripts/stop-commands.sh npx playwright install --with-deps chromium
+      # The harness, and only the harness, reaches the runner's Docker (HOMERSLAB_TEST_DOCKER_HOST), for compose project
+      # hltest-17; the code under test points at nowhere. Images are pinned by digest in packaging/sign-in. The suite
+      # runs web/e2e/passkey.idp.spec.ts against the Authentik it set up (HOMERSLAB_TEST_BROWSER).
+      - name: The contract suite
+        env:
+          HOMERSLAB_TEST_DOCKER_HOST: unix:///var/run/docker.sock
+          HOMERSLAB_TEST_BROWSER: "1"
+          PLAYWRIGHT_BROWSERS_PATH: /home/runner/ms-playwright
+          DOCKER_HOST: unix:///nonexistent
+          CONTAINER_HOST: unix:///nonexistent
+        # The containers' logs and the browser's output, which the suite prints, are third-party text too.
+        run: sh .github/scripts/stop-commands.sh go test -count=1 -v -timeout 30m -run TestTheIdentityProviderContractOnAuthentik ./internal/idp/authentik/
 
   web:
     name: Web app (lint, types, build)
@@ -55,13 +369,17 @@ jobs:
           node-version: 24
           cache: npm
           cache-dependency-path: web/package-lock.json
-      - run: npm ci --ignore-scripts
+      - run: sh ../.github/scripts/stop-commands.sh npm ci --ignore-scripts
       - run: npm run lint
+      - run: npm run test:unit
       - run: npm run build
 
   flow:
     name: Flow tests (first-time setup in a browser)
     runs-on: ubuntu-24.04
+    # Modules come only from the step that fetches them, as in the Go job.
+    env:
+      GOPROXY: "off"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -74,13 +392,17 @@ jobs:
           node-version: 24
           cache: npm
           cache-dependency-path: web/package-lock.json
+      - name: Fetch the modules
+        env:
+          GOPROXY: https://proxy.golang.org,direct
+        run: sh .github/scripts/stop-commands.sh go mod download
       - name: Build the pages, then the binary that carries them
         run: |
-          (cd web && npm ci --ignore-scripts && npm run build)
+          (cd web && sh ../.github/scripts/stop-commands.sh npm ci --ignore-scripts && npm run build)
           CGO_ENABLED=0 go build -trimpath -o bin/homerslab ./cmd/homerslab
       - name: Install the browser
         working-directory: web
-        run: npx playwright install --with-deps chromium
+        run: sh ../.github/scripts/stop-commands.sh npx playwright install --with-deps chromium
       - name: Flow tests
         working-directory: web
         # Test isolation, as in the Go job.

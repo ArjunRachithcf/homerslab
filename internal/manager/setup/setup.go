@@ -3,13 +3,18 @@
 package setup
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/ArjunRachithcf/homerslab/internal/manager/store"
@@ -39,13 +44,100 @@ var Steps = []Step{
 	{"join", Mesh}, {"passkey", Mesh}, {"done", Mesh},
 }
 
-// Handler checks a step's answer and returns what to keep of it. Answers kept here are never secret.
-type Handler func(ctx context.Context, answer json.RawMessage) (map[string]string, error)
+// Handler checks a step's answer and returns what to keep of it; earlier are the answers so far. Answers kept here are
+// never secret. A step that needs a secret returns *NeedsSecret.
+type Handler func(ctx context.Context, answer json.RawMessage, earlier map[string]string) (map[string]string, error)
 
-// Invalid is an answer that didn't pass its checks, naming the fields to fix.
-type Invalid struct{ Fields []string }
+// SecretHandler takes a secret a waiting step asked for, given in this machine's terminal over the control socket,
+// and finishes the step: it returns what to keep, none of it secret.
+type SecretHandler func(ctx context.Context, value string, earlier map[string]string) (map[string]string, error)
+
+// Invalid is an answer that didn't pass its checks, naming the fields to fix and why each was refused.
+type Invalid struct {
+	Fields  []string
+	Reasons map[string]string
+}
+
+// add refuses field for why, unless why is empty.
+func (e *Invalid) add(field, why string) {
+	if why == "" {
+		return
+	}
+	if e.Reasons == nil {
+		e.Reasons = map[string]string{}
+	}
+	e.Fields = append(e.Fields, field)
+	e.Reasons[field] = why
+}
 
 func (e *Invalid) Error() string { return fmt.Sprintf("invalid answer: %v", e.Fields) }
+
+// NeedsSecret is a handler's answer when its step can't be finished without a secret: the step keeps Keep and waits
+// for the secret named Secret, which arrives through `homerslab setup secret <Secret>` (#64).
+type NeedsSecret struct {
+	Secret string
+	Keep   map[string]string
+}
+
+func (e *NeedsSecret) Error() string { return "waiting for the secret " + e.Secret }
+
+// NeedsConfirm is a handler's answer when its step found something only the admin may say yes to (Confirm names
+// it); the step keeps Keep and waits for the answer again with the yes.
+type NeedsConfirm struct {
+	Confirm string
+	Keep    map[string]string
+}
+
+func (e *NeedsConfirm) Error() string { return "waiting for the admin's yes to " + e.Confirm }
+
+// SecretOverHTTP refuses an answer over the LAN page that carries a secret: no secret travels over plain HTTP (#64).
+// Command is what to run in the machine's terminal instead.
+type SecretOverHTTP struct{ Command string }
+
+func (e *SecretOverHTTP) Error() string { return "secret-over-http" }
+
+// Secrets are the names of the secrets setup asks for, by the step that needs them. Each is given with
+// `sudo homerslab setup secret <name>`.
+var Secrets = map[string]string{"network": "mesh", "domain": "dns", "mail": "mail"}
+
+// Command is the terminal command that gives a secret.
+func Command(secret string) string { return "sudo homerslab setup secret " + secret }
+
+// AnyCommand is the command for a secret sent where no step names which: it lists them.
+var AnyCommand = Command("mesh|dns|mail")
+
+// CommandFor is the command that gives the secret a step needs, or AnyCommand for a step that needs none.
+func CommandFor(step string) string {
+	if s := Secrets[step]; s != "" {
+		return Command(s)
+	}
+	return AnyCommand
+}
+
+// secretParts are what the name of a field holding a secret contains, whatever its case. A request on the LAN
+// listener with such a field is refused, whatever its value.
+var secretParts = []string{"token", "secret", "password", "passwd", "key", "credential"}
+
+// notSecrets are the fields whose names look like a secret's but which never hold one: the TSIG key's name (the
+// domain step's keyName) names the key, which is given in the terminal.
+var notSecrets = []string{"keyname"}
+
+// SecretField says whether a field's name says it holds a secret.
+func SecretField(k string) bool {
+	k = strings.ToLower(k)
+	if k == "pat" {
+		return true
+	}
+	if slices.Contains(notSecrets, k) {
+		return false
+	}
+	for _, p := range secretParts {
+		if strings.Contains(k, p) {
+			return true
+		}
+	}
+	return false
+}
 
 // The ways a request can be refused.
 var (
@@ -56,6 +148,10 @@ var (
 	ErrLinkRefused     = errors.New("link-refused")      // unknown, used, ended or expired
 	ErrNoSession       = errors.New("no-session")
 	ErrLANHalfDone     = errors.New("lan-half-done") // setup continues over the mesh
+	ErrNotWaiting      = errors.New("not-waiting")   // a secret no step is waiting for
+	ErrBadNonce        = errors.New("bad-nonce")     // a claim without its tab's nonce: the link is still good
+	ErrStale           = errors.New("stale")         // an answer made from an out-of-date view of its step (#110)
+	ErrStepDone        = errors.New("step-done")     // an answer to a done step that didn't say it is an edit
 )
 
 const (
@@ -65,18 +161,76 @@ const (
 	SessionIdle = 30 * time.Minute
 	// SessionMax is how long a session lasts at most; then a new link continues where setup stopped.
 	SessionMax = 2 * time.Hour
+	// ClaimAgainWithin is how long after a claim the same tab may send it again, from the same address with the same
+	// nonce, and get its session back: for a claim whose answer the network lost, or a reload while it was out.
+	ClaimAgainWithin = time.Minute
 )
+
+// A nonce is the claiming tab's: at least 128 random bits, URL-safe base64, and no longer than nonceMax.
+const (
+	nonceMin = 22
+	nonceMax = 128
+)
+
+// goodNonce says whether a claim's nonce is long enough to name one tab, and plain URL-safe base64.
+func goodNonce(n string) bool {
+	if len(n) < nonceMin || len(n) > nonceMax {
+		return false
+	}
+	for _, c := range []byte(n) {
+		if !('a' <= c && c <= 'z' || 'A' <= c && c <= 'Z' || '0' <= c && c <= '9' || c == '-' || c == '_') {
+			return false
+		}
+	}
+	return true
+}
+
+// Clock is setup's time.
+type Clock struct {
+	// Now is the wall clock: the times setup records and shows.
+	Now func() time.Time
+	// Elapsed is the time since the machine booted, and Boot that boot's ID. How old a link or a session is goes by
+	// them, across any number of the manager's restarts, so setting the wall clock back or forward neither lengthens
+	// nor cuts them. After another boot, their age is unknown: they have ended.
+	Elapsed func() time.Duration
+	Boot    func() string
+}
 
 // Setup is first-time setup on this primary.
 type Setup struct {
 	db       *store.Store
-	now      func() time.Time
+	clock    Clock
 	handlers map[string]Handler
+	secrets  map[string]SecretHandler
+
+	// mu guards the session's last use, which this process knows sooner than the database: it is written there at
+	// most every SeenEvery. A new link ends every session, so there is at most one.
+	mu   sync.Mutex
+	seen *lastUse
+
+	// acting is held from checking an answer through its handler to keeping it, in Answer and Secret: of two answers
+	// from one revision the first decides, and the other is refused before its handler can do anything (seal a
+	// credential, ask NetBird) that would outlive it (#110).
+	acting sync.Mutex
 }
 
+// lastUse is when this process last saw a session used, and when it last wrote that to the database (Elapsed). Used
+// says whether its token was ever used: then its claim got its answer, and is never answered again.
+type lastUse struct {
+	hash       []byte
+	seen, kept time.Duration
+	used       bool
+}
+
+// SeenEvery is how often a session's last use is written to the database, at most, after its first use, which is
+// written at once (a claim whose session was used is never answered again, even after a restart). Reading setup
+// writes nothing more, and a restarted manager knows how long the session was idle, to within this.
+const SeenEvery = time.Minute
+
 // New is first-time setup kept in db. Handlers answer the steps that are built; a step without one is not built yet.
-func New(db *store.Store, now func() time.Time, handlers map[string]Handler) *Setup {
-	return &Setup{db: db, now: now, handlers: handlers}
+// Secrets take the secrets that waiting steps ask for, by the secret's name.
+func New(db *store.Store, clock Clock, handlers map[string]Handler, secrets map[string]SecretHandler) *Setup {
+	return &Setup{db: db, clock: clock, handlers: handlers, secrets: secrets}
 }
 
 // StoreSteps are the steps as the database seeds them.
@@ -90,17 +244,31 @@ func StoreSteps() []store.Step {
 
 // State is where setup stands: every step's state, the first one still open, and the answers so far.
 type State struct {
-	Half    Half              `json:"half"`
-	Current string            `json:"current"`
-	Steps   []StepState       `json:"steps"`
-	Answers map[string]string `json:"answers"`
+	Half    Half   `json:"half"`
+	Current string `json:"current"`
+	// Revision counts every change to setup's answers: the sum of its steps' revisions, each of which only goes up. A
+	// secret is given at the revision of the answers the terminal showed with it (#64).
+	Revision int64             `json:"revision"`
+	Steps    []StepState       `json:"steps"`
+	Answers  map[string]string `json:"answers"`
 }
 
 // StepState is one step and whether it is done.
 type StepState struct {
-	ID    string `json:"id"`
-	Half  Half   `json:"half"`
-	State string `json:"state"` // todo or done
+	ID   string `json:"id"`
+	Half Half   `json:"half"`
+	// State is todo, waiting (for Secret, given in the terminal, or for the admin's Confirm), checking (its secret
+	// arrived, and is being checked) or done.
+	State string `json:"state"`
+	// Revision counts the step's changes. An answer carries the one its page last saw: if the step changed since (in
+	// another tab, say), the answer is refused as stale.
+	Revision int64 `json:"revision"`
+	// Secret is the secret a waiting step needs, and Command what gives it; or Confirm, what it asks a yes to.
+	Secret  string `json:"secret,omitempty"`
+	Command string `json:"command,omitempty"`
+	Confirm string `json:"confirm,omitempty"`
+	// Refused is why the last secret given for a waiting step was refused (the manager's code, never the secret).
+	Refused string `json:"refused,omitempty"`
 }
 
 // State reads where setup stands.
@@ -115,13 +283,22 @@ func (s *Setup) State(ctx context.Context) (State, error) {
 	}
 	st := State{Steps: make([]StepState, 0, len(rows)), Answers: answers}
 	for _, r := range rows {
-		state := "todo"
+		ss := StepState{ID: r.ID, Half: Half(r.Half), State: "todo", Revision: r.Revision}
+		st.Revision += r.Revision
 		if r.Done {
-			state = "done"
-		} else if st.Current == "" {
-			st.Current, st.Half = r.ID, Half(r.Half)
+			ss.State = "done"
+		} else {
+			switch r.WaitKind {
+			case "secret":
+				ss.State, ss.Secret, ss.Command = "waiting", r.WaitName, Command(r.WaitName)
+			case "confirm":
+				ss.State, ss.Confirm = "waiting", r.WaitName
+			}
+			if st.Current == "" {
+				st.Current, st.Half = r.ID, Half(r.Half)
+			}
 		}
-		st.Steps = append(st.Steps, StepState{ID: r.ID, Half: Half(r.Half), State: state})
+		st.Steps = append(st.Steps, ss)
 	}
 	if st.Current == "" && len(rows) > 0 { // all done
 		last := rows[len(rows)-1]
@@ -136,8 +313,25 @@ func (s *Setup) LANHalfDone(ctx context.Context) (bool, error) {
 	return err == nil && st.Half == Mesh, err
 }
 
-// Answer takes a step's answer, given over the half "over", and returns the new state.
-func (s *Setup) Answer(ctx context.Context, id string, over Half, answer json.RawMessage) (State, error) {
+// Basis is the view of a step an answer was made from: the step's revision as its page last saw it, and whether the
+// answer says it changes a step that is done.
+type Basis struct {
+	Revision int64
+	Edit     bool
+	// From is the device the answer came from, kept with the step's answers: the terminal says whose answers decide
+	// where a secret goes (#64).
+	From string
+}
+
+// AnsweredFrom and AnsweredAt are the answers' keys for where and when a step was last answered from.
+func AnsweredFrom(step string) string { return "answeredFrom:" + step }
+func AnsweredAt(step string) string   { return "answeredAt:" + step }
+
+// Answer takes a step's answer, given over the half "over", and returns the new state. It changes nothing unless the
+// step is still at basis.Revision (ErrStale), and a step that is done only when basis says it is an edit (ErrStepDone).
+func (s *Setup) Answer(ctx context.Context, id string, over Half, answer json.RawMessage, basis Basis) (State, error) {
+	s.acting.Lock()
+	defer s.acting.Unlock()
 	st, err := s.State(ctx)
 	if err != nil {
 		return State{}, err
@@ -160,18 +354,121 @@ func (s *Setup) Answer(ctx context.Context, id string, over Half, answer json.Ra
 			return State{}, ErrEarlierStepOpen
 		}
 	}
+	if basis.Revision < 0 || st.Steps[i].Revision != basis.Revision {
+		return State{}, ErrStale // before the handler runs: a stale page's answer does nothing, not even outside the database
+	}
+	if st.Steps[i].State == "done" && !basis.Edit {
+		return State{}, ErrStepDone
+	}
+	if over == LAN && CarriesSecret(answer) {
+		return State{}, &SecretOverHTTP{Command: CommandFor(id)}
+	}
 	h := s.handlers[id]
 	if h == nil {
 		return State{}, ErrNotBuilt
 	}
-	keep, err := h(ctx, answer)
+	keep, err := h(ctx, answer, st.Answers)
+	if basis.From != "" && Secrets[id] != "" { // a step whose answers decide where its secret goes
+		at := s.clock.Now().UTC().Format(time.RFC3339)
+		var secret *NeedsSecret
+		var confirm *NeedsConfirm
+		switch {
+		case errors.As(err, &secret):
+			secret.Keep = withAnswer(secret.Keep, id, basis.From, at)
+		case errors.As(err, &confirm):
+			confirm.Keep = withAnswer(confirm.Keep, id, basis.From, at)
+		case err == nil:
+			keep = withAnswer(keep, id, basis.From, at)
+		}
+	}
+	return s.settle(ctx, id, keep, err, basis.Revision)
+}
+
+// settle keeps what a handler returned: the step done, waiting, or as it was with the handler's error. The step moves
+// on only from revision, which the database checks as it keeps the change.
+func (s *Setup) settle(ctx context.Context, id string, keep map[string]string, err error, revision int64) (State, error) {
+	var secret *NeedsSecret
+	var confirm *NeedsConfirm
+	switch {
+	case errors.As(err, &secret):
+		err = s.db.Wait(ctx, id, "secret", secret.Secret, secret.Keep, revision)
+	case errors.As(err, &confirm):
+		err = s.db.Wait(ctx, id, "confirm", confirm.Confirm, confirm.Keep, revision)
+	case err == nil:
+		err = s.db.CompleteStep(ctx, id, keep, s.clock.Now(), revision)
+	}
+	if errors.Is(err, store.ErrStale) {
+		return State{}, ErrStale
+	}
 	if err != nil {
 		return State{}, err
 	}
-	if err := s.db.CompleteStep(ctx, id, keep, s.now()); err != nil {
+	return s.State(ctx)
+}
+
+// withAnswer is what a step keeps, with where and when it was answered from.
+func withAnswer(keep map[string]string, id, from, at string) map[string]string {
+	out := make(map[string]string, len(keep)+2)
+	for k, v := range keep {
+		out[k] = v
+	}
+	out[AnsweredFrom(id)], out[AnsweredAt(id)] = from, at
+	return out
+}
+
+// CarriesSecret says whether a JSON body has a field named like a secret, at any depth. The top-level fields named in
+// allowed are a request's own (a claim's link key), though what they hold is looked into all the same.
+func CarriesSecret(raw []byte, allowed ...string) bool {
+	var v any
+	if json.Unmarshal(raw, &v) != nil {
+		return false
+	}
+	var walk func(v any, top bool) bool
+	walk = func(v any, top bool) bool {
+		switch x := v.(type) {
+		case map[string]any:
+			for k, inner := range x {
+				if (SecretField(k) && !(top && slices.Contains(allowed, k))) || walk(inner, false) {
+					return true
+				}
+			}
+		case []any:
+			for _, inner := range x {
+				if walk(inner, false) {
+					return true
+				}
+			}
+		}
+		return false
+	}
+	return walk(v, true)
+}
+
+// Secret takes a secret, by name, for the step waiting for it, and finishes that step. It comes from this machine's
+// terminal over the control socket, never from the LAN page, given at the revision of the answers the terminal showed
+// with it: if they changed since, it is refused (ErrStale) before anything sees it.
+func (s *Setup) Secret(ctx context.Context, name, value string, revision int64) (State, error) {
+	s.acting.Lock()
+	defer s.acting.Unlock()
+	st, err := s.State(ctx)
+	if err != nil {
 		return State{}, err
 	}
-	return s.State(ctx)
+	if st.Revision != revision {
+		return State{}, ErrStale
+	}
+	var step string
+	for _, ss := range st.Steps {
+		if ss.State == "waiting" && ss.Secret == name {
+			step = ss.ID
+		}
+	}
+	h := s.secrets[name]
+	if step == "" || h == nil {
+		return State{}, ErrNotWaiting
+	}
+	keep, err := h(ctx, value, st.Answers)
+	return s.settle(ctx, step, keep, err, store.AnyRevision)
 }
 
 func index(id string) int {
@@ -199,30 +496,145 @@ func (s *Setup) NewLink(ctx context.Context) (Link, error) {
 		return Link{}, ErrLANHalfDone
 	}
 	key, hash := token()
-	now := s.now()
-	l := Link{Key: key, ExpiresAt: now.Add(LinkLife)}
-	return l, s.db.NewLink(ctx, hash, now, l.ExpiresAt)
+	now := s.moment()
+	l := Link{Key: key, ExpiresAt: now.Wall.Add(LinkLife)}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.db.NewLink(ctx, hash, now, l.ExpiresAt); err != nil {
+		return Link{}, err
+	}
+	s.seen = nil
+	return l, nil
 }
 
-// Claim uses up a link and returns the token of the session it opens for client, the claiming device's address.
-func (s *Setup) Claim(ctx context.Context, key, client string) (string, error) {
-	session, sessionHash := token()
-	err := s.db.ClaimLink(ctx, digest(key), sessionHash, client, s.now())
+// moment is now, by every clock setup keeps.
+func (s *Setup) moment() store.Moment {
+	return store.Moment{Wall: s.clock.Now(), Boot: s.clock.Boot(), Since: s.clock.Elapsed()}
+}
+
+// age is how long ago then was, if it is known: in this boot. After another boot, it isn't.
+func age(now, then store.Moment) (time.Duration, bool) {
+	if now.Boot == "" || then.Boot != now.Boot {
+		return 0, false
+	}
+	return now.Since - then.Since, true
+}
+
+// Claim uses up a link and returns the token of the session it opens for client, the claiming device's address. Nonce
+// is the claiming tab's own: within ClaimAgainWithin of the claim, the same key and nonce from the same client get
+// the same session again, with a new token (the one whose answer was lost no longer opens it), and again says so.
+// Anyone else is refused.
+func (s *Setup) Claim(ctx context.Context, key, nonce, client string) (tok string, again bool, err error) {
+	if !goodNonce(nonce) {
+		return "", false, ErrBadNonce
+	}
+	hash, nonceHash := digest(key), digest(nonce)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	row, err := s.db.Link(ctx, hash)
+	if errors.Is(err, store.ErrNotFound) {
+		return "", false, ErrLinkRefused
+	}
+	if err != nil {
+		return "", false, err
+	}
+	// Whether it was claimed or revoked, ClaimLink says, at once with using it up.
+	now := s.moment()
+	if old, ok := age(now, row.Made); ok && within(old, LinkLife) {
+		session, sessionHash := token()
+		err = s.db.ClaimLink(ctx, hash, nonceHash, sessionHash, client, now)
+		if err == nil {
+			s.seen = &lastUse{hash: sessionHash, seen: now.Since, kept: now.Since}
+			return session, false, nil
+		}
+		if !errors.Is(err, store.ErrNotFound) {
+			return "", false, err
+		}
+	}
+	tok, err = s.claimAgain(ctx, hash, nonceHash, client, now)
+	return tok, err == nil, err
+}
+
+// claimAgain answers a link already claimed, under the lock: the same session, with a new token, if the claim was
+// this tab's (its nonce), from this client, less than ClaimAgainWithin ago in this boot, and its session's token was
+// never used (then the answer wasn't lost). Otherwise it is refused. ClaimAgainWithin is shorter than SessionIdle
+// and SessionMax, so a session within it hasn't ended by either.
+func (s *Setup) claimAgain(ctx context.Context, hash, nonceHash []byte, client string, now store.Moment) (string, error) {
+	c, err := s.db.Claim(ctx, hash)
 	if errors.Is(err, store.ErrNotFound) {
 		return "", ErrLinkRefused
 	}
-	return session, err
+	if err != nil {
+		return "", err
+	}
+	claimed, ok := age(now, c.Session.Opened)
+	used := c.Session.Seen.Since != c.Session.Opened.Since || s.seen != nil && bytes.Equal(s.seen.hash, c.SessionHash) && s.seen.used
+	if subtle.ConstantTimeCompare(c.NonceHash, nonceHash) != 1 || c.Session.Client != client || !ok ||
+		!within(claimed, ClaimAgainWithin) || used {
+		return "", ErrLinkRefused
+	}
+	session, sessionHash := token()
+	err = s.db.RenewClaim(ctx, hash, c.SessionHash, sessionHash, now)
+	if errors.Is(err, store.ErrNotFound) {
+		return "", ErrLinkRefused
+	}
+	if err != nil {
+		return "", err
+	}
+	s.seen = &lastUse{hash: sessionHash, seen: now.Since, kept: c.Session.Seen.Since}
+	return session, nil
 }
 
 // Session checks a session's token, from client, and keeps the session open. The token travels in clear on the LAN,
-// so it is good only from the device that claimed the link, and for a while.
+// so it is good only from the device that claimed the link, and for a while. The database says whether the session
+// exists, wasn't ended, and when it was opened; its last use is this process's or, after a restart, the database's.
+// That last use is written at most every SeenEvery, outside the lock, and a write that fails doesn't refuse the
+// session: reading setup must work on a full disk.
 func (s *Setup) Session(ctx context.Context, tok, client string) error {
-	err := s.db.TouchSession(ctx, digest(tok), client, s.now(), SessionIdle, SessionMax)
-	if errors.Is(err, store.ErrNotFound) {
-		return ErrNoSession
+	hash := digest(tok)
+	now, write, err := s.check(ctx, hash, client)
+	if err != nil {
+		return err
 	}
-	return err
+	if write {
+		_ = s.db.SeeSession(ctx, hash, now) // tried again a minute later
+	}
+	return nil
 }
+
+// check checks a session under the lock, and says whether it is time to write its last use.
+func (s *Setup) check(ctx context.Context, hash []byte, client string) (store.Moment, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	row, err := s.db.Session(ctx, hash)
+	if errors.Is(err, store.ErrNotFound) {
+		return store.Moment{}, false, ErrNoSession
+	}
+	if err != nil {
+		return store.Moment{}, false, err
+	}
+	now := s.moment()
+	use := s.seen
+	if use == nil || !bytes.Equal(use.hash, hash) {
+		use = &lastUse{hash: hash, seen: row.Seen.Since, kept: row.Seen.Since, used: row.Seen.Since != row.Opened.Since} // opened before a restart
+	}
+	opened, ok := age(now, row.Opened)
+	if !ok || row.Client != client || !within(opened, SessionMax) || !within(now.Since-use.seen, SessionIdle) {
+		return store.Moment{}, false, ErrNoSession
+	}
+	use.seen = now.Since
+	s.seen = use
+	first := !use.used
+	use.used = true
+	if !first && now.Since-use.kept < SeenEvery {
+		return now, false, nil
+	}
+	use.kept = now.Since
+	return now, true, nil
+}
+
+// within says whether an age is known and below limit.
+func within(age, limit time.Duration) bool { return age >= 0 && age < limit }
 
 // token is 256 random bits, URL-safe, and the hash the database keeps of it.
 func token() (string, []byte) {

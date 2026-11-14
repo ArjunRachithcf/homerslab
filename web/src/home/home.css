@@ -1,0 +1,51 @@
+/* Home on the design system, as in prototypes/assets/home.css: a frosted bar whose word becomes the greeting, the
+   greeting as the large title with today's one fact in grey, app panels on a 12-column grid, a kid's own tiles. */
+
+/* the bar: the household's word gives way to the greeting once it scrolls under the bar (iOS) */
+.h-brand .names { position: relative; display: grid; min-width: 0; }
+.h-brand .word, .h-brand .mini { grid-area: 1 / 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; transition: opacity var(--dur-base) var(--ease-out), transform var(--dur-spring) var(--spring); }
+/* the one that isn't shown is hidden too, so it never sits over the other's words */
+.h-brand .word { transition-property: opacity, transform, visibility; }
+.h-brand .mini { opacity: 0; transform: translateY(8px); visibility: hidden; transition-property: opacity, transform, visibility; }
+.topbar.is-titled .h-brand .word { opacity: 0; transform: translateY(-8px); visibility: hidden; }
+.topbar.is-titled .h-brand .mini { opacity: 1; transform: none; visibility: visible; }
+.h-brand .mark-glyph { flex: none; }
+.h-me { position: relative; display: inline-flex; align-items: center; gap: 8px; height: 40px; padding: 4px 12px 4px 4px; border: 0; border-radius: var(--radius-pill); color: var(--text); font: inherit; cursor: pointer;
+  background-color: var(--mat-thick); -webkit-backdrop-filter: var(--mat-blur); backdrop-filter: var(--mat-blur);
+  transition: background-color var(--dur-fast), transform var(--dur-spring) var(--spring); }
+.h-me::after { content: ""; position: absolute; inset: 0; border-radius: inherit; padding: 1px; pointer-events: none; background: linear-gradient(160deg, var(--mat-rim) 0%, var(--mat-rim-soft) 18%, transparent 42%, transparent 64%, var(--mat-rim-soft) 100%); -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0); -webkit-mask-composite: xor; mask: linear-gradient(#000 0 0) content-box exclude, linear-gradient(#000 0 0); } /* taste-skill-ignore: the glass rim, asked for in design round 2 */
+.h-me:active { transform: scale(var(--press-scale)); transition-duration: var(--dur-fast), var(--dur-press); }
+:is([data-transparency="reduce"], [data-glass="solid"]) .h-me { background-color: var(--mat-solid-thick); background-image: none; -webkit-backdrop-filter: none; backdrop-filter: none; }
+@media (prefers-reduced-transparency: reduce) { .h-me { background-color: var(--mat-solid-thick); background-image: none; -webkit-backdrop-filter: none; backdrop-filter: none; } }
+
+/* the greeting: the large title, then today's one fact in grey (apple.com's two-tone headline) */
+.h-hello { padding: 56px 0 36px; }
+.h-hello h1 { font-size: var(--fs-large-title); line-height: var(--lh-title); font-weight: var(--weight-bold); letter-spacing: var(--tracking-large); max-width: 24ch; }
+.h-hello h1 .fact { color: var(--text-2); }
+.h-hello .h-sub { margin-top: 12px; color: var(--text-2); font-size: var(--fs-headline); }
+#home:focus { outline: none; }
+
+.h-panels { row-gap: var(--gap); }
+.h-panels .panel { min-width: 0; }
+.h-sec { margin-top: 40px; }
+.h-foot { display: flex; flex-wrap: wrap; gap: 8px 16px; justify-content: space-between; padding: 48px 0 32px; color: var(--text-2); font-size: var(--fs-foot); }
+.h-none { padding: 40px 24px; }
+.h-loading { padding: 56px 0; color: var(--text-2); }
+.h-problem { padding: 56px 0; }
+
+/* a kid's Home: bigger tiles that say what each app is for */
+.h-kid .h-hello h1 { max-width: 20ch; }
+
+.only-phone { display: none; }
+@media (max-width: 640px) {
+  .h-hello { padding: 28px 0 24px; }
+  .h-hello .h-sub { font-size: var(--fs-body); }
+  .h-me .h-me-name { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+  .h-me { padding: 4px; }
+  .only-phone { display: revert; }
+  .h-foot { flex-direction: column; }
+}
+
+/* an app's state in a panel: its colour a step towards the text, so it keeps AA on any glass over Home's wallpaper */
+.app-row.is-down .app-row-state { color: color-mix(in srgb, var(--red-text), var(--text) 20%); }
+.app-row.is-updating .app-row-state { color: color-mix(in srgb, var(--orange-text), var(--text) 20%); }

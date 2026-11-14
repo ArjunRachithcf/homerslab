@@ -3,19 +3,23 @@
 [Unit]
 Description=HomersLab manager
 Documentation=https://github.com/ArjunRachithcf/homerslab
-Wants=homerslab-agent.service
-After=homerslab-agent.service network.target
+Wants=homerslab-agent.service homerslab-admin.socket
+After=homerslab-agent.service homerslab-admin.socket network.target
 
 [Service]
 Type=exec
 User=homerslab
 Group=homerslab
 ExecStart=/usr/bin/homerslab manager
+# Admin's socket, for the edge's group only.
+Sockets=homerslab-admin.socket
 StateDirectory=homerslab
 StateDirectoryMode=0700
 RuntimeDirectory=homerslab
 RuntimeDirectoryMode=0700
 UMask=0077
+# Home's projection, which Home's process reads (#21); optional, so the manager starts before tmpfiles has made it.
+ReadWritePaths=-/run/homerslab-projection
 Restart=on-failure
 RestartSec=2s
 

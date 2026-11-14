@@ -1,11 +1,9 @@
 package setup
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
-	"net/mail"
-	"strings"
-	"unicode/utf8"
 )
 
 // Built are the steps this version of HomersLab can take. The rest come with the tickets that build them.
@@ -15,39 +13,70 @@ var Built = map[string]Handler{
 	"household": household,
 }
 
-func welcome(context.Context, json.RawMessage) (map[string]string, error) { return nil, nil }
+// The limits of what someone types. A name is counted in code points, so an accent or an emoji can count as more
+// than one; a mail address is RFC 5321's longest, in octets.
+const (
+	NameMax = 64
+	MailMax = 254
+)
+
+// Why a field's answer was refused.
+const (
+	Missing          = "missing"
+	TooLong          = "too-long"
+	HiddenCharacters = "hidden-characters" // an invisible character, or one a name can't use
+	TooManyMarks     = "too-many-marks"    // more than MarksMax combining marks on one letter
+	NotAMail         = "not-a-mail"
+)
+
+func welcome(_ context.Context, raw json.RawMessage, _ map[string]string) (map[string]string, error) {
+	var a struct{}
+	if !decode(raw, &a) {
+		return nil, &Invalid{Fields: []string{"answer"}}
+	}
+	return nil, nil
+}
+
+// decode reads an answer into a, refusing any field a doesn't have.
+func decode(raw json.RawMessage, a any) bool {
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.DisallowUnknownFields()
+	return dec.Decode(a) == nil
+}
 
 // you: the admin's name and mail address.
-func you(_ context.Context, raw json.RawMessage) (map[string]string, error) {
-	var a struct{ Name, Mail string }
-	_ = json.Unmarshal(raw, &a)
-	var bad []string
-	name := strings.TrimSpace(a.Name)
-	if !plain(name) {
-		bad = append(bad, "name")
+func you(_ context.Context, raw json.RawMessage, _ map[string]string) (map[string]string, error) {
+	var a struct {
+		Name string `json:"name"`
+		Mail string `json:"mail"`
 	}
-	mailAddr := strings.TrimSpace(a.Mail)
-	if p, err := mail.ParseAddress(mailAddr); err != nil || p.Address != mailAddr || p.Name != "" || !strings.Contains(mailAddr[strings.LastIndex(mailAddr, "@"):], ".") {
-		bad = append(bad, "mail")
+	if !decode(raw, &a) {
+		return nil, &Invalid{Fields: []string{"answer"}}
 	}
-	if bad != nil {
-		return nil, &Invalid{Fields: bad}
+	bad := &Invalid{}
+	n, why := name(a.Name)
+	bad.add("name", why)
+	addr, why := mailAddress(a.Mail)
+	bad.add("mail", why)
+	if bad.Fields != nil {
+		return nil, bad
 	}
-	return map[string]string{"name": name, "mail": mailAddr}, nil
+	return map[string]string{"name": n, "mail": addr}, nil
 }
 
 // household: the household's name.
-func household(_ context.Context, raw json.RawMessage) (map[string]string, error) {
-	var a struct{ Name string }
-	_ = json.Unmarshal(raw, &a)
-	name := strings.TrimSpace(a.Name)
-	if !plain(name) {
-		return nil, &Invalid{Fields: []string{"name"}}
+func household(_ context.Context, raw json.RawMessage, _ map[string]string) (map[string]string, error) {
+	var a struct {
+		Name string `json:"name"`
 	}
-	return map[string]string{"household": name}, nil
-}
-
-// plain is a name someone typed: not empty, not huge, one line.
-func plain(s string) bool {
-	return s != "" && utf8.RuneCountInString(s) <= 120 && !strings.ContainsAny(s, "\r\n\x00")
+	if !decode(raw, &a) {
+		return nil, &Invalid{Fields: []string{"answer"}}
+	}
+	n, why := name(a.Name)
+	if why != "" {
+		bad := &Invalid{}
+		bad.add("name", why)
+		return nil, bad
+	}
+	return map[string]string{"household": n}, nil
 }

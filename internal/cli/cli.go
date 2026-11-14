@@ -10,6 +10,8 @@ import (
 	"io"
 	"os"
 	"strings"
+
+	"github.com/ArjunRachithcf/homerslab/internal/agent"
 )
 
 // Defaults: where the packaged units put things.
@@ -18,23 +20,47 @@ const (
 	DefaultControlSocket = "/run/homerslab/manager.sock"
 	DefaultDB            = "/var/lib/homerslab/manager.db"
 	DefaultListen        = ":7020"
+	DefaultSetupPort     = 7020
+	DefaultAgentState    = "/var/lib/homerslab-agent"
 	DefaultGroup         = "homerslab"
+	// DefaultProjection is Home's projection, which the manager writes and Home reads (#21).
+	DefaultProjection = "/run/homerslab-projection/home.json"
 )
 
 // Env is what a command reaches of the world.
 type Env struct {
+	Stdin          io.Reader
 	Stdout, Stderr io.Writer
 	Euid           func() int
 }
 
 // OS is the real environment.
-func OS() Env { return Env{Stdout: os.Stdout, Stderr: os.Stderr, Euid: os.Geteuid} }
+func OS() Env { return Env{Stdin: os.Stdin, Stdout: os.Stdout, Stderr: os.Stderr, Euid: os.Geteuid} }
 
 const usage = `Usage:
   homerslab agent      run the agent (as root, from homerslab-agent.service)
   homerslab manager    run the manager (unprivileged, from homerslab-manager.service)
+  homerslab home       run Home, where people open their apps (unprivileged, from homerslab-home.service)
   homerslab setup link make a one-time link to first-time setup, and show it with its QR code
+  homerslab setup secret mesh|dns
+                       give first-time setup the mesh's or the DNS provider's token, from this machine's terminal
+                       (read from stdin, never shown)
+  homerslab setup join show, in this machine's terminal only, a key for your device and a one-time link to your first
+                       passkey, as QR codes: first-time setup's second half
+  homerslab setup passkey
+                       a one-time link to a second passkey, until first-time setup is done
+  homerslab dns token  replace the DNS provider's token, from this machine's console, and renew the certificate if it
+                       is due
   homerslab node       show this primary as its agent reports it
+  homerslab catalog    list the apps in the catalog
+  homerslab plan APP   make an install plan for an app, and show it in plain words
+  homerslab plan show ID
+                       show an install plan by its id
+  homerslab mesh owner-password
+                       show the owner's password of a NetBird HomersLab set up, for its dashboard (as root)
+  homerslab firewall restore
+                       load the firewall table the agent last applied, or a closed one on the first boot (as root,
+                       from homerslab-firewall-restore.service)
 
 Each command takes --help.
 `
@@ -48,14 +74,36 @@ func Main(ctx context.Context, args []string, env Env) int {
 	switch strings.Join(first(args, 2), " ") {
 	case "setup link":
 		err = setupLink(ctx, args[2:], env)
+	case "agent read-project": // the agent's own child for one compose read; not for people
+		return agent.ReadProjectMain(args[2:], os.Stdin, env.Stdout)
+	case "plan show":
+		err = showPlanByID(ctx, args[2:], env)
+	case "setup secret":
+		err = setupSecret(ctx, args[2:], env)
+	case "setup join":
+		err = setupJoin(ctx, args[2:], env)
+	case "setup passkey":
+		err = setupPasskey(ctx, args[2:], env)
+	case "dns token":
+		err = dnsToken(ctx, args[2:], env)
+	case "firewall restore":
+		err = firewallRestore(ctx, args[2:], env)
+	case "mesh owner-password":
+		err = meshOwnerPassword(ctx, args[2:], env)
 	default:
 		switch strings.Join(first(args, 1), " ") {
 		case "agent":
 			err = runAgent(ctx, args[1:], env)
 		case "manager":
 			err = runManager(ctx, args[1:], env)
+		case "home":
+			err = runHome(ctx, args[1:], env)
 		case "node":
 			err = showNode(ctx, args[1:], env)
+		case "catalog":
+			err = showCatalog(ctx, args[1:], env)
+		case "plan":
+			err = makePlan(ctx, args[1:], env)
 		default:
 			fmt.Fprint(env.Stderr, usage)
 			return 2

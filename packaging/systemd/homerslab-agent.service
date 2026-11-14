@@ -2,28 +2,87 @@
 [Unit]
 Description=HomersLab agent
 Documentation=https://github.com/ArjunRachithcf/homerslab
+# The table is loaded at boot by homerslab-firewall-restore, before the network and the engines; the agent takes it
+# over after that, and orders itself against nothing of the engines' or the network's: it never waits on them, and
+# they never wait on it.
+Wants=homerslab-firewall-restore.service
+After=homerslab-firewall-restore.service
 Before=homerslab-manager.service
 
 [Service]
-Type=exec
+# Ready once the agent has applied its table (from its saved state: it asks no engine first) and its socket listens.
+Type=notify
+NotifyAccess=main
+TimeoutStartSec=30s
+# systemd-creds' host key, made once, outside the sandbox (which keeps /var/lib/systemd read-only).
+ExecStartPre=+/usr/bin/systemd-creds setup
 ExecStart=/usr/bin/homerslab agent
+# The Compose SDK's client configuration: a folder of the agent's own, never root's home (Compose SDK spike).
+Environment=DOCKER_CONFIG=/run/homerslab-agent/docker
+# The edge's group: the agent alone opens the edge's admin socket.
+SupplementaryGroups=homerslab-edge
 RuntimeDirectory=homerslab-agent
 RuntimeDirectoryMode=0755
+# The agent's state (agent.json: the firewall table's settings) and the manager's sealed credentials.
+StateDirectory=homerslab-agent
+StateDirectoryMode=0700
+# The exec-only copy of the agent that its compose reads run (agent.execOnly, #190): on disk, where one in /tmp would
+# be held in memory on many distributions. The reads' user may enter it, not list it; the copy is mode 0711.
+CacheDirectory=homerslab-agent
+CacheDirectoryMode=0711
 UMask=0077
 Restart=on-failure
 RestartSec=2s
 
-# So far the agent only reads the machine's facts (/etc, /proc, /sys, pci.ids) and answers on its socket, which it
-# hands to the manager's group (CAP_CHOWN). Later tickets loosen this as its contract grows: the firewall (netlink,
-# CAP_NET_ADMIN), the engine, app units, disks. Checked as a transient user unit with these settings (Fedora 44):
-# the facts, TPM and GPUs included, read in full. To check again as root at the first package install (#48).
+# The agent reads the machine's facts (/etc, /proc, /sys, pci.ids, the space under /var/lib/homerslab) and answers on
+# its socket, which it hands to the manager's group (CAP_CHOWN). Since #15 it also:
+#   - owns the firewall table, inet homerslab, in the host's own network (nft over netlink, CAP_NET_ADMIN);
+#   - joins the mesh: a drop-in for NetBird's service (NAT mapper off), systemctl, netbird up, and a check that the
+#     machine's resolver still answers (AF_INET, AF_INET6);
+#   - seals the manager's credentials with systemd-creds, in its state directory, with the TPM where there is one;
+#   - since #16, seals the edge's certificates, writes the edge's drop-in, restarts the edge (systemctl) and configures
+#     it through its admin socket (the edge's group);
+#   - since #17, makes and seals the sign-in's secrets, writes its drop-in and restarts it (systemctl), reads its
+#     journal (its own files: root's), and asks its readiness check on the sign-in network.
+# Every file it reads is world-readable or its own, so it reads no one else's files and no home (#71): no
+# CAP_DAC_READ_SEARCH, ProtectHome=yes. Its devices are closed but for the TPM's resource manager, which sealing uses
+# (ADR 0011), so not PrivateDevices, which would hide it.
+# Since #18 it reads apps' compose files for planning, each in a child of its own (homerslab agent read-project), in
+# an empty folder of its private /tmp that the agent gives to homerslab-read (CAP_CHOWN), the reads' own user
+# (sysusers.d; without it the agent refuses to read); the child starts as that user, its IDs set in the fork
+# (CAP_SETUID, CAP_SETGID), from a copy of the agent in its CacheDirectory that it may run but not read (mode 0711), so
+# the kernel starts it not dumpable (#190; refused where fs.suid_dumpable is 1), and makes itself so again before it
+# reads (#183). Without CAP_KILL the agent can't
+# signal it, nor send it the parent-death signal, so the child ends itself (#138): at the deadline it was handed, and
+# when its control pipe closes, as it does when the agent dies; a child that is stopped holds the read slot no longer
+# than the deadline and a second. CI runs those tests as root with exactly this unit's CapabilityBoundingSet
+# (as-unit.sh).
+# Since #19 it installs apps: it reads their compose files (as above), seals their secrets in its state directory,
+# writes each app's unit in /etc/homerslab/units (a folder outside systemd's search path: systemd links the unit from
+# there, `systemctl enable <path>`, so the agent writes nothing else under /etc/systemd), restarts it, asks the engine
+# (Docker's socket, as root) for the apps' containers, health and logs through the Compose SDK, and probes each app's
+# upstream on its network, which its table lets the agent and the edge open, and nobody else.
+# Since #22 it backs up: it seals the node's repository key and the target's credentials in its state directory, asks
+# the engine where apps' volumes are, and runs restic in a transient unit of its own (systemd-run), which loads those
+# credentials, reads apps' folders with CAP_DAC_READ_SEARCH alone, and writes only its cache (StateDirectory
+# homerslab/backup-cache, on the app-data disk) and a disk target: the agent's own sandbox stays as it is.
+# Later tickets loosen this as its contract grows: disks. To check as root at the first package install (#48).
 NoNewPrivileges=yes
-CapabilityBoundingSet=CAP_CHOWN CAP_DAC_READ_SEARCH
+CapabilityBoundingSet=CAP_CHOWN CAP_NET_ADMIN CAP_SETUID CAP_SETGID
 ProtectSystem=strict
-ProtectHome=read-only
+# NetBird's, the edge's and the sign-in's drop-ins, and apps' units (agent.RootWrites; the folders come from
+# tmpfiles.d/homerslab.conf).
+ReadWritePaths=/etc/systemd/system/netbird.service.d /etc/systemd/system/homerslab-edge.service.d /etc/systemd/system/homerslab-authentik.service.d /etc/homerslab/units
+ProtectHome=yes
 PrivateTmp=yes
-PrivateNetwork=yes
-RestrictAddressFamilies=AF_UNIX
+DevicePolicy=closed
+DeviceAllow=/dev/tpmrm0 rw
+PrivateIPC=yes
+ProtectProc=invisible
+RestrictNamespaces=yes
+RestrictRealtime=yes
+PrivateNetwork=no
+RestrictAddressFamilies=AF_UNIX AF_NETLINK AF_INET AF_INET6
 ProtectKernelTunables=yes
 ProtectKernelModules=yes
 ProtectKernelLogs=yes
@@ -35,6 +94,12 @@ MemoryDenyWriteExecute=yes
 SystemCallArchitectures=native
 SystemCallFilter=@system-service
 SystemCallErrorNumber=EPERM
+# Its compose reads run as homerslab-read, one at a time, each ended at its deadline and limited on its own; the unit, with
+# those children, gets at most one core and 512 MB, far above what it uses (tens of MB).
+MemoryMax=512M
+CPUQuota=100%
+# A child the kernel kills for memory (each asks to be first: oom_score_adj 1000) ends that read, not the agent.
+OOMPolicy=continue
 
 [Install]
 WantedBy=multi-user.target

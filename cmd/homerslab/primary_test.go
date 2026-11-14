@@ -48,7 +48,8 @@ func TestThePrimaryRunsTheManagerUnprivilegedAndTheAgentAsRoot(t *testing.T) {
 	must(t, err)
 
 	agentSock, controlSock := filepath.Join(agentDir, "agent.sock"), filepath.Join(managerDir, "manager.sock")
-	agent := start(t, bin, nil, "agent", "--socket", agentSock, "--socket-group", fmt.Sprint(nobody), "--sysroot", sysroot)
+	agent := start(t, bin, nil, "agent", "--socket", agentSock, "--socket-group", fmt.Sprint(nobody), "--sysroot", sysroot,
+		"--state-dir", filepath.Join(agentDir, "state"))
 	waitForSocket(t, agentSock)
 	manager := start(t, bin, &syscall.Credential{Uid: nobody, Gid: nobody, Groups: []uint32{}},
 		"manager", "--db", filepath.Join(managerDir, "manager.db"), "--agent-socket", agentSock,
@@ -77,7 +78,7 @@ func TestThePrimaryRunsTheManagerUnprivilegedAndTheAgentAsRoot(t *testing.T) {
 	base := "http://127.0.0.1:" + m[1]
 
 	c := &http.Client{Timeout: 5 * time.Second}
-	resp, err := c.Post(base+"/api/v1/setup/claim", "application/json", strings.NewReader(`{"key":"`+m[2]+`"}`))
+	resp, err := c.Post(base+"/api/v1/setup/claim", "application/json", strings.NewReader(`{"key":"`+m[2]+`","nonce":"a-tab-of-its-own-0123456789"}`))
 	must(t, err)
 	var session struct{ Token string }
 	must(t, json.NewDecoder(resp.Body).Decode(&session))

@@ -2,9 +2,10 @@
 // state in its database and serves the one API that Admin, the CLI and first-time setup use. It reaches the host only
 // through the agent.
 //
-// It answers on two listeners:
+// It answers on three listeners, and keeps Home's projection, which Home's own process reads (home.go):
 //   - the control socket, a Unix socket only root and the manager's own user can open, for the CLI on this machine;
-//   - the setup listener, on this machine and its LAN, for first-time setup's page, opened by a one-time link.
+//   - the setup listener, on this machine and its LAN, for first-time setup's page, opened by a one-time link;
+//   - Admin's socket, which only the edge opens, for admin.<main domain> over the mesh.
 package manager
 
 import (
@@ -18,8 +19,17 @@ import (
 	"net/http"
 	"net/netip"
 	"os"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
+	"github.com/ArjunRachithcf/homerslab/catalogs"
+	"github.com/ArjunRachithcf/homerslab/internal/agent"
+	"github.com/ArjunRachithcf/homerslab/internal/catalog"
+	"github.com/ArjunRachithcf/homerslab/internal/certs"
 	"github.com/ArjunRachithcf/homerslab/internal/lan"
 	"github.com/ArjunRachithcf/homerslab/internal/manager/setup"
 	"github.com/ArjunRachithcf/homerslab/internal/manager/store"
@@ -34,7 +44,12 @@ type Config struct {
 	// Local is the loopback address the setup listener answers on, for the link on this machine itself; the zero
 	// Addr when it doesn't.
 	Local netip.Addr
-	Now   func() time.Time
+	// Now is the wall clock, for what the manager records and shows. Elapsed is the time since the machine booted
+	// (CLOCK_BOOTTIME), which no one sets and which goes on across the manager's restarts, and Boot is that boot's ID:
+	// how old a link or a session is goes by them. Setting the wall clock moves only Now.
+	Now     func() time.Time
+	Elapsed func() time.Duration
+	Boot    func() string
 	// LAN is the home network; LANAddress is this machine's address on it, or the zero Addr when the setup listener
 	// isn't on the LAN.
 	LAN        func() lan.LAN
@@ -42,26 +57,76 @@ type Config struct {
 	// Hosts are the names the setup listener answers to, with SetupPort: the link's own addresses, loopback and the
 	// machine's hostname. Any other Host is refused, against DNS rebinding.
 	Hosts func() []string
-	// Steps adds step handlers to the built ones (setup.Built).
+	// Steps adds step handlers to the built ones (setup.Built and the manager's own).
 	Steps map[string]setup.Handler
-	Web   fs.FS // the built pages; surfaces.Dist() when nil
-	Log   *slog.Logger
+	// NetBird reaches NetBird's management API; the netbird package when nil.
+	NetBird NetBird
+	// Authority is the certificate authority (Let's Encrypt when its Directory is empty; its staging endpoint for
+	// rehearsals and CI), and Domains how the manager reaches it and the DNS provider: Authority through the dns and
+	// certs packages when nil.
+	Authority certs.Authority
+	Domains   Domains
+	// SignIn reaches the household account's provider (the authentik package when nil); SignInUpstream is where its
+	// server answers on this machine (the agent's sign-in address when empty). SignInWait is how long setting it up
+	// waits for it to start, asking every SignInPoll.
+	SignIn         SignIn
+	SignInUpstream string
+	SignInWait     time.Duration
+	SignInPoll     time.Duration
+	// BackupWait is the longest one backup run may take before it is ended and the next one is due (13 hours when 0:
+	// a first photo library takes hours, and each item's own run in the agent ends at 12).
+	BackupWait time.Duration
+	// ScheduleEvery is how often the scheduler looks for due jobs.
+	ScheduleEvery time.Duration
+	Web           fs.FS // the built pages; surfaces.Dist() when nil
+	// Projection is Home's projection, which the manager keeps for Home's process (#21); none when empty. HomeEvery is
+	// how often the apps' health on it is refreshed (HomeEvery when zero).
+	Projection string
+	HomeEvery  time.Duration
+	// Catalog is the catalog the Store shows; the official one when nil.
+	Catalog fs.FS
+	Log     *slog.Logger
 }
 
 // Manager is a running manager.
 type Manager struct {
-	cfg   Config
-	db    *store.Store
-	setup *setup.Setup
-	agent *agentClient
-	web   fs.FS
-	log   *slog.Logger
+	cfg       Config
+	db        *store.Store
+	setup     *setup.Setup
+	agent     *agentClient
+	netbird   NetBird
+	domains   Domains
+	web       fs.FS
+	catalog   *catalog.Catalog
+	catalogFS fs.FS
+	log       *slog.Logger
+	lanClosed atomic.Bool
+	certMu    sync.Mutex  // one issuance or renewal at a time
+	signInMu  sync.Mutex  // one setting-up of the household account at a time
+	attempts  attempts    // sign-ins to Admin under way
+	backingUp atomic.Bool // a backup run is under way
+
+	// given is what the page sees of the secrets the terminal gives (#64): those being checked, and why the last one
+	// given for each was refused. By the secret's name; never the secret.
+	givenMu  sync.Mutex
+	checking map[string]int // how many are being checked
+	refusals map[string]string
+
+	homeMu  sync.Mutex // one writing of Home's projection at a time, and the hash of what it last wrote
+	homeSum [32]byte
 }
 
 // New opens the manager's database.
 func New(c Config) (*Manager, error) {
 	if c.Now == nil {
 		c.Now = time.Now
+	}
+	if c.Elapsed == nil {
+		c.Elapsed = elapsed()
+	}
+	if c.Boot == nil {
+		id := bootID()
+		c.Boot = func() string { return id }
 	}
 	if c.LAN == nil {
 		c.LAN = lan.Cached(lan.Current, 5*time.Second)
@@ -81,39 +146,88 @@ func New(c Config) (*Manager, error) {
 	if c.Web == nil {
 		c.Web = surfaces.Dist()
 	}
+	if c.NetBird == nil {
+		c.NetBird = realNetBird{}
+	}
+	if c.Authority.Directory == "" {
+		c.Authority = certs.LetsEncrypt
+	}
+	if c.SignIn == nil {
+		c.SignIn = realSignIn{}
+	}
+	if c.SignInWait == 0 {
+		c.SignInWait = 15 * time.Minute // the first start pulls Authentik's images
+	}
+	if c.SignInPoll == 0 {
+		c.SignInPoll = 3 * time.Second
+	}
+	if c.BackupWait == 0 {
+		c.BackupWait = 13 * time.Hour
+	}
+	if c.ScheduleEvery == 0 {
+		c.ScheduleEvery = time.Hour
+	}
+	if c.Catalog == nil {
+		c.Catalog = catalogs.Official()
+	}
+	cat, err := catalog.Load(c.Catalog)
+	if err != nil {
+		return nil, fmt.Errorf("the catalog: %w", err)
+	}
 	db, err := store.Open(c.DB, setup.StoreSteps())
 	if err != nil {
 		return nil, err
 	}
-	handlers := map[string]setup.Handler{}
+	if c.Domains == nil {
+		a := c.Authority
+		a.Log = c.Log
+		c.Domains = realDomains{a: a, book: db.Book()}
+	}
+	m := &Manager{cfg: c, db: db, agent: newAgentClient(c.AgentSocket), netbird: c.NetBird, domains: c.Domains, web: c.Web, log: c.Log,
+		catalog: cat, catalogFS: c.Catalog}
+	handlers := map[string]setup.Handler{"signin": m.signin, "network": m.network, "domain": m.domain, "done": m.finish}
 	for id, h := range setup.Built {
 		handlers[id] = h
 	}
 	for id, h := range c.Steps {
 		handlers[id] = h
 	}
-	return &Manager{
-		cfg:   c,
-		db:    db,
-		setup: setup.New(db, c.Now, handlers),
-		agent: newAgentClient(c.AgentSocket),
-		web:   c.Web,
-		log:   c.Log,
-	}, nil
+	m.setup = setup.New(db, setup.Clock{Now: c.Now, Elapsed: c.Elapsed, Boot: c.Boot}, handlers, map[string]setup.SecretHandler{"mesh": m.meshSecret, "dns": m.dnsSecret})
+	answers, err := db.Answers(context.Background())
+	if err != nil {
+		db.Close()
+		return nil, err
+	}
+	m.lanClosed.Store(answers[ansLANClosed] != "")
+	return m, nil
 }
 
 // Close closes the database.
 func (m *Manager) Close() error { return m.db.Close() }
 
-// Serve answers on the setup listener and the control socket until ctx ends.
-func (m *Manager) Serve(ctx context.Context, setupLn, controlLn net.Listener) error {
+// Serve answers on the setup listener, the control socket and Admin's socket (for the edge; none when adminLn is
+// nil) until ctx ends.
+func (m *Manager) Serve(ctx context.Context, setupLn, controlLn, adminLn net.Listener) error {
 	servers := []*http.Server{
-		{Handler: m.Setup(), ReadHeaderTimeout: 10 * time.Second, ReadTimeout: 30 * time.Second, WriteTimeout: 30 * time.Second, IdleTimeout: 2 * time.Minute},
+		{Handler: m.Setup(), ReadHeaderTimeout: 10 * time.Second, ReadTimeout: 30 * time.Second,
+			// The network step bootstraps a mesh and joins it, waiting for the client to connect: up to a few minutes.
+			WriteTimeout: 3 * time.Minute, IdleTimeout: 2 * time.Minute},
 		{Handler: m.Control(), ReadHeaderTimeout: 10 * time.Second},
+		{Handler: m.Admin(), ReadHeaderTimeout: 10 * time.Second, ReadTimeout: 30 * time.Second,
+			WriteTimeout: agent.ReadDeadline + 30*time.Second, IdleTimeout: 2 * time.Minute},
 	}
-	errc := make(chan error, 2)
-	go func() { errc <- servers[0].Serve(setupLn) }()
-	go func() { errc <- servers[1].Serve(controlLn) }()
+	listeners := []net.Listener{setupLn, controlLn, adminLn}
+	if adminLn == nil {
+		servers, listeners = servers[:2], listeners[:2]
+	}
+	scheduled, stop := context.WithCancel(ctx)
+	defer stop()
+	go m.schedule(scheduled)
+	go m.refreshHome(scheduled)
+	errc := make(chan error, len(servers))
+	for i, s := range servers {
+		go func() { errc <- s.Serve(listeners[i]) }()
+	}
 	var err error
 	select {
 	case err = <-errc:
@@ -134,8 +248,19 @@ func (m *Manager) Serve(ctx context.Context, setupLn, controlLn net.Listener) er
 func (m *Manager) Control() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /api/v1/setup/links", m.newLink)
+	mux.HandleFunc("PUT /api/v1/setup/secrets/{name}", m.putSecret)
+	mux.HandleFunc("POST /api/v1/setup/join", m.postJoin)
+	mux.HandleFunc("POST /api/v1/setup/passkey", m.postPasskey)
+	mux.HandleFunc("GET /api/v1/drift", m.getDrift)
+	mux.HandleFunc("GET /api/v1/mesh", m.getMesh)
+	mux.HandleFunc("GET /api/v1/mesh/owner-password", m.getOwnerPassword)
 	mux.HandleFunc("GET /api/v1/setup", m.getSetup)
 	mux.HandleFunc("GET /api/v1/nodes/primary", m.getPrimary)
+	mux.HandleFunc("GET /api/v1/dns", m.getDNS)
+	mux.HandleFunc("PUT /api/v1/dns/token", m.putDNSToken)
+	mux.HandleFunc("PUT /api/v1/backups/target", m.putBackupTarget)
+	mux.HandleFunc("GET /api/v1/warnings", m.getWarnings)
+	m.catalogRoutes(mux)
 	mux.HandleFunc("/", notFound)
 	return mux
 }
@@ -147,13 +272,18 @@ type linkResponse struct {
 }
 
 func (m *Manager) newLink(w http.ResponseWriter, r *http.Request) {
+	if m.lanClosed.Load() {
+		fail(w, http.StatusConflict, "lan-closed")
+		return
+	}
 	l, err := m.setup.NewLink(r.Context())
 	if errors.Is(err, setup.ErrLANHalfDone) {
 		fail(w, http.StatusConflict, err.Error())
 		return
 	}
 	if err != nil {
-		m.internal(w, "making a link", err)
+		// Only root and the manager's user reach the control socket, so its answer may name the database's folder.
+		m.fault(w, "making a link", err, map[string]string{"folder": filepath.Dir(m.cfg.DB)})
 		return
 	}
 	// The key rides in the fragment, which browsers never send: it stays out of logs and Referer headers.
@@ -178,7 +308,54 @@ func (m *Manager) getSetup(w http.ResponseWriter, r *http.Request) {
 		m.internal(w, "reading setup", err)
 		return
 	}
-	writeJSON(w, http.StatusOK, st)
+	writeJSON(w, http.StatusOK, m.withGiven(st))
+}
+
+// withGiven shows a waiting step's secret as the terminal gives it: checking while it is checked, and why the last one
+// was refused.
+func (m *Manager) withGiven(st setup.State) setup.State {
+	m.givenMu.Lock()
+	defer m.givenMu.Unlock()
+	for i, s := range st.Steps {
+		if s.State != "waiting" || s.Secret == "" {
+			continue
+		}
+		if m.checking[s.Secret] > 0 {
+			st.Steps[i].State = "checking"
+		} else {
+			st.Steps[i].Refused = m.refusals[s.Secret]
+		}
+	}
+	return st
+}
+
+// checkingSecret records that a secret arrived and is being checked; done, that its check ended, refused for why (""
+// when it was taken).
+func (m *Manager) checkingSecret(name string) {
+	m.givenMu.Lock()
+	defer m.givenMu.Unlock()
+	if m.checking == nil {
+		m.checking, m.refusals = map[string]int{}, map[string]string{}
+	}
+	m.checking[name]++
+}
+
+func (m *Manager) forgetRefusal(name string) {
+	m.givenMu.Lock()
+	defer m.givenMu.Unlock()
+	delete(m.refusals, name)
+}
+
+func (m *Manager) checkedSecret(name, why string) {
+	m.givenMu.Lock()
+	defer m.givenMu.Unlock()
+	if m.checking == nil {
+		m.checking, m.refusals = map[string]int{}, map[string]string{}
+	}
+	if m.checking[name] > 0 {
+		m.checking[name]--
+	}
+	m.refusals[name] = why
 }
 
 func (m *Manager) getPrimary(w http.ResponseWriter, r *http.Request) {
@@ -191,24 +368,64 @@ func (m *Manager) getPrimary(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, facts)
 }
 
+// stepBasis reads the view of the step an answer was made from: its revision in If-Match (a quoted number, as the
+// state gave it), and ?edit=true when the answer changes a step that is done.
+func stepBasis(r *http.Request) (setup.Basis, string) {
+	h := r.Header.Get("If-Match")
+	if h == "" {
+		return setup.Basis{}, "revision-required"
+	}
+	n, err := strconv.ParseInt(strings.Trim(h, `"`), 10, 64)
+	if err != nil || n < 0 || !strings.HasPrefix(h, `"`) || !strings.HasSuffix(h, `"`) {
+		return setup.Basis{}, "bad-revision"
+	}
+	switch r.URL.Query().Get("edit") {
+	case "":
+		return setup.Basis{Revision: n}, ""
+	case "true":
+		return setup.Basis{Revision: n, Edit: true}, ""
+	}
+	return setup.Basis{}, "bad-edit"
+}
+
 func (m *Manager) putStep(w http.ResponseWriter, r *http.Request) {
+	basis, bad := stepBasis(r)
+	if bad != "" {
+		status := http.StatusBadRequest
+		if bad == "revision-required" {
+			status = http.StatusPreconditionRequired
+		}
+		fail(w, status, bad)
+		return
+	}
 	var raw json.RawMessage
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10)).Decode(&raw); err != nil {
 		fail(w, http.StatusBadRequest, "not-json")
 		return
 	}
-	st, err := m.setup.Answer(r.Context(), r.PathValue("id"), setup.LAN, raw)
+	if from, ok := client(r); ok {
+		basis.From = from.String()
+	}
+	st, err := m.setup.Answer(r.Context(), r.PathValue("id"), setup.LAN, raw, basis)
 	var invalid *setup.Invalid
+	var overHTTP *setup.SecretOverHTTP
 	switch {
 	case err == nil:
-		writeJSON(w, http.StatusOK, st)
+		if secret := setup.Secrets[r.PathValue("id")]; secret != "" {
+			m.forgetRefusal(secret) // a new answer: a new wait for its secret, nothing refused yet
+		}
+		writeJSON(w, http.StatusOK, m.withGiven(st))
+	case errors.As(err, &overHTTP):
+		// Refused whatever its value: no secret travels over plain HTTP (#64). The page shows the command.
+		m.log.Warn("refused a secret sent over the LAN page", "step", r.PathValue("id"))
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "secret-over-http", "command": overHTTP.Command})
 	case errors.As(err, &invalid):
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid", "fields": invalid.Fields})
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid", "fields": invalid.Fields, "reasons": invalid.Reasons})
 	case errors.Is(err, setup.ErrUnknownStep):
 		fail(w, http.StatusNotFound, err.Error())
 	case errors.Is(err, setup.ErrOverTheMesh):
 		fail(w, http.StatusForbidden, err.Error())
-	case errors.Is(err, setup.ErrEarlierStepOpen), errors.Is(err, setup.ErrLANHalfDone):
+	case errors.Is(err, setup.ErrEarlierStepOpen), errors.Is(err, setup.ErrLANHalfDone), errors.Is(err, setup.ErrStale), errors.Is(err, setup.ErrStepDone):
 		fail(w, http.StatusConflict, err.Error())
 	case errors.Is(err, setup.ErrNotBuilt):
 		fail(w, http.StatusNotImplemented, err.Error())
@@ -217,9 +434,21 @@ func (m *Manager) putStep(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (m *Manager) internal(w http.ResponseWriter, what string, err error) {
+// internal answers an error the request can't help: 507 disk-full when the disk under the database is full, else 500.
+func (m *Manager) internal(w http.ResponseWriter, what string, err error) { m.fault(w, what, err, nil) }
+
+// fault is internal, with more to say when the disk is full.
+func (m *Manager) fault(w http.ResponseWriter, what string, err error, onFullDisk map[string]string) {
 	m.log.Error(what, "err", err)
-	fail(w, http.StatusInternalServerError, "internal")
+	if !errors.Is(err, store.ErrDiskFull) {
+		fail(w, http.StatusInternalServerError, "internal")
+		return
+	}
+	body := map[string]string{"error": "disk-full"}
+	for k, v := range onFullDisk {
+		body[k] = v
+	}
+	writeJSON(w, http.StatusInsufficientStorage, body)
 }
 
 func notFound(w http.ResponseWriter, _ *http.Request) { fail(w, http.StatusNotFound, "not-found") }

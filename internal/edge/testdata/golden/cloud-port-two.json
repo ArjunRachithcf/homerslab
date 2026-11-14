@@ -1,0 +1,158 @@
+{
+  "admin": {
+    "config": {
+      "persist": false
+    },
+    "listen": "unix//run/homerslab-edge/admin.sock|0660"
+  },
+  "apps": {
+    "http": {
+      "servers": {
+        "mesh": {
+          "automatic_https": {
+            "disable": true
+          },
+          "listen": [
+            "100.88.7.186:9443",
+            "[fd7a:115c:a1e0::1]:9443"
+          ],
+          "protocols": [
+            "h1",
+            "h2"
+          ],
+          "routes": [
+            {
+              "handle": [
+                {
+                  "handler": "headers",
+                  "response": {
+                    "deferred": true,
+                    "replace": {
+                      "Set-Cookie": [
+                        {
+                          "replace": "$1",
+                          "search_regexp": "(?i);\\s*secure\\s*(;|$)"
+                        },
+                        {
+                          "replace": "; Secure",
+                          "search_regexp": "$"
+                        }
+                      ]
+                    },
+                    "set": {
+                      "Strict-Transport-Security": [
+                        "max-age=31536000"
+                      ]
+                    }
+                  }
+                },
+                {
+                  "handler": "reverse_proxy",
+                  "upstreams": [
+                    {
+                      "dial": "unix//run/homerslab-admin.sock"
+                    }
+                  ]
+                }
+              ],
+              "match": [
+                {
+                  "host": [
+                    "admin.example.test"
+                  ]
+                }
+              ],
+              "terminal": true
+            },
+            {
+              "handle": [
+                {
+                  "handler": "static_response",
+                  "status_code": 421
+                }
+              ]
+            }
+          ],
+          "tls_connection_policies": [
+            {
+              "certificate_selection": {
+                "any_tag": [
+                  "example.test"
+                ]
+              },
+              "match": {
+                "sni": [
+                  "*.example.test"
+                ]
+              }
+            }
+          ]
+        },
+        "redirect": {
+          "automatic_https": {
+            "disable": true
+          },
+          "listen": [
+            "100.88.7.186:80",
+            "[fd7a:115c:a1e0::1]:80"
+          ],
+          "protocols": [
+            "h1"
+          ],
+          "routes": [
+            {
+              "handle": [
+                {
+                  "handler": "static_response",
+                  "headers": {
+                    "Location": [
+                      "https://admin.example.test:9443{http.request.uri}"
+                    ]
+                  },
+                  "status_code": 308
+                }
+              ],
+              "match": [
+                {
+                  "host": [
+                    "admin.example.test"
+                  ],
+                  "path": [
+                    "/*"
+                  ]
+                }
+              ],
+              "terminal": true
+            },
+            {
+              "handle": [
+                {
+                  "handler": "static_response",
+                  "status_code": 421
+                }
+              ]
+            }
+          ]
+        }
+      }
+    },
+    "tls": {
+      "certificates": {
+        "load_files": [
+          {
+            "certificate": "/run/credentials/homerslab-edge.service/tls-example.test.crt",
+            "key": "/run/credentials/homerslab-edge.service/tls-example.test.key",
+            "tags": [
+              "example.test"
+            ]
+          }
+        ]
+      },
+      "disable_ocsp_stapling": true
+    }
+  },
+  "storage": {
+    "module": "file_system",
+    "root": "/var/lib/homerslab-edge"
+  }
+}

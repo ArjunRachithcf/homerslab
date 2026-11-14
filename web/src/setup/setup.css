@@ -24,6 +24,7 @@
 .more-body .group { box-shadow: inset 0 0 0 var(--hairline) var(--separator); }
 .assistant .notice { text-align: left; }
 .as-body .cmd code { user-select: all; }
+.as-waiting { display: flex; align-items: center; gap: 10px; text-align: left; }
 
 @media (max-width: 640px) {
   .as-top { padding: 10px 12px; }

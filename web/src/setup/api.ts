@@ -1,10 +1,10 @@
 // First-time setup's side of the manager's API, on the setup listener. Claiming the link gives a session token, which
 // this tab keeps (sessionStorage) and sends as a bearer token: not a cookie, which every port of this host would get.
-// Until the manager has answered the claim, the tab also holds the link's key, so a claim the network lost can be sent
-// again; the key never goes anywhere but the claim's body.
+// That token is the one thing the tab stores. The link's key, and the tab's nonce for its claim, are held only in
+// memory and in the address's fragment until the manager has answered the claim; the key never goes anywhere but the
+// claim's body.
 
 const TOKEN = 'homerslab.setup.session';
-const KEY = 'homerslab.setup.link';
 const memory = new Map<string, string>(); // when the browser refuses storage, and the newest value
 
 function read(name: string): string | null {
@@ -15,12 +15,10 @@ function read(name: string): string | null {
   }
 }
 
-function write(name: string, value: string | null) {
-  if (value === null) memory.delete(name);
-  else memory.set(name, value);
+function write(name: string, value: string) {
+  memory.set(name, value);
   try {
-    if (value === null) sessionStorage.removeItem(name);
-    else sessionStorage.setItem(name, value);
+    sessionStorage.setItem(name, value);
   } catch {
     // memory holds it for this page's life
   }
@@ -28,13 +26,36 @@ function write(name: string, value: string | null) {
 
 const token = () => read(TOKEN);
 
-/** The link's key, held by this tab until the manager has answered its claim. */
-export const heldKey = () => read(KEY);
-export const holdKey = (key: string) => write(KEY, key);
-export const dropKey = () => write(KEY, null);
+/**
+ * A link's claim, as this tab sends it: the link's key, and the tab's own random nonce. The manager answers the same
+ * key and nonce from the same address with the same session for a minute after it took the claim, so a claim whose
+ * answer was lost, or a reload while it was out, can be sent again; anyone else is refused.
+ */
+export type Link = { key: string; nonce: string };
+
+let held: Link | null = null;
+
+/** The link this tab holds until the manager has answered its claim: in memory only. */
+export const heldLink = () => held;
+export const holdLink = (link: Link) => { held = link; };
+export const dropLink = () => { held = null; };
+
+/** A nonce as the manager takes it (goodNonce in internal/manager/setup): 22 to 128 URL-safe base64 characters. */
+export const goodNonce = (n: string | null): n is string => n !== null && /^[A-Za-z0-9_-]{22,128}$/.test(n);
+
+/** A new nonce: 256 random bits. */
+export function newNonce(): string {
+  const b = crypto.getRandomValues(new Uint8Array(32));
+  return btoa(String.fromCharCode(...b)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
 
 export type Half = 'lan' | 'mesh';
-export type StepState = { id: string; half: Half; state: 'todo' | 'done' };
+// A step waiting for a secret is "checking" while the secret the terminal gave is checked; refused says why the last one
+// wasn't taken (the manager's code, never the secret).
+export type StepState = {
+  id: string; half: Half; state: 'todo' | 'waiting' | 'checking' | 'done'; revision: number;
+  secret?: string; command?: string; confirm?: string; refused?: string;
+};
 export type Setup = { half: Half; current: string; steps: StepState[]; answers: Record<string, string> };
 
 export type Facts = {
@@ -47,6 +68,9 @@ export type Facts = {
   gpus: { vendor: string; model: string; pciId: string }[];
 };
 
+/** Why the manager refused a field's answer. */
+export type Reason = 'missing' | 'too-long' | 'hidden-characters' | 'too-many-marks' | 'not-a-mail';
+
 /** The request got no answer: the network dropped it, or the manager isn't listening. */
 export class Unreachable extends Error {
   constructor() {
@@ -54,15 +78,15 @@ export class Unreachable extends Error {
   }
 }
 
-/** The manager said no, with its reason. */
+/** The manager said no, with its reason: for an invalid answer, each refused field and why. */
 export class Refused extends Error {
-  constructor(readonly status: number, readonly code: string, readonly fields: string[] = []) {
+  constructor(readonly status: number, readonly code: string, readonly reasons: Record<string, Reason> = {}) {
     super(code);
   }
 }
 
-async function call<T>(method: string, path: string, body?: unknown): Promise<T> {
-  const headers: Record<string, string> = {};
+async function call<T>(method: string, path: string, body?: unknown, extra: Record<string, string> = {}): Promise<T> {
+  const headers: Record<string, string> = { ...extra };
   if (body !== undefined) headers['Content-Type'] = 'application/json';
   const t = token();
   if (t) headers.Authorization = `Bearer ${t}`;
@@ -80,21 +104,23 @@ async function call<T>(method: string, path: string, body?: unknown): Promise<T>
   if (resp.status === 204) return undefined as T;
   const data: unknown = await resp.json().catch(() => ({}));
   if (!resp.ok) {
-    const e = data as { error?: string; fields?: string[] };
-    throw new Refused(resp.status, e.error ?? 'unknown', e.fields ?? []);
+    const e = data as { error?: string; fields?: string[]; reasons?: Record<string, Reason> };
+    const reasons = { ...Object.fromEntries((e.fields ?? []).map((f) => [f, 'missing' as Reason])), ...e.reasons };
+    throw new Refused(resp.status, e.error ?? 'unknown', reasons);
   }
   return data as T;
 }
 
 const claiming = new Map<string, Promise<string>>();
 
-/** Claims the link's key, and gives its session token. The same key, claimed again while its claim is out, shares it. */
-export function claim(key: string): Promise<string> {
-  let claimed = claiming.get(key);
+/** Claims the link, and gives its session token. The same link, claimed again while its claim is out, shares it. */
+export function claim({ key, nonce }: Link): Promise<string> {
+  const id = `${key} ${nonce}`;
+  let claimed = claiming.get(id);
   if (!claimed) {
-    claimed = call<{ token: string }>('POST', '/api/v1/setup/claim', { key }).then((r) => r.token)
-      .finally(() => claiming.delete(key));
-    claiming.set(key, claimed);
+    claimed = call<{ token: string }>('POST', '/api/v1/setup/claim', { key, nonce }).then((r) => r.token)
+      .finally(() => claiming.delete(id));
+    claiming.set(id, claimed);
   }
   return claimed;
 }
@@ -103,4 +129,11 @@ export function claim(key: string): Promise<string> {
 export const keepSession = (token: string) => write(TOKEN, token);
 export const getSetup = () => call<Setup>('GET', '/api/v1/setup');
 export const getPrimary = () => call<Facts>('GET', '/api/v1/nodes/primary');
-export const answer = (step: string, body: Record<string, string>) => call<Setup>('PUT', `/api/v1/setup/steps/${encodeURIComponent(step)}`, body);
+
+/**
+ * Answers a step from the revision this page last saw of it (the manager refuses with 409 `stale` if the step changed
+ * since, in another tab say), and as an edit when the step is done (409 `step-done` otherwise): #110.
+ */
+export const answer = (step: StepState, body: Record<string, string | boolean>) =>
+  call<Setup>('PUT', `/api/v1/setup/steps/${encodeURIComponent(step.id)}${step.state === 'done' ? '?edit=true' : ''}`, body,
+    { 'If-Match': `"${step.revision}"` });

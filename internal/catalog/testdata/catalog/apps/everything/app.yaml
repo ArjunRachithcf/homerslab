@@ -1,0 +1,59 @@
+id: everything
+name: Everything
+purpose: Photos
+description: An app that uses every field of the manifest.
+category: photos
+tier: verified
+icon: icon.svg
+screenshots:
+  - {file: screenshots/one.png, caption: The first screen}
+versions:
+  app: v1.2.3
+  images:
+    - service: web
+      digests:
+        docker:
+          x86_64: sha256:1111111111111111111111111111111111111111111111111111111111111111
+          arm64: sha256:2222222222222222222222222222222222222222222222222222222222222222
+        podman:
+          x86_64: sha256:1111111111111111111111111111111111111111111111111111111111111111
+signIn:
+  - method: oidc
+    redirectUris: [/auth/callback, app.everything:///callback]
+    scopes: [openid, email, profile]
+  - method: ldap
+    attributes: [uid, mail]
+  - method: guard
+names:
+  name: everything
+  service: web
+  port: 8080
+  exposure: mesh
+  public: true
+audience:
+  default: adults
+  kidView: Only the kids' albums
+data:
+  - {what: The library, service: web, path: /data}
+  - what: Its database
+    service: web
+    dump: {command: [pg_dump, --username=postgres, everything], file: everything.sql}
+  - {what: Thumbnails, service: web, path: /cache, backup: false, why: They are made again from the library}
+secrets:
+  - {name: db-password, what: the database password, uid: 999}
+health:
+  - service: web
+    http: {port: 8080, path: /health}
+  - {service: web, compose: true}
+resources:
+  memoryMiB: 2048
+  diskGiB: 10
+  grows: the library
+  gpu: {need: optional, vendors: [nvidia, intel], for: faster thumbnails}
+  canPause: true
+extras:
+  - {id: render, kind: device, service: web, device: /dev/dri/renderD128, why: Video made smaller on the GPU, optional: true}
+  - {id: lan, kind: network, service: web, why: It finds the TVs at home}
+  - {id: admin, kind: capability, service: web, capability: NET_ADMIN, why: It sets up its own network}
+updateNotes:
+  - {version: v1.2.3, notes: The first version in the catalog.}

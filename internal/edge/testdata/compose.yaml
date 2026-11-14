@@ -1,0 +1,144 @@
+# The edge's request matrix: a real Caddy as the node's edge, a stub of Admin on its socket, a device on the mesh and a
+# host on the LAN, driven by matrix_test.go. Always run as compose project hltest-16-edge (named below); the test brings
+# it up and takes it down with `down -v`.
+#
+# Isolation:
+#   - two internal networks, the mesh (10.216.1.0/24) and the LAN (10.216.2.0/24): no internet, no route between them,
+#     no published port;
+#   - no bind mounts: the test copies its files in (the edge's boot configuration, its credentials), with the owners
+#     and modes systemd gives them;
+#   - the edge runs as its own unprivileged user, with only the capability to bind low ports, as its unit does;
+#   - the agent's firewall table goes into the edge's machine through a companion in its network namespace (NET_ADMIN
+#     there only), and the LAN host routes the mesh's addresses through the edge's LAN address, as a LAN host can;
+#   - the companion also does the agent's part of the sign-in listener (#19): its address on the edge machine's loopback,
+#     and the apps' network as a bridge there, as an engine's is.
+name: hltest-16-edge
+
+networks:
+  mesh:
+    internal: true
+    ipam:
+      config:
+        - subnet: 10.216.1.0/24
+  lan:
+    internal: true
+    ipam:
+      config:
+        - subnet: 10.216.2.0/24
+  sign-in:
+    internal: true
+    ipam:
+      config:
+        - subnet: 10.216.3.0/24
+  # A guarded app's own network (#19): the edge reaches the app's one upstream there, and nothing else of the edge's
+  # machine may (the firewall table's to_apps).
+  apps:
+    internal: true
+    ipam:
+      config:
+        - subnet: 10.216.4.0/24
+
+x-machine: &machine
+  image: alpine:3.22@sha256:49340b346798875b5592e5d420241f2f9cfba5f47e62ebb1446a1b34734e898f
+  command: ["sleep", "infinity"]
+  init: true
+  stop_grace_period: 1s
+
+services:
+  edge:
+    image: caddy:2.11.9-alpine@sha256:0bbb055bda6793c999bde78b1b5ce3e89f829fb031af2cf50056ea1246559fee
+    command: ["caddy", "run", "--config", "/usr/share/homerslab/edge-boot.json"]
+    user: "4100:4100"
+    cap_drop: [ALL]
+    cap_add: [NET_BIND_SERVICE]
+    environment:
+      HOME: /var/lib/homerslab-edge
+      XDG_DATA_HOME: /var/lib/homerslab-edge
+      XDG_CONFIG_HOME: /var/lib/homerslab-edge
+    tmpfs:
+      - /run/homerslab-edge:uid=4100,gid=4100,mode=0750
+      - /var/lib/homerslab-edge:uid=4100,gid=4100,mode=0700
+    volumes:
+      - admin:/run/homerslab-admin
+      - home:/run/homerslab-home
+    stop_grace_period: 2s
+    networks:
+      mesh:
+        ipv4_address: 10.216.1.10
+      lan:
+        ipv4_address: 10.216.2.10
+      sign-in:
+        ipv4_address: 10.216.3.20
+      apps:
+        ipv4_address: 10.216.4.20
+
+  # The agent's side of the edge's machine: its firewall table, applied in the edge's network namespace.
+  firewall:
+    build: ./firewall
+    image: hltest-16-edge-firewall:latest
+    command: ["sleep", "infinity"]
+    init: true
+    network_mode: "service:edge"
+    cap_add: [NET_ADMIN]
+    stop_grace_period: 1s
+
+  # The manager's Admin, as a stub on its socket: the manager's user, the socket's group the edge's. It also keeps the
+  # manager's control socket and database, as the manager's unit does: for its own user only.
+  admin:
+    <<: *machine
+    user: "4200:4100"
+    volumes:
+      - admin:/run/homerslab-admin
+      - manager-run:/run/homerslab
+      - manager-state:/var/lib/homerslab
+    network_mode: none
+
+  # Home (#21): the real Home on its socket, as its own user in no group but its own; the manager's socket and
+  # database are in its view here (its unit hides them), so only their modes keep it out.
+  home:
+    <<: *machine
+    user: "4300:4300"
+    volumes:
+      - home:/run/homerslab-home
+      - admin:/run/homerslab-admin
+      - manager-run:/run/homerslab
+      - manager-state:/var/lib/homerslab
+    network_mode: none
+
+  # The sign-in's server, as a stub on the sign-in network: it answers what reached it.
+  authentik:
+    <<: *machine
+    networks:
+      sign-in:
+        ipv4_address: 10.216.3.10
+
+  # A guarded app, as a stub on its own network: it answers with the identity and the cookies that reached it. It reaches
+  # the sign-in listener's address through the edge's machine, as an app's container does through its bridge.
+  app:
+    <<: *machine
+    command: ["sh", "-c", "ip route add 10.216.9.1/32 via 10.216.4.20 && exec sleep infinity"]
+    cap_add: [NET_ADMIN]
+    networks:
+      apps:
+        ipv4_address: 10.216.4.10
+
+  phone:
+    <<: *machine
+    networks:
+      mesh:
+        ipv4_address: 10.216.1.20
+
+  # A host on the LAN that sends the mesh's addresses to the edge's machine: only the firewall table keeps it out.
+  laptop-on-the-lan:
+    <<: *machine
+    command: ["sh", "-c", "ip route add 10.216.1.0/24 via 10.216.2.10 && exec sleep infinity"]
+    cap_add: [NET_ADMIN]
+    networks:
+      lan:
+        ipv4_address: 10.216.2.20
+
+volumes:
+  admin:
+  home:
+  manager-run:
+  manager-state:

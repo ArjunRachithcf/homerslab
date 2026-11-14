@@ -1,0 +1,63 @@
+# Home: where the household opens its apps (ADR 0013). Its own process, as its own unprivileged user, in no group but
+# its own: it reads only the projection the manager writes for it, and its network reaches only the sign-in's server,
+# for its OIDC client. The manager's sockets and database, the agent's, the edge's admin API and every sealed
+# credential are gone from its view.
+[Unit]
+Description=HomersLab Home
+Documentation=https://github.com/ArjunRachithcf/homerslab
+Requires=homerslab-home.socket
+After=homerslab-home.socket
+
+[Service]
+Type=exec
+User=homerslab-home
+Group=homerslab-home
+ExecStart=/usr/bin/homerslab home
+# Home's socket, for the edge's group only.
+Sockets=homerslab-home.socket
+# Its OIDC client's secret, which the manager had the agent seal (ADR 0011): decrypted by systemd into Home's own
+# credentials directory as Home starts. Home is socket-activated, and the edge first connects once the manager has
+# sealed it.
+LoadCredentialEncrypted=manager-home-client-secret:/var/lib/homerslab-agent/credentials/manager-home-client-secret.cred
+UMask=0077
+Restart=on-failure
+RestartSec=2s
+
+# What Home sees is an allow-list (story 69): where sockets and state live, an empty folder of its own, and in it only
+# the projection, read-only (its credential systemd mounts there itself). So the manager's control socket and database,
+# Admin's socket, the agent's socket and sealed credentials, the edge's admin API and storage, and every other daemon's
+# socket (the mesh client's, the system bus, systemd's own) are gone from its view, whatever their modes; and the
+# HomersLab's settings with them.
+TemporaryFileSystem=/run /var /srv /opt /mnt /media /dev/shm
+BindReadOnlyPaths=-/run/homerslab-projection
+InaccessiblePaths=-/etc/homerslab
+# The sign-in's server, on the sign-in's network (agent.SignInUpstream), and nothing else over IP.
+IPAddressDeny=any
+IPAddressAllow=172.31.250.10
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+PrivateIPC=yes
+ProtectProc=invisible
+ProcSubset=pid
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+# No AF_UNIX: Home makes no Unix socket of its own, so it can connect to none, abstract or not; it answers the edge
+# on the one systemd hands it.
+RestrictAddressFamilies=AF_INET AF_INET6
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM

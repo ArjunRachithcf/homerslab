@@ -1,0 +1,49 @@
+// What the Actions runner takes as workflow commands in a step's output, after actions/runner's ActionCommandManager
+// and ActionCommand (#115), for the tests: lines split at \n, \r\n and a lone \r (StreamReader.ReadLine); the v2 form
+// `::name args::data` after TrimStart, then the v1 form `##[name args]data` anywhere in the line, each only for a
+// registered command. While commands are stopped, the runner takes no command but the stop token, which resumes them;
+// the model registers only that name then. TrimStart is .NET's: it strips U+0085 (JS's doesn't) and leaves U+FEFF
+// (JS's \s has it). The model is looser than the runner while stopped: the runner never falls back to `##[` on a
+// line whose `::` form parsed, the model does, so it may resume where the runner wouldn't (the safe direction).
+const REGISTERED = ['add-mask', 'add-matcher', 'add-path', 'debug', 'echo', 'endgroup', 'error', 'group', 'notice',
+  'remove-matcher', 'save-state', 'set-env', 'set-output', 'stop-commands', 'warning', 'internal-set-repo-path'];
+
+// .NET's Char.IsWhiteSpace: JS's \s plus U+0085, minus U+FEFF.
+const TRIM_START = /^(?:(?!\uFEFF)[\s\u0085])+/;
+
+function v2(line, registered) {
+  const s = line.replace(TRIM_START, '');
+  if (!s.startsWith('::')) return null;
+  const end = s.indexOf('::', 2);
+  if (end < 0) return null;
+  const name = s.slice(2, end).split(' ')[0].toLowerCase();
+  return registered.has(name) ? { name, data: s.slice(end + 2), line } : null;
+}
+
+function v1(line, registered) {
+  const at = line.indexOf('##[');
+  if (at < 0) return null;
+  const close = line.indexOf(']', at);
+  if (close < 0) return null;
+  const name = line.slice(at + 3, close).split(' ')[0].toLowerCase();
+  return registered.has(name) ? { name, data: line.slice(close + 1), line } : null;
+}
+
+/** Every command the runner would run for `output`: { name, data, line }, with name 'resume' for the stop token. */
+export function commands(output) {
+  const found = [];
+  let token = null;
+  for (const line of output.split(/\r\n|\r|\n/)) {
+    const registered = new Set(token === null ? REGISTERED : [token.toLowerCase()]);
+    const c = v2(line, registered) ?? v1(line, registered);
+    if (!c) continue;
+    if (token !== null) {
+      found.push({ ...c, name: 'resume' });
+      token = null;
+    } else {
+      found.push(c);
+      if (c.name === 'stop-commands') token = c.data;
+    }
+  }
+  return found;
+}

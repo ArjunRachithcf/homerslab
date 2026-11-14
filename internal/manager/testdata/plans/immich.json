@@ -1,0 +1,117 @@
+{
+  "id": "p-0438f7911a8f4029a88e32a74f0c1555",
+  "kind": "install",
+  "madeAt": "2026-11-10T13:30:00Z",
+  "app": {
+    "id": "immich",
+    "name": "Immich",
+    "purpose": "Photos",
+    "version": "v3.3.5",
+    "tier": "verified",
+    "catalog": "official",
+    "publisher": "HomersLab",
+    "definition": "sha256:055302683ab949f9333bed35de7554b87f1f34e8183e1b33ad7a5cc1c7a08fe2"
+  },
+  "name": {
+    "host": "photos.ferreira.family",
+    "meshes": [
+      "NetBird"
+    ],
+    "exposure": "mesh",
+    "publicAllowed": true
+  },
+  "audience": {
+    "default": "adults",
+    "people": [
+      {
+        "name": "Inês Ferreira",
+        "role": "admin"
+      }
+    ]
+  },
+  "signIn": {
+    "method": "oidc",
+    "provider": {
+      "id": "authentik",
+      "name": "Authentik"
+    },
+    "creates": "oidc-client"
+  },
+  "backups": {
+    "every": "hour",
+    "restoreTest": "week",
+    "data": [
+      {
+        "what": "The photo library",
+        "kind": "folder"
+      },
+      {
+        "what": "Its database",
+        "kind": "dump"
+      }
+    ],
+    "left": [
+      {
+        "what": "The database's own files",
+        "why": "The dump holds them"
+      },
+      {
+        "what": "Machine-learning models",
+        "why": "Immich downloads them again"
+      }
+    ]
+  },
+  "placement": {
+    "node": "study-pc",
+    "architecture": "x86_64",
+    "engine": "docker",
+    "project": "homerslab-immich",
+    "services": [
+      {
+        "name": "database",
+        "image": "ghcr.io/immich-app/postgres:14-vectorchord0.4.3-pgvectors0.2.0@sha256:bcf63357191b76a916ae5eb93464d65c07511da41e3bf7a8416db519b40b1c23",
+        "digest": "sha256:b1d33572a9a0634aa6d344077467ad32847812a37fa3859f702952cba22a2f55"
+      },
+      {
+        "name": "machine-learning",
+        "image": "ghcr.io/immich-app/immich-machine-learning:v3.3.5@sha256:5b28c9352c8374b8a1ed96fbdd8d6755fea6e43510ec43fdf6538aa02ea40f56",
+        "digest": "sha256:1270449e47e1fcd703661c4d728b7904d89aacfb715662c26116cc9dd73f266b"
+      },
+      {
+        "name": "redis",
+        "image": "docker.io/valkey/valkey:9@sha256:c123e3715db63d06d4ad6964884037aa0d5d4d703939b9929954112889708e1d",
+        "digest": "sha256:67878c70fc179bb928b1a9b510860aff1c475ff245e91d98d4b2133326bf8e3e"
+      },
+      {
+        "name": "server",
+        "image": "ghcr.io/immich-app/immich-server:v3.3.5@sha256:485d546a2e31d6a8b4db8423fcba5c109de8c218d93410af115fd1ccfc4352a6",
+        "digest": "sha256:1ab81816384ce8e782fdbdb2b7703ab68fd12442bc311a53118dc0d74c2ced24"
+      }
+    ]
+  },
+  "extras": [],
+  "secrets": [
+    {
+      "name": "db-password",
+      "what": "the database password",
+      "sealedTo": "tpm"
+    }
+  ],
+  "resources": {
+    "memory": {
+      "needsBytes": 6442450944,
+      "freeBytes": 20480000000
+    },
+    "disk": {
+      "needsBytes": 10737418240,
+      "freeBytes": 412000000000,
+      "grows": "the photo library"
+    },
+    "gpu": {
+      "need": "none",
+      "usable": []
+    },
+    "warnings": []
+  },
+  "risky": false
+}
