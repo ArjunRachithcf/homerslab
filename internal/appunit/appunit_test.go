@@ -277,7 +277,8 @@ func TestAStorageLocationIsABindOfItsFolderReadOnlyWhereThePlanSays(t *testing.T
 	if db := o[strings.Index(o, "  \"db\":\n"):strings.Index(o, "  \"web\":\n")]; strings.Contains(db, "volumes") {
 		t.Errorf("a service that didn't ask sees a location:\n%s", db)
 	}
-	// A source or a target no check passed is never written: compose would read ${...} as a variable.
+	// A source or a target no check passed is never written (compose would read ${...} as a variable), and the app
+	// doesn't start without it: the engine refuses a bind of a folder that is never there.
 	for _, m := range []appunit.Mount{
 		{Location: "films", Service: "web", Source: "/srv/${HOME}", Target: "/media", ReadOnly: true},
 		{Location: "films", Service: "web", Source: "/etc", Target: "/media", ReadOnly: true},
@@ -287,7 +288,9 @@ func TestAStorageLocationIsABindOfItsFolderReadOnlyWhereThePlanSays(t *testing.T
 	} {
 		b := withSecrets()
 		b.Mounts = []appunit.Mount{m}
-		if o := string(appunit.Override(b)); strings.Contains(o, "volumes") {
+		o := string(appunit.Override(b))
+		if strings.Contains(o, m.Source) || strings.Contains(o, m.Target+"\"") ||
+			!strings.Contains(o, "        source: \""+appunit.RefusedMount+"\"\n        target: \""+appunit.RefusedMount+"\"\n        read_only: true\n") {
 			t.Errorf("%+v written:\n%s", m, o)
 		}
 	}

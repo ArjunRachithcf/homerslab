@@ -379,6 +379,14 @@ func TestAPlanSaysWhichStorageLocationAnAppUsesAndHow(t *testing.T) {
 	if again, _ := plan.MakeWith(d, official, project(), h, made, map[string]string{"library": "films", "uploads": "music"}); again.ID == p.ID {
 		t.Error("a location's backup turned off, and the plan is the same")
 	}
+	// A location the app may write to is a risky change: the admin's passkey decides (#28). Read-only is not.
+	if !p.Risky {
+		t.Error("a plan that writes to a storage location needs no passkey")
+	}
+	d.Storage = d.Storage[:1]
+	if ro, _ := plan.MakeWith(d, official, project(), withLibrary(), made, map[string]string{"library": "films"}); ro.Risky {
+		t.Error("a plan that only reads a storage location needs the passkey")
+	}
 	// An app that asks for none says nothing of storage, as before.
 	if p := make_(t, definition(), withLibrary()); p.Storage != nil || p.Backups.Locations != nil {
 		t.Errorf("no storage asked: %+v %+v", p.Storage, p.Backups.Locations)
@@ -406,6 +414,20 @@ func TestAPlanTakesAStorageLocationOnlyWhereItsClear(t *testing.T) {
 		"one that isn't there":        {withLibrary(), map[string]string{"library": "photos"}, plan.ErrNoSuchLocation},
 		"a folder on another node":    {withLibrary(), map[string]string{"library": "elsewhere"}, plan.ErrNoSuchLocation},
 		"a choice the app didn't ask": {withLibrary(), map[string]string{"library": "films", "other": "films"}, plan.ErrNoSuchLocation},
+	} {
+		if _, err := plan.MakeWith(d, official, project(), c.h, made, c.chosen); !errors.Is(err, c.want) {
+			t.Errorf("%s: %v, want %v", name, err, c.want)
+		}
+	}
+	// One location, and an app that writes to it: never without the admin's choice.
+	d.Storage[0].Access = "read-write"
+	for name, c := range map[string]struct {
+		h      plan.Household
+		chosen map[string]string
+		want   error
+	}{
+		"the one location, not chosen": {one, nil, plan.ErrStorageNeeded},
+		"the one location, chosen":     {one, map[string]string{"library": "films"}, nil},
 	} {
 		if _, err := plan.MakeWith(d, official, project(), c.h, made, c.chosen); !errors.Is(err, c.want) {
 			t.Errorf("%s: %v, want %v", name, err, c.want)

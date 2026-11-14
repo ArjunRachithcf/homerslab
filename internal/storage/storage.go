@@ -26,21 +26,31 @@ var (
 	ErrNotFolder = errors.New("not-a-folder")
 )
 
-// segment is one name of a folder's path: what a media library's folders are called, and nothing compose would
-// interpolate ($), nor a separator of a volume's short syntax (:) or of an option (,).
-var segment = regexp.MustCompile(`^[A-Za-z0-9_+()' -][A-Za-z0-9._+()' -]{0,127}$`)
+// plainName says whether n is one name of a folder's path as a media library's folders are called, in any script
+// (Médias, Björk), and nothing compose would interpolate ($), nor a quote, an escape, a specifier (%) or a separator of
+// a volume's short syntax (:) or of an option (,). Not hidden, nor . or ..
+func plainName(n string) bool {
+	return n != "" && len(n) <= 255 && !strings.HasPrefix(n, ".") && strings.TrimSpace(n) == n && text.OneLine(n) &&
+		!strings.ContainsAny(n, "$\\\"`%:,")
+}
 
-// forbidden are the machine's own folders and HomersLab's: a location is none of them, inside none, and holds none.
-// The engine's socket is under /run (/var/run links there).
-var forbidden = []string{"/etc", "/proc", "/sys", "/dev", "/run", "/var/run", "/boot", "/root", "/tmp", "/var/tmp", "/usr", "/bin",
-	"/sbin", "/lib", "/lib64", "/var/log", "/var/lib/docker", "/var/lib/containers", "/var/lib/homerslab"}
+// forbidden are the machine's own folders, and those of its services and HomersLab's (all under /var/lib, the engine's
+// socket under /run): a location is none of them, inside none, and holds none. /home is the household's people's own,
+// and the agent's unit can't see it (ProtectHome).
+var forbidden = []string{"/etc", "/proc", "/sys", "/dev", "/run", "/var/run", "/boot", "/efi", "/root", "/home", "/tmp", "/var/tmp",
+	"/usr", "/bin", "/sbin", "/lib", "/lib32", "/lib64", "/snap", "/var/lib", "/var/log", "/var/spool", "/var/cache", "/var/mail"}
 
 // CheckFolder says whether p, under the machine's root directory root ("/" on a real machine), may be a storage
-// location: an absolute, clean path of plain names, outside the machine's and HomersLab's folders, holding none of
-// them, that is a folder reached without a symlink.
-func CheckFolder(root, p string) error {
+// location: an absolute, clean path of plain names, outside the machine's and HomersLab's folders (and also's: the
+// agent's own state, wherever it is), holding none of them, that is a folder reached without a symlink.
+func CheckFolder(root, p string, also ...string) error {
 	if err := Allowed(p); err != nil {
 		return err
+	}
+	for _, f := range also {
+		if Nested(p, f) {
+			return ErrForbidden
+		}
 	}
 	at := root
 	for _, n := range strings.Split(p[1:], "/") {
@@ -67,19 +77,32 @@ func Allowed(p string) error {
 	if p == "/" {
 		return ErrForbidden
 	}
-	names := strings.Split(p[1:], "/")
-	for _, n := range names {
-		if n == "." || n == ".." || !segment.MatchString(n) {
+	for _, n := range strings.Split(p[1:], "/") {
+		if !plainName(n) {
 			return ErrPath
 		}
 	}
 	for _, f := range forbidden {
-		// HomersLab's own folders are every /var/lib/homerslab*: the manager's and the agent's among them.
-		if p == f || strings.HasPrefix(p, f+"/") || strings.HasPrefix(f, p+"/") || (f == "/var/lib/homerslab" && strings.HasPrefix(p, f)) {
+		if Nested(p, f) {
 			return ErrForbidden
 		}
 	}
 	return nil
+}
+
+// Nested says whether one path is the other, or holds it.
+func Nested(a, b string) bool {
+	return a == b || strings.HasPrefix(a, strings.TrimSuffix(b, "/")+"/") || strings.HasPrefix(b, strings.TrimSuffix(a, "/")+"/")
+}
+
+// ErrLabel is a folder SELinux keeps containers from: only one labelled for containers at no level (container_file_t,
+// or container_ro_file_t, s0) is read by every app at its own level.
+var ErrLabel = errors.New("selinux-label")
+
+// ReadableLabel says whether a folder's SELinux label (user:role:type:level) is one every app's container reads.
+func ReadableLabel(label string) bool {
+	f := strings.Split(strings.TrimRight(label, "\x00"), ":")
+	return len(f) == 4 && (f[2] == "container_file_t" || f[2] == "container_ro_file_t") && f[3] == "s0"
 }
 
 // targetSegment is one name of an app's path in its container.

@@ -170,9 +170,13 @@ jobs:
         run: sudo modprobe wireguard
       # The harness, and only the harness, reaches the runner's Docker (HOMERSLAB_TEST_DOCKER_HOST), for compose project
       # hltest-15; the code under test points at nowhere. Images are pinned by digest in testdata/compose.yaml.
+      # Storage locations' folders (#28) may not be under /home or /tmp: a throwaway folder of the runner's own in /srv.
+      - name: A folder for the storage locations
+        run: sudo install -d -o "$(id -u)" -g "$(id -g)" /srv/homerslab-test
       - name: The contract suite
         env:
           HOMERSLAB_TEST_DOCKER_HOST: unix:///var/run/docker.sock
+          HOMERSLAB_TEST_STORAGE_DIR: /srv/homerslab-test
           DOCKER_HOST: unix:///nonexistent
           CONTAINER_HOST: unix:///nonexistent
         # The containers' logs, which the suite prints when it fails, are third-party text too.

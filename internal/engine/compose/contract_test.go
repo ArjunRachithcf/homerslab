@@ -5,7 +5,7 @@ package compose_test
 // appunit), and the adapter reads their state, health and logs, many projects at once, and nothing that isn't
 // HomersLab's. It needs an engine nobody else uses: it runs when HOMERSLAB_TEST_DOCKER_HOST names one (CI's runner, or a
 // throwaway Docker in a container), and is skipped otherwise. The code under test reaches only that engine, by its
-// endpoint; testenv points DOCKER_HOST at nowhere.
+// endpoint; testenv points DOCKER_HOST at nowhere. Its storage locations' folders are in HOMERSLAB_TEST_STORAGE_DIR.
 
 import (
 	"context"
@@ -22,6 +22,7 @@ import (
 	"github.com/ArjunRachithcf/homerslab/internal/appunit"
 	"github.com/ArjunRachithcf/homerslab/internal/engine"
 	"github.com/ArjunRachithcf/homerslab/internal/engine/compose"
+	"github.com/ArjunRachithcf/homerslab/internal/storage"
 	"github.com/ArjunRachithcf/homerslab/internal/testenv"
 )
 
@@ -57,11 +58,11 @@ func TestTheContainerEngineContractOnDocker(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()
 	r := reader(t)
-	// Two storage locations (#28), a folder the app only reads and one it writes, where the engine's machine sees them:
-	// beside the test, as no location may be under /tmp. HOMERSLAB_TEST_STORAGE_DIR names another such folder.
+	// Two storage locations (#28), a folder the app only reads and one it writes, in HOMERSLAB_TEST_STORAGE_DIR, a folder
+	// the engine's machine sees at the same path, where a location may be (not under /home or /tmp: CI's is in /srv).
 	locations := os.Getenv("HOMERSLAB_TEST_STORAGE_DIR")
-	if locations == "" {
-		locations, _ = os.Getwd()
+	if err := storage.Allowed(locations); err != nil {
+		t.Fatalf("HOMERSLAB_TEST_STORAGE_DIR %q: %v; name a folder where a storage location may be", locations, err)
 	}
 	media, err := os.MkdirTemp(locations, "storage-media-")
 	if err != nil {

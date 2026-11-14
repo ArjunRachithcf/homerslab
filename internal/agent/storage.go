@@ -4,7 +4,10 @@ import (
 	"encoding/json"
 	"maps"
 	"net/http"
+	"path/filepath"
 	"slices"
+
+	"golang.org/x/sys/unix"
 
 	"github.com/ArjunRachithcf/homerslab/internal/appunit"
 	"github.com/ArjunRachithcf/homerslab/internal/storage"
@@ -59,19 +62,59 @@ func (s *storageState) mount(id string, as AppStorage) appunit.Mount {
 	return appunit.Mount{Location: id, Service: as.Service, Source: s.status(id).Source, Target: as.Path, ReadOnly: as.ReadOnly}
 }
 
-// checkStorage is what is wrong with a request, by its code and status, or "".
-func (a *Agent) checkStorage(r StorageRequest) (string, int) {
+// checkStorage is what is wrong with a request for location id, by its code and status, or "". The caller holds a.mu.
+func (a *Agent) checkStorage(id string, r StorageRequest) (string, int) {
 	if r.Kind != "folder" {
 		return "bad-storage", http.StatusBadRequest
 	}
-	if err := storage.CheckFolder(a.cfg.Root, r.Path); err != nil {
+	if err := a.checkFolder(r.Path); err != nil {
 		return err.Error(), http.StatusUnprocessableEntity
+	}
+	// No location inside another: an app that writes to one could put a symlink where the other's folder was.
+	for other, s := range a.state.Storage {
+		if other != id && s.Kind == "folder" && storage.Nested(s.Path, r.Path) {
+			return "storage-overlaps", http.StatusConflict
+		}
 	}
 	return "", 0
 }
 
-// putStorage adds a storage location, or puts one back as it was added. A location the agent has can't become another:
-// an app may use it.
+// checkFolder says whether a folder may be a location, now: storage.CheckFolder, outside the agent's own state, and on
+// SELinux labelled so that every app reads it at its own level. Nothing is relabelled: the admin labels it.
+func (a *Agent) checkFolder(p string) error {
+	if err := storage.CheckFolder(a.cfg.Root, p, a.cfg.StateDir); err != nil {
+		return err
+	}
+	if a.selinux() {
+		if l, err := a.cfg.FolderLabel(filepath.Join(a.cfg.Root, p)); err != nil || !storage.ReadableLabel(l) {
+			return storage.ErrLabel
+		}
+	}
+	return nil
+}
+
+// folderLabel is a folder's SELinux label, from its security.selinux attribute.
+func folderLabel(path string) (string, error) {
+	b := make([]byte, 256)
+	n, err := unix.Lgetxattr(path, "security.selinux", b)
+	if err != nil {
+		return "", err
+	}
+	return string(b[:n]), nil
+}
+
+// inUse says whether an app's compose file binds the location. The caller holds a.mu.
+func (a *Agent) inUse(id string) bool {
+	for _, app := range a.state.Apps {
+		if slices.ContainsFunc(app.Mounts, func(m appunit.Mount) bool { return m.Location == id }) {
+			return true
+		}
+	}
+	return false
+}
+
+// putStorage adds a storage location, or puts one back as it was added (a manager that didn't keep it, retrying). A
+// location no app uses yet can become another (the manager kept none); one an app uses can't.
 func (a *Agent) putStorage(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	var req StorageRequest
@@ -83,10 +126,14 @@ func (a *Agent) putStorage(w http.ResponseWriter, r *http.Request) {
 	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	code, status := a.checkStorage(req)
 	next := &storageState{Kind: req.Kind, Path: req.Path}
 	prev := a.state.Storage[id]
-	if code == "" && prev != nil && *prev != *next {
+	if prev != nil && *prev == *next {
+		writeJSON(w, http.StatusOK, next.status(id)) // as it was added, whatever its folder is like now
+		return
+	}
+	code, status := a.checkStorage(id, req)
+	if code == "" && prev != nil && a.inUse(id) {
 		code, status = "storage-exists", http.StatusConflict
 	}
 	if code != "" {
@@ -101,6 +148,8 @@ func (a *Agent) putStorage(w http.ResponseWriter, r *http.Request) {
 	if err := a.save(); err != nil {
 		if prev == nil {
 			delete(a.state.Storage, id)
+		} else {
+			a.state.Storage[id] = prev
 		}
 		a.log.Error("keeping a storage location", "location", id, "err", err)
 		fail(w, http.StatusInternalServerError, "state-unsaved")
@@ -120,8 +169,9 @@ func (a *Agent) getStorage(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, out)
 }
 
-// appMounts are the mounts an app's request names, or the code that refuses it: a location the agent doesn't have.
-// The caller holds a.mu.
+// appMounts are the mounts an app's request names, or the code that refuses it: a location the agent doesn't have, a
+// folder that no longer passes its checks (a symlink put in its way since it was added, say), or a mount the agent's
+// files couldn't name. The caller holds a.mu.
 func (a *Agent) appMounts(r AppRequest) ([]appunit.Mount, string) {
 	var out []appunit.Mount
 	for _, as := range r.Storage {
@@ -129,7 +179,16 @@ func (a *Agent) appMounts(r AppRequest) ([]appunit.Mount, string) {
 		if s == nil {
 			return nil, "no-such-storage"
 		}
-		out = append(out, s.mount(as.Location, as))
+		if s.Kind == "folder" {
+			if err := a.checkFolder(s.Path); err != nil {
+				return nil, err.Error()
+			}
+		}
+		m := s.mount(as.Location, as)
+		if !m.Checked() {
+			return nil, "bad-storage"
+		}
+		out = append(out, m)
 	}
 	return out, ""
 }

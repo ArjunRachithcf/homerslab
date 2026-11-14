@@ -282,16 +282,14 @@ func checkData(p *problems, data []Data) {
 
 func checkStorage(p *problems, asks []Storage, data []Data) {
 	seen := map[string]bool{}
-	// nested says whether one path is the other or holds it.
-	nested := func(a, b string) bool { return a == b || strings.HasPrefix(a, b+"/") || strings.HasPrefix(b, a+"/") }
 	for i, s := range asks {
 		for _, other := range asks[:i] {
-			if other.Service == s.Service && nested(other.Path, s.Path) {
+			if other.Service == s.Service && storage.Nested(other.Path, s.Path) {
 				p.add("storage %q: its path is %q's, or inside it", s.ID, other.ID)
 			}
 		}
 		for _, d := range data {
-			if d.Service == s.Service && d.Path != "" && nested(d.Path, s.Path) {
+			if d.Service == s.Service && d.Path != "" && storage.Nested(d.Path, s.Path) {
 				p.add("storage %q: its path is the app's own data %q, or inside it", s.ID, d.What)
 			}
 		}

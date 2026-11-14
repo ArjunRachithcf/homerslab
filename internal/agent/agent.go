@@ -66,6 +66,9 @@ type Config struct {
 	// HasInterface says whether the kernel has an interface by that name (/sys/class/net/<name>, from Sysroot, when
 	// nil). A saved bridge the kernel doesn't have yet (at boot) stays in the table, for the moment its engine makes it.
 	HasInterface func(name string) bool
+	// FolderLabel is a folder's SELinux label, which a storage location's must let every app read (#28): its
+	// security.selinux attribute when nil.
+	FolderLabel func(path string) (string, error)
 	// SetupPort is the setup link's LAN listener, the firewall table's one exception until it closes.
 	SetupPort int
 	// CheckEvery is how often the firewall table is checked for drift: often, so an `nft flush ruleset` is undone
@@ -249,6 +252,9 @@ func New(ctx context.Context, c Config) (*Agent, error) {
 			fi, err := fs.Stat(root, "sys/class/net/"+name+"/bridge")
 			return err == nil && fi.IsDir()
 		}
+	}
+	if c.FolderLabel == nil {
+		c.FolderLabel = folderLabel
 	}
 	if c.HasInterface == nil {
 		root := c.Sysroot

@@ -733,36 +733,41 @@ func (s *Store) AddLocation(ctx context.Context, l Location) error {
 	return nil
 }
 
+const locationColumns = `id, name, kind, node, path, protocol, server, share, backup, added_at`
+
+func scanLocation(row interface{ Scan(...any) error }) (Location, error) {
+	var l Location
+	var at int64
+	err := row.Scan(&l.ID, &l.Name, &l.Kind, &l.Node, &l.Path, &l.Protocol, &l.Server, &l.Share, &l.Backup, &at)
+	l.AddedAt = time.UnixMilli(at).UTC()
+	return l, err
+}
+
 // Locations are the household's storage locations, by id, each with whether the admin opted in to backing it up: what
 // the backup plan reads (#22) to back up only those.
 func (s *Store) Locations(ctx context.Context) ([]Location, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id, name, kind, node, path, protocol, server, share, backup, added_at
-		FROM storage_location ORDER BY id`)
+	rows, err := s.db.QueryContext(ctx, `SELECT `+locationColumns+` FROM storage_location ORDER BY id`)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	out := []Location{}
 	for rows.Next() {
-		var l Location
-		var at int64
-		if err := rows.Scan(&l.ID, &l.Name, &l.Kind, &l.Node, &l.Path, &l.Protocol, &l.Server, &l.Share, &l.Backup, &at); err != nil {
+		l, err := scanLocation(rows)
+		if err != nil {
 			return nil, err
 		}
-		l.AddedAt = time.UnixMilli(at).UTC()
 		out = append(out, l)
 	}
 	return out, rows.Err()
 }
 
-// SetLocationBackup opts a storage location in to backups, or out: ErrNotFound when there is none by that id.
-func (s *Store) SetLocationBackup(ctx context.Context, id string, backup bool) error {
-	res, err := s.db.ExecContext(ctx, `UPDATE storage_location SET backup = ? WHERE id = ?`, backup, id)
-	if err != nil {
-		return written(err, s.dir)
+// SetLocationBackup opts a storage location in to backups, or out, and returns it: ErrNotFound when there is none by
+// that id.
+func (s *Store) SetLocationBackup(ctx context.Context, id string, backup bool) (Location, error) {
+	l, err := scanLocation(s.db.QueryRowContext(ctx, `UPDATE storage_location SET backup = ? WHERE id = ? RETURNING `+locationColumns, backup, id))
+	if errors.Is(err, sql.ErrNoRows) {
+		return Location{}, ErrNotFound
 	}
-	if n, _ := res.RowsAffected(); n == 0 {
-		return ErrNotFound
-	}
-	return nil
+	return l, written(err, s.dir)
 }

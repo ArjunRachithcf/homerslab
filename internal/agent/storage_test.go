@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/ArjunRachithcf/homerslab/internal/agent"
+	"github.com/ArjunRachithcf/homerslab/internal/agent/agenttest"
 	"github.com/ArjunRachithcf/homerslab/internal/testenv"
 )
 
@@ -40,12 +41,24 @@ func TestAFolderIsAStorageLocationWhereItsChecksPass(t *testing.T) {
 			t.Errorf("%s: %d", name, code)
 		}
 	}
-	if code, _ := call(t, sock, "PUT", "/v1/storage/films", agent.StorageRequest{Kind: "folder", Path: "/srv"}); code != http.StatusConflict {
-		t.Errorf("another folder under the same id: %d", code)
+	// A location inside another, or holding one, is refused: an app that writes to one could put a symlink in the
+	// other's way. While no app uses a location, the manager may give its id another folder (it kept none).
+	_ = os.MkdirAll(filepath.Join(h.Root, "srv/media/films"), 0o755)
+	for _, p := range []string{"/srv/media/films", "/srv"} {
+		if code, body := call(t, sock, "PUT", "/v1/storage/other", agent.StorageRequest{Kind: "folder", Path: p}); code != http.StatusConflict ||
+			!strings.Contains(string(body), "storage-overlaps") {
+			t.Errorf("%s beside /srv/media: %d %s", p, code, body)
+		}
 	}
-	if code, _ := call(t, sock, "PUT", "/v1/storage/films", agent.StorageRequest{Kind: "folder", Path: "/srv/media"}); code != http.StatusOK {
+	if code, _ := call(t, sock, "PUT", "/v1/storage/films", agent.StorageRequest{Kind: "folder", Path: "/srv/media/films"}); code != http.StatusOK {
+		t.Errorf("another folder under an unused id: %d", code)
+	}
+	// The same location again answers as it was added, whatever its folder is like now (a disk not mounted yet).
+	_ = os.Remove(filepath.Join(h.Root, "srv/media/films"))
+	if code, _ := call(t, sock, "PUT", "/v1/storage/films", agent.StorageRequest{Kind: "folder", Path: "/srv/media/films"}); code != http.StatusOK {
 		t.Errorf("the same folder again: %d", code)
 	}
+	call(t, sock, "PUT", "/v1/storage/films", agent.StorageRequest{Kind: "folder", Path: "/srv/media"})
 	if code, _ := call(t, sock, "PUT", "/v1/storage/Not_An_ID", agent.StorageRequest{Kind: "folder", Path: "/srv/media"}); code != http.StatusBadRequest {
 		t.Errorf("a bad id: %d", code)
 	}
@@ -78,6 +91,11 @@ func TestAnAppGetsTheStorageLocationsItsPlanNames(t *testing.T) {
 			t.Errorf("the app's compose file lacks %q:\n%s", want, o)
 		}
 	}
+	// An app uses it now: its folder stays the one it was.
+	_ = os.MkdirAll(filepath.Join(h.Root, "srv/other"), 0o755)
+	if code, _ := call(t, sock, "PUT", "/v1/storage/films", agent.StorageRequest{Kind: "folder", Path: "/srv/other"}); code != http.StatusConflict {
+		t.Errorf("another folder for a location in use: %d", code)
+	}
 	for name, c := range map[string]struct {
 		s    agent.AppStorage
 		code int
@@ -92,5 +110,43 @@ func TestAnAppGetsTheStorageLocationsItsPlanNames(t *testing.T) {
 		if code, body := call(t, sock, "PUT", "/v1/apps/other", r); code != c.code || !strings.Contains(string(body), c.want) {
 			t.Errorf("%s: %d %s", name, code, body)
 		}
+	}
+}
+
+// On SELinux, a folder is a location only where every app reads it at its own level: labelled for containers at no
+// level. The agent never relabels it (an adopted folder stays untouched); it refuses, so the admin labels it (#28).
+func TestOnSELinuxAFolderIsALocationOnlyWhenEveryAppReadsIt(t *testing.T) {
+	testenv.Isolate(t)
+	labels := map[string]string{}
+	sock, h, _ := joined(t, agent.Config{Sysroot: withSELinux{agenttest.Primary()}, FolderLabel: func(p string) (string, error) {
+		return labels[p], nil
+	}})
+	for d, l := range map[string]string{"srv/media": "system_u:object_r:var_t:s0", "srv/films": "system_u:object_r:container_file_t:s0"} {
+		_ = os.MkdirAll(filepath.Join(h.Root, d), 0o755)
+		labels[filepath.Join(h.Root, d)] = l
+	}
+	if code, body := call(t, sock, "PUT", "/v1/storage/media", agent.StorageRequest{Kind: "folder", Path: "/srv/media"}); code != http.StatusUnprocessableEntity ||
+		!strings.Contains(string(body), "selinux-label") {
+		t.Errorf("a folder containers can't read: %d %s", code, body)
+	}
+	if code, body := call(t, sock, "PUT", "/v1/storage/films", agent.StorageRequest{Kind: "folder", Path: "/srv/films"}); code != http.StatusOK {
+		t.Errorf("a folder labelled for containers: %d %s", code, body)
+	}
+}
+
+// A folder is checked again whenever an app is given it: a symlink put in its way since it was added is refused, so the
+// engine never follows it to another folder of the machine's (#28).
+func TestAFolderIsCheckedAgainWhenAnAppIsGivenIt(t *testing.T) {
+	testenv.Isolate(t)
+	sock, h, _ := signedIn(t, agent.Config{})
+	_ = os.MkdirAll(filepath.Join(h.Root, "srv/media"), 0o755)
+	_ = os.MkdirAll(filepath.Join(h.Root, "etc"), 0o755)
+	call(t, sock, "PUT", "/v1/storage/films", agent.StorageRequest{Kind: "folder", Path: "/srv/media"})
+	_ = os.Remove(filepath.Join(h.Root, "srv/media"))
+	_ = os.Symlink(filepath.Join(h.Root, "etc"), filepath.Join(h.Root, "srv/media"))
+	r := withSecrets()
+	r.Storage = []agent.AppStorage{{Location: "films", Service: "web", Path: "/media", ReadOnly: true}}
+	if code, body := call(t, sock, "PUT", "/v1/apps/ledger", r); code != http.StatusUnprocessableEntity || !strings.Contains(string(body), "symlink-in-path") {
+		t.Errorf("a folder swapped for a symlink: %d %s", code, body)
 	}
 }

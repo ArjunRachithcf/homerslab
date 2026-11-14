@@ -109,24 +109,15 @@ func (m *Manager) putStorageBackup(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx := r.Context()
 	id := r.PathValue("id")
-	if err := m.db.SetLocationBackup(ctx, id, *body.Backup); errors.Is(err, store.ErrNotFound) {
+	l, err := m.db.SetLocationBackup(ctx, id, *body.Backup)
+	switch {
+	case errors.Is(err, store.ErrNotFound):
 		fail(w, http.StatusNotFound, "no-such-storage-location")
 		return
-	} else if err != nil {
+	case err != nil:
 		m.internal(w, "keeping a location's backup", err)
 		return
 	}
-	ls, err := m.db.Locations(ctx)
-	if err != nil {
-		m.internal(w, "reading the storage locations", err)
-		return
-	}
 	m.log.Info("a storage location's backup", "location", id, "backup", *body.Backup)
-	for _, l := range ls {
-		if l.ID == id {
-			writeJSON(w, http.StatusOK, l)
-			return
-		}
-	}
-	fail(w, http.StatusNotFound, "no-such-storage-location")
+	writeJSON(w, http.StatusOK, l)
 }

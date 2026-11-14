@@ -70,11 +70,16 @@ type Mount struct {
 	ReadOnly bool   `json:"readOnly"`
 }
 
-// checked says whether the mount is one the agent's files may name: a folder its checks allow, at a plain path in the
-// container. Anything else is left out: compose would interpolate a ${...}.
-func (m Mount) checked() bool {
+// Checked says whether the mount is one the agent's files may name: a folder its checks allow, at a plain path in the
+// container. Anything else is written as a bind of a folder that is never there, so the app doesn't start without its
+// storage, and nothing of it reaches the file: compose would interpolate a ${...}.
+func (m Mount) Checked() bool {
 	return storage.ID.MatchString(m.Location) && storage.ValidTarget(m.Target) && storage.Allowed(m.Source) == nil
 }
+
+// RefusedMount is the bind a mount no check passed is written as: a folder that is never there, so the engine refuses
+// to start the app, rather than start it without its storage.
+const RefusedMount = "/nonexistent/homerslab-refused-mount"
 
 // ID is an app's id as the agent takes it: what a unit, a project and a runtime directory can be named after.
 var ID = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,38}[a-z0-9])?$`)
@@ -164,7 +169,12 @@ func Override(a App) []byte {
 			w("    extra_hosts:")
 			w("      - %s", q(a.SignIn+"="+a.SignInAt.String()))
 		}
-		mounts := slices.DeleteFunc(slices.Clone(a.Mounts), func(m Mount) bool { return m.Service != s.Name || !m.checked() })
+		mounts := slices.DeleteFunc(slices.Clone(a.Mounts), func(m Mount) bool { return m.Service != s.Name })
+		for i, m := range mounts {
+			if !m.Checked() {
+				mounts[i] = Mount{Source: RefusedMount, Target: RefusedMount, ReadOnly: true}
+			}
+		}
 		slices.SortFunc(mounts, func(x, y Mount) int { return strings.Compare(x.Target, y.Target) })
 		if len(mounts) > 0 {
 			w("    volumes:")

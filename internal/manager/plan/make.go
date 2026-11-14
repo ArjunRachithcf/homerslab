@@ -96,7 +96,8 @@ func MakeWith(d catalog.App, from From, p engine.Project, h Household, made time
 		pl.Secrets = append(pl.Secrets, Secret{Name: s.Name, What: s.What, SealedTo: sealed})
 	}
 	pl.Resources = resources(d.Resources, h, services)
-	pl.Risky = len(pl.Extras) > 0
+	// An extra, or a storage location the app may write to, is a risky change (#28): the admin's passkey decides.
+	pl.Risky = len(pl.Extras) > 0 || slices.ContainsFunc(use, func(s Storage) bool { return !s.ReadOnly })
 	pl.MadeAt = made.UTC()
 	pl.ID = id(pl)
 	return pl, nil
@@ -195,8 +196,9 @@ func placement(d catalog.App, p engine.Project, n Node) ([]Service, error) {
 	return out, nil
 }
 
-// storage is the location each of the app's asks gets: the one chosen, or the only one the household has where the app
-// runs. A folder is on its node, so only an app on that node can use it; a share is on the mesh, which every node is on.
+// storage is the location each of the app's asks gets: the one chosen, or, for an app that only reads it, the only one
+// the household has where the app runs; a location an app may write to is never taken without the admin's choice. A
+// folder is on its node, so only an app on that node can use it; a share is on the mesh, which every node is on.
 func storage(asks []catalog.Storage, h Household, chosen map[string]string) ([]Storage, error) {
 	var usable []Location
 	for _, l := range h.Storage {
@@ -219,7 +221,7 @@ func storage(asks []catalog.Storage, h Household, chosen map[string]string) ([]S
 				return nil, fmt.Errorf("%w: %s", ErrNoSuchLocation, id)
 			}
 			l = usable[i]
-		case len(usable) == 1:
+		case len(usable) == 1 && a.ReadOnly():
 			l = usable[0]
 		default:
 			return nil, fmt.Errorf("%w: %s", ErrStorageNeeded, a.ID)
