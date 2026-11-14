@@ -61,3 +61,12 @@ export const getCatalog = () => call<Catalog>('GET', '/api/v1/catalog');
 export const getApp = (id: string) => call<AppPage>('GET', `/api/v1/catalog/apps/${encodeURIComponent(id)}`);
 export const makePlan = (app: string) => call<Plan>('POST', '/api/v1/plans', { app });
 export const getPlan = (id: string) => call<Plan>('GET', `/api/v1/plans/${encodeURIComponent(id)}`);
+
+/** An installed app, with its health as the agent finds it. */
+export type Health = 'healthy' | 'starting' | 'unhealthy' | 'stopped' | 'unknown';
+export type InstalledApp = {
+  id: string; name: string; purpose: string; host: string; url: string; plan: string; appliedAt: string; node: string;
+  health: Health; active: boolean; checks: { service: string; kind: 'http' | 'compose'; ok: boolean; detail?: string }[];
+};
+export const applyPlan = (id: string) => call<InstalledApp>('POST', `/api/v1/plans/${encodeURIComponent(id)}/apply`, {});
+export const getApps = () => call<{ apps: InstalledApp[] }>('GET', '/api/v1/apps');
