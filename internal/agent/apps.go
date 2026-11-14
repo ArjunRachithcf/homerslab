@@ -63,7 +63,14 @@ const UnitsDir = "etc/homerslab/units"
 var (
 	upstreamRange = netip.MustParsePrefix("172.31.240.0/20")
 	signInNet     = netip.MustParsePrefix("172.31.250.0/28")
+	// listenerNet holds the sign-in listener's address (SignInListen), on the machine's loopback: no app's network.
+	listenerNet = netip.MustParsePrefix("172.31.255.240/28")
 )
+
+// SignInListen is the sign-in listener's own address on every node (ADR 0020): where apps reach the sign-in, on the
+// household's port. The agent puts it on the machine's loopback, so it is a local address no network leads to but this
+// machine's own routing, and every app's container resolves auth.<main domain> to it.
+var SignInListen = netip.MustParseAddr("172.31.255.241")
 
 const (
 	firstCategory = 600
@@ -165,7 +172,16 @@ func (a *Agent) appDir(id string) string { return filepath.Join(a.cfg.StateDir, 
 
 func (a *Agent) appUnit(id string, s *appState) appunit.App {
 	return appunit.App{ID: id, Product: s.Product, Plan: s.Plan, Project: s.Project, Service: s.Service, Upstream: s.Upstream,
-		Subnet: s.Subnet, Level: s.Level, Slot: slot(s.Level), SELinux: a.selinux(), Secrets: s.Secrets, Dir: a.appDir(id)}
+		Subnet: s.Subnet, Level: s.Level, Slot: slot(s.Level), SELinux: a.selinux(), Secrets: s.Secrets, Dir: a.appDir(id),
+		SignIn: a.signInName(), SignInAt: SignInListen}
+}
+
+// signInName is the sign-in's name where this node serves it, or "". The caller holds a.mu.
+func (a *Agent) signInName() string {
+	if e := a.state.Edge; e != nil && a.state.SignIn != nil {
+		return e.SignIn
+	}
+	return ""
 }
 
 // slot is an app's number on this node, from its level (s0:c600,c601 is 0): unique as the level is.
@@ -213,12 +229,14 @@ func validApp(id string, r AppRequest) string {
 // network mode (the machine's network is an extra), what loosens a container's confinement (privileged never; a
 // capability, a device, its own security options, which would undo the app's level, or the machine's namespaces:
 // extras, approved with the passkey, #25), a network that isn't the project's own bridge as the agent makes it (another
-// project's, an external one, another driver, its own options or addresses), an upstream the project doesn't run, or
-// other secrets than the plan makes.
-func checkProject(p engine.Project, r AppRequest) (code, detail string) {
+// project's, an external one, another driver, its own options or addresses), an address of its own for the sign-in's
+// name (the agent's is the sign-in listener), an upstream the project doesn't run, or other secrets than the plan makes.
+func checkProject(p engine.Project, r AppRequest, signIn string) (code, detail string) {
 	upstream := false
 	for _, s := range p.Services {
 		switch {
+		case signIn != "" && slices.Contains(s.Hosts, strings.ToLower(signIn)):
+			return "names-the-sign-in", s.Name // its own address for the sign-in: the agent's is the listener
 		case len(s.Published) > 0:
 			return "publishes-ports", s.Name
 		case len(s.Relabelled) > 0:
@@ -305,7 +323,10 @@ func (a *Agent) putApp(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusUnprocessableEntity, map[string]string{"error": code})
 		return
 	}
-	if code, detail := checkProject(p, req); code != "" {
+	a.mu.Lock()
+	signIn := a.signInName()
+	a.mu.Unlock()
+	if code, detail := checkProject(p, req, signIn); code != "" {
 		a.log.Warn("refused an app's compose project", "app", id, "why", code, "service", detail)
 		writeJSON(w, http.StatusUnprocessableEntity, map[string]string{"error": code, "detail": detail})
 		return
@@ -417,7 +438,7 @@ func (a *Agent) placeApp(id string, prev *appState) (*appState, error) {
 		next := *prev
 		return &next, nil
 	}
-	levels, nets := map[string]bool{}, map[netip.Prefix]bool{signInNet: true}
+	levels, nets := map[string]bool{}, map[netip.Prefix]bool{signInNet: true, listenerNet: true}
 	for other, s := range a.state.Apps {
 		if other != id {
 			levels[s.Level], nets[s.Subnet] = true, true

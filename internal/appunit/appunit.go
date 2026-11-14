@@ -39,10 +39,14 @@ type App struct {
 	Subnet   netip.Prefix
 	// Level is the app's own SELinux MCS level (s0:c600,c601); SELinux says whether the machine has SELinux, so the
 	// unit labels the app's secrets. Slot is the app's number on this node, which its bridges are named after.
-	Level   string
-	Slot    int
-	SELinux bool
-	Secrets []Secret
+	Level string
+	Slot  int
+	// SignIn is the sign-in's name (auth.<main domain>), which every container resolves to the sign-in listener's
+	// address, SignInAt (ADR 0020); none while the sign-in isn't served.
+	SignIn   string
+	SignInAt netip.Addr
+	SELinux  bool
+	Secrets  []Secret
 	// Dir is where the agent keeps the app's compose files and sealed credentials.
 	Dir string
 }
@@ -122,6 +126,7 @@ func Override(a App) []byte {
 	w("#     SELinux level;")
 	w("#   - the app's one upstream, a fixed address on a network of its own, which only the edge and the agent may open;")
 	w("#   - every network's bridge named by the agent, so the firewall table knows it before it is made;")
+	w("#   - the sign-in's name, at the sign-in listener's address: the one thing of this machine's the app may open;")
 	w("#   - its secrets, as files its unit copies from the credentials the agent sealed.")
 	w("name: %s", q(Project(a.ID)))
 	w("services:")
@@ -135,6 +140,10 @@ func Override(a App) []byte {
 		w("        condition: \"none\"")
 		w("    security_opt:")
 		w("      - %s", q("label=level:"+a.Level))
+		if a.SignIn != "" && a.SignInAt.IsValid() {
+			w("    extra_hosts:")
+			w("      - %s", q(a.SignIn+"="+a.SignInAt.String()))
+		}
 		if s.Name != a.Service {
 			continue
 		}

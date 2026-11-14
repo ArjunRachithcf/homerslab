@@ -45,6 +45,8 @@ type Service struct {
 	Published   []string `json:"published,omitempty"`
 	Relabelled  []string `json:"relabelled,omitempty"`
 	Loosened    []string `json:"loosened,omitempty"`
+	// Hosts are the names its extra_hosts give an address to, in order.
+	Hosts []string `json:"hosts,omitempty"`
 }
 
 // State is a compose project as its engine runs it now: its containers, in name order. None is a project the engine

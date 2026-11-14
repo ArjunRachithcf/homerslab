@@ -86,6 +86,7 @@ services:
   quiet:
     image: docker.io/library/alpine:3@sha256:3333333333333333333333333333333333333333333333333333333333333333
     security_opt: [no-new-privileges:true, no-new-privileges]
+    extra_hosts: ["Auth.example.test=10.0.0.1", "other.test:10.0.0.2"]
 networks:
   front: {}
   back: {}
@@ -105,7 +106,7 @@ volumes: {data: {}}
 			Networks: []string{"back", "front"}, Published: []string{"127.0.0.1:8080:80/tcp", "9000/tcp"}, Relabelled: []string{"/srv/a", "/srv/b"}},
 	}
 	if !reflect.DeepEqual(got.Services[0], want[0]) || !reflect.DeepEqual(got.Services[3], want[1]) || got.Services[1].Name != "quiet" ||
-		got.Services[1].Loosened != nil {
+		got.Services[1].Loosened != nil || !reflect.DeepEqual(got.Services[1].Hosts, []string{"auth.example.test", "other.test"}) {
 		t.Errorf("read\n %+v\nwant %+v", got.Services, want)
 	}
 	if tool := got.Services[2]; !reflect.DeepEqual(tool.Loosened, []string{"privileged", "cap_add", "devices", "security_opt",

@@ -106,8 +106,27 @@ func (a *Agent) edgeConfig() (cfg []byte, ok bool, err error) {
 		c.SignIn = &edge.Site{Name: e.SignIn, Dial: a.upstream()}
 	}
 	c.Apps = a.edgeApps()
+	if a.listening() {
+		c.SignInListen = SignInListen
+	}
 	b, err := edge.Render(c)
 	return b, err == nil, err
+}
+
+// listening says whether the edge serves the sign-in listener: where the sign-in is served, once an app is installed
+// (the listener is for apps only). The caller holds a.mu.
+func (a *Agent) listening() bool {
+	e := a.state.Edge
+	return e != nil && e.SignIn != "" && a.state.SignIn != nil && len(a.state.Apps) > 0
+}
+
+// listen puts the sign-in listener's address on the machine's loopback, before the edge binds it (Caddy refuses a
+// configuration whose address isn't there). Idempotent. The caller holds a.mu.
+func (a *Agent) listen(ctx context.Context) error {
+	if !a.listening() {
+		return nil
+	}
+	return a.run(ctx, "ip", "-4", "address", "replace", SignInListen.String()+"/32", "dev", "lo")
 }
 
 // pushEdge loads the configuration into the edge, waiting a while for an edge that is starting. The caller holds a.mu.
@@ -115,6 +134,9 @@ func (a *Agent) pushEdge(ctx context.Context) error {
 	cfg, ok, err := a.edgeConfig()
 	if err != nil || !ok {
 		return err
+	}
+	if err := a.listen(ctx); err != nil {
+		return fmt.Errorf("the sign-in listener's address: %w", err)
 	}
 	c := edge.NewClient(a.cfg.Edge.AdminSocket)
 	ctx, cancel := context.WithTimeout(ctx, min(a.cfg.JoinWait, 15*time.Second)) // an edge that is starting
@@ -142,6 +164,9 @@ func (a *Agent) reconcileEdge(ctx context.Context) error {
 	running, err := c.Running(ctx, cfg)
 	if err != nil || running {
 		return err
+	}
+	if err := a.listen(ctx); err != nil {
+		return fmt.Errorf("the sign-in listener's address: %w", err)
 	}
 	if err := c.Load(ctx, cfg); err != nil {
 		return err

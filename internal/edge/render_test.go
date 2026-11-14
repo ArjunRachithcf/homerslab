@@ -7,6 +7,8 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -37,10 +39,11 @@ func TestTheEdgesConfigurationIsItsGoldenRender(t *testing.T) {
 	twoAddresses.Listen = append(twoAddresses.Listen, netip.MustParseAddr("fd7a:115c:a1e0::1"))
 	twoAddresses.Port = 9443
 	for name, c := range map[string]edge.Config{
-		"primary":        thePrimary(),
-		"with-sign-in":   withSignIn(),
-		"guarded-app":    withAGuardedApp(),
-		"cloud-port-two": twoAddresses,
+		"primary":          thePrimary(),
+		"with-sign-in":     withSignIn(),
+		"guarded-app":      withAGuardedApp(),
+		"sign-in-listener": withTheSignInListener(),
+		"cloud-port-two":   twoAddresses,
 		"before-the-cert": {AdminSocket: "/run/homerslab-edge/admin.sock", Storage: "/var/lib/homerslab-edge",
 			Listen: []netip.Addr{netip.MustParseAddr("100.88.7.186")}, Port: 443},
 	} {
@@ -426,6 +429,78 @@ func TestPort80OnlyRedirectsAndEveryNameHasHSTSAndSecureCookies(t *testing.T) {
 func fmt_(m []map[string]any) string {
 	b, _ := json.Marshal(m)
 	return strings.NewReplacer(`"`, "").Replace(string(b))
+}
+
+func withTheSignInListener() edge.Config {
+	c := withAGuardedApp()
+	c.SignInListen = netip.MustParseAddr("172.31.255.241")
+	return c
+}
+
+// The sign-in listener (ADR 0020, #19): apps reach the sign-in at an address of its own, on the household's port, and
+// it carries the sign-in's route only. A handshake for any other name finds no certificate; another Host gets 421.
+func TestTheSignInListenerCarriesTheSignInsRouteOnly(t *testing.T) {
+	testenv.Isolate(t)
+	b, err := edge.Render(withTheSignInListener())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cfg struct {
+		Apps struct {
+			HTTP struct {
+				Servers map[string]struct {
+					Listen   []string `json:"listen"`
+					Policies []struct {
+						Match struct {
+							SNI []string `json:"sni"`
+						} `json:"match"`
+					} `json:"tls_connection_policies"`
+					Routes []map[string]any `json:"routes"`
+				} `json:"servers"`
+			} `json:"http"`
+		} `json:"apps"`
+	}
+	if err := json.Unmarshal(b, &cfg); err != nil {
+		t.Fatal(err)
+	}
+	s, ok := cfg.Apps.HTTP.Servers["sign-in"]
+	if !ok || !reflect.DeepEqual(s.Listen, []string{"172.31.255.241:443"}) || len(s.Policies) != 1 ||
+		!reflect.DeepEqual(s.Policies[0].Match.SNI, []string{"auth.example.test"}) || len(s.Routes) != 2 {
+		t.Fatalf("the sign-in listener: %+v", s)
+	}
+	route, _ := json.Marshal(s.Routes)
+	for _, want := range []string{`"host":["auth.example.test"]`, `"dial":"172.31.250.10:9000"`, `"/if/flow/initial-setup"`, `"status_code":421`} {
+		if !strings.Contains(string(route), want) {
+			t.Errorf("the sign-in listener's routes lack %s: %s", want, route)
+		}
+	}
+	for _, bad := range []string{"admin.example.test", "pdf.example.test", "unix/"} {
+		if strings.Contains(string(route), bad) {
+			t.Errorf("the sign-in listener carries %s: %s", bad, route)
+		}
+	}
+	if !slices.Contains(cfg.Apps.HTTP.Servers["mesh"].Listen, "100.88.7.186:443") || slices.Contains(cfg.Apps.HTTP.Servers["mesh"].Listen, "172.31.255.241:443") {
+		t.Errorf("the mesh listener: %+v", cfg.Apps.HTTP.Servers["mesh"].Listen)
+	}
+	// Without the sign-in on this node, a mesh address, or loopback: no listener.
+	for name, c := range map[string]edge.Config{
+		"no sign-in":     func() edge.Config { c := withTheSignInListener(); c.SignIn = nil; return c }(),
+		"a mesh address": func() edge.Config { c := withTheSignInListener(); c.SignInListen = c.Listen[0]; return c }(),
+		"no certificate for its name": func() edge.Config {
+			c := withTheSignInListener()
+			c.SignIn = &edge.Site{Name: "auth.home.example.test", Dial: c.SignIn.Dial}
+			return c
+		}(),
+		"loopback": func() edge.Config {
+			c := withTheSignInListener()
+			c.SignInListen = netip.MustParseAddr("127.0.0.1")
+			return c
+		}(),
+	} {
+		if _, err := edge.Render(c); err == nil {
+			t.Errorf("%s: rendered", name)
+		}
+	}
 }
 
 // The edge's rule for cookies, as Caddy runs it on each Set-Cookie value: Secure, once, whatever the upstream sent.

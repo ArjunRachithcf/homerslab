@@ -4,6 +4,7 @@
 #     SELinux level;
 #   - the app's one upstream, a fixed address on a network of its own, which only the edge and the agent may open;
 #   - every network's bridge named by the agent, so the firewall table knows it before it is made;
+#   - the sign-in's name, at the sign-in listener's address: the one thing of this machine's the app may open;
 #   - its secrets, as files its unit copies from the credentials the agent sealed.
 name: "homerslab-everything"
 services:
@@ -14,6 +15,8 @@ services:
         condition: "none"
     security_opt:
       - "label=level:s0:c602,c603"
+    extra_hosts:
+      - "auth.example.test=172.31.255.241"
   "web":
     restart: "no"
     deploy:
@@ -21,6 +24,8 @@ services:
         condition: "none"
     security_opt:
       - "label=level:s0:c602,c603"
+    extra_hosts:
+      - "auth.example.test=172.31.255.241"
     networks:
       "homerslab-upstream":
         ipv4_address: "172.31.240.18"
@@ -31,6 +36,8 @@ services:
         condition: "none"
     security_opt:
       - "label=level:s0:c602,c603"
+    extra_hosts:
+      - "auth.example.test=172.31.255.241"
 networks:
   "back":
     driver_opts:

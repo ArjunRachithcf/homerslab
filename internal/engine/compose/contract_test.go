@@ -67,7 +67,8 @@ func TestTheContainerEngineContractOnDocker(t *testing.T) {
 		}
 		sub := netip.PrefixFrom(netip.AddrFrom4([4]byte{172, 31, 241, byte(16 * i)}), 28)
 		a := appunit.App{ID: id, Product: id, Plan: "p-contract", Project: p, Service: "web",
-			Upstream: netip.AddrPortFrom(sub.Addr().Next().Next(), 8080), Subnet: sub, Level: fmt.Sprintf("s0:c%d,c%d", 600+2*i, 601+2*i), Slot: i, Dir: filepath.Join(dir, id)}
+			Upstream: netip.AddrPortFrom(sub.Addr().Next().Next(), 8080), Subnet: sub, Level: fmt.Sprintf("s0:c%d,c%d", 600+2*i, 601+2*i), Slot: i, Dir: filepath.Join(dir, id),
+			SignIn: "auth.example.test", SignInAt: netip.MustParseAddr("172.31.255.241")}
 		if err := os.MkdirAll(a.Dir, 0o700); err != nil {
 			t.Fatal(err)
 		}
@@ -127,6 +128,18 @@ func TestTheContainerEngineContractOnDocker(t *testing.T) {
 			if got := strings.TrimSpace(string(out)); err != nil || got != bridge {
 				t.Errorf("%s's bridge: %q %v, want %s", network, got, err, bridge)
 			}
+		}
+	})
+
+	// The claim ADR 0020 tests first: an app's container resolves auth.<main domain> to the sign-in listener on a host
+	// running systemd-resolved (CI's runner), whose stub resolver Docker can't hand a container. The agent's file gives
+	// it the name in the container's own hosts file, which any resolver reads first.
+	t.Run("claim (#82): a container resolves the sign-in's name to the sign-in listener, systemd-resolved or not", func(t *testing.T) {
+		resolved := exec.Command("systemctl", "is-active", "--quiet", "systemd-resolved.service").Run() == nil
+		t.Logf("this host runs systemd-resolved: %v (the engine's host, when the engine is this machine's)", resolved)
+		out, err := exec.Command("docker", "-H", host, "exec", appunit.Project("contract-a")+"-web-1", "getent", "hosts", "auth.example.test").CombinedOutput()
+		if f := strings.Fields(string(out)); err != nil || len(f) < 2 || f[0] != "172.31.255.241" || f[1] != "auth.example.test" {
+			t.Errorf("getent hosts auth.example.test: %q %v", out, err)
 		}
 	})
 

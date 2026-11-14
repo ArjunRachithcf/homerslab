@@ -137,6 +137,10 @@ func (r *Reader) load(ctx context.Context, name string, file []byte) (engine.Pro
 			}
 		}
 		svc.Loosened = loosened(s)
+		for name := range s.ExtraHosts {
+			svc.Hosts = append(svc.Hosts, strings.ToLower(name))
+		}
+		slices.Sort(svc.Hosts)
 		out.Services = append(out.Services, svc)
 	}
 	slices.SortFunc(out.Services, func(a, b engine.Service) int { return strings.Compare(a.Name, b.Name) })

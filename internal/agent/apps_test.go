@@ -108,7 +108,8 @@ func TestAnAppIsOneUnitRunningTheStandardComposeCommand(t *testing.T) {
 	want := appunit.App{ID: "bentopdf", Product: "BentoPDF", Plan: r.Plan,
 		Project: engine.Project{Name: "homerslab-bentopdf", Services: []engine.Service{{Name: "web", Image: "ghcr.io/alam00000/bentopdf-simple:2.8.10@sha256:b5227a308e796d2bd00d2eb6da9d7296093107a8be7efef38a006d06506dc3c0"}},
 			Networks: []engine.Network{{Name: "default"}}},
-		Service: "web", Upstream: mustAddrPort("172.31.240.2:8080"), Subnet: mustPrefix("172.31.240.0/28"), Level: "s0:c600,c601", Slot: 0, SELinux: true, Dir: dir}
+		Service: "web", Upstream: mustAddrPort("172.31.240.2:8080"), Subnet: mustPrefix("172.31.240.0/28"), Level: "s0:c600,c601", Slot: 0, SELinux: true, Dir: dir,
+		SignIn: "auth.example.test", SignInAt: agent.SignInListen}
 	if !bytes.Equal(unit, appunit.UnitFile(want)) {
 		t.Errorf("the unit:\n%s\nwant\n%s", unit, appunit.UnitFile(want))
 	}
@@ -148,6 +149,31 @@ func TestTheEdgeAloneReachesTheApp(t *testing.T) {
 	table, _ := h.Table()
 	if !strings.Contains(table, "ip daddr . tcp dport . meta skuid { 172.31.240.2 . 8080 . 0, 172.31.240.2 . 8080 . 981, 172.31.250.10 . 9000 . 0, 172.31.250.10 . 9000 . 980, 172.31.250.10 . 9000 . 981 } accept") {
 		t.Errorf("the firewall table:\n%s", table)
+	}
+}
+
+// Apps reach the sign-in through the sign-in listener only (ADR 0020): its own address, on the machine's loopback, on
+// the household's port, with the sign-in's route only; every container resolves auth.<main domain> to it, and the
+// firewall table lets the apps' networks open that and nothing else of the machine. Before an app, there is none.
+func TestAppsReachTheSignInThroughItsListener(t *testing.T) {
+	testenv.Isolate(t)
+	sock, h, state := signedIn(t, agent.Config{})
+	if table, _ := h.Table(); bytes.Contains(h.Edge.Config(), []byte("172.31.255.241")) || strings.Contains(table, "172.31.255.241") || len(h.Loopback()) != 0 {
+		t.Errorf("a listener before any app:\n%s\n%s", h.Edge.Config(), table)
+	}
+	install(t, sock, "bentopdf", bentoPDF(t))
+	if got := h.Loopback(); !slices.Equal(got, []string{"172.31.255.241/32"}) {
+		t.Errorf("the loopback's addresses: %q", got)
+	}
+	cfg := strings.NewReplacer(" ", "", "\n", "").Replace(string(h.Edge.Config()))
+	if !strings.Contains(cfg, `"sign-in":{`) || !strings.Contains(cfg, `"listen":["172.31.255.241:443"]`) {
+		t.Errorf("the edge has no sign-in listener:\n%s", cfg)
+	}
+	if table, _ := h.Table(); !strings.Contains(table, "\tchain apps_in {\n\t\tmeta l4proto { tcp, udp } th dport 53 fib daddr . iif type local accept\n\t\tip daddr . tcp dport { 172.31.255.241 . 443 } accept\n") {
+		t.Errorf("the firewall table doesn't let apps reach the listener:\n%s", table)
+	}
+	if o, _ := os.ReadFile(filepath.Join(state, "apps", "bentopdf", "homerslab.yaml")); !strings.Contains(string(o), "extra_hosts:\n      - \"auth.example.test=172.31.255.241\"\n") {
+		t.Errorf("the app's containers don't resolve the sign-in to its listener:\n%s", o)
 	}
 }
 
@@ -300,6 +326,9 @@ func TestAnAppsProjectIsRefusedWhenItCantBeWired(t *testing.T) {
 			r.Compose = strings.Replace(r.Compose, "  db:\n", "  db:\n    networks: [back]\n", 1) +
 				"networks:\n  back: {ipam: {config: [{subnet: 172.31.250.0/28}]}}\n"
 		}), 422, "network-configured"},
+		"its own address for the sign-in": {"ledger", edit(func(r *agent.AppRequest) {
+			r.Compose = strings.Replace(r.Compose, "  db:\n", "  db:\n    extra_hosts: [\"auth.example.test=10.0.0.1\"]\n", 1)
+		}), 422, "names-the-sign-in"},
 		"an upstream it doesn't run":     {"ledger", edit(func(r *agent.AppRequest) { r.Service = "api" }), 422, "no-such-service"},
 		"a secret the plan doesn't make": {"ledger", edit(func(r *agent.AppRequest) { r.Secrets = nil }), 422, "secrets-mismatch"},
 		"a secret the file doesn't take": {"ledger", edit(func(r *agent.AppRequest) {
