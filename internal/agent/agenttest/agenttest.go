@@ -145,6 +145,7 @@ type Host struct {
 	mu        sync.Mutex
 	cmds      []host.Cmd
 	table     string
+	loopback  []string // the addresses the agent put on the loopback
 	hasTable  bool
 	dropInAt  map[string][]byte // the NetBird drop-in as it was when each command ran
 	fail      map[string]error
@@ -509,6 +510,12 @@ func (h *Host) Run(ctx context.Context, c host.Cmd) ([]byte, error) {
 		return []byte("2026-11-11T10:00:00+0000 primary docker[812]: server-1 | {\"event\": \"Starting authentik server\"}\n" +
 			"2026-11-11T10:01:00+0000 primary docker[812]: server-1 | {\"event\": \"/if/flow/homerslab-passkey-enrolment/?itoken=" + JournalToken + "\"}\n" +
 			"2026-11-11T10:01:01+0000 primary docker[812]: server-1 | {\"event\": \"/api/v3/flows/executor/homerslab-passkey-enrolment/?query=itoken%3D" + JournalToken + "&x=1\"}\n"), nil
+	case len(c.Args) == 6 && line == "ip -4 address replace "+c.Args[3]+" dev lo":
+		// An address on the machine's loopback: the sign-in listener's.
+		if !slices.Contains(h.loopback, c.Args[3]) {
+			h.loopback = append(h.loopback, c.Args[3])
+		}
+		return nil, nil
 	case line == "netbird status --json":
 		return fmt.Appendf(nil, `{"management":{"connected":true},"netbirdIp":"%s/16","fqdn":"study-pc.netbird.selfhosted"}`, h.NetbirdIP), nil
 	case c.Name == "systemd-creds" && len(c.Args) == 5 && c.Args[0] == "encrypt":
@@ -521,6 +528,13 @@ func (h *Host) Run(ctx context.Context, c host.Cmd) ([]byte, error) {
 		return base64.StdEncoding.DecodeString(strings.TrimPrefix(string(b), "sealed:"))
 	}
 	return nil, &host.Error{Cmd: line, Err: errors.New("not something this test's machine does")}
+}
+
+// Loopback are the addresses the agent put on the machine's loopback.
+func (h *Host) Loopback() []string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return slices.Clone(h.loopback)
 }
 
 // showNetBird is `systemctl show netbird.service` for the drop-ins, whether a reload is due, and when the main process

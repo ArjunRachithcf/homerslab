@@ -99,18 +99,21 @@ type Agent struct {
 
 	mu         sync.Mutex // the state below, and joins
 	state      state
-	natUnknown bool             // the unknown NAT mapper state was reported, until systemd can say again
-	natAt      time.Time        // when the mesh client's NAT mapper was last checked
-	bridgesAt  time.Time        // when the engines were last asked for their bridges
-	refused    map[string]bool  // engine bridge names refused, reported once each
-	meshDrift  []firewall.Drift // what the agent found changed in the mesh client, and put back
-	reads      *reads           // compose reads, one at a time
-	installs   sync.Mutex       // apps' installs, one at a time, outside mu
-	edgeDown   string           // the edge's last check's error, so a down edge is logged once
-	network    lan.Network      // the network's last reading, which the table keeps while the kernel can't be asked
-	networkErr bool             // the network can't be read, which is logged once
-	stateErr   error            // why the saved state couldn't be read at start, if it couldn't
-	brokenFile bool             // the state file is that unreadable one, not yet put aside
+	natUnknown bool            // the unknown NAT mapper state was reported, until systemd can say again
+	natAt      time.Time       // when the mesh client's NAT mapper was last checked
+	bridgesAt  time.Time       // when the engines were last asked for their bridges
+	refused    map[string]bool // engine bridge names refused, reported once each
+	// listenerUp: the sign-in listener's address is on the loopback; listenerFailed: putting it there failed, and
+	// was reported.
+	listenerUp, listenerFailed bool
+	meshDrift                  []firewall.Drift // what the agent found changed in the mesh client, and put back
+	reads                      *reads           // compose reads, one at a time
+	installs                   sync.Mutex       // apps' installs, one at a time, outside mu
+	edgeDown                   string           // the edge's last check's error, so a down edge is logged once
+	network                    lan.Network      // the network's last reading, which the table keeps while the kernel can't be asked
+	networkErr                 bool             // the network can't be read, which is logged once
+	stateErr                   error            // why the saved state couldn't be read at start, if it couldn't
+	brokenFile                 bool             // the state file is that unreadable one, not yet put aside
 }
 
 // state is what the agent keeps across restarts, in StateDir/agent.json. None of it is secret.
@@ -351,6 +354,9 @@ func (a *Agent) firewallState(context.Context) firewall.State {
 	s := firewall.State{Mesh: a.state.Mesh, WireGuard: a.state.WireGuard, LAN: n.LAN, LANPrefixes: n.Prefixes,
 		Uplinks4: n.Uplinks4, Uplinks6: n.Uplinks6, Virtual: n.Virtual, Bridges: a.bridges(), Resolvers: resolvers(a.cfg.Sysroot),
 		Upstreams: a.appsFirewall()}
+	if a.listening() && a.listenerUp {
+		s.SignInListener = []netip.AddrPort{netip.AddrPortFrom(SignInListen, uint16(a.state.Edge.Port))}
+	}
 	if !a.state.SetupClosed {
 		s.SetupPort = a.setupPort()
 	}

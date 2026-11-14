@@ -62,6 +62,7 @@ const (
 	signInStub = "10.216.3.10:9000"
 	appStub    = "10.216.4.10:8080"
 	edgeApps   = "10.216.4.20"
+	listener   = "10.216.9.1" // the sign-in listener's address, on the edge machine's loopback
 	helperMode = "HLTEST16_HELPER"
 )
 
@@ -243,7 +244,8 @@ func TestTheEdgesRequestMatrix(t *testing.T) {
 	cfg := edge.Config{AdminSocket: adminFile, Storage: "/var/lib/homerslab-edge", Listen: []netip.Addr{netip.MustParseAddr(edgeMesh)},
 		Port: 443, Certificates: []edge.Certificate{{Domain: "example.test", CertFile: credDir + "/tls-example.test.crt", KeyFile: credDir + "/tls-example.test.key"}},
 		Admin: &edge.Site{Name: "admin.example.test", Upstream: adminSock}, SignIn: &edge.Site{Name: "auth.example.test", Dial: signInStub},
-		Apps: []edge.App{{Name: "pdf.example.test", Dial: appStub, Guard: edge.AuthentikGuard(signInStub)}}}
+		Apps:         []edge.App{{Name: "pdf.example.test", Dial: appStub, Guard: edge.AuthentikGuard(signInStub)}},
+		SignInListen: netip.MustParseAddr(listener)}
 	want, err := edge.Render(cfg)
 	if err != nil {
 		t.Fatal(err)
@@ -433,9 +435,45 @@ func TestTheEdgesRequestMatrix(t *testing.T) {
 		})
 	}
 
+	// The sign-in listener (ADR 0020, #19): an app reaches the sign-in there, with SNI and Host both the sign-in's name;
+	// nothing else is served on it, and nothing else of the edge's machine is open to the app.
+	toListener := func(sni, host, path string) request {
+		return request{Addr: listener + ":443", SNI: sni, Host: host, Path: path}
+	}
+	for _, row := range []struct {
+		name, from string
+		q          request
+		want       string
+		notWants   string
+	}{
+		{name: "an app reaches the sign-in through it: served", from: "app",
+			q: toListener("auth.example.test", "auth.example.test", "/application/o/token/"), want: "200 Authentik, at auth.example.test /application/o/token/"},
+		{name: "the sign-in's name, with the port in Host: served", from: "app",
+			q: toListener("auth.example.test", "auth.example.test:443", "/"), want: "200 Authentik"},
+		{name: "SNI the sign-in's, Host Admin's: refused", from: "app",
+			q: toListener("auth.example.test", "admin.example.test", "/"), want: "421 ", notWants: "Admin"},
+		{name: "SNI the sign-in's, Host another app's: refused", from: "app",
+			q: toListener("auth.example.test", "pdf.example.test", "/"), want: "421 ", notWants: "App,"},
+		{name: "SNI Admin's: no certificate, nothing served", from: "app",
+			q: toListener("admin.example.test", "admin.example.test", "/"), want: "error: ", notWants: "Admin"},
+		{name: "SNI another app's: no certificate, nothing served", from: "app",
+			q: toListener("pdf.example.test", "pdf.example.test", "/"), want: "error: ", notWants: "App,"},
+		{name: "the first-admin flow: 403, never the provider", from: "app",
+			q: toListener("auth.example.test", "auth.example.test", "/if/flow/initial-setup/"), want: "403 ", notWants: "Authentik"},
+		{name: "the edge machine's mesh listener, from an app: dropped", from: "app",
+			q: request{Addr: edgeApps + ":443", SNI: "auth.example.test", Host: "auth.example.test"}, want: "error: ", notWants: "Authentik"},
+	} {
+		t.Run("the sign-in listener, "+row.name, func(t *testing.T) {
+			got := ask(row.from, row.q)
+			if !strings.HasPrefix(got, row.want) || (row.notWants != "" && strings.Contains(got, row.notWants)) {
+				t.Errorf("%s asks %s with SNI %s, Host %s: %q, want %q…", row.from, row.q.Addr, row.q.SNI, row.q.Host, got, row.want)
+			}
+		})
+	}
+
 	// Authentik's first-admin flow is refused on every listener before the provider sees it, its page and its executor
-	// API alike, however the path is written (#84). Today the edge has one listener for the sign-in, the mesh one; the
-	// sign-in listener (#19) and the public listener (#32) take the same rows.
+	// API alike, however the path is written (#84). Today the edge has one listener for people, the mesh one, and the
+	// sign-in listener for apps (above); the public listener (#32) takes the same rows.
 	for _, path := range []string{
 		"/if/flow/initial-setup/", "/if/flow/initial-setup", "/if/flow/initial-setup/?next=/",
 		"/api/v3/flows/executor/initial-setup/", "/api/v3/flows/executor/initial-setup/?query=", "/api/v3/flows/executor/initial-setup",
@@ -482,7 +520,15 @@ func TestTheEdgesRequestMatrix(t *testing.T) {
 		if !edge.Same([]byte(got), boot) {
 			t.Errorf("after a restart the edge runs %s, want its boot configuration", got)
 		}
-		w.load(t, want)
+		// The restarted container has a network namespace of its own, without the listener's address the companion put
+		// in the old one (the agent puts it back before it pushes): the push is without the listener.
+		noListener := cfg
+		noListener.SignInListen = netip.Addr{}
+		again, err := edge.Render(noListener)
+		if err != nil {
+			t.Fatal(err)
+		}
+		w.load(t, again)
 		if got := ask("phone", request{Addr: edgeMesh + ":443", SNI: "admin.example.test", Host: "admin.example.test"}); !strings.HasPrefix(got, "200 Admin") {
 			t.Errorf("after the push again: %q", got)
 		}
@@ -557,7 +603,8 @@ func (w *world) firewall(t *testing.T) {
 	users := []uint32{uint32(edgeID), 0}
 	table := firewall.Render(firewall.State{Mesh: []string{meshIf}, LAN: []string{lanIf},
 		LANPrefixes: []netip.Prefix{netip.MustParsePrefix("10.216.2.0/24")}, Bridges: []string{appsIf}, Virtual: []string{appsIf},
-		Upstreams: []firewall.Upstream{{Addr: netip.MustParseAddrPort(appStub), UIDs: users}, {Addr: netip.MustParseAddrPort(signInStub), UIDs: users}}})
+		Upstreams:      []firewall.Upstream{{Addr: netip.MustParseAddrPort(appStub), UIDs: users}, {Addr: netip.MustParseAddrPort(signInStub), UIDs: users}},
+		SignInListener: []netip.AddrPort{netip.MustParseAddrPort(listener + ":443")}})
 	if out, err := w.cmd(strings.NewReader(table), "exec", "-i", container("firewall"), "nft", "-f", "-").CombinedOutput(); err != nil {
 		t.Fatalf("applying the firewall table: %v %s\n%s", err, out, table)
 	}
@@ -630,6 +677,11 @@ func up(t *testing.T, engine, chain, key string) *world {
 		w.copy(t, m, []file{{path: strings.TrimPrefix(helperBin, "/"), body: bin, mode: 0o755}})
 	}
 	w.compose(t, "start")
+	// The agent's part of the sign-in listener: its address on the loopback; and the apps' network as an engine's bridge,
+	// whose veth is its one port, so the table treats it as one.
+	w.docker(t, nil, "exec", container("firewall"), "sh", "-c", "ip address add "+listener+"/32 dev lo && ip link add br-apps type bridge && "+
+		"dev=$(ip -o -4 address show | awk '$4 == \""+edgeApps+"/24\" {print $2}') && ip address del "+edgeApps+"/24 dev $dev && "+
+		"ip link set $dev master br-apps && ip address add "+edgeApps+"/24 dev br-apps && ip link set br-apps up")
 	w.docker(t, nil, "exec", "-u", "0", container("admin"), "sh", "-c", "chown 4200:4100 /run/homerslab-admin && chmod 0750 /run/homerslab-admin")
 	w.docker(t, nil, "exec", "-d", "-u", "4200:4100", "-e", helperMode+"=admin", container("admin"), helperBin, "-")
 	w.docker(t, nil, "exec", "-d", "-e", helperMode+"=authentik", container("authentik"), helperBin, "-")

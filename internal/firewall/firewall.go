@@ -18,7 +18,8 @@
 //     is forwarding, and dropped), and nothing routed.
 //   - From the mesh: any listener of this machine (the mesh's own policies filter it), but nothing routed: only the
 //     edge, on this machine, reaches an app (#19).
-//   - From the apps (the engines' bridges): this machine's DNS at their bridge's own gateway, the resolvers it uses
+//   - From the apps (the engines' bridges): this machine's DNS at their bridge's own gateway, the sign-in listener (its
+//     own address, on the household's port: ADR 0020), the resolvers it uses
 //     out through an uplink (never one at a mesh peer), IPv6 neighbour discovery,
 //     their own bridge, and the internet through an uplink of the packet's address family (the LAN's, or a VPN's
 //     tunnel, which is never the LAN); never another app's bridge, the LAN, the mesh, a private range or a local
@@ -96,6 +97,10 @@ type State struct {
 	// agent's for its health probes, and the manager's for the sign-in); nothing else of this machine opens a
 	// connection into an app's network (ADR 0020, #82).
 	Upstreams []Upstream `json:"upstreams,omitempty"`
+	// SignInListener is where apps reach the sign-in on this node (ADR 0020): the sign-in listener's own address, on
+	// the household's port (and LDAPS's 636 once an LDAP app is installed, #20). The one thing of this machine's an app
+	// may open besides its engine's DNS.
+	SignInListener []netip.AddrPort `json:"signInListener,omitempty"`
 }
 
 // Upstream is one address and TCP port on an app's network, and the users of this machine that may connect to it.
@@ -239,6 +244,9 @@ func Render(s State) string {
 	// the mesh's, the LAN's or another bridge's), and IPv6's neighbour discovery.
 	w("\tchain apps_in {")
 	w("\t\tmeta l4proto { tcp, udp } th dport 53 fib daddr . iif type local accept")
+	if l := listenerAddrs(s.SignInListener); len(l) > 0 {
+		w("\t\tip daddr . tcp dport %s accept", set(l))
+	}
 	w("\t\ticmpv6 type { nd-neighbor-solicit, nd-neighbor-advert, nd-router-solicit } accept")
 	w("\t\tdrop")
 	w("\t}")
@@ -319,6 +327,17 @@ func Render(s State) string {
 	w("\t}")
 	w("}")
 	return b.String()
+}
+
+// listenerAddrs are the sign-in listener's addresses as nft's address . port, in order: IPv4, with a port.
+func listenerAddrs(l []netip.AddrPort) []string {
+	var out []string
+	for _, a := range l {
+		if a.Addr().Unmap().Is4() && a.Port() != 0 {
+			out = append(out, fmt.Sprintf("%s . %d", a.Addr().Unmap(), a.Port()))
+		}
+	}
+	return uniqStrings(out)
 }
 
 // usable are the upstreams that can be rendered: IPv4 with a port, and at least one user.

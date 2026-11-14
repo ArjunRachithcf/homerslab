@@ -37,6 +37,7 @@ func withSecrets() appunit.App {
 			Networks: []engine.Network{{Name: "back"}, {Name: "default"}, {Name: "front"}}},
 		Service: "web", Upstream: netip.MustParseAddrPort("172.31.240.18:8080"), Subnet: netip.MustParsePrefix("172.31.240.16/28"),
 		Level: "s0:c602,c603", Slot: 1, SELinux: true, Dir: "/var/lib/homerslab-agent/apps/everything",
+		SignIn: "auth.example.test", SignInAt: netip.MustParseAddr("172.31.255.241"),
 		Secrets: []appunit.Secret{{Name: "secret-key", UID: 1000}, {Name: "db-password", UID: 999}}}
 }
 
@@ -199,7 +200,7 @@ func TestNoTextOfTheAppsEndsALineOfItsFiles(t *testing.T) {
 			}
 			for svc, v := range services {
 				for k := range v.(map[string]any) {
-					if !slices.Contains([]string{"restart", "deploy", "security_opt", "networks"}, k) {
+					if !slices.Contains([]string{"restart", "deploy", "security_opt", "extra_hosts", "networks"}, k) {
 						t.Errorf("%q has %q:\n%s", svc, k, o)
 					}
 				}
@@ -228,5 +229,22 @@ func TestNoTextOfTheAppsEndsALineOfItsFiles(t *testing.T) {
 				t.Errorf("the unit's description:\n%s", u)
 			}
 		})
+	}
+}
+
+// Every container resolves the sign-in's name to the sign-in listener (ADR 0020): from its own hosts file, whatever
+// resolver the machine runs (systemd-resolved's stub included).
+func TestEveryContainerResolvesTheSignInToItsListener(t *testing.T) {
+	testenv.Isolate(t)
+	a := withSecrets()
+	o := string(appunit.Override(a))
+	for _, s := range a.Project.Services {
+		if !strings.Contains(o, "  \""+s.Name+"\":\n    restart: \"no\"\n    deploy:\n      restart_policy:\n        condition: \"none\"\n"+
+			"    security_opt:\n      - \"label=level:s0:c602,c603\"\n    extra_hosts:\n      - \"auth.example.test=172.31.255.241\"\n") {
+			t.Errorf("%s doesn't resolve the sign-in to its listener:\n%s", s.Name, o)
+		}
+	}
+	if strings.Contains(string(appunit.Override(bentoPDF())), "extra_hosts") {
+		t.Error("an app on a node without the sign-in resolves it")
 	}
 }

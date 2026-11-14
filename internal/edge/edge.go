@@ -65,6 +65,10 @@ type Config struct {
 	Admin *Site
 	// SignIn is the sign-in, auth.<main domain>, on the primary only: the identity provider's server.
 	SignIn *Site
+	// SignInListen is the sign-in listener's own address on this node (ADR 0020), where apps reach the sign-in, on the
+	// household's port: it carries the sign-in's route only, with SNI and Host both the sign-in's name. None: no
+	// listener (no sign-in on this node yet).
+	SignInListen netip.Addr
 	// Apps are this node's apps' sites.
 	Apps []App
 }
@@ -206,8 +210,9 @@ func Render(c Config) ([]byte, error) {
 		cookies = append(cookies, obj{"search_regexp": r.search, "replace": r.replace})
 	}
 	var routes, redirects []obj
+	var signIn obj // the sign-in's route, which the sign-in listener carries too
 	for _, site := range sites {
-		routes = append(routes, obj{
+		route := obj{
 			"match": []obj{{"host": []string{site.name}}},
 			"handle": []obj{
 				{"handler": "headers", "response": obj{
@@ -218,7 +223,11 @@ func Render(c Config) ([]byte, error) {
 				site.handle,
 			},
 			"terminal": true,
-		})
+		}
+		routes = append(routes, route)
+		if c.SignIn != nil && site.name == c.SignIn.Name {
+			signIn = route
+		}
 		// Only an origin-form target, a path: an opaque absolute-form one (`GET http:@evil.test`) has none, and would
 		// otherwise follow the name in the Location, making it another host's.
 		redirects = append(redirects, obj{
@@ -233,30 +242,67 @@ func Render(c Config) ([]byte, error) {
 	misdirected := obj{"handle": []obj{{"handler": "static_response", "status_code": 421}}}
 	routes, redirects = append(routes, misdirected), append(redirects, misdirected)
 
+	var signInServer obj
+	if c.SignInListen.IsValid() {
+		a := c.SignInListen.Unmap()
+		if c.SignIn == nil || !a.Is4() || a.IsUnspecified() || a.IsLoopback() || a.IsMulticast() || slices.Contains(c.Listen, a) {
+			return nil, fmt.Errorf("the sign-in listener needs the sign-in, and an IPv4 address of its own, not %v", a)
+		}
+		// The sign-in's name only: a handshake for any other name finds no certificate, and another Host gets 421.
+		// The one wildcard certificate that covers the name: *.<the name's parent>.
+		_, parent, _ := strings.Cut(c.SignIn.Name, ".")
+		var tags []string
+		for _, crt := range c.Certificates {
+			if strings.EqualFold(crt.Domain, parent) && tags == nil {
+				tags = []string{crt.Domain}
+			}
+		}
+		if tags == nil && len(c.Certificates) > 0 {
+			return nil, fmt.Errorf("the sign-in listener: no certificate covers %s", c.SignIn.Name)
+		}
+		if tags != nil {
+			signInServer = obj{
+				"listen":          []string{netip.AddrPortFrom(a, uint16(c.Port)).String()},
+				"protocols":       []string{"h1", "h2"},
+				"automatic_https": obj{"disable": true},
+				"tls_connection_policies": []obj{{
+					"match":                 obj{"sni": []string{c.SignIn.Name}},
+					"certificate_selection": obj{"any_tag": tags},
+				}},
+				"routes": []obj{signIn, misdirected},
+			}
+		}
+	}
+
 	cfg := obj{
 		"admin":   obj{"listen": AdminListen(c.AdminSocket), "config": obj{"persist": false}},
 		"storage": obj{"module": "file_system", "root": c.Storage},
 	}
 	// Without a certificate the edge listens nowhere: Caddy would serve plain HTTP on a server without TLS.
 	if loads != nil {
+		servers := obj{
+			"mesh": obj{
+				"listen":                  at(c.Port),
+				"protocols":               []string{"h1", "h2"},
+				"automatic_https":         obj{"disable": true},
+				"tls_connection_policies": policies,
+				"routes":                  routes,
+			},
+			// Plain HTTP only redirects to HTTPS (#64): it proxies nothing.
+			"redirect": obj{
+				"listen":          at(80),
+				"protocols":       []string{"h1"},
+				"automatic_https": obj{"disable": true},
+				"routes":          redirects,
+			},
+		}
+		// Apps reach the sign-in here, over HTTPS only: no plain listener at its address.
+		if signInServer != nil {
+			servers["sign-in"] = signInServer
+		}
 		cfg["apps"] = obj{
-			"tls": obj{"certificates": obj{"load_files": loads}, "disable_ocsp_stapling": true},
-			"http": obj{"servers": obj{
-				"mesh": obj{
-					"listen":                  at(c.Port),
-					"protocols":               []string{"h1", "h2"},
-					"automatic_https":         obj{"disable": true},
-					"tls_connection_policies": policies,
-					"routes":                  routes,
-				},
-				// Plain HTTP only redirects to HTTPS (#64): it proxies nothing.
-				"redirect": obj{
-					"listen":          at(80),
-					"protocols":       []string{"h1"},
-					"automatic_https": obj{"disable": true},
-					"routes":          redirects,
-				},
-			}},
+			"tls":  obj{"certificates": obj{"load_files": loads}, "disable_ocsp_stapling": true},
+			"http": obj{"servers": servers},
 		}
 	}
 	var buf bytes.Buffer

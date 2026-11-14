@@ -106,12 +106,44 @@ func (a *Agent) edgeConfig() (cfg []byte, ok bool, err error) {
 		c.SignIn = &edge.Site{Name: e.SignIn, Dial: a.upstream()}
 	}
 	c.Apps = a.edgeApps()
+	if a.listening() && a.listenerUp {
+		c.SignInListen = SignInListen
+	}
 	b, err := edge.Render(c)
 	return b, err == nil, err
 }
 
+// listening says whether the edge serves the sign-in listener: where the sign-in is served, once an app is installed
+// (the listener is for apps only). Only the primary serves the sign-in so far; other nodes' listeners, forwarding to
+// it, come with the nodes that run apps (ADR 0020). The caller holds a.mu.
+func (a *Agent) listening() bool {
+	return a.signInName() != "" && len(a.state.Apps) > 0
+}
+
+// listen puts the sign-in listener's address on the machine's loopback, before the edge binds it (Caddy refuses a
+// configuration whose address isn't there), or takes it away once no listener is wanted. Idempotent, so it runs at
+// every check: an address someone flushed comes back. A failure leaves the listener out of the edge's configuration,
+// never the rest of it. The caller holds a.mu.
+func (a *Agent) listen(ctx context.Context) {
+	addr := SignInListen.String() + "/32"
+	switch {
+	case a.listening():
+		err := a.run(ctx, "ip", "-4", "address", "replace", addr, "dev", "lo")
+		if err != nil && !a.listenerFailed {
+			a.log.Error("the sign-in listener's address; the edge serves without it", "err", err)
+		}
+		a.listenerUp, a.listenerFailed = err == nil, err != nil
+	case a.listenerUp:
+		if err := a.run(ctx, "ip", "-4", "address", "del", addr, "dev", "lo"); err != nil {
+			a.log.Warn("taking the sign-in listener's address away", "err", err)
+		}
+		a.listenerUp = false
+	}
+}
+
 // pushEdge loads the configuration into the edge, waiting a while for an edge that is starting. The caller holds a.mu.
 func (a *Agent) pushEdge(ctx context.Context) error {
+	a.listen(ctx)
 	cfg, ok, err := a.edgeConfig()
 	if err != nil || !ok {
 		return err
@@ -134,6 +166,7 @@ func (a *Agent) pushEdge(ctx context.Context) error {
 // reconcileEdge pushes the configuration again when the edge doesn't run it: it started again (its boot
 // configuration has no sites, and autosave is off), or something changed it. The caller holds a.mu.
 func (a *Agent) reconcileEdge(ctx context.Context) error {
+	a.listen(ctx)
 	cfg, ok, err := a.edgeConfig()
 	if err != nil || !ok {
 		return err
@@ -260,10 +293,15 @@ func (a *Agent) saveEdge(w http.ResponseWriter, r *http.Request, next edgeState,
 		fail(w, http.StatusConflict, "not-on-the-mesh") // kept: the edge serves once the node has joined
 		return
 	}
+	a.appsFollowSignIn(ctx) // the sign-in's name may be new
 	if err := a.pushEdge(ctx); err != nil {
 		a.log.Error("loading the edge's configuration", "err", err)
 		fail(w, http.StatusBadGateway, "edge-unreachable")
 		return
+	}
+	// The sign-in listener's port is the household's: the table follows it now, not at the next check.
+	if err := a.reconcile(ctx, true); err != nil {
+		a.log.Error("the firewall table, after the edge's sites", "err", err)
 	}
 	writeJSON(w, http.StatusOK, a.edgeStatus(ctx))
 }

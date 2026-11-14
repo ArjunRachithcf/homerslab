@@ -402,3 +402,21 @@ func TestOnlyTheUpstreamsUsersOpenConnectionsIntoAppNetworks(t *testing.T) {
 		t.Error("the upstreams don't count in Equal")
 	}
 }
+
+// Apps reach the sign-in listener, on its address and port only, and nothing else of the machine but their DNS (ADR
+// 0020, #19).
+func TestAppsReachTheSignInListenerAndNothingElseOfTheMachine(t *testing.T) {
+	testenv.Isolate(t)
+	s := firewall.State{Mesh: []string{"wt0"}, LAN: []string{"enp5s0"}, Bridges: []string{"br-app"}, Virtual: []string{"br-app"},
+		SignInListener: []netip.AddrPort{netip.MustParseAddrPort("172.31.255.241:443"), netip.MustParseAddrPort("[fd00::1]:443"),
+			netip.MustParseAddrPort("172.31.255.241:0")}}
+	r := firewall.Render(s)
+	want := "\tchain apps_in {\n\t\tmeta l4proto { tcp, udp } th dport 53 fib daddr . iif type local accept\n" +
+		"\t\tip daddr . tcp dport { 172.31.255.241 . 443 } accept\n"
+	if !strings.Contains(r, want) || strings.Contains(r, "fd00::1") {
+		t.Errorf("the table lacks the sign-in listener, or has more:\n%s", r)
+	}
+	if none := firewall.Render(firewall.State{Mesh: s.Mesh, LAN: s.LAN, Bridges: s.Bridges, Virtual: s.Virtual}); strings.Contains(none, "172.31.255.241") {
+		t.Errorf("without a listener:\n%s", none)
+	}
+}

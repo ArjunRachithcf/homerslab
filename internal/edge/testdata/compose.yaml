@@ -9,7 +9,9 @@
 #     and modes systemd gives them;
 #   - the edge runs as its own unprivileged user, with only the capability to bind low ports, as its unit does;
 #   - the agent's firewall table goes into the edge's machine through a companion in its network namespace (NET_ADMIN
-#     there only), and the LAN host routes the mesh's addresses through the edge's LAN address, as a LAN host can.
+#     there only), and the LAN host routes the mesh's addresses through the edge's LAN address, as a LAN host can;
+#   - the companion also does the agent's part of the sign-in listener (#19): its address on the edge machine's loopback,
+#     and the apps' network as a bridge there, as an engine's is.
 name: hltest-16-edge
 
 networks:
@@ -94,9 +96,12 @@ services:
       sign-in:
         ipv4_address: 10.216.3.10
 
-  # A guarded app, as a stub on its own network: it answers with the identity and the cookies that reached it.
+  # A guarded app, as a stub on its own network: it answers with the identity and the cookies that reached it. It reaches
+  # the sign-in listener's address through the edge's machine, as an app's container does through its bridge.
   app:
     <<: *machine
+    command: ["sh", "-c", "ip route add 10.216.9.1/32 via 10.216.4.20 && exec sleep infinity"]
+    cap_add: [NET_ADMIN]
     networks:
       apps:
         ipv4_address: 10.216.4.10
