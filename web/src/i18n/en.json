@@ -232,6 +232,7 @@
   "store.kids.none": "No kid view",
   "store.planning": "Making its plan…",
   "store.notSetUp": "Finish first-time setup first: a plan needs the household’s name and your mail address.",
+  "store.needsStorage": "This app uses a storage location, a folder of films or music say, and this page can’t choose one yet. Nothing was installed.",
   "store.cantPlan": "HomersLab can’t plan this app: {why}.",
   "plan.title": "Install {app}",
   "plan.sub": "What installing {app} will do, in plain words. Nothing happens until you press Install.",

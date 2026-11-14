@@ -289,6 +289,10 @@ func checkProject(p engine.Project, r AppRequest, signIn string) (code, detail s
 			return "publishes-ports", s.Name
 		case len(s.Relabelled) > 0:
 			return "relabels-a-folder", s.Name
+		case len(s.Binds) > 0:
+			// A folder of the machine reaches an app only as a storage location, bound by the agent as the plan says:
+			// read-only unless the plan says otherwise, and only the location's own folder (#28).
+			return "binds-a-folder", s.Name + ": " + strings.Join(s.Binds, ", ")
 		case s.NetworkMode != "":
 			return "network-mode", s.Name
 		case len(s.Loosened) > 0:
@@ -393,12 +397,16 @@ func (a *Agent) putApp(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusUnprocessableEntity, map[string]string{"error": code})
 		return
 	}
+	data := ""
+	if len(req.Storage) > 0 {
+		data = a.engineData(ctx)
+	}
 	a.mu.Lock()
 	signIn := ""
 	if e := a.state.Edge; e != nil {
 		signIn = e.SignIn // whether this node serves it yet or not
 	}
-	mounts, noStorage := a.appMounts(req)
+	mounts, noStorage := a.appMounts(req, data)
 	a.mu.Unlock()
 	if code, detail := checkProject(p, req, signIn); code != "" {
 		a.log.Warn("refused an app's compose project", "app", id, "why", code, "service", detail)

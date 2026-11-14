@@ -70,6 +70,15 @@ type Config struct {
 	// FolderLabel is a folder's SELinux label, which a storage location's must let every app read (#28): its
 	// security.selinux attribute when nil.
 	FolderLabel func(path string) (string, error)
+	// FolderOwner is the user whose folders lead to a storage location's: root (0), the only one who may be able to
+	// put another folder, or a symlink, where one of them was. Another only in tests, which aren't root.
+	FolderOwner int
+	// EngineData is where the container engine keeps its data, which no storage location is, holds or is inside:
+	// Docker's data-root, asked of Docker, when nil.
+	EngineData func(ctx context.Context) (string, error)
+	// NoSetuid says whether a folder's filesystem is mounted nosuid and nodev, as one an app writes to must be;
+	// statfs when nil.
+	NoSetuid func(path string) (bool, error)
 	// SetupPort is the setup link's LAN listener, the firewall table's one exception until it closes.
 	SetupPort int
 	// CheckEvery is how often the firewall table is checked for drift: often, so an `nft flush ruleset` is undone
@@ -264,6 +273,12 @@ func New(ctx context.Context, c Config) (*Agent, error) {
 	}
 	if c.FolderLabel == nil {
 		c.FolderLabel = folderLabel
+	}
+	if c.EngineData == nil {
+		c.EngineData = dockerData(c.Run)
+	}
+	if c.NoSetuid == nil {
+		c.NoSetuid = noSetuid
 	}
 	if c.HasInterface == nil {
 		root := c.Sysroot

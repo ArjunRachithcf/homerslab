@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"syscall"
 
 	"github.com/ArjunRachithcf/homerslab/internal/text"
 )
@@ -24,6 +25,8 @@ var (
 	ErrForbidden = errors.New("forbidden-path")
 	ErrSymlink   = errors.New("symlink-in-path")
 	ErrNotFolder = errors.New("not-a-folder")
+	// ErrOwner is a folder on the way to the location's that another user than root could replace.
+	ErrOwner = errors.New("path-not-roots")
 )
 
 // plainName says whether n is one name of a folder's path as a media library's folders are called, in any script
@@ -42,19 +45,29 @@ var forbidden = []string{"/etc", "/proc", "/sys", "/dev", "/run", "/var/run", "/
 
 // CheckFolder says whether p, under the machine's root directory root ("/" on a real machine), may be a storage
 // location: an absolute, clean path of plain names, outside the machine's and HomersLab's folders (and also's: the
-// agent's own state, wherever it is), holding none of them, that is a folder reached without a symlink.
-func CheckFolder(root, p string, also ...string) error {
+// agent's own state, the engine's data, wherever they are), holding none of them, that is a folder reached without a
+// symlink, through folders only owner (root, on a real machine) can change.
+//
+// The last is what keeps the answer true after it is given: the engine binds the path later, at every start, as root,
+// following symlinks. Were a folder on the way another user's, or writable by a group or by everyone, that user (an
+// app that writes to the location above it, say) could put a symlink to /etc where the folder was. The folder itself
+// may be anyone's (a media library is its owner's): replacing it takes writing to its parent. POSIX ACLs aren't read:
+// one that lets a user write to a folder on the way is the admin's own doing.
+func CheckFolder(root string, owner int, p string, also ...string) error {
 	if err := Allowed(p); err != nil {
 		return err
 	}
 	for _, f := range also {
-		if Nested(p, f) {
+		if f != "" && Nested(p, f) {
 			return ErrForbidden
 		}
 	}
+	names := strings.Split(p[1:], "/")
 	at := root
-	for _, n := range strings.Split(p[1:], "/") {
-		at = filepath.Join(at, n)
+	for i := -1; i < len(names); i++ {
+		if i >= 0 {
+			at = filepath.Join(at, names[i])
+		}
 		fi, err := os.Lstat(at)
 		switch {
 		case err != nil:
@@ -63,6 +76,12 @@ func CheckFolder(root, p string, also ...string) error {
 			return ErrSymlink
 		case !fi.IsDir():
 			return ErrNotFolder
+		}
+		if i == len(names)-1 {
+			break // the folder itself
+		}
+		if st, ok := fi.Sys().(*syscall.Stat_t); !ok || int(st.Uid) != owner || fi.Mode().Perm()&0o022 != 0 {
+			return ErrOwner
 		}
 	}
 	return nil

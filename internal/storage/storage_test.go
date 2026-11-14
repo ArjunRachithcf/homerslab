@@ -27,7 +27,7 @@ func TestAFolderIsTakenOnlyWhereItHoldsNothingOfTheMachines(t *testing.T) {
 	_ = os.Symlink(filepath.Join(root, "data"), filepath.Join(root, "mnt"))
 
 	for _, ok := range []string{"/srv/media", "/srv/media/Films", "/srv/My Music", "/srv/Médias/Björk", "/data/real"} {
-		if err := storage.CheckFolder(root, ok); err != nil {
+		if err := storage.CheckFolder(root, os.Getuid(), ok); err != nil {
 			t.Errorf("%s refused: %v", ok, err)
 		}
 	}
@@ -69,9 +69,54 @@ func TestAFolderIsTakenOnlyWhereItHoldsNothingOfTheMachines(t *testing.T) {
 		"/srv/a-file":              storage.ErrNotFolder,
 		"/srv/nothing":             storage.ErrNotFolder,
 	} {
-		if err := storage.CheckFolder(root, p, "/srv/state"); !errors.Is(err, want) {
+		if err := storage.CheckFolder(root, os.Getuid(), p, "/srv/state"); !errors.Is(err, want) {
 			t.Errorf("%q: %v, want %v", p, err, want)
 		}
+	}
+}
+
+// A folder is taken only where nobody but root can put another in its place afterwards: the engine binds the path at
+// every start, as root, following symlinks. Every folder on the way is root's (here: the test's user's) and writable by
+// nobody else; the folder itself may be anyone's (#28's review).
+func TestAFolderIsTakenOnlyWhereOnlyRootCanReplaceIt(t *testing.T) {
+	testenv.Isolate(t)
+	root := t.TempDir()
+	for _, d := range []string{"srv/media/Films", "srv/shared/Films", "srv/world/Films", "etc"} {
+		if err := os.MkdirAll(filepath.Join(root, d), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mode := func(d string, m os.FileMode) {
+		t.Helper()
+		if err := os.Chmod(filepath.Join(root, d), m); err != nil { // not MkdirAll's mode: the umask would cut it
+			t.Fatal(err)
+		}
+	}
+	mode("srv/shared", 0o775)
+	mode("srv/world", 0o757)
+	mode("srv/media/Films", 0o777) // the folder itself: its owner's, whoever writes to it
+	me := os.Getuid()
+	if err := storage.CheckFolder(root, me, "/srv/media/Films"); err != nil {
+		t.Errorf("a folder under root's own: %v", err)
+	}
+	for _, p := range []string{"/srv/shared/Films", "/srv/world/Films"} {
+		if err := storage.CheckFolder(root, me, p); !errors.Is(err, storage.ErrOwner) {
+			t.Errorf("%s, under a folder others write to: %v", p, err)
+		}
+	}
+	// Under a folder that isn't root's: its owner could swap it. (Here "root" is another user than the test's.)
+	if err := storage.CheckFolder(root, me+1, "/srv/media/Films"); !errors.Is(err, storage.ErrOwner) {
+		t.Errorf("under another user's folder: %v", err)
+	}
+	// The swap itself, where the parent let it happen: the check that runs before every start refuses the symlink.
+	if err := os.Rename(filepath.Join(root, "srv/media/Films"), filepath.Join(root, "srv/media/Films.old")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(root, "etc"), filepath.Join(root, "srv/media/Films")); err != nil {
+		t.Fatal(err)
+	}
+	if err := storage.CheckFolder(root, me, "/srv/media/Films"); !errors.Is(err, storage.ErrSymlink) {
+		t.Errorf("a symlink where the folder was: %v", err)
 	}
 }
 

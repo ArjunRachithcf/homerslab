@@ -277,6 +277,24 @@ func TestAStorageLocationIsABindOfItsFolderReadOnlyWhereThePlanSays(t *testing.T
 	if db := o[strings.Index(o, "  \"db\":\n"):strings.Index(o, "  \"web\":\n")]; strings.Contains(db, "volumes") {
 		t.Errorf("a service that didn't ask sees a location:\n%s", db)
 	}
+	// A service that writes to a location can't make a device there; one that only reads keeps its capabilities.
+	if n := strings.Count(o, "    cap_drop:\n      - \"MKNOD\"\n"); n != 1 {
+		t.Errorf("MKNOD dropped for %d services, want the one that writes:\n%s", n, o)
+	}
+	ro := withStorage()
+	for i := range ro.Mounts {
+		ro.Mounts[i].ReadOnly = true
+	}
+	if strings.Contains(string(appunit.Override(ro)), "cap_drop") {
+		t.Error("a service that only reads its locations lost a capability")
+	}
+	// Before every start the unit has each folder checked again: the engine binds the path as root, following symlinks.
+	u := string(appunit.UnitFile(a))
+	for _, want := range []string{"ExecStartPre=/usr/bin/homerslab agent check-storage \"/srv/media/Films\"\n", "ExecStartPre=/usr/bin/homerslab agent check-storage \"/srv/uploads\"\n"} {
+		if !strings.Contains(u, want) || strings.Index(u, want) > strings.Index(u, "ExecStart=") {
+			t.Errorf("the unit lacks %q before its start:\n%s", want, u)
+		}
+	}
 	// A source or a target no check passed is never written (compose would read ${...} as a variable), and the app
 	// doesn't start without it: the engine refuses a bind of a folder that is never there.
 	for _, m := range []appunit.Mount{
@@ -292,6 +310,9 @@ func TestAStorageLocationIsABindOfItsFolderReadOnlyWhereThePlanSays(t *testing.T
 		if strings.Contains(o, m.Source) || strings.Contains(o, m.Target+"\"") ||
 			!strings.Contains(o, "        source: \""+appunit.RefusedMount+"\"\n        target: \""+appunit.RefusedMount+"\"\n        read_only: true\n") {
 			t.Errorf("%+v written:\n%s", m, o)
+		}
+		if u := string(appunit.UnitFile(b)); strings.Contains(u, "check-storage") {
+			t.Errorf("%+v reached the unit:\n%s", m, u)
 		}
 	}
 }

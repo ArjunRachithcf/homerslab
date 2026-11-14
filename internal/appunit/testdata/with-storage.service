@@ -21,6 +21,8 @@ LoadCredentialEncrypted=everything.secret-key:/var/lib/homerslab-agent/apps/ever
 ExecStartPre=/usr/bin/install -m 0400 -o 999 -g 999 %d/everything.db-password /run/homerslab-app-everything/db-password
 ExecStartPre=/usr/bin/install -m 0400 -o 1000 -g 1000 %d/everything.secret-key /run/homerslab-app-everything/secret-key
 ExecStartPre=/usr/bin/chcon -t container_file_t -l s0:c602,c603 /run/homerslab-app-everything/db-password /run/homerslab-app-everything/secret-key
+ExecStartPre=/usr/bin/homerslab agent check-storage "/srv/media/Films"
+ExecStartPre=/usr/bin/homerslab agent check-storage "/srv/uploads"
 ExecStart=/usr/bin/docker compose --project-name homerslab-everything --project-directory /var/lib/homerslab-agent/apps/everything --file /var/lib/homerslab-agent/apps/everything/compose.yaml --file /var/lib/homerslab-agent/apps/everything/homerslab.yaml up --no-log-prefix --quiet-pull --abort-on-container-exit
 # Not into the journal: compose writes the containers' output there, secrets and all; the agent reads the app's
 # logs from the engine, its secrets cut out. systemd still logs the unit's starts, stops and exit statuses.

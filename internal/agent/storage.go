@@ -1,22 +1,33 @@
 package agent
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
 	"maps"
 	"net/http"
 	"path/filepath"
 	"slices"
+	"strings"
+	"time"
 
 	"golang.org/x/sys/unix"
 
 	"github.com/ArjunRachithcf/homerslab/internal/appunit"
+	"github.com/ArjunRachithcf/homerslab/internal/host"
 	"github.com/ArjunRachithcf/homerslab/internal/storage"
 )
 
 // Storage locations on this node (#28; story 48; ADR 0003), which the manager adds once and apps' plans name: so far a
 // local folder; network shares reached over the mesh come with #28's second part.
-//   - A folder is taken only where storage.CheckFolder passes: a folder of its own, reached without a symlink, holding
-//     nothing of the machine's or HomersLab's. It is never relabelled or changed.
+//   - A folder is taken only where storage.CheckFolder passes: a folder of its own, reached without a symlink through
+//     folders only root can change, holding nothing of the machine's, the engine's or HomersLab's. It is never
+//     relabelled or changed. The check runs again when an app that uses it is installed, and before every start of
+//     that app (CheckStorageMain, from the app's unit): the engine binds the path as root, following symlinks.
+//   - A location an app writes to is on a filesystem mounted nosuid and nodev: what an app leaves there (a setuid
+//     program, a device) then gives nobody on the machine more than they had.
 //   - An app's compose file binds the location's folder into the service that asked, read-only unless its plan says
 //     otherwise.
 
@@ -63,11 +74,11 @@ func (s *storageState) mount(id string, as AppStorage) appunit.Mount {
 }
 
 // checkStorage is what is wrong with a request for location id, by its code and status, or "". The caller holds a.mu.
-func (a *Agent) checkStorage(id string, r StorageRequest) (string, int) {
+func (a *Agent) checkStorage(id string, r StorageRequest, data string) (string, int) {
 	if r.Kind != "folder" {
 		return "bad-storage", http.StatusBadRequest
 	}
-	if err := a.checkFolder(r.Path); err != nil {
+	if err := a.checkFolder(r.Path, data); err != nil {
 		return err.Error(), http.StatusUnprocessableEntity
 	}
 	// No location inside another: an app that writes to one could put a symlink where the other's folder was.
@@ -79,10 +90,14 @@ func (a *Agent) checkStorage(id string, r StorageRequest) (string, int) {
 	return "", 0
 }
 
-// checkFolder says whether a folder may be a location, now: storage.CheckFolder, outside the agent's own state, and on
-// SELinux labelled so that every app reads it at its own level. Nothing is relabelled: the admin labels it.
-func (a *Agent) checkFolder(p string) error {
-	if err := storage.CheckFolder(a.cfg.Root, p, a.cfg.StateDir); err != nil {
+// checkFolder says whether a folder may be a location, now: storage.CheckFolder, outside the agent's own state and the
+// engine's data, and on SELinux labelled so that every app reads it at its own level. Nothing is relabelled: the admin
+// labels it.
+func (a *Agent) checkFolder(p, data string) error {
+	if !filepath.IsAbs(data) {
+		return errEngineData // not known to be outside the engine's data: refused
+	}
+	if err := storage.CheckFolder(a.cfg.Root, a.cfg.FolderOwner, p, a.cfg.StateDir, filepath.Clean(data)); err != nil {
 		return err
 	}
 	if a.selinux() {
@@ -91,6 +106,58 @@ func (a *Agent) checkFolder(p string) error {
 		}
 	}
 	return nil
+}
+
+// errEngineData is a folder refused because the engine didn't say where its data is.
+var errEngineData = errors.New("engine-not-answering")
+
+// errSetuid is a folder an app may not write to: its filesystem would honour a setuid program or a device left there.
+var errSetuid = errors.New("storage-not-nosuid-nodev")
+
+// engineData is where the engine keeps its data, or "" where it doesn't say. Asked without a.mu held: it is a command.
+func (a *Agent) engineData(ctx context.Context) string {
+	data, err := a.cfg.EngineData(ctx)
+	if err != nil {
+		a.log.Warn("the engine doesn't say where its data is", "err", err)
+		return ""
+	}
+	return data
+}
+
+// dockerData is where Docker keeps its data (its data-root; /var/lib/docker unless the admin moved it).
+func dockerData(run func(context.Context, host.Cmd) ([]byte, error)) func(context.Context) (string, error) {
+	return func(ctx context.Context) (string, error) {
+		ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		defer cancel()
+		out, err := run(ctx, host.Cmd{Name: "docker", Args: []string{"info", "--format", "{{.DockerRootDir}}"}})
+		return strings.TrimSpace(string(out)), err
+	}
+}
+
+// noSetuid says whether the filesystem a folder is on is mounted nosuid and nodev.
+func noSetuid(path string) (bool, error) {
+	var st unix.Statfs_t
+	if err := unix.Statfs(path, &st); err != nil {
+		return false, err
+	}
+	return st.Flags&unix.ST_NOSUID != 0 && st.Flags&unix.ST_NODEV != 0, nil
+}
+
+// CheckStorageMain is the agent's check-storage mode (homerslab agent check-storage PATH...): what an app's unit runs
+// before every start, as root, for each folder its compose file binds. It ends with 0 only where each still passes
+// storage.CheckFolder, so an app never starts on a path that has become a symlink, or that another user than root
+// could make one, since its location was added.
+func CheckStorageMain(args []string, stderr io.Writer) int {
+	if len(args) == 0 {
+		return 2
+	}
+	for _, p := range args {
+		if err := storage.CheckFolder("/", 0, p); err != nil {
+			fmt.Fprintf(stderr, "homerslab: storage folder %q is refused: %v\n", p, err)
+			return 1
+		}
+	}
+	return 0
 }
 
 // folderLabel is a folder's SELinux label, from its security.selinux attribute.
@@ -124,6 +191,7 @@ func (a *Agent) putStorage(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusBadRequest, "bad-storage")
 		return
 	}
+	data := a.engineData(r.Context())
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	next := &storageState{Kind: req.Kind, Path: req.Path}
@@ -132,7 +200,7 @@ func (a *Agent) putStorage(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, next.status(id)) // as it was added, whatever its folder is like now
 		return
 	}
-	code, status := a.checkStorage(id, req)
+	code, status := a.checkStorage(id, req, data)
 	if code == "" && prev != nil && a.inUse(id) {
 		code, status = "storage-exists", http.StatusConflict
 	}
@@ -170,9 +238,10 @@ func (a *Agent) getStorage(w http.ResponseWriter, _ *http.Request) {
 }
 
 // appMounts are the mounts an app's request names, or the code that refuses it: a location the agent doesn't have, a
-// folder that no longer passes its checks (a symlink put in its way since it was added, say), or a mount the agent's
+// folder that no longer passes its checks (a symlink put in its way since it was added, say), one the app would write
+// to on a filesystem that honours setuid programs or devices, or a mount the agent's
 // files couldn't name. The caller holds a.mu.
-func (a *Agent) appMounts(r AppRequest) ([]appunit.Mount, string) {
+func (a *Agent) appMounts(r AppRequest, data string) ([]appunit.Mount, string) {
 	var out []appunit.Mount
 	for _, as := range r.Storage {
 		s := a.state.Storage[as.Location]
@@ -180,8 +249,11 @@ func (a *Agent) appMounts(r AppRequest) ([]appunit.Mount, string) {
 			return nil, "no-such-storage"
 		}
 		if s.Kind == "folder" {
-			if err := a.checkFolder(s.Path); err != nil {
+			if err := a.checkFolder(s.Path, data); err != nil {
 				return nil, err.Error()
+			}
+			if ok, err := a.cfg.NoSetuid(filepath.Join(a.cfg.Root, s.Path)); !as.ReadOnly && (err != nil || !ok) {
+				return nil, errSetuid.Error()
 			}
 		}
 		m := s.mount(as.Location, as)

@@ -76,6 +76,8 @@ func Main(ctx context.Context, args []string, env Env) int {
 		err = setupLink(ctx, args[2:], env)
 	case "agent read-project": // the agent's own child for one compose read; not for people
 		return agent.ReadProjectMain(args[2:], os.Stdin, env.Stdout)
+	case "agent check-storage": // an app's unit's own check before each start; not for people
+		return agent.CheckStorageMain(args[2:], env.Stderr)
 	case "plan show":
 		err = showPlanByID(ctx, args[2:], env)
 	case "setup secret":

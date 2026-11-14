@@ -321,3 +321,24 @@ func TestSetupLinkSaysWhenItWorksOnlyOnThisMachine(t *testing.T) {
 		t.Errorf("a link for this machine only is offered to another device:\n%s", out)
 	}
 }
+
+// An app's unit asks before every start whether each folder it binds is still a storage location's (#28): "homerslab
+// agent check-storage" ends with 0 only where every folder passes, and names nothing to check as a mistake.
+func TestCheckStorageRefusesAFolderThatIsNoLocations(t *testing.T) {
+	testenv.Isolate(t)
+	for _, c := range []struct {
+		args []string
+		code int
+	}{
+		{[]string{"/etc"}, 1},
+		{[]string{"/srv/../etc"}, 1},
+		{[]string{"relative"}, 1},
+		{[]string{"/nonexistent-homerslab-test/folder"}, 1},
+		{nil, 2},
+	} {
+		code, _, stderr := run(t, append([]string{"agent", "check-storage"}, c.args...)...)
+		if code != c.code || (c.code == 1 && !strings.Contains(stderr, "refused")) {
+			t.Errorf("check-storage %q: %d %q, want %d", c.args, code, stderr, c.code)
+		}
+	}
+}

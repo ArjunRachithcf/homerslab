@@ -77,6 +77,19 @@ func (m Mount) Checked() bool {
 	return storage.ID.MatchString(m.Location) && storage.ValidTarget(m.Target) && storage.Allowed(m.Source) == nil
 }
 
+// folders are the folders of the machine the mounts bind, each once, in order: only checked ones, whose paths carry
+// nothing a unit's line would read as its own (no quote, backslash, specifier or variable: storage.Allowed).
+func folders(mounts []Mount) []string {
+	var out []string
+	for _, m := range mounts {
+		if m.Checked() {
+			out = append(out, m.Source)
+		}
+	}
+	slices.Sort(out)
+	return slices.Compact(out)
+}
+
 // RefusedMount is the bind a mount no check passed is written as: a folder that is never there, so the engine refuses
 // to start the app, rather than start it without its storage.
 const RefusedMount = "/nonexistent/homerslab-refused-mount"
@@ -152,7 +165,8 @@ func Override(a App) []byte {
 	w("#   - every network's bridge named by the agent, so the firewall table knows it before it is made;")
 	w("#   - the sign-in's name, at the sign-in listener's address: the one thing of this machine's the app may open;")
 	w("#   - its secrets, as files its unit copies from the credentials the agent sealed;")
-	w("#   - its storage locations, each a bind of the location's folder, read-only unless the plan says otherwise.")
+	w("#   - its storage locations, each a bind of the location's folder, read-only unless the plan says otherwise; a")
+	w("#     service that writes to one can't make a device.")
 	w("name: %s", q(Project(a.ID)))
 	w("services:")
 	services := slices.Clone(a.Project.Services)
@@ -186,6 +200,12 @@ func Override(a App) []byte {
 			w("        read_only: %t", m.ReadOnly)
 			w("        bind:")
 			w("          create_host_path: false")
+		}
+		if slices.ContainsFunc(mounts, func(m Mount) bool { return !m.ReadOnly }) {
+			// What it writes to a location stays on the machine: no device among it (the location's filesystem is
+			// nodev and nosuid besides, which the agent checked).
+			w("    cap_drop:")
+			w("      - \"MKNOD\"")
 		}
 		if s.Name != a.Service {
 			continue
@@ -266,6 +286,10 @@ func UnitFile(a App) []byte {
 	}
 	if a.SELinux && len(copies) > 0 {
 		w("ExecStartPre=/usr/bin/chcon -t container_file_t -l %s %s", a.Level, strings.Join(copies, " "))
+	}
+	for _, p := range folders(a.Mounts) {
+		// Before every start: the folder is still one, reached without a symlink through folders only root can change.
+		w("ExecStartPre=/usr/bin/homerslab agent check-storage %s", strconv.Quote(p))
 	}
 	w("ExecStart=%s up --no-log-prefix --quiet-pull --abort-on-container-exit", compose)
 	w("# Not into the journal: compose writes the containers' output there, secrets and all; the agent reads the app's")
