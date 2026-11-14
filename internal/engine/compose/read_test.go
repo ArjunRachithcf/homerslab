@@ -372,3 +372,63 @@ func TestEveryMergeKeyAndFileReferenceIsHarmless(t *testing.T) {
 		}
 	}
 }
+
+// An app never shares the host's namespaces: not its processes (pid), its shared memory (ipc), its host name (uts),
+// its users (userns_mode) or its cgroups. With pid: host an app sees the node's processes and, at a uid it shares
+// with one, signals or traces it. The spec's extras are the machine's network, a device and a capability, so these
+// are refused outright, as the floor (#190), and so is joining another container's namespace by name, which may be
+// the host's. A service of the app's own project may share one, since each of them is held to the same rule.
+func TestAProjectThatSharesTheHostsNamespacesIsRefused(t *testing.T) {
+	testenv.Isolate(t)
+	r := reader(t)
+	for name, c := range map[string]struct{ web, db string }{
+		"pid: host":                  {"pid: host", ""},
+		"pid: HOST":                  {"pid: HOST", ""},
+		"pid: a container's":         {"pid: container:other", ""},
+		"pid: a namespace's path":    {"pid: ns:/proc/1/ns/pid", ""},
+		"ipc: host":                  {"ipc: host", ""},
+		"ipc: a container's":         {"ipc: container:other", ""},
+		"uts: host":                  {"uts: host", ""},
+		"uts: a quoted host":         {`uts: "host"`, ""},
+		"userns_mode: host":          {"userns_mode: host", ""},
+		"userns_mode: a namespace's": {"userns_mode: ns:/proc/1/ns/user", ""},
+		"cgroup: host":               {"cgroup: host", ""},
+		"pid: a service with host's": {"pid: service:db", "pid: host"},
+		"ipc: a service with host's": {"ipc: service:db", "ipc: host"},
+		"uts: a service's":           {"uts: service:db", ""},
+		"userns_mode: a service's":   {"userns_mode: service:db", ""},
+		"only the other service":     {"restart: always", "uts: host"},
+	} {
+		db := "{image: y}"
+		if c.db != "" {
+			db = "{image: y, " + c.db + "}"
+		}
+		file := fmt.Sprintf("services:\n  web: {image: x, %s}\n  db: %s\n", c.web, db)
+		if _, err := r.Read(context.Background(), "homerslab-example", []byte(file)); !errors.Is(err, compose.ErrOffFloor) {
+			t.Errorf("%s: %v, want ErrOffFloor", name, err)
+		}
+	}
+	// A namespace's key is a string, as Compose reads it.
+	for _, v := range []string{"pid: null", "pid: 7", "ipc: [host]", "uts: {host: true}", "cgroup: ~"} {
+		file := fmt.Sprintf("services:\n  web: {image: x, %s}\n", v)
+		if _, err := r.Read(context.Background(), "homerslab-example", []byte(file)); !errors.Is(err, compose.ErrNotPlain) {
+			t.Errorf("%s: %v, want ErrNotPlain", v, err)
+		}
+	}
+	// Their own namespaces, and a service's of the same project, are the app's own.
+	for name, service := range map[string]string{
+		"none":                  "init: true",
+		"pid: a service's":      "pid: service:db",
+		"ipc: private":          "ipc: private",
+		"ipc: shareable":        "ipc: shareable",
+		"ipc: none":             "ipc: none",
+		"ipc: a service's":      "ipc: service:db",
+		"cgroup: private":       "cgroup: private",
+		"network_mode: service": "network_mode: service:db",
+	} {
+		file := fmt.Sprintf("services:\n  web: {image: x, restart: always, %s}\n  db: {image: y}\n", service)
+		if _, err := r.Read(context.Background(), "homerslab-example", []byte(file)); err != nil {
+			t.Errorf("%s: %v, want it read", name, err)
+		}
+	}
+}

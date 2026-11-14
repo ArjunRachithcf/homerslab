@@ -208,6 +208,7 @@ func TestAgentReadsAComposeProjectForPlanning(t *testing.T) {
 		"another project's name": {"homelab", compose, http.StatusBadRequest, "not-ours"},
 		"a file naming another":  {"homerslab-web", "include: [/etc/shadow]\n" + compose, http.StatusUnprocessableEntity, "not-plain"},
 		"a broken file":          {"homerslab-web", "services: {web: {imagee: x}}\n", http.StatusUnprocessableEntity, "invalid-compose"},
+		"the host's processes":   {"homerslab-web", "services: {web: {image: x, pid: host}}\n", http.StatusUnprocessableEntity, "off-floor"},
 	} {
 		resp, body := post(t, sock, "/v1/projects/read", map[string]string{"project": c.project, "compose": c.compose})
 		var e struct{ Error string }

@@ -692,6 +692,8 @@ func (a *Agent) readProject(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusBadRequest, "not-ours")
 	case errors.Is(err, compose.ErrNotPlain):
 		writeJSON(w, http.StatusUnprocessableEntity, map[string]string{"error": "not-plain", "detail": err.Error()})
+	case errors.Is(err, compose.ErrOffFloor):
+		writeJSON(w, http.StatusUnprocessableEntity, map[string]string{"error": "off-floor", "detail": err.Error()})
 	default:
 		writeJSON(w, http.StatusUnprocessableEntity, map[string]string{"error": "invalid-compose", "detail": err.Error()})
 	}
@@ -909,6 +911,8 @@ func (rs *reads) read(ctx context.Context, name string, file []byte) (engine.Pro
 		return engine.Project{}, compose.ErrNotOurs
 	case "not-plain":
 		return engine.Project{}, fmt.Errorf("%w (%s)", compose.ErrNotPlain, res.Detail)
+	case "off-floor":
+		return engine.Project{}, fmt.Errorf("%w (%s)", compose.ErrOffFloor, res.Detail)
 	default:
 		return engine.Project{}, errors.New(res.Detail)
 	}

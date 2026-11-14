@@ -129,7 +129,7 @@ const (
 // readResult is what a read's child answers on its standard output.
 type readResult struct {
 	Project *engine.Project `json:"project,omitempty"`
-	Error   string          `json:"error,omitempty"` // not-ours, not-plain, invalid-compose, cpu-limit or deadline
+	Error   string          `json:"error,omitempty"` // not-ours, not-plain, off-floor, invalid-compose, cpu-limit or deadline
 	Detail  string          `json:"detail,omitempty"`
 	// Confined is how the read ran, as the child read it back from the kernel: its user and groups, its limits and
 	// its OOM score, and the deadline and control pipe it was handed, for the tests.
@@ -254,6 +254,8 @@ func readProjectMain(args []string, stdin io.Reader, stdout io.Writer, read func
 		res.Error = "not-ours"
 	case errors.Is(err, compose.ErrNotPlain):
 		res.Error, res.Detail = "not-plain", err.Error()
+	case errors.Is(err, compose.ErrOffFloor):
+		res.Error, res.Detail = "off-floor", err.Error()
 	default:
 		res.Error, res.Detail = "invalid-compose", err.Error()
 	}
