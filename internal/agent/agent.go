@@ -116,11 +116,15 @@ type Agent struct {
 
 	mu         sync.Mutex // the state below, and joins
 	state      state
-	natUnknown bool            // the unknown NAT mapper state was reported, until systemd can say again
-	natAt      time.Time       // when the mesh client's NAT mapper was last checked
-	sockAt     time.Time       // when the mesh clients' control sockets were last checked (zero: not yet)
-	bridgesAt  time.Time       // when the engines were last asked for their bridges
-	refused    map[string]bool // engine bridge names refused, reported once each
+	natUnknown bool      // the unknown NAT mapper state was reported, until systemd can say again
+	natAt      time.Time // when the mesh client's NAT mapper was last checked
+	sockAt     time.Time // when the mesh clients' control sockets were last checked (zero: not yet)
+	// sockRestarted: when the agent restarted a mesh client to close its socket; sockStuck: one that stayed open after,
+	// reported once and left running.
+	sockRestarted map[string]time.Time
+	sockStuck     map[string]bool
+	bridgesAt     time.Time       // when the engines were last asked for their bridges
+	refused       map[string]bool // engine bridge names refused, reported once each
 	// listenerUp: the sign-in listener's address is on the loopback; listenerFailed: putting it there failed, and
 	// was reported.
 	listenerUp, listenerFailed bool

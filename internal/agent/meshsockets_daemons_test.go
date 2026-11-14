@@ -52,7 +52,7 @@ var daemons = []daemon{
 }
 
 // startScript is what systemd does to start the unit with a drop-in, as a shell script: each drop-in line is merged
-// over the unit's (a list setting adds to it, a single one replaces it), and a setting the harness doesn't know fails
+// over the unit's (a list setting adds to it, a single one replaces it; a folder named twice is made twice), and a setting the harness doesn't know fails
 // the test, so no line of the agent's drop-ins goes untried.
 func startScript(t *testing.T, unit []string, dropIn []byte) string {
 	t.Helper()
@@ -68,9 +68,7 @@ func startScript(t *testing.T, unit []string, dropIn []byte) string {
 		k, v, _ := strings.Cut(l, "=")
 		switch k {
 		case "RuntimeDirectory":
-			if !slices.Contains(dirs, v) {
-				dirs = append(dirs, v)
-			}
+			dirs = append(dirs, v)
 		case "RuntimeDirectoryMode":
 			mode = v
 		case "Environment":

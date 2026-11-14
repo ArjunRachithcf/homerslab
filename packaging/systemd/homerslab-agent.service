@@ -74,8 +74,9 @@ NoNewPrivileges=yes
 CapabilityBoundingSet=CAP_CHOWN CAP_NET_ADMIN CAP_SETUID CAP_SETGID
 ProtectSystem=strict
 # NetBird's, tailscaled's, the edge's and the sign-in's drop-ins, and apps' units (agent.RootWrites; the folders come
-# from tmpfiles.d/homerslab.conf).
-ReadWritePaths=/etc/systemd/system/netbird.service.d /etc/systemd/system/tailscaled.service.d /etc/systemd/system/homerslab-edge.service.d /etc/systemd/system/homerslab-authentik.service.d /etc/homerslab/units
+# from tmpfiles.d/homerslab.conf; tailscaled's, new in #200, may not be there yet when an upgrade restarts the agent
+# before tmpfiles runs: "-", so the agent starts and only that drop-in waits).
+ReadWritePaths=/etc/systemd/system/netbird.service.d -/etc/systemd/system/tailscaled.service.d /etc/systemd/system/homerslab-edge.service.d /etc/systemd/system/homerslab-authentik.service.d /etc/homerslab/units
 ProtectHome=yes
 PrivateTmp=yes
 DevicePolicy=closed

@@ -5,7 +5,10 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"slices"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/ArjunRachithcf/homerslab/internal/agent"
 	"github.com/ArjunRachithcf/homerslab/internal/agent/agenttest"
@@ -199,5 +202,115 @@ func TestASocketFolderOfAnotherOwnersIsDrift(t *testing.T) {
 	call(t, sock, "POST", "/v1/firewall/check", nil)
 	if s := meshStatus(t, sock); len(s.Drift) != 1 || s.Drift[0].What != "tailscaled.service-socket-open" {
 		t.Errorf("the drift: %+v", s.Drift)
+	}
+}
+
+func TestASocketThatStaysOpenIsSaidOnceAndTheClientIsRestartedNoMore(t *testing.T) {
+	testenv.Isolate(t)
+	now := time.Date(2026, 11, 14, 9, 0, 0, 0, time.UTC)
+	var mu sync.Mutex
+	clock := func() time.Time { mu.Lock(); defer mu.Unlock(); return now }
+	tick := func(d time.Duration) { mu.Lock(); now = now.Add(d); mu.Unlock() }
+	sock, h := agenttest.StartWith(t, agent.Config{Now: clock, CheckEvery: time.Hour})
+	stockDaemons(t, h.Root)
+	call(t, sock, "POST", "/v1/firewall/check", nil) // the drop-ins, and a restart that closes it
+	h.KeepSocketsOpen = true                         // from now on systemd doesn't apply it
+	if err := os.Chmod(filepath.Join(h.Root, tailscale.ControlSocket.Dir), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	call(t, sock, "POST", "/v1/firewall/check", nil)
+	call(t, sock, "POST", "/v1/firewall/check", nil) // moments later: waits for the restart
+	tick(time.Minute)
+	for range 3 {
+		call(t, sock, "POST", "/v1/firewall/check", nil)
+		tick(time.Minute)
+	}
+	if n := h.Times("systemctl --no-block try-restart tailscaled.service"); n != 2 {
+		t.Errorf("tailscaled restarted %d times, want twice (its drop-in, then the drift), and no more", n)
+	}
+	var whats []string
+	for _, d := range meshStatus(t, sock).Drift {
+		whats = append(whats, d.What)
+	}
+	if want := []string{"tailscaled.service-socket-open", "tailscaled.service-socket-stays-open"}; !slices.Equal(whats, want) {
+		t.Errorf("the drift: %v, want %v", whats, want)
+	}
+	// Closed by hand: watched again from then on.
+	h.KeepSocketsOpen = false
+	if err := os.Chmod(filepath.Join(h.Root, tailscale.ControlSocket.Dir), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	call(t, sock, "POST", "/v1/firewall/check", nil)
+	if err := os.Chmod(filepath.Join(h.Root, tailscale.ControlSocket.Dir), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	call(t, sock, "POST", "/v1/firewall/check", nil)
+	if n := h.Times("systemctl --no-block try-restart tailscaled.service"); n != 3 {
+		t.Errorf("tailscaled restarted %d times, want a third time once it was closed and opened again", n)
+	}
+}
+
+func TestAnOpenSocketReloadsSystemdBeforeTheRestart(t *testing.T) {
+	testenv.Isolate(t)
+	sock, h := agenttest.StartWith(t, agent.Config{})
+	stockDaemons(t, h.Root)
+	h.Fail("systemctl daemon-reload") // the drop-ins are written, systemd never hears of them
+	call(t, sock, "POST", "/v1/firewall/check", nil)
+	h.Mend()
+	call(t, sock, "POST", "/v1/firewall/check", nil)
+	cmds := h.Cmds()
+	var lines []string
+	for _, c := range cmds {
+		lines = append(lines, c.String())
+	}
+	r, n := slices.Index(lines, "systemctl daemon-reload"), slices.Index(lines, "systemctl --no-block try-restart netbird.service")
+	if r < 0 || n < r {
+		t.Errorf("after a reload that failed, the restart isn't after a reload: %v", lines)
+	}
+	if m := mode(t, h.Root, netbird.ControlSocket.Dir); m != 0o700 {
+		t.Errorf("NetBird's socket folder: %v", m)
+	}
+}
+
+func TestAStoppedNetBirdsLeftoverSocketIsLeftAlone(t *testing.T) {
+	testenv.Isolate(t)
+	sock, h := agenttest.StartWith(t, agent.Config{})
+	call(t, sock, "POST", "/v1/firewall/check", nil)
+	if err := os.MkdirAll(filepath.Join(h.Root, "run"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	ln, err := net.ListenUnix("unix", &net.UnixAddr{Name: filepath.Join(h.Root, netbird.ControlSocket.Link), Net: "unix"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ln.SetUnlinkOnClose(false)
+	ln.Close() // the daemon died: its socket file stays, nothing answers on it
+	call(t, sock, "POST", "/v1/firewall/check", nil)
+	if s := meshStatus(t, sock); len(s.Drift) != 0 {
+		t.Errorf("a socket nothing answers on is drift: %+v", s.Drift)
+	}
+	if h.Times("systemctl --no-block try-restart netbird.service") != 0 {
+		t.Error("a stopped NetBird was restarted")
+	}
+}
+
+func TestADropInWhoseCommentsAloneChangedRestartsNothing(t *testing.T) {
+	testenv.Isolate(t)
+	sock, h := agenttest.StartWith(t, agent.Config{})
+	stockDaemons(t, h.Root)
+	call(t, sock, "POST", "/v1/firewall/check", nil)
+	path := filepath.Join(h.Root, netbird.ControlSocket.DropInPath)
+	if err := os.WriteFile(path, append([]byte("# an older agent's words\n"), netbird.ControlSocket.DropIn...), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	call(t, sock, "POST", "/v1/firewall/check", nil)
+	if b, _ := os.ReadFile(path); string(b) != string(netbird.ControlSocket.DropIn) {
+		t.Errorf("the drop-in wasn't rewritten: %q", b)
+	}
+	if n := h.Times("systemctl --no-block try-restart netbird.service"); n != 1 {
+		t.Errorf("NetBird restarted %d times, want once (the first check's)", n)
+	}
+	if s := meshStatus(t, sock); len(s.Drift) != 0 {
+		t.Errorf("new comments are drift: %+v", s.Drift)
 	}
 }

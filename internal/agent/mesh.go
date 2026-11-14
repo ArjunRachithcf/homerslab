@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"net"
 	"net/http"
 	"net/netip"
 	"os"
@@ -517,33 +518,42 @@ func (a *Agent) noteMeshDrift(what string) {
 // node has joined a mesh: a client's daemon that runs at all answers on it.
 var meshSockets = []mesh.ControlSocket{netbird.ControlSocket, tailscale.ControlSocket}
 
-// checkMeshSockets keeps each mesh client's control socket where only root may connect to it: it puts the client's
-// drop-in back when it changed, and restarts a client whose socket is open to others (systemd makes the folder again,
-// with the drop-in's mode, at the start). Both are drift, but for the drop-ins written at the agent's first check, as
-// a new install or an upgrade brings them. Like checkNATMapper, it runs outside the agent's lock, each host command
+// checkMeshSockets keeps each mesh client's control socket where only root may connect to it.
+//   - A drop-in whose settings changed is put back, and a running client restarted with it (systemd makes the folder
+//     again, with the drop-in's mode, at every start). One whose comments alone changed is rewritten, nothing more.
+//   - A socket open to others is closed the same way: systemd reloaded (a reload that failed earlier is made up for),
+//     the client restarted.
+//
+// Both are drift, but for the drop-ins written at the agent's first check, as a new install or an upgrade brings them.
+// A socket still open a natEvery after its restart stays open, said once, and the client is restarted no more: no
+// restart loop of the node's mesh connection. Like checkNATMapper, it runs each host command outside the agent's lock,
 // for hostWait at most, and queues the restarts; force checks now, otherwise every natEvery.
 func (a *Agent) checkMeshSockets(ctx context.Context, force bool) error {
 	a.mu.Lock()
 	first := a.sockAt.IsZero()
 	due := force || first || a.cfg.Now().Sub(a.sockAt) >= natEvery
-	if due {
-		a.sockAt = a.cfg.Now()
-	}
-	a.mu.Unlock()
 	if !due {
+		a.mu.Unlock()
 		return nil
 	}
-	ctx, cancel := context.WithTimeout(ctx, hostWait)
-	defer cancel()
+	a.sockAt = a.cfg.Now()
+	if a.sockRestarted == nil {
+		a.sockRestarted, a.sockStuck = map[string]time.Time{}, map[string]bool{}
+	}
+	// Decided under the lock, which a join holds throughout, so a check never decides on a join's half-done restart.
 	var drift, restarts []string
 	reload := false
 	var errs []error
 	for _, c := range meshSockets {
 		running, open := a.socketState(c)
-		if b, err := os.ReadFile(filepath.Join(a.cfg.Root, c.DropInPath)); err != nil || string(b) != string(c.DropIn) {
+		b, err := os.ReadFile(filepath.Join(a.cfg.Root, c.DropInPath))
+		if err != nil || string(b) != string(c.DropIn) {
 			if err := a.writeAt(c.DropInPath, c.DropIn); err != nil {
 				errs = append(errs, fmt.Errorf("writing %s's drop-in: %w", c.Unit, err))
 				continue
+			}
+			if err == nil && settings(b) == settings(c.DropIn) {
+				continue // its comments alone
 			}
 			reload = true
 			if !first {
@@ -554,17 +564,35 @@ func (a *Agent) checkMeshSockets(ctx context.Context, force bool) error {
 			}
 			continue
 		}
-		if open {
+		if !open {
+			delete(a.sockRestarted, c.Unit)
+			delete(a.sockStuck, c.Unit)
+			continue
+		}
+		at, restarted := a.sockRestarted[c.Unit]
+		switch {
+		case a.sockStuck[c.Unit]:
+		case restarted && a.cfg.Now().Sub(at) < natEvery:
+			// Restarted moments ago: systemd may not have started it yet.
+		case restarted:
+			a.sockStuck[c.Unit] = true
+			a.log.Error("a mesh client's control socket stayed open to every user on the node after its restart; "+
+				"leaving the client running", "unit", c.Unit)
+			drift = append(drift, c.Unit+"-socket-stays-open")
+		default:
+			a.log.Warn("a mesh client's control socket was open to every user on the node: restarting it closed", "unit", c.Unit)
 			drift = append(drift, c.Unit+"-socket-open")
 			restarts = append(restarts, c.Unit)
+			a.sockRestarted[c.Unit] = a.cfg.Now()
+			reload = true
 		}
 	}
-	a.mu.Lock()
 	for _, what := range drift {
-		a.log.Warn("a mesh client's control socket could be opened by anyone on the node: putting it back", "what", what)
 		a.noteMeshDrift(what)
 	}
 	a.mu.Unlock()
+	ctx, cancel := context.WithTimeout(ctx, hostWait)
+	defer cancel()
 	if reload {
 		if err := a.run(ctx, "systemctl", "daemon-reload"); err != nil {
 			return errors.Join(append(errs, err)...)
@@ -579,23 +607,45 @@ func (a *Agent) checkMeshSockets(ctx context.Context, force bool) error {
 	return errors.Join(errs...)
 }
 
-// socketState says whether a mesh client's daemon has run since boot (its socket's folder, or the link to the socket,
-// is there), and whether its control socket is open to anyone but root: its folder not root's alone (mode 0700, the
-// agent's own uid), or something other than the link at the CLI's path (the daemon listening there, without the
-// drop-in).
+// settings are a unit file's lines but its comments and blank ones.
+func settings(b []byte) string {
+	var out []string
+	for _, l := range strings.Split(string(b), "\n") {
+		if l = strings.TrimSpace(l); l != "" && !strings.HasPrefix(l, "#") && !strings.HasPrefix(l, ";") {
+			out = append(out, l)
+		}
+	}
+	return strings.Join(out, "\n")
+}
+
+// socketState says whether a mesh client's daemon runs (its socket's folder is there, or something answers at
+// NetBird's link), and whether its control socket is open to anyone but root: its folder not root's alone (mode 0700,
+// the agent's own uid), or a listening socket at the CLI's path instead of the link (the daemon running without the
+// drop-in). A socket file there that nothing answers on is a stopped daemon's leftover: no one can connect to it.
 func (a *Agent) socketState(c mesh.ControlSocket) (running, open bool) {
 	if fi, err := os.Lstat(filepath.Join(a.cfg.Root, c.Dir)); err == nil {
 		running = true
 		st, ok := fi.Sys().(*syscall.Stat_t)
 		open = !fi.IsDir() || fi.Mode().Perm() != 0o700 || !ok || int(st.Uid) != os.Geteuid()
 	}
-	if c.Link != "" {
-		path := filepath.Join(a.cfg.Root, c.Link)
-		if fi, err := os.Lstat(path); err == nil {
-			running = true
-			l, err := os.Readlink(path)
-			open = open || fi.Mode()&fs.ModeSymlink == 0 || err != nil || l != "/"+c.Socket
+	if c.Link == "" {
+		return running, open
+	}
+	path := filepath.Join(a.cfg.Root, c.Link)
+	fi, err := os.Lstat(path)
+	switch {
+	case err != nil:
+	case fi.Mode()&fs.ModeSymlink != 0:
+		if l, err := os.Readlink(path); err != nil || l != "/"+c.Socket {
+			running, open = true, true
 		}
+	case fi.Mode()&fs.ModeSocket != 0:
+		if conn, err := net.DialTimeout("unix", path, 100*time.Millisecond); err == nil {
+			conn.Close()
+			running, open = true, true
+		}
+	default:
+		running, open = true, true
 	}
 	return running, open
 }
