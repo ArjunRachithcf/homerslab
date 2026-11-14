@@ -41,13 +41,23 @@ func withSecrets() appunit.App {
 		Secrets: []appunit.Secret{{Name: "secret-key", UID: 1000}, {Name: "db-password", UID: 999}}}
 }
 
+// withStorage is an app given two storage locations (#28): a folder it only reads, and one it writes.
+func withStorage() appunit.App {
+	a := withSecrets()
+	a.Mounts = []appunit.Mount{
+		{Location: "films", Service: "web", Source: "/srv/media/Films", Target: "/media", ReadOnly: true},
+		{Location: "uploads", Service: "worker", Source: "/srv/uploads", Target: "/uploads"},
+	}
+	return a
+}
+
 // Golden renders (spec: Testing Decisions): the unit and the compose file the agent writes for an app, byte for byte.
 // A deliberate change runs `go test ./internal/appunit -update` and explains the diff.
 func TestAnAppsUnitAndComposeFileAreTheirGoldenRenders(t *testing.T) {
 	testenv.Isolate(t)
 	noSELinux := withSecrets()
 	noSELinux.SELinux = false
-	for name, a := range map[string]appunit.App{"bentopdf": bentoPDF(), "with-secrets": withSecrets(), "without-selinux": noSELinux} {
+	for name, a := range map[string]appunit.App{"bentopdf": bentoPDF(), "with-secrets": withSecrets(), "without-selinux": noSELinux, "with-storage": withStorage()} {
 		for file, got := range map[string][]byte{name + ".service": appunit.UnitFile(a), name + ".compose.yaml": appunit.Override(a)} {
 			t.Run(file, func(t *testing.T) {
 				path := filepath.Join("testdata", file)
@@ -200,7 +210,7 @@ func TestNoTextOfTheAppsEndsALineOfItsFiles(t *testing.T) {
 			}
 			for svc, v := range services {
 				for k := range v.(map[string]any) {
-					if !slices.Contains([]string{"restart", "deploy", "security_opt", "extra_hosts", "networks"}, k) {
+					if !slices.Contains([]string{"restart", "deploy", "security_opt", "extra_hosts", "networks", "volumes"}, k) {
 						t.Errorf("%q has %q:\n%s", svc, k, o)
 					}
 				}
@@ -246,5 +256,42 @@ func TestEveryContainerResolvesTheSignInToItsListener(t *testing.T) {
 	}
 	if strings.Contains(string(appunit.Override(bentoPDF())), "extra_hosts") {
 		t.Error("an app on a node without the sign-in resolves it")
+	}
+}
+
+// A storage location reaches only the service that asked for it, as a bind of exactly its folder, read-only where the
+// plan says so, and never made where it isn't there (#28).
+func TestAStorageLocationIsABindOfItsFolderReadOnlyWhereThePlanSays(t *testing.T) {
+	testenv.Isolate(t)
+	a := withStorage()
+	o := string(appunit.Override(a))
+	for _, want := range []string{
+		"  \"web\":\n", "    volumes:\n      - type: \"bind\"\n        source: \"/srv/media/Films\"\n        target: \"/media\"\n        read_only: true\n" +
+			"        bind:\n          create_host_path: false\n",
+		"        source: \"/srv/uploads\"\n        target: \"/uploads\"\n        read_only: false\n",
+	} {
+		if !strings.Contains(o, want) {
+			t.Errorf("the agent's compose file lacks %q:\n%s", want, o)
+		}
+	}
+	if db := o[strings.Index(o, "  \"db\":\n"):strings.Index(o, "  \"web\":\n")]; strings.Contains(db, "volumes") {
+		t.Errorf("a service that didn't ask sees a location:\n%s", db)
+	}
+	// A source or a target no check passed is never written (compose would read ${...} as a variable), and the app
+	// doesn't start without it: the engine refuses a bind of a folder that is never there.
+	for _, m := range []appunit.Mount{
+		{Location: "films", Service: "web", Source: "/srv/${HOME}", Target: "/media", ReadOnly: true},
+		{Location: "films", Service: "web", Source: "/etc", Target: "/media", ReadOnly: true},
+		{Location: "films", Service: "web", Source: "/srv/media", Target: "/media/../etc", ReadOnly: true},
+		{Location: "x", Service: "web", Source: "/var/lib/homerslab-storage/y", Target: "/media"},
+		{Location: "../x", Service: "web", Source: "/srv/media", Target: "/media"},
+	} {
+		b := withSecrets()
+		b.Mounts = []appunit.Mount{m}
+		o := string(appunit.Override(b))
+		if strings.Contains(o, m.Source) || strings.Contains(o, m.Target+"\"") ||
+			!strings.Contains(o, "        source: \""+appunit.RefusedMount+"\"\n        target: \""+appunit.RefusedMount+"\"\n        read_only: true\n") {
+			t.Errorf("%+v written:\n%s", m, o)
+		}
 	}
 }

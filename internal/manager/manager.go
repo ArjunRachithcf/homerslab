@@ -253,6 +253,7 @@ func (m *Manager) Control() http.Handler {
 	mux.HandleFunc("PUT /api/v1/dns/token", m.putDNSToken)
 	mux.HandleFunc("GET /api/v1/warnings", m.getWarnings)
 	m.catalogRoutes(mux)
+	m.storageRoutes(mux)
 	mux.HandleFunc("/", notFound)
 	return mux
 }

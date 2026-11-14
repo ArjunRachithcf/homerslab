@@ -5,7 +5,7 @@ package compose_test
 // appunit), and the adapter reads their state, health and logs, many projects at once, and nothing that isn't
 // HomersLab's. It needs an engine nobody else uses: it runs when HOMERSLAB_TEST_DOCKER_HOST names one (CI's runner, or a
 // throwaway Docker in a container), and is skipped otherwise. The code under test reaches only that engine, by its
-// endpoint; testenv points DOCKER_HOST at nowhere.
+// endpoint; testenv points DOCKER_HOST at nowhere. Its storage locations' folders are in HOMERSLAB_TEST_STORAGE_DIR.
 
 import (
 	"context"
@@ -22,6 +22,7 @@ import (
 	"github.com/ArjunRachithcf/homerslab/internal/appunit"
 	"github.com/ArjunRachithcf/homerslab/internal/engine"
 	"github.com/ArjunRachithcf/homerslab/internal/engine/compose"
+	"github.com/ArjunRachithcf/homerslab/internal/storage"
 	"github.com/ArjunRachithcf/homerslab/internal/testenv"
 )
 
@@ -57,6 +58,25 @@ func TestTheContainerEngineContractOnDocker(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()
 	r := reader(t)
+	// Two storage locations (#28), a folder the app only reads and one it writes, in HOMERSLAB_TEST_STORAGE_DIR, a folder
+	// the engine's machine sees at the same path, where a location may be (not under /home or /tmp: CI's is in /srv).
+	locations := os.Getenv("HOMERSLAB_TEST_STORAGE_DIR")
+	if err := storage.Allowed(locations); err != nil {
+		t.Fatalf("HOMERSLAB_TEST_STORAGE_DIR %q: %v; name a folder where a storage location may be", locations, err)
+	}
+	media, err := os.MkdirTemp(locations, "storage-media-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	uploads, err := os.MkdirTemp(locations, "storage-uploads-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(media); _ = os.RemoveAll(uploads) })
+	_ = os.Chmod(uploads, 0o777) // the container's user writes there
+	if err := os.WriteFile(filepath.Join(media, "film.mkv"), []byte("a film\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	// Two apps, each as its unit runs it: their files where the agent keeps them, the standard compose command.
 	apps := map[string]appunit.App{}
 	for i, id := range []string{"contract-a", "contract-b"} {
@@ -69,6 +89,10 @@ func TestTheContainerEngineContractOnDocker(t *testing.T) {
 		a := appunit.App{ID: id, Product: id, Plan: "p-contract", Project: p, Service: "web",
 			Upstream: netip.AddrPortFrom(sub.Addr().Next().Next(), 8080), Subnet: sub, Level: fmt.Sprintf("s0:c%d,c%d", 600+2*i, 601+2*i), Slot: i, Dir: filepath.Join(dir, id),
 			SignIn: "auth.example.test", SignInAt: netip.MustParseAddr("172.31.255.241")}
+		if id == "contract-a" {
+			a.Mounts = []appunit.Mount{{Location: "media", Service: "web", Source: media, Target: "/media", ReadOnly: true},
+				{Location: "uploads", Service: "web", Source: uploads, Target: "/uploads"}}
+		}
 		if err := os.MkdirAll(a.Dir, 0o700); err != nil {
 			t.Fatal(err)
 		}
@@ -140,6 +164,34 @@ func TestTheContainerEngineContractOnDocker(t *testing.T) {
 		out, err := exec.Command("docker", "-H", host, "exec", appunit.Project("contract-a")+"-web-1", "getent", "hosts", "auth.example.test").CombinedOutput()
 		if f := strings.Fields(string(out)); err != nil || len(f) < 2 || f[0] != "172.31.255.241" || f[1] != "auth.example.test" {
 			t.Errorf("getent hosts auth.example.test: %q %v", out, err)
+		}
+	})
+
+	// An app given a storage location read-only can't write there, whatever user it runs as (root here); one given it
+	// read-write can (#28). The engine enforces it: the bind itself is read-only.
+	t.Run("a read-only storage location can't be written, a read-write one can", func(t *testing.T) {
+		exec_ := func(args ...string) (string, error) {
+			out, err := exec.Command("docker", append([]string{"-H", host, "exec", appunit.Project("contract-a") + "-web-1"}, args...)...).CombinedOutput()
+			return string(out), err
+		}
+		if out, err := exec_("cat", "/media/film.mkv"); err != nil || out != "a film\n" {
+			t.Errorf("reading the read-only location: %q %v", out, err)
+		}
+		for _, write := range [][]string{{"touch", "/media/new"}, {"rm", "/media/film.mkv"}, {"mkdir", "/media/dir"}, {"sh", "-c", "echo x >> /media/film.mkv"}} {
+			if out, err := exec_(write...); err == nil || !strings.Contains(out, "Read-only file system") {
+				t.Errorf("%v in the read-only location: %q %v", write, out, err)
+			}
+		}
+		if _, err := os.Stat(filepath.Join(media, "new")); err == nil {
+			t.Error("the app wrote into its read-only location")
+		}
+		if out, err := exec_("sh", "-c", "echo note > /uploads/note && cat /uploads/note && rm /uploads/note"); err != nil || out != "note\n" {
+			t.Errorf("writing the read-write location: %q %v", out, err)
+		}
+		out, err := exec.Command("docker", "-H", host, "inspect", "--format", `{{range .Mounts}}{{.Destination}}={{.RW}} {{end}}`,
+			appunit.Project("contract-a")+"-web-1").CombinedOutput()
+		if got := strings.Fields(string(out)); err != nil || !slices.Contains(got, "/media=false") || !slices.Contains(got, "/uploads=true") {
+			t.Errorf("the engine's mounts: %q %v", out, err)
 		}
 	})
 
