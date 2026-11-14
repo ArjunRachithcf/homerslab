@@ -158,6 +158,9 @@ func loadApp(fsys fs.FS, dir string, categories map[string]bool, digestOf func(m
 		if !idPattern.MatchString(s.Name) || s.What == "" || s.UID < 0 {
 			p.add("secrets: %q needs a name, what it is, and the UID that reads it", s.Name)
 		}
+		if s.Name == ClientSecret {
+			p.add("secrets: %q is reserved for the sign-in's client", s.Name)
+		}
 	}
 	if len(a.Health) == 0 {
 		p.add("health: at least one check")
@@ -227,6 +230,68 @@ func checkSignIn(p *problems, methods []SignIn) {
 			p.add("signIn: %s twice", m.Method)
 		}
 		seen[m.Method] = true
+		if m.Method != OIDC {
+			if m.Env != nil || m.SecretUID != nil || len(m.RedirectURIs) > 0 || len(m.RefusePaths) > 0 {
+				p.add("signIn: %s takes no redirectUris, env, secretUid or refusePaths", m.Method)
+			}
+			continue
+		}
+		checkOIDC(p, m)
+	}
+}
+
+var (
+	// EnvName is an environment variable's name, as HomersLab sets one for an app.
+	EnvName = regexp.MustCompile(`^[A-Z_][A-Z0-9_]{0,63}$`)
+	// A path on the app's own URL: no other host (//), no way out (..), no query or fragment, no wildcard or pattern.
+	appPath = regexp.MustCompile(`^/[A-Za-z0-9._~!&',;=:@%/-]{0,200}$`)
+	// The address of one of the app's own apps: a private-use scheme, which RFC 8252 (7.1) wants to hold a dot, and a
+	// path, no host.
+	appAddress = regexp.MustCompile(`^[a-z][a-z0-9+-]*(\.[a-z0-9+-]+)+:(/|///)[A-Za-z0-9._~!&',;=:@%/-]{0,200}$`)
+)
+
+// ownPath says whether p is a path on the app's own URL, as appPath takes it.
+func ownPath(p string) bool {
+	return appPath.MatchString(p) && !strings.HasPrefix(p, "//") && !slices.Contains(strings.Split(p, "/"), "..")
+}
+
+// checkOIDC checks an OIDC method's redirect addresses, and how the app takes its client (#20; adversarial review round
+// 2): a redirect address is a callback path on the app's own URL, which HomersLab puts on the app's canonical URL, or
+// one of the app's own apps' addresses; never a wildcard, another site or plain HTTP.
+func checkOIDC(p *problems, m SignIn) {
+	if len(m.RedirectURIs) == 0 {
+		p.add("signIn: oidc needs its redirectUris")
+	}
+	for _, u := range m.RedirectURIs {
+		hostless := !strings.Contains(u, "://") || strings.Contains(u, ":///")
+		if !ownPath(u) && (!appAddress.MatchString(u) || !hostless || strings.Contains(u, "..")) {
+			p.add("signIn: redirectUris %q: a path on the app's own URL, or its own app's address (a scheme with a dot)", u)
+		}
+	}
+	for _, r := range m.RefusePaths {
+		if !ownPath(r) || r == "/" {
+			p.add("signIn: refusePaths %q: a path on the app's own URL, not all of it", r)
+		}
+	}
+	e := m.Env
+	if e == nil {
+		return
+	}
+	names := map[string]bool{}
+	for _, n := range e.Names() {
+		if n == "" {
+			continue
+		}
+		if !EnvName.MatchString(n) || names[n] {
+			p.add("signIn: env %q: each a variable's name, once", n)
+		}
+		names[n] = true
+	}
+	if e.ClientID == "" || e.ClientSecretFile == "" || e.Issuer == "" && e.Discovery == "" {
+		p.add("signIn: env names at least the client's id, its secret's file, and the issuer or its discovery document")
+	}
+	if m.SecretUID == nil || *m.SecretUID < 0 {
+		p.add("signIn: secretUid: the UID that reads the client's secret")
 	}
 }
 

@@ -1,0 +1,87 @@
+{
+  "id": "p-b73e257b114df8fb4af9637473fc3482",
+  "kind": "install",
+  "madeAt": "2026-11-10T13:30:00Z",
+  "app": {
+    "id": "mealie",
+    "name": "Mealie",
+    "purpose": "Recipes",
+    "version": "v3.30.0",
+    "tier": "verified",
+    "catalog": "official",
+    "publisher": "HomersLab",
+    "definition": "sha256:b95173824341c26e583d3d4ba5525038e43454eddcd81dab0551238f15424838"
+  },
+  "name": {
+    "host": "recipes.ferreira.family",
+    "meshes": [
+      "NetBird"
+    ],
+    "exposure": "mesh",
+    "publicAllowed": true
+  },
+  "audience": {
+    "default": "adults",
+    "people": [
+      {
+        "name": "Inês Ferreira",
+        "role": "admin"
+      }
+    ]
+  },
+  "signIn": {
+    "method": "oidc",
+    "provider": {
+      "id": "authentik",
+      "name": "Authentik"
+    },
+    "creates": "oidc-client",
+    "redirectUris": [
+      "https://recipes.ferreira.family/login"
+    ],
+    "wired": true
+  },
+  "backups": {
+    "every": "hour",
+    "restoreTest": "week",
+    "data": [
+      {
+        "what": "Recipes, photos and meal plans, and Mealie's database",
+        "kind": "folder"
+      }
+    ],
+    "left": []
+  },
+  "placement": {
+    "node": "study-pc",
+    "architecture": "x86_64",
+    "engine": "docker",
+    "project": "homerslab-mealie",
+    "services": [
+      {
+        "name": "web",
+        "image": "ghcr.io/mealie-recipes/mealie:v3.30.0@sha256:90f83da6f3ab0a421efc827118a556168573930105f13fa3321768f42163d784",
+        "digest": "sha256:d552b662eb93f4dafa127fccfd8db9139e24c249753c72c17c9248edbc21e0c8"
+      }
+    ]
+  },
+  "extras": [],
+  "secrets": [],
+  "resources": {
+    "memory": {
+      "needsBytes": 1073741824,
+      "freeBytes": 20480000000
+    },
+    "disk": {
+      "needsBytes": 2147483648,
+      "freeBytes": 412000000000,
+      "grows": "the recipes' photos"
+    },
+    "gpu": {
+      "need": "none",
+      "usable": []
+    },
+    "warnings": []
+  },
+  "risky": false
+}

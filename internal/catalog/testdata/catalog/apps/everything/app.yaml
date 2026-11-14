@@ -21,6 +21,16 @@ signIn:
   - method: oidc
     redirectUris: [/auth/callback, app.everything:///callback]
     scopes: [openid, email, profile]
+    env:
+      issuer: OIDC_ISSUER
+      discovery: OIDC_DISCOVERY_URL
+      clientId: OIDC_CLIENT_ID
+      clientSecretFile: OIDC_CLIENT_SECRET_FILE
+      redirectUri: OIDC_REDIRECT_URI
+      url: BASE_URL
+      adminGroup: OIDC_ADMIN_GROUP
+    secretUid: 1000
+    refusePaths: [/api/password-login]
   - method: ldap
     attributes: [uid, mail]
   - method: guard

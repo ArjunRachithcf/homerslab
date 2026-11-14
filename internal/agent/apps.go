@@ -2,6 +2,7 @@ package agent
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -22,6 +23,7 @@ import (
 
 	"github.com/ArjunRachithcf/homerslab/internal/appunit"
 	"github.com/ArjunRachithcf/homerslab/internal/atomicfile"
+	"github.com/ArjunRachithcf/homerslab/internal/catalog"
 	"github.com/ArjunRachithcf/homerslab/internal/edge"
 	"github.com/ArjunRachithcf/homerslab/internal/engine"
 	"github.com/ArjunRachithcf/homerslab/internal/engine/compose"
@@ -89,7 +91,7 @@ var reservedApps = map[string]bool{"authentik": true, "edge": true, "agent": tru
 	"home": true, "projection": true}
 
 // AppRequest is an app as the manager wants it: what its install plan says, and the catalog's compose file, whose digest
-// the plan carries. None of it is secret.
+// the plan carries. None of it is secret but an OIDC client's secret, which travels inward only.
 type AppRequest struct {
 	Plan    string `json:"plan"`
 	Product string `json:"product"`
@@ -98,10 +100,33 @@ type AppRequest struct {
 	Name    string `json:"name"`
 	Service string `json:"service"`
 	Port    int    `json:"port"`
-	// Guard: people sign in to it at the edge (its sign-in method is the guard). The only method so far (#20).
+	// Guard: people sign in to it at the edge (its sign-in method is the guard). OIDC: it signs them in itself, with
+	// this client (#20). One or the other.
 	Guard   bool             `json:"guard"`
+	OIDC    *AppOIDC         `json:"oidc,omitempty"`
 	Secrets []appunit.Secret `json:"secrets"`
 	Health  []AppHealth      `json:"health"`
+}
+
+// AppOIDC is the OIDC client the household account made for an app that signs people in itself (#20), and how the app
+// takes it (the manifest's env): the settings as environment variables of its upstream's service, the secret as a
+// file.
+type AppOIDC struct {
+	Env catalog.OIDCEnv `json:"env"`
+	// Issuer is the client's issuer, at the sign-in this node serves; ClientID the client's id.
+	Issuer   string `json:"issuer"`
+	ClientID string `json:"clientId"`
+	// RedirectURIs are the client's redirect addresses: the first on the app's own URL is the one the app is told.
+	RedirectURIs []string `json:"redirectUris"`
+	// AdminGroup is the admins' group, for an app that makes them its own admins.
+	AdminGroup string `json:"adminGroup"`
+	// SecretUID is the container user that reads the client's secret.
+	SecretUID int `json:"secretUid"`
+	// RefusePaths are the app's own other ways to sign in, which the edge refuses before the app sees them.
+	RefusePaths []string `json:"refusePaths,omitempty"`
+	// ClientSecret is the client's secret, inward only: the agent seals it as one of the app's credentials, and keeps
+	// it nowhere else. Empty when the manager only checks the app (?check=true), before the client is made.
+	ClientSecret string `json:"clientSecret,omitempty"`
 }
 
 // AppHealth is one of an app's health checks: an HTTP request to a service's port, or the compose file's own check.
@@ -122,6 +147,8 @@ type appState struct {
 	Subnet   netip.Prefix     `json:"subnet"`
 	Level    string           `json:"level"`
 	Guard    bool             `json:"guard"`
+	OIDC     *appunit.OIDC    `json:"oidc,omitempty"`    // its client's settings; never its secret
+	Refused  []string         `json:"refused,omitempty"` // its own other ways to sign in, which the edge refuses
 	Secrets  []appunit.Secret `json:"secrets"`
 	Health   []AppHealth      `json:"health"`
 	Project  engine.Project   `json:"project"`
@@ -174,8 +201,8 @@ func (a *Agent) appDir(id string) string { return filepath.Join(a.cfg.StateDir, 
 
 func (a *Agent) appUnit(id string, s *appState) appunit.App {
 	return appunit.App{ID: id, Product: s.Product, Plan: s.Plan, Project: s.Project, Service: s.Service, Upstream: s.Upstream,
-		Subnet: s.Subnet, Level: s.Level, Slot: slot(s.Level), SELinux: a.selinux(), Secrets: s.Secrets, Dir: a.appDir(id),
-		SignIn: a.signInName(), SignInAt: SignInListen}
+		Subnet: s.Subnet, Level: s.Level, Slot: slot(s.Level), SELinux: a.selinux(), Secrets: s.Secrets, OIDC: s.OIDC,
+		Dir: a.appDir(id), SignIn: a.signInName(), SignInAt: SignInListen}
 }
 
 // appsFollowSignIn writes every app's compose file again where the sign-in's name or its listener changed what it says
@@ -224,7 +251,80 @@ func slot(level string) int {
 
 var (
 	httpPath = regexp.MustCompile(`^/[A-Za-z0-9._~!$&'()*+,;=:@%/?-]{0,255}$`)
+	// An OIDC client's settings, as the agent takes them: an issuer and a redirect address are https URLs of plain
+	// characters, an id and a group plain words, a variable's name a shell's, a secret printable ASCII.
+	urlPath    = regexp.MustCompile(`^/[A-Za-z0-9._~!$&'()+,;=:@%/-]{0,255}$`)
+	clientID   = regexp.MustCompile(`^[A-Za-z0-9._~-]{1,255}$`)
+	groupName  = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,63}$`)
+	secretText = regexp.MustCompile(`^[\x21-\x7e]{16,512}$`)
 )
+
+// siteURL is a name's one URL on the household's port (ADR 0021).
+func siteURL(name string, port int) string {
+	if port == 0 || port == 443 {
+		return "https://" + name
+	}
+	return fmt.Sprintf("https://%s:%d", name, port)
+}
+
+// under says whether u is an https URL at origin, with a path of plain characters.
+func under(u, origin string) bool {
+	rest, ok := strings.CutPrefix(u, origin)
+	return ok && urlPath.MatchString(rest)
+}
+
+// oidcEnv is an app's client's settings, as its environment takes them: what the manifest names, from the client
+// the manager made and the sign-in and port this node serves, or the code that refuses the request. sites are this
+// node's, nil when it serves none. Only checking (before the manager has made the client), the client's issuer, id
+// and secret may be missing.
+func oidcEnv(r AppRequest, sites *EdgeSites, check bool) (*appunit.OIDC, string) {
+	o := *r.OIDC
+	if sites == nil || sites.SignIn == "" {
+		return nil, "no-sign-in" // nothing to send people to sign in at
+	}
+	signIn, app := siteURL(sites.SignIn, sites.Port), siteURL(r.Name, sites.Port)
+	if check {
+		o.Issuer, o.ClientID = cmp.Or(o.Issuer, signIn+"/"), cmp.Or(o.ClientID, "unmade")
+	} else if o.ClientSecret == "" {
+		return nil, "no-client-secret"
+	}
+	for _, p := range o.RefusePaths {
+		if !urlPath.MatchString(p) || p == "/" || strings.HasPrefix(p, "//") || slices.Contains(strings.Split(p, "/"), "..") {
+			return nil, "bad-sign-in"
+		}
+	}
+	if !under(o.Issuer, signIn) || !strings.HasSuffix(o.Issuer, "/") || !clientID.MatchString(o.ClientID) ||
+		o.AdminGroup != "" && !groupName.MatchString(o.AdminGroup) || o.SecretUID < 0 || o.SecretUID > 1<<31-2 ||
+		len(o.RedirectURIs) == 0 || o.ClientSecret != "" && !secretText.MatchString(o.ClientSecret) {
+		return nil, "bad-sign-in"
+	}
+	redirect := ""
+	for _, u := range o.RedirectURIs {
+		switch {
+		case under(u, app):
+			redirect = cmp.Or(redirect, u)
+		case strings.HasPrefix(u, "http") || !strings.Contains(u, ".") || len(u) > 255 || !text.OneLine(u):
+			return nil, "bad-sign-in" // its own apps' addresses aside, every redirect address is on the app's own URL
+		}
+	}
+	e := o.Env
+	if e.ClientID == "" || e.ClientSecretFile == "" || e.Issuer == "" && e.Discovery == "" {
+		return nil, "bad-sign-in"
+	}
+	values := map[string]string{e.Issuer: o.Issuer, e.Discovery: o.Issuer + ".well-known/openid-configuration", e.ClientID: o.ClientID,
+		e.ClientSecretFile: appunit.ClientSecretPath, e.RedirectURI: redirect, e.URL: app, e.AdminGroup: o.AdminGroup}
+	env := map[string]string{}
+	for _, n := range e.Names() {
+		if n == "" {
+			continue
+		}
+		if _, twice := env[n]; twice || !catalog.EnvName.MatchString(n) || values[n] == "" {
+			return nil, "bad-sign-in"
+		}
+		env[n] = values[n]
+	}
+	return &appunit.OIDC{Env: env, SecretUID: o.SecretUID}, ""
+}
 
 // validApp says what is wrong with an app's request, or "".
 func validApp(id string, r AppRequest) string {
@@ -235,12 +335,14 @@ func validApp(id string, r AppRequest) string {
 		return "bad-app"
 	case !domainName.MatchString(r.Name) || r.Service == "" || r.Port <= 0 || r.Port > 65535 || r.Compose == "":
 		return "bad-app"
-	case !r.Guard:
-		return "sign-in-not-built" // apps that sign people in themselves come with #20
+	case r.Guard && r.OIDC != nil:
+		return "bad-app" // one way to sign in
+	case !r.Guard && r.OIDC == nil:
+		return "sign-in-not-built" // LDAP comes with #49
 	}
 	seen := map[string]bool{}
 	for _, s := range r.Secrets {
-		if !appunit.SecretName.MatchString(s.Name) || seen[s.Name] || s.UID < 0 || s.UID > 1<<31-2 {
+		if !appunit.SecretName.MatchString(s.Name) || seen[s.Name] || s.UID < 0 || s.UID > 1<<31-2 || s.Name == appunit.ClientSecret {
 			return "bad-secrets"
 		}
 		seen[s.Name] = true
@@ -318,6 +420,23 @@ func (a *Agent) putApp(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusBadRequest, code)
 		return
 	}
+	check := r.URL.Query().Get("check") == "true"
+	var oidc *appunit.OIDC
+	if req.OIDC != nil {
+		a.mu.Lock()
+		var sites *EdgeSites
+		if a.state.Edge != nil {
+			e := a.state.Edge.EdgeSites
+			sites = &e
+		}
+		a.mu.Unlock()
+		var code string
+		if oidc, code = oidcEnv(req, sites, check); code != "" {
+			a.log.Warn("refused an app's OIDC client", "app", id, "why", code)
+			fail(w, http.StatusBadRequest, code)
+			return
+		}
+	}
 	a.installs.Lock()
 	defer a.installs.Unlock()
 	ctx := r.Context()
@@ -364,7 +483,7 @@ func (a *Agent) putApp(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Only checking (?check=true): the app would install. The manager asks this before it makes the app's guard.
-	if r.URL.Query().Get("check") == "true" {
+	if check {
 		writeJSON(w, http.StatusOK, map[string]bool{"installable": true})
 		return
 	}
@@ -383,7 +502,11 @@ func (a *Agent) putApp(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusInsufficientStorage, "no-room")
 		return
 	}
-	next.Product, next.Plan, next.Name, next.Service, next.Guard = req.Product, req.Plan, req.Name, req.Service, req.Guard
+	next.Product, next.Plan, next.Name, next.Service, next.Guard, next.OIDC = req.Product, req.Plan, req.Name, req.Service, req.Guard, oidc
+	next.Refused = nil
+	if req.OIDC != nil {
+		next.Refused = slices.Clone(req.OIDC.RefusePaths)
+	}
 	next.Upstream = netip.AddrPortFrom(next.Subnet.Addr().Next().Next(), uint16(req.Port))
 	next.Secrets, next.Health, next.Project = slices.Clone(req.Secrets), slices.Clone(req.Health), p
 	if a.state.Apps == nil {
@@ -407,7 +530,11 @@ func (a *Agent) putApp(w http.ResponseWriter, r *http.Request) {
 	// From here the install runs to its end whatever the manager does: a request given up on never leaves it halfway.
 	ctx, cancel = context.WithTimeout(context.WithoutCancel(ctx), installWait)
 	defer cancel()
-	if err := a.writeApp(ctx, u, []byte(req.Compose)); err != nil {
+	var clientSecret []byte
+	if req.OIDC != nil {
+		clientSecret = []byte(req.OIDC.ClientSecret)
+	}
+	if err := a.writeApp(ctx, u, []byte(req.Compose), clientSecret); err != nil {
 		a.log.Error("writing an app's unit", "app", id, "err", err)
 		// The app as it was: an app the agent keeps is one whose unit it wrote, and the firewall table and the edge open
 		// only to those. A new one's unit, if it got that far, is stopped.
@@ -500,10 +627,16 @@ func (a *Agent) placeApp(id string, prev *appState) (*appState, error) {
 	return next, nil
 }
 
-// writeApp writes an app's files, seals its secrets (once), and has systemd run its unit.
-func (a *Agent) writeApp(ctx context.Context, u appunit.App, file []byte) error {
+// writeApp writes an app's files, seals its secrets (once) and its OIDC client's (at every apply: the client may have
+// been made again), and has systemd run its unit.
+func (a *Agent) writeApp(ctx context.Context, u appunit.App, file, clientSecret []byte) error {
 	if err := os.MkdirAll(filepath.Join(u.Dir, "credentials"), 0o700); err != nil {
 		return err
+	}
+	if u.OIDC != nil {
+		if err := a.sealAt(ctx, u.CredentialFile(appunit.ClientSecret), appunit.Credential(u.ID, appunit.ClientSecret), clientSecret); err != nil {
+			return fmt.Errorf("sealing the client's secret: %w", err)
+		}
 	}
 	for _, s := range u.Secrets {
 		if _, err := os.Stat(u.CredentialFile(s.Name)); err == nil {
@@ -754,7 +887,7 @@ func (a *Agent) getAppLogs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var secrets [][]byte
-	for _, sec := range u.Secrets {
+	for _, sec := range u.Handed() {
 		v, err := a.unsealAt(ctx, u.CredentialFile(sec.Name), appunit.Credential(id, sec.Name))
 		if err != nil {
 			a.log.Error("reading an app's secret, to cut it out of its logs", "app", id, "err", err)
@@ -831,15 +964,19 @@ func (a *Agent) appsFirewall() []firewall.Upstream {
 	return out
 }
 
-// edgeApps are the apps' sites on the edge: each behind its guard, once the sign-in is served. The caller holds a.mu.
+// edgeApps are the apps' sites on the edge, once the sign-in is served: a guarded app's behind its guard, an app that
+// signs people in itself without one. The caller holds a.mu.
 func (a *Agent) edgeApps() []edge.App {
 	if a.state.SignIn == nil || a.state.Edge == nil || a.state.Edge.SignIn == "" {
 		return nil // no sign-in to send anyone to: the app's name stays unserved, never unguarded
 	}
 	var out []edge.App
 	for _, s := range a.state.Apps {
-		if s.Guard {
+		switch {
+		case s.Guard:
 			out = append(out, edge.App{Name: s.Name, Dial: s.Upstream.String(), Guard: edge.AuthentikGuard(a.upstream())})
+		case s.OIDC != nil:
+			out = append(out, edge.App{Name: s.Name, Dial: s.Upstream.String(), SignsIn: true, Refused: s.Refused})
 		}
 	}
 	slices.SortFunc(out, func(x, y edge.App) int { return strings.Compare(x.Name, y.Name) })

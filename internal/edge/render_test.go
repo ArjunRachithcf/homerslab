@@ -42,6 +42,7 @@ func TestTheEdgesConfigurationIsItsGoldenRender(t *testing.T) {
 		"primary":          thePrimary(),
 		"with-sign-in":     withSignIn(),
 		"guarded-app":      withAGuardedApp(),
+		"both-apps":        withBothApps(),
 		"sign-in-listener": withTheSignInListener(),
 		"with-home":        withHome(),
 		"cloud-port-two":   twoAddresses,
@@ -279,6 +280,100 @@ func withAGuardedApp() edge.Config {
 	return c
 }
 
+// withBothApps is the primary with a guarded app and one that signs people in itself (#20), Mealie at
+// recipes.example.test.
+func withBothApps() edge.Config {
+	c := withAGuardedApp()
+	c.Apps = append(c.Apps, edge.App{Name: "recipes.example.test", Dial: "172.31.240.34:9000", SignsIn: true, Refused: []string{"/api/auth/token"}})
+	return c
+}
+
+// steps are the handlers of one name's site, in order, each with its upstream, whether it is the guard, and its match.
+func steps(t *testing.T, b []byte, name string) []string {
+	t.Helper()
+	var c struct {
+		Apps struct {
+			HTTP struct {
+				Servers map[string]struct {
+					Routes []struct {
+						Match  []struct{ Host []string }
+						Handle []struct {
+							Handler string
+							Routes  []struct {
+								Match  []map[string]any
+								Handle []map[string]any
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+	if err := json.Unmarshal(b, &c); err != nil {
+		t.Fatal(err)
+	}
+	var out []string
+	for _, r := range c.Apps.HTTP.Servers["mesh"].Routes {
+		if len(r.Match) == 0 || len(r.Match[0].Host) == 0 || r.Match[0].Host[0] != name {
+			continue
+		}
+		for _, sub := range r.Handle[len(r.Handle)-1].Routes { // after the headers every name gets (HSTS, Secure cookies)
+			for _, h := range sub.Handle {
+				step := h["handler"].(string)
+				if ups, ok := h["upstreams"].([]any); ok {
+					step += " " + ups[0].(map[string]any)["dial"].(string)
+				}
+				if _, ok := h["rewrite"]; ok {
+					step += " (the guard)"
+				}
+				if len(sub.Match) > 0 {
+					step += " if " + fmt_(sub.Match)
+				}
+				out = append(out, step)
+			}
+		}
+	}
+	return out
+}
+
+// An app that signs people in itself (#20) is served without a guard, but like a guarded app the client's identity
+// headers are stripped first (no app should ever trust one from a client), and no cookie it sets reaches a whole
+// household domain (#83). Its own other ways to sign in (Mealie's password, which its default admin has) are refused
+// before anything else. An app that is neither guarded nor signs people in itself is never served.
+func TestANativeAppsSiteHasNoGuardAndStillStripsIdentity(t *testing.T) {
+	testenv.Isolate(t)
+	b, err := edge.Render(withBothApps())
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := steps(t, b, "recipes.example.test")
+	want := []string{"static_response if [{path:[/api/auth/token,/api/auth/token/*]}]", "headers", "headers", "reverse_proxy 172.31.240.34:9000"}
+	if strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Errorf("the native app's site:\n%s\nwant\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+	}
+	if g := steps(t, b, "pdf.example.test"); len(g) != 5 {
+		t.Errorf("the guarded app's site beside it: %v", g)
+	}
+	site := siteOf(t, b, "recipes.example.test")
+	for _, want := range []string{`"X-Authentik-*"`, `"Remote-*"`, `"Set-Cookie"`, `domain\\s*=`} {
+		if !bytes.Contains(site, []byte(want)) {
+			t.Errorf("the native app's site lacks %s", want)
+		}
+	}
+	for _, bad := range []edge.App{{Name: "recipes.example.test", Dial: "172.31.240.34:9000"},
+		{Name: "recipes.example.test", Dial: "172.31.240.34:9000", SignsIn: true, Guard: edge.AuthentikGuard("172.31.250.10:9000")},
+		{Name: "recipes.example.test", Dial: "nowhere", SignsIn: true}, {Dial: "172.31.240.34:9000", SignsIn: true},
+		{Name: "recipes.example.test", Dial: "172.31.240.34:9000", SignsIn: true, Refused: []string{"/"}},
+		{Name: "recipes.example.test", Dial: "172.31.240.34:9000", SignsIn: true, Refused: []string{"/api/*"}},
+		{Name: "pdf.example.test", Dial: "172.31.240.2:8080", Guard: edge.AuthentikGuard("172.31.250.10:9000"), Refused: []string{"/x"}}} {
+		c := withSignIn()
+		c.Apps = []edge.App{bad}
+		if _, err := edge.Render(c); err == nil {
+			t.Errorf("rendered %+v", bad)
+		}
+	}
+}
+
 // A guarded app's site (#19): the client's identity headers are stripped before anything else; the provider's own
 // paths go to the provider; every other request asks the guard first, and only a 2xx answer lets it on to the app, with
 // the identity the guard names. The guard's own cookie never reaches the app.
@@ -433,6 +528,31 @@ func TestPort80OnlyRedirectsAndEveryNameHasHSTSAndSecureCookies(t *testing.T) {
 			t.Errorf("port %d: the catch-all has %+v, want its 421 alone, no HSTS for names that aren't HomersLab's here", port, catchAll.Handle)
 		}
 	}
+}
+
+// siteOf is one name's route in a render, as JSON.
+func siteOf(t *testing.T, b []byte, name string) []byte {
+	t.Helper()
+	var c struct {
+		Apps struct {
+			HTTP struct {
+				Servers map[string]struct {
+					Routes []json.RawMessage
+				}
+			}
+		}
+	}
+	if err := json.Unmarshal(b, &c); err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range c.Apps.HTTP.Servers["mesh"].Routes {
+		var m struct{ Match []struct{ Host []string } }
+		_ = json.Unmarshal(r, &m)
+		if len(m.Match) > 0 && len(m.Match[0].Host) > 0 && m.Match[0].Host[0] == name {
+			return r
+		}
+	}
+	return nil
 }
 
 func fmt_(m []map[string]any) string {

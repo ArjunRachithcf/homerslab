@@ -39,6 +39,7 @@ import (
 	"runtime"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -237,6 +238,82 @@ func TestTheIdentityProviderContractOnAuthentik(t *testing.T) {
 		inABrowser(t, w, a)
 	})
 
+	// Installing an app makes its client in one call to Authentik (#20; API research: one call per app): the provider,
+	// the application and the bindings that limit it to its audience, in one transaction, so a failure leaves none of
+	// them. Its secret never reaches Authentik's logs.
+	t.Run("an app's client and the policy limiting it to its audience: one write, Authentik's transactional call (#20)", func(t *testing.T) {
+		var mu sync.Mutex
+		var writes []string
+		up, _ := url.Parse(upstream)
+		proxy := httputil.NewSingleHostReverseProxy(up)
+		rec := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
+			if r.Method != http.MethodGet {
+				mu.Lock()
+				writes = append(writes, r.Method+" "+r.URL.Path)
+				mu.Unlock()
+			}
+			proxy.ServeHTTP(rw, r)
+		}))
+		defer rec.Close()
+		counted, err := authentik.Open(rec.URL, household, own, landing)
+		if err != nil {
+			t.Fatal(err)
+		}
+		c := idp.Client{Slug: "homerslab-notes", Name: "Notes", RedirectURIs: []string{"https://notes.example.test/callback"}, Roles: []idp.Role{idp.Adult}}
+		creds, err := counted.EnsureClient(ctx, c)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if want := []string{"PUT /api/v3/core/transactional/applications/"}; !slices.Equal(writes, want) {
+			t.Errorf("making the client wrote %v, want %v", writes, want)
+		}
+		var app struct {
+			PBM string `json:"pbm_uuid"`
+		}
+		w.raw(t, own, "GET", "/api/v3/core/applications/homerslab-notes/", nil, &app)
+		var bs struct {
+			Results []struct {
+				Group string `json:"group"`
+			}
+		}
+		w.raw(t, own, "GET", "/api/v3/policies/bindings/?target="+app.PBM, nil, &bs)
+		if len(bs.Results) != 1 || bs.Results[0].Group == "" {
+			t.Errorf("the application's bindings: %+v, want the adults' group alone", bs.Results)
+		}
+		mu.Lock()
+		writes = nil
+		mu.Unlock()
+		if _, err := counted.EnsureClient(ctx, c); err != nil {
+			t.Fatal(err)
+		}
+		if slices.Contains(writes, "PUT /api/v3/core/transactional/applications/") {
+			t.Errorf("an existing client was made again: %v", writes)
+		}
+		if err := counted.DeleteClient(ctx, c.Slug); err != nil {
+			t.Fatal(err)
+		}
+		if code := w.status(t, own, "/api/v3/core/applications/homerslab-notes/"); code != http.StatusNotFound {
+			t.Errorf("the deleted client's application: %d", code)
+		}
+		out, err := w.composeOut("logs", "--no-color", "server", "worker")
+		if err != nil {
+			t.Fatalf("docker compose logs: %v", err)
+		}
+		if strings.Contains(out, creds.Secret.Reveal()) {
+			t.Error("Authentik's logs hold an app client's secret")
+		}
+	})
+
+	// Stories 27 and 32 (#20): a person signed in to the household account opens an app with native sign-in (Mealie)
+	// and is in it, with no second login, in Chromium with its virtual authenticator (web/e2e/native-sign-in.idp.spec.ts).
+	// Mealie's server reaches the sign-in only through the edge's sign-in listener (#19, ADR 0020): native_test.go.
+	t.Run("in a real browser: a signed-in person opens an app with native sign-in, with no second login (#20)", func(t *testing.T) {
+		if os.Getenv("HOMERSLAB_TEST_BROWSER") == "" {
+			t.Skip("set HOMERSLAB_TEST_BROWSER to run web/e2e/native-sign-in.idp.spec.ts in Chromium (CI's identity job does)")
+		}
+		nativeSignIn(t, w, a)
+	})
+
 	t.Run("Authentik's logs, which reach the journal, never hold an enrolment link's token", func(t *testing.T) {
 		out, err := w.composeOut("logs", "--no-color", "server", "worker")
 		if err != nil {
@@ -390,6 +467,7 @@ func inABrowser(t *testing.T, w *world, a *authentik.Authentik) {
 	}
 	if os.Getenv("HOMERSLAB_TEST_BROWSER") == "external" {
 		// The browser runs elsewhere (a developer's machine, where Go runs in a container): wait for its answer.
+		shareWithTheBrowser(t, dir, filepath.Join(dir, "world.json"))
 		t.Logf("waiting for the browser: HOMERSLAB_TEST_SIGNIN=%s npx playwright test e2e/passkey.idp.spec.ts --project=desktop", filepath.Join(dir, "world.json"))
 		for deadline := time.Now().Add(10 * time.Minute); time.Now().Before(deadline); time.Sleep(time.Second) {
 			if _, err := os.Stat(out); err == nil {
@@ -953,6 +1031,12 @@ func (b *browser) Enrol(t *testing.T, link idp.Link) (idptest.Enrolment, error) 
 
 func (b *browser) SignIn(t *testing.T, authorize, username string, f idptest.Factors) (string, string, error) {
 	next := authorize
+	// The client's redirect address, as the authorize URL asks for it: where the browser stops.
+	au, err := url.Parse(authorize)
+	if err != nil || au.Query().Get("redirect_uri") == "" {
+		return "", "", fmt.Errorf("not an authorize URL: %q", authorize)
+	}
+	redirect := au.Query().Get("redirect_uri")
 	for range 20 {
 		req, _ := http.NewRequest("GET", next, nil)
 		resp, err := b.c.Do(req)
@@ -962,7 +1046,7 @@ func (b *browser) SignIn(t *testing.T, authorize, username string, f idptest.Fac
 		resp.Body.Close()
 		loc := resp.Header.Get("Location")
 		switch {
-		case resp.StatusCode/100 == 3 && strings.HasPrefix(loc, redirect):
+		case resp.StatusCode/100 == 3 && (loc == redirect || strings.HasPrefix(loc, redirect+"?")):
 			u, _ := url.Parse(loc)
 			if e := u.Query().Get("error"); e != "" {
 				return "", "", fmt.Errorf("the client was refused: %s", e)

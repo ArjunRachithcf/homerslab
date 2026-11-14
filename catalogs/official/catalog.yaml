@@ -5,3 +5,4 @@ publisher: HomersLab
 categories:
   - {id: photos, name: Photos and videos}
   - {id: documents, name: Documents and files}
+  - {id: home, name: Home and chores}

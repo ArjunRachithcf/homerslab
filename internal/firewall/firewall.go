@@ -98,7 +98,7 @@ type State struct {
 	// connection into an app's network (ADR 0020, #82).
 	Upstreams []Upstream `json:"upstreams,omitempty"`
 	// SignInListener is where apps reach the sign-in on this node (ADR 0020): the sign-in listener's own address, on
-	// the household's port (and LDAPS's 636 once an LDAP app is installed, #20). The one thing of this machine's an app
+	// the household's port (and LDAPS's 636 once an LDAP app is installed, #204). The one thing of this machine's an app
 	// may open besides its engine's DNS.
 	SignInListener []netip.AddrPort `json:"signInListener,omitempty"`
 }

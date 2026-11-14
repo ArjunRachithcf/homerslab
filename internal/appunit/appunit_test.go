@@ -41,13 +41,30 @@ func withSecrets() appunit.App {
 		Secrets: []appunit.Secret{{Name: "secret-key", UID: 1000}, {Name: "db-password", UID: 999}}}
 }
 
+// mealie is Mealie as the agent installs it (#20): it signs people in itself, with the OIDC client the household
+// account made for it, whose settings it takes from its environment and whose secret from a file.
+func mealie() appunit.App {
+	return appunit.App{ID: "mealie", Product: "Mealie", Plan: "p-3a5f8e0c1d2b4a6978c0e1f2a3b4c5d6",
+		Project: engine.Project{Name: "homerslab-mealie", Services: []engine.Service{{Name: "web", Image: "ghcr.io/mealie-recipes/mealie:v3.30.0@sha256:90f83da6f3ab0a421efc827118a556168573930105f13fa3321768f42163d784"}},
+			Networks: []engine.Network{{Name: "default"}}},
+		Service: "web", Upstream: netip.MustParseAddrPort("172.31.240.34:9000"), Subnet: netip.MustParsePrefix("172.31.240.32/28"),
+		Level: "s0:c604,c605", Slot: 2, SELinux: true, Dir: "/var/lib/homerslab-agent/apps/mealie",
+		OIDC: &appunit.OIDC{SecretUID: 911, Env: map[string]string{
+			"OIDC_CONFIGURATION_URL":  "https://auth.ferreira.family:9443/application/o/homerslab-mealie/.well-known/openid-configuration",
+			"OIDC_CLIENT_ID":          "homerslab-mealie",
+			"OIDC_CLIENT_SECRET_FILE": appunit.ClientSecretPath,
+			"BASE_URL":                "https://recipes.ferreira.family:9443",
+			"OIDC_ADMIN_GROUP":        "homerslab-admins",
+		}}}
+}
+
 // Golden renders (spec: Testing Decisions): the unit and the compose file the agent writes for an app, byte for byte.
 // A deliberate change runs `go test ./internal/appunit -update` and explains the diff.
 func TestAnAppsUnitAndComposeFileAreTheirGoldenRenders(t *testing.T) {
 	testenv.Isolate(t)
 	noSELinux := withSecrets()
 	noSELinux.SELinux = false
-	for name, a := range map[string]appunit.App{"bentopdf": bentoPDF(), "with-secrets": withSecrets(), "without-selinux": noSELinux} {
+	for name, a := range map[string]appunit.App{"bentopdf": bentoPDF(), "mealie": mealie(), "with-secrets": withSecrets(), "without-selinux": noSELinux} {
 		for file, got := range map[string][]byte{name + ".service": appunit.UnitFile(a), name + ".compose.yaml": appunit.Override(a)} {
 			t.Run(file, func(t *testing.T) {
 				path := filepath.Join("testdata", file)
@@ -123,6 +140,55 @@ func TestSecretsReachTheContainersOnlyAsFilesAtTheAppsLevel(t *testing.T) {
 	}
 }
 
+// An app with native sign-in takes its OIDC client's settings from its environment, and its secret only as a file
+// (#20): the secret is a credential the agent sealed, loaded and copied like the app's own for the one user that reads
+// it, and handed in as a Compose secret on the upstream's service. The environment names the file, never the secret.
+func TestAnOIDCClientsSecretReachesTheAppOnlyAsAFile(t *testing.T) {
+	testenv.Isolate(t)
+	a := mealie()
+	a.Project.Services = append(a.Project.Services, engine.Service{Name: "worker"})
+	u, o := string(appunit.UnitFile(a)), string(appunit.Override(a))
+	for _, want := range []string{
+		"LoadCredentialEncrypted=mealie.oidc-client-secret:/var/lib/homerslab-agent/apps/mealie/credentials/oidc-client-secret.cred\n",
+		"ExecStartPre=/usr/bin/install -m 0400 -o 911 -g 911 %d/mealie.oidc-client-secret /run/homerslab-app-mealie/oidc-client-secret\n",
+		"ExecStartPre=/usr/bin/chcon -t container_file_t -l s0:c604,c605 /run/homerslab-app-mealie/oidc-client-secret\n",
+	} {
+		if !strings.Contains(u, want) {
+			t.Errorf("the unit lacks %q:\n%s", want, u)
+		}
+	}
+	var doc struct {
+		Services map[string]struct {
+			Environment map[string]string `yaml:"environment"`
+			Secrets     []string          `yaml:"secrets"`
+		} `yaml:"services"`
+		Secrets map[string]struct {
+			File string `yaml:"file"`
+		} `yaml:"secrets"`
+	}
+	if err := yaml.Unmarshal([]byte(o), &doc); err != nil {
+		t.Fatalf("%v\n%s", err, o)
+	}
+	web := doc.Services["web"]
+	if !maps.Equal(web.Environment, a.OIDC.Env) || !slices.Equal(web.Secrets, []string{"oidc-client-secret"}) {
+		t.Errorf("the upstream's service: environment %v, secrets %v", web.Environment, web.Secrets)
+	}
+	if w := doc.Services["worker"]; w.Environment != nil || w.Secrets != nil {
+		t.Errorf("another service got the client: %+v", w)
+	}
+	if f := doc.Secrets["oidc-client-secret"].File; f != "/run/homerslab-app-mealie/oidc-client-secret" {
+		t.Errorf("the client's secret is %q, want the unit's copy", f)
+	}
+	if strings.Contains(u, "Environment=") || strings.Contains(o, "CLIENT_SECRET\":") && !strings.Contains(o, "\"OIDC_CLIENT_SECRET_FILE\": \"/run/secrets/oidc-client-secret\"") {
+		t.Errorf("a secret in the environment:\n%s\n%s", u, o)
+	}
+	without := mealie()
+	without.OIDC = nil
+	if bytes.Contains(appunit.Override(without), []byte("oidc")) || strings.Contains(string(appunit.UnitFile(without)), "oidc") {
+		t.Error("an app without a client still gets one")
+	}
+}
+
 // The app's one upstream is on a network of its own, at a fixed address; the service keeps the networks it had.
 func TestTheUpstreamIsAFixedAddressOnANetworkOfItsOwn(t *testing.T) {
 	testenv.Isolate(t)
@@ -169,6 +235,11 @@ func TestNoTextOfTheAppsEndsALineOfItsFiles(t *testing.T) {
 		"the line separator":     func() appunit.App { a := withSecrets(); a.Product = "X\u2028include: [/etc/shadow]\u2028#"; return a }(),
 		"a backslash at its end": func() appunit.App { a := withSecrets(); a.Product = "X\\"; return a }(),
 		"a plan that isn't one":  func() appunit.App { a := withSecrets(); a.Plan = "p-1\u2028include: [/x]"; return a }(),
+		"a client's setting": func() appunit.App {
+			a := withSecrets()
+			a.OIDC = &appunit.OIDC{SecretUID: 1, Env: map[string]string{"BASE_URL": "https://x\u2028cap_add: [ALL]", "X\u0085user: root": "y\u2029"}}
+			return a
+		}(),
 		"a service's odd name": func() appunit.App {
 			a := withSecrets()
 			a.Project.Services = append(a.Project.Services, engine.Service{Name: "odd\u0085privileged: true"})
@@ -200,7 +271,7 @@ func TestNoTextOfTheAppsEndsALineOfItsFiles(t *testing.T) {
 			}
 			for svc, v := range services {
 				for k := range v.(map[string]any) {
-					if !slices.Contains([]string{"restart", "deploy", "security_opt", "extra_hosts", "networks"}, k) {
+					if !slices.Contains([]string{"restart", "deploy", "security_opt", "extra_hosts", "networks", "environment", "secrets"}, k) {
 						t.Errorf("%q has %q:\n%s", svc, k, o)
 					}
 				}
@@ -208,6 +279,12 @@ func TestNoTextOfTheAppsEndsALineOfItsFiles(t *testing.T) {
 			for _, bad := range []string{"\u0085", "\u2028", "\u2029", "privileged", "include", "/host"} {
 				if strings.Contains(string(o), bad) && !(bad == "privileged" && strings.Contains(string(o), `\u0085privileged`)) {
 					t.Errorf("the agent's compose file carries %q:\n%s", bad, o)
+				}
+			}
+			if a.OIDC != nil {
+				env, _ := services["web"].(map[string]any)["environment"].(map[string]any)
+				if len(env) != len(a.OIDC.Env) || env["BASE_URL"] != a.OIDC.Env["BASE_URL"] {
+					t.Errorf("the client's settings came back as %q", env)
 				}
 			}
 			u := string(appunit.UnitFile(a))

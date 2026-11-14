@@ -162,8 +162,12 @@ type Provider interface {
 	// works once, for EnrolmentLife, and runs HomersLab's own flow with only a passkey-enrolment stage, never the
 	// provider's recovery flow.
 	EnrolmentLink(ctx context.Context, username string) (Link, error)
-	// EnsureClient makes an app's OIDC client, or brings it in line.
+	// EnsureClient makes an app's OIDC client, or brings it in line: its redirect addresses exactly the ones given
+	// (https, no wildcard, or an app's own private-use scheme), its roles the only ones it opens to. Its id is its slug
+	// and its credentials never change once it is made, so a change reaches the app with no new secret.
 	EnsureClient(ctx context.Context, c Client) (ClientCredentials, error)
+	// DeleteClient deletes an app's OIDC client and what opens it; one that isn't there is gone already.
+	DeleteClient(ctx context.Context, slug string) error
 	// EnsureGuard makes an app's guard, or brings it in line: only its roles get past it, at its URL only.
 	EnsureGuard(ctx context.Context, g Guard) error
 }

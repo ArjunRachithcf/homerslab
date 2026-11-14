@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"io/fs"
+	"log/slog"
 	"net/http"
 	"net/netip"
 	"net/url"
@@ -12,12 +13,14 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/ArjunRachithcf/homerslab/catalogs"
 	"github.com/ArjunRachithcf/homerslab/internal/agent"
 	"github.com/ArjunRachithcf/homerslab/internal/agent/agenttest"
 	"github.com/ArjunRachithcf/homerslab/internal/appunit"
+	"github.com/ArjunRachithcf/homerslab/internal/catalog"
 	"github.com/ArjunRachithcf/homerslab/internal/engine"
 	"github.com/ArjunRachithcf/homerslab/internal/engine/compose"
 	"github.com/ArjunRachithcf/homerslab/internal/testenv"
@@ -51,6 +54,28 @@ secrets:
 `,
 		Secrets: []appunit.Secret{{Name: "db-password", UID: 999}},
 		Health:  []agent.AppHealth{{Service: "web", Port: 3000, Path: "/health"}, {Service: "db", Compose: true}}}
+}
+
+// clientSecret stands in for the secret of Mealie's OIDC client, which the manager hands the agent inward only.
+const clientSecret = "CLIENT-SECRET-PLACEHOLDER-0123456789abcdefghijklmnopqrstuv"
+
+// mealie is the official catalog's Mealie as its install plan hands it to the agent (#20): it signs people in itself,
+// with the OIDC client the household account made for it.
+func mealie(t *testing.T) agent.AppRequest {
+	t.Helper()
+	file, err := fs.ReadFile(catalogs.Official(), "apps/mealie/compose.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return agent.AppRequest{Plan: "p-3a5f8e0c1d2b4a6978c0e1f2a3b4c5d6", Product: "Mealie", Compose: string(file), Name: "recipes.example.test",
+		Service: "web", Port: 9000, Secrets: []appunit.Secret{}, Health: []agent.AppHealth{{Service: "web", Port: 9000, Path: "/api/app/about"}},
+		OIDC: &agent.AppOIDC{
+			Env: catalog.OIDCEnv{Discovery: "OIDC_CONFIGURATION_URL", ClientID: "OIDC_CLIENT_ID", ClientSecretFile: "OIDC_CLIENT_SECRET_FILE",
+				URL: "BASE_URL", AdminGroup: "OIDC_ADMIN_GROUP", RedirectURI: "OIDC_REDIRECT_URI", Issuer: "OIDC_ISSUER"},
+			Issuer: "https://auth.example.test/application/o/homerslab-mealie/", ClientID: "homerslab-mealie",
+			RedirectURIs: []string{"https://recipes.example.test/login"}, AdminGroup: "homerslab-admins", SecretUID: 911, ClientSecret: clientSecret,
+			RefusePaths: []string{"/api/auth/token"},
+		}}
 }
 
 // signedIn is an agent on a joined primary whose edge serves the sign-in: where a guarded app can be served.
@@ -564,6 +589,19 @@ func TestAnAppsLogsNeverCarryItsSecrets(t *testing.T) {
 	}
 }
 
+// lockedBuffer is the agent's log, as a test reads it.
+type lockedBuffer struct {
+	mu sync.Mutex
+	b  bytes.Buffer
+}
+
+func (l *lockedBuffer) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.Write(p)
+}
+func (l *lockedBuffer) String() string { l.mu.Lock(); defer l.mu.Unlock(); return l.b.String() }
+
 func toString(v any) string {
 	b, _ := json.Marshal(v)
 	return string(b)
@@ -571,3 +609,159 @@ func toString(v any) string {
 
 func mustAddrPort(s string) netip.AddrPort { return netip.MustParseAddrPort(s) }
 func mustPrefix(s string) netip.Prefix     { return netip.MustParsePrefix(s) }
+
+// An app with native sign-in gets its OIDC client from the agent (#20): its settings in its upstream's environment, as
+// the manifest names them, and the client's secret only as a credential the agent seals, handed to the one container
+// user that reads it as a file. The secret is nowhere else: not the agent's state, its files, its commands, its answers
+// or the app's logs. The edge serves the app without a guard, its identity headers still stripped.
+func TestAnAppWithNativeSignInGetsItsClientsSecretAsAFileOnly(t *testing.T) {
+	testenv.Isolate(t)
+	var logs lockedBuffer
+	sock, h, state := signedIn(t, agent.Config{Sysroot: withSELinux{agenttest.Primary()}, Log: slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug}))})
+	r := mealie(t)
+	check := r
+	check.OIDC = &agent.AppOIDC{}
+	*check.OIDC = *r.OIDC
+	check.OIDC.ClientSecret = ""
+	if code, body := call(t, sock, "PUT", "/v1/apps/mealie?check=true", check); code != http.StatusOK {
+		t.Fatalf("checking, before the client has a secret: %d %s", code, body)
+	}
+	if code, body := call(t, sock, "PUT", "/v1/apps/mealie", check); code != http.StatusBadRequest || !strings.Contains(string(body), "no-client-secret") {
+		t.Errorf("installing without the client's secret: %d %s", code, body)
+	}
+	s := install(t, sock, "mealie", r)
+	dir := filepath.Join(state, "apps", "mealie")
+	cred := filepath.Join(dir, "credentials", "oidc-client-secret.cred")
+	var sealed []string
+	for _, c := range h.Cmds() {
+		if c.Name == "systemd-creds" && c.Args[0] == "encrypt" && strings.Contains(c.String(), "/apps/") {
+			sealed = append(sealed, strings.Join(c.Args, " "))
+		}
+	}
+	if len(sealed) != 1 || sealed[0] != "encrypt --with-key=host+tpm2 --name=mealie.oidc-client-secret - "+cred+".new" {
+		t.Fatalf("sealed: %q", sealed)
+	}
+	if b, _ := os.ReadFile(cred); string(b) != "sealed:"+base64.StdEncoding.EncodeToString([]byte(clientSecret)) {
+		t.Errorf("the sealed credential holds %q", b)
+	}
+	want := appunit.App{ID: "mealie", Product: "Mealie", Plan: r.Plan,
+		Project: engine.Project{Name: "homerslab-mealie", Services: []engine.Service{{Name: "web", Image: "ghcr.io/mealie-recipes/mealie:v3.30.0@sha256:90f83da6f3ab0a421efc827118a556168573930105f13fa3321768f42163d784"}},
+			Networks: []engine.Network{{Name: "default"}}},
+		Service: "web", Upstream: mustAddrPort("172.31.240.2:9000"), Subnet: mustPrefix("172.31.240.0/28"), Level: "s0:c600,c601", SELinux: true, Dir: dir,
+		SignIn: "auth.example.test", SignInAt: agent.SignInListen,
+		OIDC: &appunit.OIDC{SecretUID: 911, Env: map[string]string{
+			"OIDC_ISSUER":             "https://auth.example.test/application/o/homerslab-mealie/",
+			"OIDC_CONFIGURATION_URL":  "https://auth.example.test/application/o/homerslab-mealie/.well-known/openid-configuration",
+			"OIDC_CLIENT_ID":          "homerslab-mealie",
+			"OIDC_CLIENT_SECRET_FILE": "/run/secrets/oidc-client-secret",
+			"OIDC_REDIRECT_URI":       "https://recipes.example.test/login",
+			"BASE_URL":                "https://recipes.example.test",
+			"OIDC_ADMIN_GROUP":        "homerslab-admins",
+		}}}
+	if got, _ := os.ReadFile(filepath.Join(dir, "homerslab.yaml")); !bytes.Equal(got, appunit.Override(want)) {
+		t.Errorf("the agent's compose file:\n%s\nwant\n%s", got, appunit.Override(want))
+	}
+	if unit, _ := os.ReadFile(filepath.Join(h.Root, agent.UnitsDir, "homerslab-app-mealie.service")); !bytes.Equal(unit, appunit.UnitFile(want)) {
+		t.Errorf("the unit:\n%s\nwant\n%s", unit, appunit.UnitFile(want))
+	}
+	var cfg struct {
+		Apps struct {
+			HTTP struct {
+				Servers map[string]struct{ Routes []json.RawMessage }
+			}
+		}
+	}
+	_ = json.Unmarshal(h.Edge.Config(), &cfg)
+	var site string
+	for _, r := range cfg.Apps.HTTP.Servers["mesh"].Routes {
+		if compact := strings.Join(strings.Fields(string(r)), ""); strings.Contains(compact, `"host":["recipes.example.test"]`) {
+			site = compact
+		}
+	}
+	if !strings.Contains(site, `"dial":"172.31.240.2:9000"`) || strings.Contains(site, "outpost.goauthentik.io") || !strings.Contains(site, `"X-Authentik-*"`) ||
+		!strings.Contains(site, `"path":["/api/auth/token","/api/auth/token/*"]`) {
+		t.Errorf("the app's site, which signs people in itself: no guard, identity headers stripped, its password sign-in refused:\n%s", site)
+	}
+
+	// Nowhere in the clear but the sealed credential.
+	seen := []string{toString(s)}
+	for _, root := range []string{state, h.Root} {
+		_ = filepath.Walk(root, func(p string, fi os.FileInfo, err error) error {
+			if err == nil && !fi.IsDir() && p != cred {
+				b, _ := os.ReadFile(p)
+				seen = append(seen, string(b))
+			}
+			return nil
+		})
+	}
+	for _, c := range h.Cmds() {
+		seen = append(seen, strings.Join(c.Args, " "))
+	}
+	_, body := call(t, sock, "GET", "/v1/apps", nil)
+	seen = append(seen, string(body), logs.String())
+	for _, txt := range seen {
+		if strings.Contains(txt, clientSecret) {
+			t.Fatalf("the client's secret is in the clear: %.200s", txt)
+		}
+	}
+	h.SetLogs("homerslab-mealie", []compose.LogLine{{Container: "homerslab-mealie-web-1", Line: "oidc: client_secret=" + clientSecret}})
+	if _, body := call(t, sock, "GET", "/v1/apps/mealie/logs", nil); strings.Contains(string(body), clientSecret) {
+		t.Errorf("the app's logs carry its client's secret: %s", body)
+	}
+
+	// A client made again (a new secret) reaches the app at the next apply: the secret is sealed again.
+	r.OIDC.ClientSecret = clientSecret + "-new"
+	install(t, sock, "mealie", r)
+	if b, _ := os.ReadFile(cred); string(b) != "sealed:"+base64.StdEncoding.EncodeToString([]byte(clientSecret+"-new")) {
+		t.Errorf("after the client's secret changed, the credential holds %q", b)
+	}
+}
+
+// The agent takes an app's OIDC client only as the app's own (#20): its issuer at the sign-in this node serves, its
+// URL the app's one name, its redirect addresses on that URL, its settings' names and values plain; and an app signs in
+// one way, the guard or its own client.
+func TestAnOIDCClientIsTakenOnlyAsTheAppsOwn(t *testing.T) {
+	testenv.Isolate(t)
+	sock, _, _ := signedIn(t, agent.Config{})
+	for name, c := range map[string]struct {
+		edit func(*agent.AppRequest)
+		code string
+	}{
+		"another sign-in's issuer":   {func(r *agent.AppRequest) { r.OIDC.Issuer = "https://auth.evil.example/application/o/x/" }, "bad-sign-in"},
+		"an issuer over plain HTTP":  {func(r *agent.AppRequest) { r.OIDC.Issuer = "http://auth.example.test/application/o/x/" }, "bad-sign-in"},
+		"an issuer that ends a line": {func(r *agent.AppRequest) { r.OIDC.Issuer = "https://auth.example.test/x\u2028y/" }, "bad-sign-in"},
+		"a client id with a quote":   {func(r *agent.AppRequest) { r.OIDC.ClientID = `x"y` }, "bad-sign-in"},
+		"a redirect on another site": {func(r *agent.AppRequest) { r.OIDC.RedirectURIs = []string{"https://evil.example/login"} }, "bad-sign-in"},
+		"a redirect on a lookalike": {func(r *agent.AppRequest) {
+			r.OIDC.RedirectURIs = []string{"https://recipes.example.test.evil.example/login"}
+		}, "bad-sign-in"},
+		"its own app's address, ending a line": {func(r *agent.AppRequest) {
+			r.OIDC.RedirectURIs = append(r.OIDC.RedirectURIs, "org.example.app:/cb\u2028x")
+		}, "bad-sign-in"},
+		"a variable that isn't one":     {func(r *agent.AppRequest) { r.OIDC.Env.URL = "BASE URL" }, "bad-sign-in"},
+		"one variable twice":            {func(r *agent.AppRequest) { r.OIDC.Env.URL = "OIDC_CLIENT_ID" }, "bad-sign-in"},
+		"no variable for the secret":    {func(r *agent.AppRequest) { r.OIDC.Env.ClientSecretFile = "" }, "bad-sign-in"},
+		"an admins' group that's odd":   {func(r *agent.AppRequest) { r.OIDC.AdminGroup = "admins\nx" }, "bad-sign-in"},
+		"a secret of a line's end":      {func(r *agent.AppRequest) { r.OIDC.ClientSecret = "x\ny" }, "bad-sign-in"},
+		"a guard and a client":          {func(r *agent.AppRequest) { r.Guard = true }, "bad-app"},
+		"no way to sign in":             {func(r *agent.AppRequest) { r.OIDC = nil }, "sign-in-not-built"},
+		"its own secret of that name":   {func(r *agent.AppRequest) { r.Secrets = []appunit.Secret{{Name: "oidc-client-secret", UID: 1}} }, "bad-secrets"},
+		"a negative uid for the secret": {func(r *agent.AppRequest) { r.OIDC.SecretUID = -1 }, "bad-sign-in"},
+		"refusing every path":           {func(r *agent.AppRequest) { r.OIDC.RefusePaths = []string{"/"} }, "bad-sign-in"},
+		"refusing a pattern":            {func(r *agent.AppRequest) { r.OIDC.RefusePaths = []string{"/api/*"} }, "bad-sign-in"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			r := mealie(t)
+			o := *r.OIDC
+			r.OIDC = &o
+			c.edit(&r)
+			code, body := call(t, sock, "PUT", "/v1/apps/mealie", r)
+			if code/100 != 4 || !strings.Contains(string(body), c.code) {
+				t.Errorf("%d %s, want %s", code, body, c.code)
+			}
+		})
+	}
+	if len(apps(t, sock).Apps) != 0 {
+		t.Error("a refused request installed an app")
+	}
+}

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"slices"
 	"strconv"
 	"time"
 
@@ -17,16 +18,20 @@ import (
 	"github.com/ArjunRachithcf/homerslab/internal/manager/store"
 )
 
-// Applying an install plan (#19; spec: The install plan). Applying takes the plan's id and does what the plan says,
-// nothing more: the plan must still be the one the household gets now (the same definition, from the same catalog,
-// into the same household, which is what its id hashes), so a stale plan is refused rather than applied in part. Then:
-//   - the identity provider gets the app's guard, for its name and its audience;
-//   - the agent gets the app: the plan's name, upstream, secrets and health checks, and the catalog's compose file whose
-//     digest the plan carries;
+// Applying an install plan (#19, #20; spec: The install plan). Applying takes the plan's id and does what the plan
+// says, nothing more: the plan must still be the one the household gets now (the same definition, from the same
+// catalog, into the same household, which is what its id hashes), so a stale plan is refused rather than applied in
+// part. Then:
+//   - the identity provider gets the app's guard, for its name and its audience; or, for an app that signs people in
+//     itself, its OIDC client, for its audience and the plan's redirect addresses exactly;
+//   - the agent gets the app: the plan's name, upstream, secrets and health checks, the catalog's compose file whose
+//     digest the plan carries, and an OIDC client's settings and secret (which the agent seals; the manager keeps
+//     none of it);
 //   - the household keeps that the plan was applied.
 //
 // A plan with an extra is a risky change: it needs the admin's passkey (step-up, #25), so it is refused until then.
-// Apps that sign people in themselves (OIDC, LDAP) come with #20; only guarded apps are applied so far.
+// A plan whose sign-in isn't wired isn't applied either: LDAP apps come with #49, and an OIDC app applies once its
+// manifest says how it takes its client.
 
 // The ways applying is refused.
 var (
@@ -122,10 +127,10 @@ func (m *Manager) applyPlan(w http.ResponseWriter, r *http.Request) {
 	case p.Risky:
 		fail(w, http.StatusForbidden, errStepUp.Error())
 		return
-	case p.SignIn.Method != catalog.Guard:
-		fail(w, http.StatusUnprocessableEntity, errNotBuilt.Error())
-		return
 	}
+	// One apply at a time: an install that fails deletes the client it made, which must be no other apply's.
+	m.applying.Lock()
+	defer m.applying.Unlock()
 	a, err := m.current(ctx, p)
 	var refused *agentRefused
 	switch {
@@ -143,6 +148,10 @@ func (m *Manager) applyPlan(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusServiceUnavailable, errAgent.Error())
 		return
 	}
+	if !p.SignIn.Wired { // after the stale check: a plan made before HomersLab could set its sign-in up is stale
+		fail(w, http.StatusUnprocessableEntity, errNotBuilt.Error())
+		return
+	}
 	ans, err := m.db.Answers(ctx)
 	if err != nil {
 		m.internal(w, "reading the answers", err)
@@ -154,8 +163,17 @@ func (m *Manager) applyPlan(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusConflict, errNoSignInYet.Error())
 		return
 	}
+	var native *catalog.SignIn // an app's own OIDC client: how it takes it
+	if p.SignIn.Method == catalog.OIDC {
+		native = &a.SignIn[slices.IndexFunc(a.SignIn, func(s catalog.SignIn) bool { return s.Method == catalog.OIDC })]
+	}
 	req := agent.AppRequest{Plan: p.ID, Product: p.App.Name, Compose: string(a.Compose), Name: p.Name.Host, Service: a.Names.Service,
-		Port: a.Names.Port, Guard: true, Secrets: []appunit.Secret{}, Health: []agent.AppHealth{}}
+		Port: a.Names.Port, Guard: native == nil, Secrets: []appunit.Secret{}, Health: []agent.AppHealth{}}
+	if native != nil {
+		// The client's issuer, id and secret come once the identity provider has made it, below.
+		req.OIDC = &agent.AppOIDC{Env: *native.Env, RedirectURIs: p.SignIn.RedirectURIs, AdminGroup: idp.RoleGroup(idp.Admin),
+			SecretUID: *native.SecretUID, RefusePaths: native.RefusePaths}
+	}
 	for _, s := range a.Secrets {
 		req.Secrets = append(req.Secrets, appunit.Secret{Name: s.Name, UID: s.UID})
 	}
@@ -166,8 +184,8 @@ func (m *Manager) applyPlan(w http.ResponseWriter, r *http.Request) {
 		}
 		req.Health = append(req.Health, ah)
 	}
-	// The agent checks the app first, so a refused plan changes nothing anywhere; then the guard, before the edge
-	// serves the app's name; then the app.
+	// The agent checks the app first, so a refused plan changes nothing anywhere; then the guard or the client, before
+	// the edge serves the app's name; then the app.
 	agentFailed := func(err error) {
 		var e *agentError
 		if errors.As(err, &e) && e.Status/100 == 4 {
@@ -182,14 +200,40 @@ func (m *Manager) applyPlan(w http.ResponseWriter, r *http.Request) {
 		agentFailed(err)
 		return
 	}
-	guard := idp.Guard{Slug: "homerslab-" + a.ID, Name: p.App.Name, URL: siteURL(ans, p.Name.Host), Roles: roles(p.Audience.Default)}
-	if err := provider.EnsureGuard(ctx, guard); err != nil {
-		m.log.Error("making an app's guard", "app", a.ID, "err", err)
-		fail(w, http.StatusBadGateway, "guard-failed")
-		return
+	slug := "homerslab-" + a.ID
+	newClient := false
+	if native == nil {
+		guard := idp.Guard{Slug: slug, Name: p.App.Name, URL: siteURL(ans, p.Name.Host), Roles: roles(p.Audience.Default)}
+		if err := provider.EnsureGuard(ctx, guard); err != nil {
+			m.log.Error("making an app's guard", "app", a.ID, "err", err)
+			fail(w, http.StatusBadGateway, "guard-failed")
+			return
+		}
+	} else {
+		installed, err := m.db.Apps(ctx)
+		if err != nil {
+			m.internal(w, "reading the apps", err)
+			return
+		}
+		newClient = !slices.ContainsFunc(installed, func(x store.App) bool { return x.ID == a.ID })
+		client := idp.Client{Slug: slug, Name: p.App.Name, RedirectURIs: p.SignIn.RedirectURIs, Roles: roles(p.Audience.Default)}
+		creds, err := provider.EnsureClient(ctx, client)
+		if err != nil {
+			m.log.Error("making an app's OIDC client", "app", a.ID, "err", err)
+			fail(w, http.StatusBadGateway, "client-failed")
+			return
+		}
+		req.OIDC.Issuer, req.OIDC.ClientID, req.OIDC.ClientSecret = creds.Issuer, creds.ID, creds.Secret.Reveal()
 	}
 	var st agent.AppStatus
 	if err := m.agent.install(ctx, a.ID, req, false, &st); err != nil {
+		// No client for an app the household doesn't have: only when the agent answered that it didn't install it. A
+		// request that timed out or was given up on may still be installing, and the app would lose its sign-in.
+		if e := (*agentError)(nil); newClient && errors.As(err, &e) {
+			if err := provider.DeleteClient(context.WithoutCancel(ctx), slug); err != nil {
+				m.log.Error("deleting the client of an app that didn't install", "app", a.ID, "err", err)
+			}
+		}
 		agentFailed(err)
 		return
 	}

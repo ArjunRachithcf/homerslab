@@ -11,3 +11,4 @@ is implied.
 
 - `apps/immich/icon.svg`: Immich, selfh.st/icons, CC BY 4.0
 - `apps/bentopdf/icon.svg`: BentoPDF, selfh.st/icons, CC BY 4.0
+- `apps/mealie/icon.svg`: Mealie, selfh.st/icons, CC BY 4.0
