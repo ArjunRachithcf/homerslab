@@ -251,6 +251,20 @@ var migrations = []string{
 		plan_id    TEXT NOT NULL REFERENCES plan (id),
 		applied_at INTEGER NOT NULL
 	);`,
+	// The household's storage locations (#28): a folder on a node, or a network share on the mesh, and whether the
+	// admin opted in to backing it up. Never a share's credentials: the agent seals them.
+	`CREATE TABLE storage_location (
+		id       TEXT PRIMARY KEY,
+		name     TEXT NOT NULL,
+		kind     TEXT NOT NULL,
+		node     TEXT NOT NULL,
+		path     TEXT NOT NULL,
+		protocol TEXT NOT NULL,
+		server   TEXT NOT NULL,
+		share    TEXT NOT NULL,
+		backup   INTEGER NOT NULL DEFAULT 0,
+		added_at INTEGER NOT NULL
+	);`,
 }
 
 // Moment is when something happened: by the wall clock, for display and audit, and by the time since the machine
@@ -685,4 +699,70 @@ func (s *Store) Apps(ctx context.Context) ([]App, error) {
 		out = append(out, a)
 	}
 	return out, rows.Err()
+}
+
+// ErrExists is a row that is already there, which the write would replace.
+var ErrExists = errors.New("exists")
+
+// Location is a storage location (#28): a folder on a node (Node, Path), or a network share on the mesh (Protocol,
+// Server, Share). Backup says the admin opted in to backing it up; nothing is backed up otherwise.
+type Location struct {
+	ID       string    `json:"id"`
+	Name     string    `json:"name"`
+	Kind     string    `json:"kind"` // folder or share
+	Node     string    `json:"node,omitempty"`
+	Path     string    `json:"path,omitempty"`
+	Protocol string    `json:"protocol,omitempty"`
+	Server   string    `json:"server,omitempty"`
+	Share    string    `json:"share,omitempty"`
+	Backup   bool      `json:"backup"`
+	AddedAt  time.Time `json:"addedAt"`
+}
+
+// AddLocation keeps a new storage location, once: ErrExists when its id is taken.
+func (s *Store) AddLocation(ctx context.Context, l Location) error {
+	res, err := s.db.ExecContext(ctx, `INSERT INTO storage_location (id, name, kind, node, path, protocol, server, share, backup, added_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (id) DO NOTHING`,
+		l.ID, l.Name, l.Kind, l.Node, l.Path, l.Protocol, l.Server, l.Share, l.Backup, l.AddedAt.UnixMilli())
+	if err != nil {
+		return written(err, s.dir)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrExists
+	}
+	return nil
+}
+
+// Locations are the household's storage locations, by id, each with whether the admin opted in to backing it up: what
+// the backup plan reads (#22) to back up only those.
+func (s *Store) Locations(ctx context.Context) ([]Location, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT id, name, kind, node, path, protocol, server, share, backup, added_at
+		FROM storage_location ORDER BY id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []Location{}
+	for rows.Next() {
+		var l Location
+		var at int64
+		if err := rows.Scan(&l.ID, &l.Name, &l.Kind, &l.Node, &l.Path, &l.Protocol, &l.Server, &l.Share, &l.Backup, &at); err != nil {
+			return nil, err
+		}
+		l.AddedAt = time.UnixMilli(at).UTC()
+		out = append(out, l)
+	}
+	return out, rows.Err()
+}
+
+// SetLocationBackup opts a storage location in to backups, or out: ErrNotFound when there is none by that id.
+func (s *Store) SetLocationBackup(ctx context.Context, id string, backup bool) error {
+	res, err := s.db.ExecContext(ctx, `UPDATE storage_location SET backup = ? WHERE id = ?`, backup, id)
+	if err != nil {
+		return written(err, s.dir)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrNotFound
+	}
+	return nil
 }

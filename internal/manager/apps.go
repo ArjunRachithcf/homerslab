@@ -89,7 +89,14 @@ func (m *Manager) current(ctx context.Context, p plan.Plan) (catalog.App, error)
 	if err != nil {
 		return catalog.App{}, err
 	}
-	now, err := plan.Make(a, plan.From{ID: m.catalog.ID, Publisher: m.catalog.Publisher}, project, h, m.cfg.Now())
+	chosen := map[string]string{}
+	for _, s := range p.Storage {
+		chosen[s.Ask] = s.Location
+	}
+	now, err := plan.MakeWith(a, plan.From{ID: m.catalog.ID, Publisher: m.catalog.Publisher}, project, h, m.cfg.Now(), chosen)
+	if errors.Is(err, plan.ErrStorageNeeded) || errors.Is(err, plan.ErrNoSuchLocation) {
+		return catalog.App{}, errStalePlan // its location is gone
+	}
 	if err != nil {
 		return catalog.App{}, err
 	}
@@ -158,6 +165,9 @@ func (m *Manager) applyPlan(w http.ResponseWriter, r *http.Request) {
 		Port: a.Names.Port, Guard: true, Secrets: []appunit.Secret{}, Health: []agent.AppHealth{}}
 	for _, s := range a.Secrets {
 		req.Secrets = append(req.Secrets, appunit.Secret{Name: s.Name, UID: s.UID})
+	}
+	for _, s := range p.Storage {
+		req.Storage = append(req.Storage, agent.AppStorage{Location: s.Location, Service: s.Service, Path: s.Path, ReadOnly: s.ReadOnly})
 	}
 	for _, h := range a.Health {
 		ah := agent.AppHealth{Service: h.Service, Compose: h.Compose}

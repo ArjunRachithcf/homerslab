@@ -19,7 +19,8 @@ func (m *Manager) Admin() http.Handler {
 	// same resources to the machine's terminal.
 	store := http.NewServeMux()
 	m.catalogRoutes(store)
-	for _, p := range []string{"/api/v1/catalog", "/api/v1/catalog/", "/api/v1/plans", "/api/v1/plans/", "/api/v1/apps"} {
+	m.storageRoutes(store)
+	for _, p := range []string{"/api/v1/catalog", "/api/v1/catalog/", "/api/v1/plans", "/api/v1/plans/", "/api/v1/apps", "/api/v1/storage", "/api/v1/storage/"} {
 		mux.Handle(p, m.signedIn(store))
 	}
 	mux.HandleFunc("/api/", notFound)

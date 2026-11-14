@@ -1,0 +1,38 @@
+# Written by HomersLab's agent, from install plan p-0123456789abcdef0123456789abcdef. Never edit by hand.
+# App everything, run by the standard compose command on its catalog's compose file and the agent's (ADR 0014).
+# systemd owns the containers: their restart policies are off, and this unit restarts them; a container that stops
+# ends the compose command, which stops the others. The app's secrets are credentials the agent sealed (ADR 0011),
+# copied into the runtime directory for the one container user that reads each, at the app's own SELinux level.
+# No mount sandboxing: Docker's daemon must see that directory.
+[Unit]
+Description=HomersLab app everything
+Documentation=https://github.com/ArjunRachithcf/homerslab
+Requires=docker.service
+After=docker.service network-online.target homerslab-agent.service
+Wants=network-online.target
+
+[Service]
+Type=exec
+RuntimeDirectory=homerslab-app-everything
+RuntimeDirectoryMode=0700
+UMask=0077
+LoadCredentialEncrypted=everything.db-password:/var/lib/homerslab-agent/apps/everything/credentials/db-password.cred
+LoadCredentialEncrypted=everything.secret-key:/var/lib/homerslab-agent/apps/everything/credentials/secret-key.cred
+ExecStartPre=/usr/bin/install -m 0400 -o 999 -g 999 %d/everything.db-password /run/homerslab-app-everything/db-password
+ExecStartPre=/usr/bin/install -m 0400 -o 1000 -g 1000 %d/everything.secret-key /run/homerslab-app-everything/secret-key
+ExecStartPre=/usr/bin/chcon -t container_file_t -l s0:c602,c603 /run/homerslab-app-everything/db-password /run/homerslab-app-everything/secret-key
+ExecStart=/usr/bin/docker compose --project-name homerslab-everything --project-directory /var/lib/homerslab-agent/apps/everything --file /var/lib/homerslab-agent/apps/everything/compose.yaml --file /var/lib/homerslab-agent/apps/everything/homerslab.yaml up --no-log-prefix --quiet-pull --abort-on-container-exit
+# Not into the journal: compose writes the containers' output there, secrets and all; the agent reads the app's
+# logs from the engine, its secrets cut out. systemd still logs the unit's starts, stops and exit statuses.
+StandardOutput=null
+StandardError=null
+ExecStopPost=/usr/bin/docker compose --project-name homerslab-everything --project-directory /var/lib/homerslab-agent/apps/everything --file /var/lib/homerslab-agent/apps/everything/compose.yaml --file /var/lib/homerslab-agent/apps/everything/homerslab.yaml stop
+# Always: compose ends with the stopped container's own exit status, 0 included.
+Restart=always
+# systemctl stop: compose ends with 130 when it stops the containers itself.
+SuccessExitStatus=130
+RestartSec=10s
+TimeoutStopSec=90s
+
+[Install]
+WantedBy=multi-user.target

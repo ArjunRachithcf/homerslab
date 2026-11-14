@@ -22,6 +22,7 @@ import (
 	"strings"
 
 	"github.com/ArjunRachithcf/homerslab/internal/engine"
+	"github.com/ArjunRachithcf/homerslab/internal/storage"
 )
 
 // UpstreamNetwork is the network of the app's one upstream, in its compose project.
@@ -47,6 +48,8 @@ type App struct {
 	SignInAt netip.Addr
 	SELinux  bool
 	Secrets  []Secret
+	// Mounts are the storage locations the app's services see (#28).
+	Mounts []Mount
 	// Dir is where the agent keeps the app's compose files and sealed credentials.
 	Dir string
 }
@@ -55,6 +58,22 @@ type App struct {
 type Secret struct {
 	Name string `json:"name"`
 	UID  int    `json:"uid"`
+}
+
+// Mount is a storage location one of the app's services sees (#28): its source on this machine (the location's
+// folder), the path in the container, and whether the service only reads it.
+type Mount struct {
+	Location string `json:"location"`
+	Service  string `json:"service"`
+	Source   string `json:"source"`
+	Target   string `json:"target"`
+	ReadOnly bool   `json:"readOnly"`
+}
+
+// checked says whether the mount is one the agent's files may name: a folder its checks allow, at a plain path in the
+// container. Anything else is left out: compose would interpolate a ${...}.
+func (m Mount) checked() bool {
+	return storage.ID.MatchString(m.Location) && storage.ValidTarget(m.Target) && storage.Allowed(m.Source) == nil
 }
 
 // ID is an app's id as the agent takes it: what a unit, a project and a runtime directory can be named after.
@@ -127,7 +146,8 @@ func Override(a App) []byte {
 	w("#   - the app's one upstream, a fixed address on a network of its own, which only the edge and the agent may open;")
 	w("#   - every network's bridge named by the agent, so the firewall table knows it before it is made;")
 	w("#   - the sign-in's name, at the sign-in listener's address: the one thing of this machine's the app may open;")
-	w("#   - its secrets, as files its unit copies from the credentials the agent sealed.")
+	w("#   - its secrets, as files its unit copies from the credentials the agent sealed;")
+	w("#   - its storage locations, each a bind of the location's folder, read-only unless the plan says otherwise.")
 	w("name: %s", q(Project(a.ID)))
 	w("services:")
 	services := slices.Clone(a.Project.Services)
@@ -143,6 +163,19 @@ func Override(a App) []byte {
 		if a.SignIn != "" && a.SignInAt.IsValid() {
 			w("    extra_hosts:")
 			w("      - %s", q(a.SignIn+"="+a.SignInAt.String()))
+		}
+		mounts := slices.DeleteFunc(slices.Clone(a.Mounts), func(m Mount) bool { return m.Service != s.Name || !m.checked() })
+		slices.SortFunc(mounts, func(x, y Mount) int { return strings.Compare(x.Target, y.Target) })
+		if len(mounts) > 0 {
+			w("    volumes:")
+		}
+		for _, m := range mounts {
+			w("      - type: \"bind\"")
+			w("        source: %s", q(m.Source))
+			w("        target: %s", q(m.Target))
+			w("        read_only: %t", m.ReadOnly)
+			w("        bind:")
+			w("          create_host_path: false")
 		}
 		if s.Name != a.Service {
 			continue

@@ -38,6 +38,7 @@ type App struct {
 	Names       Names        `yaml:"names" json:"names"`
 	Audience    Audience     `yaml:"audience" json:"audience"`
 	Data        []Data       `yaml:"data" json:"data"`
+	Storage     []Storage    `yaml:"storage" json:"storage"`
 	Secrets     []Secret     `yaml:"secrets" json:"secrets"`
 	Health      []Health     `yaml:"health" json:"health"`
 	Resources   Resources    `yaml:"resources" json:"resources"`
@@ -140,6 +141,19 @@ type Data struct {
 
 // BackedUp says whether the data is backed up.
 func (d Data) BackedUp() bool { return d.Backup == nil || *d.Backup }
+
+// Storage is a storage location the app asks for (#28): what the app keeps there, which of its services sees it, at
+// which path, and whether it writes there. Read-only is the default, as for media.
+type Storage struct {
+	ID      string `yaml:"id" json:"id"`
+	What    string `yaml:"what" json:"what"` // Your films and series
+	Service string `yaml:"service" json:"service"`
+	Path    string `yaml:"path" json:"path"`
+	Access  string `yaml:"access" json:"access,omitempty"` // read-only (the default) or read-write
+}
+
+// ReadOnly says whether the app only reads the location.
+func (s Storage) ReadOnly() bool { return s.Access != "read-write" }
 
 // Dump is the command that writes a database dump to its standard output.
 type Dump struct {

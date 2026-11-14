@@ -134,6 +134,8 @@ type state struct {
 	SignIn *signInState `json:"signIn,omitempty"`
 	// Apps are the apps installed on this node, by id (#19).
 	Apps map[string]*appState `json:"apps,omitempty"`
+	// Storage are the storage locations on this node, by id (#28).
+	Storage map[string]*storageState `json:"storage,omitempty"`
 	// Bridges are the engines' bridges as each engine last confirmed them: what the table uses until an engine
 	// answers again (at boot, before any of them runs; while one hangs).
 	Bridges map[string][]string `json:"engineBridges,omitempty"`
@@ -447,6 +449,8 @@ func (a *Agent) Handler() http.Handler {
 	mux.HandleFunc("PUT /v1/apps/{id}", a.putApp)
 	mux.HandleFunc("GET /v1/apps", a.getApps)
 	mux.HandleFunc("GET /v1/apps/{id}/logs", a.getAppLogs)
+	mux.HandleFunc("PUT /v1/storage/{id}", a.putStorage)
+	mux.HandleFunc("GET /v1/storage", a.getStorage)
 	mux.HandleFunc("/", func(w http.ResponseWriter, _ *http.Request) { fail(w, http.StatusNotFound, "not-found") })
 	return mux
 }

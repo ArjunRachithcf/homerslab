@@ -332,3 +332,87 @@ func TestAPlanNeverTakesAReservedName(t *testing.T) {
 		t.Errorf("a free name: %+v, want no reason", got)
 	}
 }
+
+// withLibrary is a household with storage locations (#28): the primary's own folder of films, backed up, and a NAS's
+// share of music on the mesh, not backed up; and a folder on another node.
+func withLibrary() plan.Household {
+	h := household()
+	h.Storage = []plan.Location{
+		{ID: "films", Name: "Films", Kind: "folder", Node: "study-pc", Backup: true},
+		{ID: "music", Name: "The NAS's music", Kind: "share"},
+		{ID: "elsewhere", Name: "On the GPU box", Kind: "folder", Node: "gpu-box"},
+	}
+	return h
+}
+
+// A manifest asks for a storage location, and the plan says which one, and whether the app only reads it: read-only
+// is the default, as for media (#28). Whether the location is backed up shows in the plan's backups.
+func TestAPlanSaysWhichStorageLocationAnAppUsesAndHow(t *testing.T) {
+	testenv.Isolate(t)
+	d := definition()
+	d.Storage = []catalog.Storage{
+		{ID: "library", What: "The films it shows", Service: "web", Path: "/media"},
+		{ID: "uploads", What: "What people upload", Service: "web", Path: "/uploads", Access: "read-write"},
+	}
+	p, err := plan.MakeWith(d, official, project(), withLibrary(), made, map[string]string{"library": "films", "uploads": "music"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []plan.Storage{
+		{Ask: "library", What: "The films it shows", Service: "web", Path: "/media", Location: "films", Name: "Films", Kind: "folder", ReadOnly: true},
+		{Ask: "uploads", What: "What people upload", Service: "web", Path: "/uploads", Location: "music", Name: "The NAS's music", Kind: "share", ReadOnly: false},
+	}
+	if !reflect.DeepEqual(p.Storage, want) {
+		t.Errorf("the storage:\n got %+v\nwant %+v", p.Storage, want)
+	}
+	backups := []plan.LocationBackup{{Location: "films", Name: "Films", BackedUp: true}, {Location: "music", Name: "The NAS's music", BackedUp: false}}
+	if !reflect.DeepEqual(p.Backups.Locations, backups) {
+		t.Errorf("the backups of its locations: %+v", p.Backups.Locations)
+	}
+	// The location chosen, and whether it is backed up, are what the plan says: another is another plan.
+	other, err := plan.MakeWith(d, official, project(), withLibrary(), made, map[string]string{"library": "music", "uploads": "music"})
+	if err != nil || other.ID == p.ID {
+		t.Errorf("another location, the same plan: %v", err)
+	}
+	h := withLibrary()
+	h.Storage[0].Backup = false
+	if again, _ := plan.MakeWith(d, official, project(), h, made, map[string]string{"library": "films", "uploads": "music"}); again.ID == p.ID {
+		t.Error("a location's backup turned off, and the plan is the same")
+	}
+	// An app that asks for none says nothing of storage, as before.
+	if p := make_(t, definition(), withLibrary()); p.Storage != nil || p.Backups.Locations != nil {
+		t.Errorf("no storage asked: %+v %+v", p.Storage, p.Backups.Locations)
+	}
+}
+
+// With one location the household has where the app runs, the plan takes it; with none, several, one that isn't there
+// or one on another node, the plan can't be made until the admin chooses one that is.
+func TestAPlanTakesAStorageLocationOnlyWhereItsClear(t *testing.T) {
+	testenv.Isolate(t)
+	d := definition()
+	d.Storage = []catalog.Storage{{ID: "library", What: "The films it shows", Service: "web", Path: "/media"}}
+	one := household()
+	one.Storage = []plan.Location{{ID: "films", Name: "Films", Kind: "folder", Node: "study-pc"}, {ID: "away", Name: "Away", Kind: "folder", Node: "gpu-box"}}
+	if p, err := plan.MakeWith(d, official, project(), one, made, nil); err != nil || p.Storage[0].Location != "films" {
+		t.Errorf("the one location here: %+v %v", p.Storage, err)
+	}
+	for name, c := range map[string]struct {
+		h      plan.Household
+		chosen map[string]string
+		want   error
+	}{
+		"no location":                 {household(), nil, plan.ErrStorageNeeded},
+		"several, none chosen":        {withLibrary(), nil, plan.ErrStorageNeeded},
+		"one that isn't there":        {withLibrary(), map[string]string{"library": "photos"}, plan.ErrNoSuchLocation},
+		"a folder on another node":    {withLibrary(), map[string]string{"library": "elsewhere"}, plan.ErrNoSuchLocation},
+		"a choice the app didn't ask": {withLibrary(), map[string]string{"library": "films", "other": "films"}, plan.ErrNoSuchLocation},
+	} {
+		if _, err := plan.MakeWith(d, official, project(), c.h, made, c.chosen); !errors.Is(err, c.want) {
+			t.Errorf("%s: %v, want %v", name, err, c.want)
+		}
+	}
+	d.Storage[0].Service = "worker"
+	if _, err := plan.MakeWith(d, official, project(), withLibrary(), made, map[string]string{"library": "films"}); !errors.Is(err, plan.ErrDefinition) {
+		t.Errorf("storage for a service the compose file doesn't run: %v", err)
+	}
+}
