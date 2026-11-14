@@ -21,6 +21,10 @@ var (
 	ErrNoSignInMethod = errors.New("no-sign-in-method")
 	// ErrDefinition: the definition's manifest and its compose file disagree.
 	ErrDefinition = errors.New("definition-mismatch")
+	// ErrStorageNeeded: the app asks for a storage location, and the household has none, or several and none was
+	// chosen. ErrNoSuchLocation: the location chosen isn't one the app can use where it runs, or the app didn't ask.
+	ErrStorageNeeded  = errors.New("storage-location-needed")
+	ErrNoSuchLocation = errors.New("no-such-storage-location")
 )
 
 // The schedule every app's backups follow (ADR 0010).
@@ -41,11 +45,20 @@ type From struct{ ID, Publisher string }
 // Make plans installing the app d, from catalog from, whose compose project is p, into household h. The plan is
 // made at made, which its id leaves out.
 func Make(d catalog.App, from From, p engine.Project, h Household, made time.Time) (Plan, error) {
+	return MakeWith(d, from, p, h, made, nil)
+}
+
+// MakeWith is Make, with the storage location chosen for each that the app asks for, by its ask's id.
+func MakeWith(d catalog.App, from From, p engine.Project, h Household, made time.Time, chosen map[string]string) (Plan, error) {
 	method, ok := signIn(d.SignIn, h.Provider.Provides)
 	if !ok {
 		return Plan{}, ErrNoSignInMethod
 	}
 	services, err := placement(d, p, h.Primary)
+	if err != nil {
+		return Plan{}, err
+	}
+	use, err := storage(d.Storage, h, chosen)
 	if err != nil {
 		return Plan{}, err
 	}
@@ -61,6 +74,13 @@ func Make(d catalog.App, from From, p engine.Project, h Household, made time.Tim
 			Project: p.Name, Services: services},
 		Extras:  []Extra{},
 		Secrets: []Secret{},
+		Storage: use,
+	}
+	for _, s := range use {
+		if !slices.ContainsFunc(pl.Backups.Locations, func(b LocationBackup) bool { return b.Location == s.Location }) {
+			i := slices.IndexFunc(h.Storage, func(l Location) bool { return l.ID == s.Location })
+			pl.Backups.Locations = append(pl.Backups.Locations, LocationBackup{Location: s.Location, Name: s.Name, BackedUp: h.Storage[i].Backup})
+		}
 	}
 	if why != "" {
 		pl.Name.Asked, pl.Name.Why = d.Names.Name, why
@@ -76,7 +96,8 @@ func Make(d catalog.App, from From, p engine.Project, h Household, made time.Tim
 		pl.Secrets = append(pl.Secrets, Secret{Name: s.Name, What: s.What, SealedTo: sealed})
 	}
 	pl.Resources = resources(d.Resources, h, services)
-	pl.Risky = len(pl.Extras) > 0
+	// An extra, or a storage location the app may write to, is a risky change (#28): the admin's passkey decides.
+	pl.Risky = len(pl.Extras) > 0 || slices.ContainsFunc(use, func(s Storage) bool { return !s.ReadOnly })
 	pl.MadeAt = made.UTC()
 	pl.ID = id(pl)
 	return pl, nil
@@ -164,10 +185,48 @@ func placement(d catalog.App, p engine.Project, n Node) ([]Service, error) {
 	for _, x := range d.Extras {
 		named = append(named, x.Service)
 	}
+	for _, x := range d.Storage {
+		named = append(named, x.Service)
+	}
 	for _, name := range named {
 		if !runs[name] {
 			return nil, fmt.Errorf("%w: the manifest names service %s, which the compose file doesn't run", ErrDefinition, name)
 		}
+	}
+	return out, nil
+}
+
+// storage is the location each of the app's asks gets: the one chosen, or, for an app that only reads it, the only one
+// the household has where the app runs; a location an app may write to is never taken without the admin's choice. A
+// folder is on its node, so only an app on that node can use it; a share is on the mesh, which every node is on.
+func storage(asks []catalog.Storage, h Household, chosen map[string]string) ([]Storage, error) {
+	var usable []Location
+	for _, l := range h.Storage {
+		if l.Kind == "share" || l.Node == h.Primary.Facts.Hostname {
+			usable = append(usable, l)
+		}
+	}
+	for ask := range chosen {
+		if !slices.ContainsFunc(asks, func(s catalog.Storage) bool { return s.ID == ask }) {
+			return nil, fmt.Errorf("%w: the app asks for no %s", ErrNoSuchLocation, ask)
+		}
+	}
+	var out []Storage
+	for _, a := range asks {
+		var l Location
+		switch id, ok := chosen[a.ID]; {
+		case ok:
+			i := slices.IndexFunc(usable, func(l Location) bool { return l.ID == id })
+			if i < 0 {
+				return nil, fmt.Errorf("%w: %s", ErrNoSuchLocation, id)
+			}
+			l = usable[i]
+		case len(usable) == 1 && a.ReadOnly():
+			l = usable[0]
+		default:
+			return nil, fmt.Errorf("%w: %s", ErrStorageNeeded, a.ID)
+		}
+		out = append(out, Storage{Ask: a.ID, What: a.What, Service: a.Service, Path: a.Path, Location: l.ID, Name: l.Name, Kind: l.Kind, ReadOnly: a.ReadOnly()})
 	}
 	return out, nil
 }

@@ -17,6 +17,7 @@ import (
 	"go.yaml.in/yaml/v3"
 
 	"github.com/ArjunRachithcf/homerslab/internal/backup"
+	"github.com/ArjunRachithcf/homerslab/internal/storage"
 	"github.com/ArjunRachithcf/homerslab/internal/text"
 )
 
@@ -155,6 +156,7 @@ func loadApp(fsys fs.FS, dir string, categories map[string]bool, digestOf func(m
 		p.add("audience.default %q: everyone, adults or admins", a.Audience.Default)
 	}
 	checkData(&p, a.Data)
+	checkStorage(&p, a.Storage, a.Data)
 	for _, s := range a.Secrets {
 		if !idPattern.MatchString(s.Name) || s.What == "" || s.UID < 0 {
 			p.add("secrets: %q needs a name, what it is, and the UID that reads it", s.Name)
@@ -342,6 +344,29 @@ func checkVolumes(p *problems, data []Data, compose []byte) {
 		if !named {
 			p.add("data %q: a backed-up path is exactly one of its service's named volumes", d.What)
 		}
+	}
+}
+
+func checkStorage(p *problems, asks []Storage, data []Data) {
+	seen := map[string]bool{}
+	for i, s := range asks {
+		for _, other := range asks[:i] {
+			if other.Service == s.Service && storage.Nested(other.Path, s.Path) {
+				p.add("storage %q: its path is %q's, or inside it", s.ID, other.ID)
+			}
+		}
+		for _, d := range data {
+			if d.Service == s.Service && d.Path != "" && storage.Nested(d.Path, s.Path) {
+				p.add("storage %q: its path is the app's own data %q, or inside it", s.ID, d.What)
+			}
+		}
+		if !storage.ID.MatchString(s.ID) || seen[s.ID] || s.What == "" || !text.OneLine(s.What) || s.Service == "" || !storage.ValidTarget(s.Path) {
+			p.add("storage %q: an id of its own, what it holds (one line), its service, and an absolute path of plain names", s.ID)
+		}
+		if s.Access != "" && s.Access != "read-only" && s.Access != "read-write" {
+			p.add("storage %q: access read-only (the default) or read-write", s.ID)
+		}
+		seen[s.ID] = true
 	}
 }
 

@@ -67,6 +67,9 @@ type Config struct {
 	// HasInterface says whether the kernel has an interface by that name (/sys/class/net/<name>, from Sysroot, when
 	// nil). A saved bridge the kernel doesn't have yet (at boot) stays in the table, for the moment its engine makes it.
 	HasInterface func(name string) bool
+	// FolderLabel is a folder's SELinux label, which a storage location's must let every app read (#28): its
+	// security.selinux attribute when nil.
+	FolderLabel func(path string) (string, error)
 	// SetupPort is the setup link's LAN listener, the firewall table's one exception until it closes.
 	SetupPort int
 	// CheckEvery is how often the firewall table is checked for drift: often, so an `nft flush ruleset` is undone
@@ -143,6 +146,8 @@ type state struct {
 	Apps map[string]*appState `json:"apps,omitempty"`
 	// Backup is the node's repository at the household's target, once the manager has given it (#22).
 	Backup *backupState `json:"backup,omitempty"`
+	// Storage are the storage locations on this node, by id (#28).
+	Storage map[string]*storageState `json:"storage,omitempty"`
 	// Bridges are the engines' bridges as each engine last confirmed them: what the table uses until an engine
 	// answers again (at boot, before any of them runs; while one hangs).
 	Bridges map[string][]string `json:"engineBridges,omitempty"`
@@ -256,6 +261,9 @@ func New(ctx context.Context, c Config) (*Agent, error) {
 			fi, err := fs.Stat(root, "sys/class/net/"+name+"/bridge")
 			return err == nil && fi.IsDir()
 		}
+	}
+	if c.FolderLabel == nil {
+		c.FolderLabel = folderLabel
 	}
 	if c.HasInterface == nil {
 		root := c.Sysroot
@@ -460,6 +468,8 @@ func (a *Agent) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/backups", a.postBackups)
 	mux.HandleFunc("PUT /v1/backups/manager", a.putManagerBackup)
 	mux.HandleFunc("POST /v1/backups/prune", a.postPrune)
+	mux.HandleFunc("PUT /v1/storage/{id}", a.putStorage)
+	mux.HandleFunc("GET /v1/storage", a.getStorage)
 	mux.HandleFunc("/", func(w http.ResponseWriter, _ *http.Request) { fail(w, http.StatusNotFound, "not-found") })
 	return mux
 }
