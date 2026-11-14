@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -26,6 +27,7 @@ import (
 	"github.com/ArjunRachithcf/homerslab/internal/engine/compose"
 	"github.com/ArjunRachithcf/homerslab/internal/firewall"
 	"github.com/ArjunRachithcf/homerslab/internal/host"
+	"github.com/ArjunRachithcf/homerslab/internal/text"
 )
 
 // Apps on this node (#19). The manager applies an install plan by handing the agent what the plan says and the catalog's
@@ -132,6 +134,9 @@ type AppStatus struct {
 	// answer.
 	Health string        `json:"health"`
 	Checks []CheckResult `json:"checks"`
+	// Pending is what of the app's wiring didn't take at its install, which the agent's watch puts right: the firewall
+	// table (the upstream stays closed till then) or the edge (the name stays unserved).
+	Pending []string `json:"pending,omitempty"`
 }
 
 // CheckResult is one health check as it went.
@@ -173,7 +178,6 @@ func slot(level string) int {
 }
 
 var (
-	planID   = regexp.MustCompile(`^p-[0-9a-f]{32}$`)
 	httpPath = regexp.MustCompile(`^/[A-Za-z0-9._~!$&'()*+,;=:@%/?-]{0,255}$`)
 )
 
@@ -182,7 +186,7 @@ func validApp(id string, r AppRequest) string {
 	switch {
 	case !appunit.ID.MatchString(id) || reservedApps[id]:
 		return "bad-app"
-	case !planID.MatchString(r.Plan) || r.Product == "" || len(r.Product) > 100 || strings.ContainsAny(r.Product, "\n\r\x00%"):
+	case !appunit.PlanID.MatchString(r.Plan) || r.Product == "" || len(r.Product) > 100 || !text.OneLine(r.Product) || strings.Contains(r.Product, "%"):
 		return "bad-app"
 	case !domainName.MatchString(r.Name) || r.Service == "" || r.Port <= 0 || r.Port > 65535 || r.Compose == "":
 		return "bad-app"
@@ -372,19 +376,19 @@ func (a *Agent) putApp(w http.ResponseWriter, r *http.Request) {
 	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	// The upstream opens to the edge (and the agent) only once the table says so; the edge serves the name after.
+	// The app is installed: its unit runs it. The upstream opens to the edge (and the agent) only once the table says
+	// so, and the edge serves the name after; what doesn't take now, the watch puts right (both fail closed), and the
+	// answer says so, so the household keeps the app it has.
+	st := a.appStatusLocked(id, next)
 	if err := a.reconcile(ctx, true); err != nil {
-		a.log.Error("letting the edge reach the app", "app", id, "err", err)
-		fail(w, http.StatusInternalServerError, "firewall-failed")
-		return
-	}
-	if err := a.pushEdge(ctx); err != nil {
-		a.log.Error("serving the app's name on the edge", "app", id, "err", err)
-		fail(w, http.StatusBadGateway, "edge-unreachable")
-		return
+		a.log.Error("letting the edge reach the app; the watch tries again", "app", id, "err", err)
+		st.Pending = append(st.Pending, "firewall")
+	} else if err := a.pushEdge(ctx); err != nil {
+		a.log.Error("serving the app's name on the edge; the watch tries again", "app", id, "err", err)
+		st.Pending = append(st.Pending, "edge")
 	}
 	a.log.Info("an app is installed: its unit runs it", "app", id, "plan", req.Plan, "unit", appunit.Unit(id), "upstream", next.Upstream)
-	writeJSON(w, http.StatusAccepted, a.appStatusLocked(id, next))
+	writeJSON(w, http.StatusAccepted, st)
 }
 
 // nameTaken is the site that already serves name, if another does: Admin, the sign-in, or another app. The caller
@@ -725,8 +729,26 @@ func scrub(line string, secrets [][]byte) string {
 			line = strings.ReplaceAll(line, form, "…")
 		}
 	}
-	return line
+	// A secret inside something else that was base64-encoded (Basic's user:password, a token's claims) shows in no form
+	// above: every run of base64 that decodes to text holding a secret goes too.
+	return base64Run.ReplaceAllStringFunc(line, func(run string) string {
+		for _, enc := range []*base64.Encoding{base64.StdEncoding, base64.RawStdEncoding, base64.URLEncoding, base64.RawURLEncoding} {
+			b, err := enc.DecodeString(run)
+			if err != nil {
+				continue
+			}
+			for _, s := range secrets {
+				if len(s) > 0 && bytes.Contains(b, s) {
+					return "…"
+				}
+			}
+		}
+		return run
+	})
 }
+
+// base64Run is a run of base64 (either alphabet, padded or not) long enough to hold a secret.
+var base64Run = regexp.MustCompile(`[A-Za-z0-9+/_-]{8,}={0,2}`)
 
 // appsFirewall are the apps' upstreams, and the sign-in's, as the firewall table lets them be opened: each app's by the
 // edge's user and root (the agent's probes), the sign-in's by the manager's too. A user the machine doesn't have

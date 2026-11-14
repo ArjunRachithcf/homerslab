@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -213,6 +214,24 @@ func TestAnInstallThatFailsHalfwayLeavesNothingServed(t *testing.T) {
 	install(t, sock, "ledger", withSecrets())
 }
 
+// An install whose wiring doesn't take (the firewall table won't load) is still an install: the unit runs the app, the
+// answer says what is pending, and the agent keeps it, so the household records it; the upstream stays closed meanwhile.
+func TestAnInstallWhoseWiringDoesntTakeSaysSo(t *testing.T) {
+	testenv.Isolate(t)
+	sock, h, _ := signedIn(t, agent.Config{})
+	h.Fail("nft -f -")
+	s := install(t, sock, "ledger", withSecrets())
+	if !slices.Equal(s.Pending, []string{"firewall"}) {
+		t.Errorf("pending: %q", s.Pending)
+	}
+	if got := apps(t, sock); len(got.Apps) != 1 || got.Apps[0].ID != "ledger" {
+		t.Errorf("the agent's apps: %+v", got.Apps)
+	}
+	if table, _ := h.Table(); strings.Contains(table, "172.31.240.2 . tcp . 3000") {
+		t.Errorf("the upstream is open:\n%s", table)
+	}
+}
+
 // An app's name is its own: never Admin's, the sign-in's or another app's, which the edge would serve first.
 func TestAnAppsNameIsItsOwn(t *testing.T) {
 	testenv.Isolate(t)
@@ -290,9 +309,13 @@ func TestAnAppsProjectIsRefusedWhenItCantBeWired(t *testing.T) {
 		"the sign-in's own id":  {"authentik", withSecrets(), 400, "bad-app"},
 		"an id that isn't one":  {"Ledger", withSecrets(), 400, "bad-app"},
 		"a plan that isn't one": {"ledger", edit(func(r *agent.AppRequest) { r.Plan = "latest" }), 400, "bad-app"},
-		"a secret's odd name":   {"ledger", edit(func(r *agent.AppRequest) { r.Secrets[0].Name = "../db" }), 400, "bad-secrets"},
-		"not a compose file":    {"ledger", edit(func(r *agent.AppRequest) { r.Compose = "include: [/etc/shadow]\n" }), 422, "invalid-compose"},
-		"a check of no service": {"ledger", edit(func(r *agent.AppRequest) { r.Health[1].Service = "cache" }), 422, "no-such-service"},
+		"a name YAML reads as several lines": {"ledger", edit(func(r *agent.AppRequest) {
+			r.Product = "X\u0085---\u0085services: {web: {privileged: true, pid: host, volumes: [\"/:/host\"]}}\u0085---\u0085#"
+		}), 400, "bad-app"},
+		"a name with the line separator": {"ledger", edit(func(r *agent.AppRequest) { r.Product = "X\u2028include: [/etc/shadow]" }), 400, "bad-app"},
+		"a secret's odd name":            {"ledger", edit(func(r *agent.AppRequest) { r.Secrets[0].Name = "../db" }), 400, "bad-secrets"},
+		"not a compose file":             {"ledger", edit(func(r *agent.AppRequest) { r.Compose = "include: [/etc/shadow]\n" }), 422, "invalid-compose"},
+		"a check of no service":          {"ledger", edit(func(r *agent.AppRequest) { r.Health[1].Service = "cache" }), 422, "no-such-service"},
 	} {
 		code, body := call(t, sock, "PUT", "/v1/apps/"+c.id, c.r)
 		if code != c.code || !strings.Contains(string(body), `"`+c.why+`"`) {
@@ -443,13 +466,16 @@ func TestAnAppsLogsNeverCarryItsSecrets(t *testing.T) {
 		{Container: "homerslab-ledger-db-1", Line: "connecting with password " + string(secret)},
 		{Container: "homerslab-ledger-web-1", Line: "auth: Basic " + base64.StdEncoding.EncodeToString(secret), Err: true},
 		{Container: "homerslab-ledger-web-1", Line: "GET /?p=" + url.QueryEscape(string(secret))},
+		{Container: "homerslab-ledger-web-1", Line: "Authorization: Basic " + base64.StdEncoding.EncodeToString([]byte("ledger:"+string(secret)))},
+		{Container: "homerslab-ledger-web-1", Line: "token " + base64.RawURLEncoding.EncodeToString([]byte(`{"sub":"x","pw":"`+string(secret)+`"}`))},
 		{Container: "homerslab-ledger-web-1", Line: "ready"},
 	})
 	code, body := call(t, sock, "GET", "/v1/apps/ledger/logs", nil)
 	if code != http.StatusOK || !strings.Contains(string(body), `"ready"`) {
 		t.Fatalf("%d %s", code, body)
 	}
-	for _, form := range []string{string(secret), base64.StdEncoding.EncodeToString(secret), url.QueryEscape(string(secret))} {
+	for _, form := range []string{string(secret), base64.StdEncoding.EncodeToString(secret), url.QueryEscape(string(secret)),
+		base64.StdEncoding.EncodeToString([]byte("ledger:" + string(secret))), base64.RawURLEncoding.EncodeToString([]byte(`{"sub":"x","pw":"` + string(secret) + `"}`))} {
 		if strings.Contains(string(body), form) {
 			t.Errorf("the logs carry the secret: %s", body)
 		}

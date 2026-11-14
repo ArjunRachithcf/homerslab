@@ -173,6 +173,41 @@ func TestTheIdentityProviderContractOnAuthentik(t *testing.T) {
 	w.provider = a
 	idptest.Run(t, w, authentik.Version)
 
+	// Authentik applies its own blueprints again when its worker likes (at its start, after an upgrade, hourly). Its
+	// first-admin blueprint must apply over HomersLab's closing of that flow, and the flow stay closed (#195's CI:
+	// a binding of HomersLab's at the blueprint's order made it fail, and the sign-in never got ready).
+	t.Run("Authentik applies its first-admin blueprint again: it succeeds, and the flow still applies to nobody (#84)", func(t *testing.T) {
+		var bs struct {
+			Results []struct {
+				PK     string `json:"pk"`
+				Path   string `json:"path"`
+				Status string `json:"status"`
+			}
+		}
+		w.raw(t, own, "GET", "/api/v3/managed/blueprints/?path=default/flow-oobe.yaml", nil, &bs)
+		if len(bs.Results) != 1 {
+			t.Fatalf("the first-admin blueprint: %+v", bs.Results)
+		}
+		w.raw(t, own, "POST", "/api/v3/managed/blueprints/"+bs.Results[0].PK+"/apply/", nil, nil)
+		status := ""
+		for range 60 {
+			w.raw(t, own, "GET", "/api/v3/managed/blueprints/?path=default/flow-oobe.yaml", nil, &bs)
+			if status = bs.Results[0].Status; status == "successful" {
+				break
+			}
+			time.Sleep(time.Second)
+		}
+		if status != "successful" {
+			t.Errorf("the first-admin blueprint, applied again: %s", status)
+		}
+		if in := w.FirstAdmin(t); len(in) > 0 {
+			t.Errorf("after the blueprint again, a stranger became an admin through: %v", in)
+		}
+		if r, err := a.Report(ctx); err != nil || !r.FirstAdminOff {
+			t.Errorf("the report: %+v %v", r, err)
+		}
+	})
+
 	t.Run("drift: the report reads the household policy's expression too, and Prepare puts it back", func(t *testing.T) {
 		var ps struct {
 			Results []struct {

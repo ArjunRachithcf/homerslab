@@ -3,11 +3,15 @@ package appunit_test
 import (
 	"bytes"
 	"flag"
+	"maps"
 	"net/netip"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
+
+	"go.yaml.in/yaml/v4"
 
 	"github.com/ArjunRachithcf/homerslab/internal/appunit"
 	"github.com/ArjunRachithcf/homerslab/internal/engine"
@@ -71,12 +75,13 @@ func TestEveryServiceRunsWithoutARestartPolicyAndTheUnitRestarts(t *testing.T) {
 	o := string(appunit.Override(a))
 	for _, s := range a.Project.Services {
 		block := o[strings.Index(o, "  \""+s.Name+"\":\n"):]
-		if !strings.HasPrefix(block, "  \""+s.Name+"\":\n    restart: \"no\"\n    security_opt:\n      - \"label=level:s0:c602,c603\"\n") {
+		if !strings.HasPrefix(block, "  \""+s.Name+"\":\n    restart: \"no\"\n    deploy:\n      restart_policy:\n        condition: \"none\"\n"+
+			"    security_opt:\n      - \"label=level:s0:c602,c603\"\n") {
 			t.Errorf("%s isn't left without a restart policy at the app's level:\n%s", s.Name, o)
 		}
 	}
 	u := string(appunit.UnitFile(a))
-	for _, want := range []string{"\nRestart=always\n", "\nExecStart=/usr/bin/docker compose --project-name homerslab-everything ",
+	for _, want := range []string{"\nRestart=always\n", "\nStandardOutput=null\nStandardError=null\n", "\nExecStart=/usr/bin/docker compose --project-name homerslab-everything ",
 		" up --no-log-prefix --quiet-pull --abort-on-container-exit\n", "\nWantedBy=multi-user.target\n"} {
 		if !strings.Contains(u, want) {
 			t.Errorf("the unit lacks %q:\n%s", want, u)
@@ -149,5 +154,79 @@ func TestEveryNetworkOfAnAppsHasABridgeTheAgentNamed(t *testing.T) {
 	}
 	if got := appunit.Bridge(199, 63); len(got) > 15 {
 		t.Errorf("a bridge name over Linux's 15 characters: %s", got)
+	}
+}
+
+// No free text reaches the files the agent writes (#195's review): a name that YAML would read as several lines (U+0085,
+// U+2028 and U+2029 break lines in YAML) or that would continue a unit's line changes nothing. The agent's compose file
+// is one YAML document with exactly the keys the agent writes, and the unit has only the agent's lines.
+func TestNoTextOfTheAppsEndsALineOfItsFiles(t *testing.T) {
+	testenv.Isolate(t)
+	const probe = "X\u0085---\u0085services: {web: {privileged: true, pid: host, volumes: [\"/:/host\"]}}\u0085---\u0085#"
+	for name, a := range map[string]appunit.App{
+		"NEL":                    func() appunit.App { a := withSecrets(); a.Product = probe; return a }(),
+		"the line separator":     func() appunit.App { a := withSecrets(); a.Product = "X\u2028include: [/etc/shadow]\u2028#"; return a }(),
+		"a backslash at its end": func() appunit.App { a := withSecrets(); a.Product = "X\\"; return a }(),
+		"a plan that isn't one":  func() appunit.App { a := withSecrets(); a.Plan = "p-1\u2028include: [/x]"; return a }(),
+		"a service's odd name": func() appunit.App {
+			a := withSecrets()
+			a.Project.Services = append(a.Project.Services, engine.Service{Name: "odd\u0085privileged: true"})
+			return a
+		}(),
+	} {
+		t.Run(name, func(t *testing.T) {
+			o := appunit.Override(a)
+			dec := yaml.NewDecoder(bytes.NewReader(o))
+			var doc map[string]any
+			if err := dec.Decode(&doc); err != nil {
+				t.Fatalf("the agent's compose file doesn't parse: %v\n%s", err, o)
+			}
+			var more any
+			if err := dec.Decode(&more); err == nil {
+				t.Errorf("a second YAML document:\n%s", o)
+			}
+			services, _ := doc["services"].(map[string]any)
+			if keys := slices.Sorted(maps.Keys(doc)); !slices.Equal(keys, []string{"name", "networks", "secrets", "services"}) {
+				t.Errorf("top-level keys %q:\n%s", keys, o)
+			}
+			var want []string
+			for _, s := range a.Project.Services {
+				want = append(want, s.Name)
+			}
+			slices.Sort(want)
+			if got := slices.Sorted(maps.Keys(services)); !slices.Equal(got, want) {
+				t.Errorf("services %q, want %q", got, want)
+			}
+			for svc, v := range services {
+				for k := range v.(map[string]any) {
+					if !slices.Contains([]string{"restart", "deploy", "security_opt", "networks"}, k) {
+						t.Errorf("%q has %q:\n%s", svc, k, o)
+					}
+				}
+			}
+			for _, bad := range []string{"\u0085", "\u2028", "\u2029", "privileged", "include", "/host"} {
+				if strings.Contains(string(o), bad) && !(bad == "privileged" && strings.Contains(string(o), `\u0085privileged`)) {
+					t.Errorf("the agent's compose file carries %q:\n%s", bad, o)
+				}
+			}
+			u := string(appunit.UnitFile(a))
+			for _, line := range strings.Split(strings.TrimSuffix(u, "\n"), "\n") {
+				key, _, isKey := strings.Cut(line, "=")
+				switch {
+				case line == "", strings.HasPrefix(line, "# "), line == "[Unit]", line == "[Service]", line == "[Install]":
+				case isKey && slices.Contains([]string{"Description", "Documentation", "Requires", "After", "Wants", "Type", "RuntimeDirectory",
+					"RuntimeDirectoryMode", "UMask", "LoadCredentialEncrypted", "ExecStartPre", "ExecStart", "ExecStopPost", "Restart",
+					"SuccessExitStatus", "RestartSec", "TimeoutStopSec", "WantedBy", "StandardOutput", "StandardError"}, key):
+				default:
+					t.Errorf("a line the agent doesn't write: %q", line)
+				}
+				if strings.HasSuffix(line, "\\") || strings.ContainsAny(line, "\u0085\u2028\u2029\r") {
+					t.Errorf("a line that goes on: %q", line)
+				}
+			}
+			if !strings.Contains(u, "\nDescription=HomersLab app everything\n") {
+				t.Errorf("the unit's description:\n%s", u)
+			}
+		})
 	}
 }

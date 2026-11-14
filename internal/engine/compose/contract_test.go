@@ -28,13 +28,19 @@ import (
 // contractImage is the apps' one image: alpine 3.22, pinned by its index digest.
 const contractImage = "docker.io/library/alpine:3.22@sha256:49340b346798875b5592e5d420241f2f9cfba5f47e62ebb1446a1b34734e898f"
 
-// contractApp is a catalog compose file: one service that says hello, with a health check, publishing nothing.
+// contractApp is a catalog compose file: one service that says hello, with a health check and restart policies of its
+// own, publishing nothing.
 func contractApp(word string) string {
 	return `services:
   web:
     image: ` + contractImage + `
     command: ["sh", "-c", "echo hello from ` + word + `; echo trouble in ` + word + ` >&2; exec sleep infinity"]
     stop_grace_period: 1s
+    # Restart policies of its own, the engine's and swarm's: the agent's file turns both off (#195's review).
+    restart: always
+    deploy:
+      restart_policy:
+        condition: any
     healthcheck:
       test: ["CMD", "true"]
       interval: 1s

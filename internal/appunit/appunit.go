@@ -13,12 +13,12 @@
 package appunit
 
 import (
-	"encoding/json"
 	"fmt"
 	"net/netip"
 	"path"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/ArjunRachithcf/homerslab/internal/engine"
@@ -56,6 +56,9 @@ type Secret struct {
 // ID is an app's id as the agent takes it: what a unit, a project and a runtime directory can be named after.
 var ID = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,38}[a-z0-9])?$`)
 
+// PlanID is an install plan's id, the one thing of a plan the files name besides the app's id.
+var PlanID = regexp.MustCompile(`^p-[0-9a-f]{32}$`)
+
 // SecretName is a secret's name, as a file and a credential can carry it.
 var SecretName = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,62}[a-z0-9])?$`)
 
@@ -87,19 +90,36 @@ func Bridge(slot, network int) string {
 	return fmt.Sprintf("%s%dn%d", engine.BridgePrefix, slot, network)
 }
 
-// q is a string as YAML takes it, quoted: JSON's quoting is YAML's.
-func q(s string) string {
-	b, _ := json.Marshal(s)
-	return string(b)
+// q is a string as YAML takes it: double-quoted, with everything but printable ASCII escaped (\xNN, \uNNNN,
+// \UNNNNNNNN, which YAML's double-quoted scalars read as Go writes them), so no character of it can end the scalar or
+// the line, whatever YAML counts as a line break (U+0085, U+2028, U+2029 among them).
+func q(s string) string { return strconv.QuoteToASCII(s) }
+
+// plan is the plan's id for a comment, or "unknown" for anything that isn't one: comments can't be escaped.
+func plan(p string) string {
+	if PlanID.MatchString(p) {
+		return p
+	}
+	return "unknown"
+}
+
+// id is the app's id for a comment or a unit's line, or "unknown" for anything that isn't one.
+func id(a App) string {
+	if ID.MatchString(a.ID) {
+		return a.ID
+	}
+	return "unknown"
 }
 
 // Override is the agent's compose file for the app, the second one its unit runs the app's own with.
 func Override(a App) []byte {
 	var b strings.Builder
 	w := func(f string, args ...any) { fmt.Fprintf(&b, f+"\n", args...) }
-	w("# Written by HomersLab's agent, from install plan %s. Never edit by hand.", a.Plan)
-	w("# What HomersLab adds to %s's own compose file, as the second file of the standard compose command (ADR 0014):", a.Product)
-	w("#   - every service: no restart policy (the app's unit restarts the app), at the app's own SELinux level;")
+	// No free text: comments carry only the app's id and the plan's, which can't end a line (#195's review).
+	w("# Written by HomersLab's agent, from install plan %s. Never edit by hand.", plan(a.Plan))
+	w("# What HomersLab adds to app %s's own compose file, as the second file of the standard compose command (ADR 0014):", id(a))
+	w("#   - every service: no restart policy, the engine's nor swarm's (the app's unit restarts the app), at the app's own")
+	w("#     SELinux level;")
 	w("#   - the app's one upstream, a fixed address on a network of its own, which only the edge and the agent may open;")
 	w("#   - every network's bridge named by the agent, so the firewall table knows it before it is made;")
 	w("#   - its secrets, as files its unit copies from the credentials the agent sealed.")
@@ -110,6 +130,9 @@ func Override(a App) []byte {
 	for _, s := range services {
 		w("  %s:", q(s.Name))
 		w("    restart: \"no\"")
+		w("    deploy:")
+		w("      restart_policy:")
+		w("        condition: \"none\"")
 		w("    security_opt:")
 		w("      - %s", q("label=level:"+a.Level))
 		if s.Name != a.Service {
@@ -154,14 +177,15 @@ func UnitFile(a App) []byte {
 	run := RunDir(a.ID)
 	compose := fmt.Sprintf("/usr/bin/docker compose --project-name %s --project-directory %s --file %s --file %s",
 		Project(a.ID), a.Dir, a.ComposeFile(), a.OverrideFile())
-	w("# Written by HomersLab's agent, from install plan %s. Never edit by hand.", a.Plan)
-	w("# %s (%s), run by the standard compose command on its catalog's compose file and the agent's (ADR 0014).", a.Product, a.ID)
+	// No free text: the app's id and the plan's only, which no line of a unit can be ended or continued by.
+	w("# Written by HomersLab's agent, from install plan %s. Never edit by hand.", plan(a.Plan))
+	w("# App %s, run by the standard compose command on its catalog's compose file and the agent's (ADR 0014).", id(a))
 	w("# systemd owns the containers: their restart policies are off, and this unit restarts them; a container that stops")
 	w("# ends the compose command, which stops the others. The app's secrets are credentials the agent sealed (ADR 0011),")
 	w("# copied into the runtime directory for the one container user that reads each, at the app's own SELinux level.")
 	w("# No mount sandboxing: Docker's daemon must see that directory.")
 	w("[Unit]")
-	w("Description=HomersLab app: %s", a.Product)
+	w("Description=HomersLab app %s", id(a))
 	w("Documentation=https://github.com/ArjunRachithcf/homerslab")
 	w("Requires=docker.service")
 	w("After=docker.service network-online.target homerslab-agent.service")
@@ -186,6 +210,10 @@ func UnitFile(a App) []byte {
 		w("ExecStartPre=/usr/bin/chcon -t container_file_t -l %s %s", a.Level, strings.Join(copies, " "))
 	}
 	w("ExecStart=%s up --no-log-prefix --quiet-pull --abort-on-container-exit", compose)
+	w("# Not into the journal: compose writes the containers' output there, secrets and all; the agent reads the app's")
+	w("# logs from the engine, its secrets cut out. systemd still logs the unit's starts, stops and exit statuses.")
+	w("StandardOutput=null")
+	w("StandardError=null")
 	w("ExecStopPost=%s stop", compose)
 	w("# Always: compose ends with the stopped container's own exit status, 0 included.")
 	w("Restart=always")

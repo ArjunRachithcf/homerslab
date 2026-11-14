@@ -49,6 +49,8 @@ type appView struct {
 	Health    string              `json:"health"`
 	Active    bool                `json:"active"`
 	Checks    []agent.CheckResult `json:"checks"`
+	// Pending is what of the app's wiring the agent is still putting right (firewall, edge).
+	Pending []string `json:"pending,omitempty"`
 }
 
 // siteURL is an app's one URL, https://<name>[:port] (ADR 0021).
@@ -204,7 +206,7 @@ func (m *Manager) view(a store.App, p plan.Plan, ans map[string]string, st *agen
 	v := appView{ID: a.ID, Name: p.App.Name, Purpose: p.App.Purpose, Host: p.Name.Host, URL: siteURL(ans, p.Name.Host), Plan: a.Plan,
 		AppliedAt: a.AppliedAt, Node: p.Placement.Node, Health: "unknown", Checks: []agent.CheckResult{}}
 	if st != nil {
-		v.Health, v.Active = st.Health, st.Active
+		v.Health, v.Active, v.Pending = st.Health, st.Active, st.Pending
 		if st.Checks != nil {
 			v.Checks = st.Checks
 		}
