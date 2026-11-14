@@ -42,6 +42,13 @@ jobs:
         env:
           GOPROXY: https://proxy.golang.org,direct
         run: sh .github/scripts/stop-commands.sh go mod tidy -diff
+      # A root agent's compose reads run as homerslab-read, which the packages make (packaging/sysusers.d), and it
+      # refuses to read without it (#183). The container has no systemd-sysusers: this is that file's line, which the
+      # step checks is still the file's, so the two can't drift.
+      - name: The reads' own user, as the packages make it
+        run: |
+          grep -qxF 'u homerslab-read - "HomersLab compose reads" / /usr/sbin/nologin' packaging/sysusers.d/homerslab.conf
+          useradd --system --user-group --no-create-home --home-dir / --shell /usr/sbin/nologin --comment "HomersLab compose reads" homerslab-read
       - name: gofmt
         run: test -z "$(gofmt -l . | tee /dev/stderr)"
       - name: go vet
@@ -82,9 +89,13 @@ jobs:
           cp -a . "$src"
           cd "$src" && CGO_ENABLED=0 go test -c -o agent.test ./internal/agent
           echo "SRC=$src" >> "$GITHUB_ENV"
+      # The packages' users, from their own sysusers.d file: a root agent's reads run as homerslab-read (#183).
+      - name: The packages' users
+        run: sudo systemd-sysusers "$PWD/packaging/sysusers.d/homerslab.conf"
       # The Go job's root holds Docker's capabilities (CAP_KILL among them, not CAP_NET_ADMIN); the agent's unit gives
       # it far fewer. As root on the runner with exactly the unit's set, read from the unit file (#138), the agent's
-      # tests run again: a read's child, which runs as nobody, must still end at its deadline and with the agent.
+      # tests run again: a read's child, which runs as homerslab-read, must still end at its deadline and with the
+      # agent, and a stopped one must not hold the read slot (#183).
       - name: The agent's tests, under the agent unit's capabilities
         env:
           DOCKER_HOST: unix:///nonexistent

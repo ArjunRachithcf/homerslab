@@ -717,26 +717,50 @@ var (
 )
 
 // reads runs compose reads one at a time, each in a child process (ReadProjectMain) that ends at the deadline
-// (childCommand): the deadline really stops the work, and the slot is free again at once. The plain-file rules
+// (childCommand): the deadline really stops the work, and the slot is free again at once, or, for a child that is
+// stopped, a WaitDelay later. The plain-file rules
 // (engine/compose) bound how long a read can take; the child's own limits and the agent's unit bound the rest.
+//
+// A child that is stopped frees the slot past its deadline and WaitDelay, and is left to end and be reaped on its own
+// (#183); live counts the children not yet reaped, the one reading among them, so that left children can't pile up:
+// with maxLiveReads of them, a read is refused as busy until one ends.
 type reads struct {
 	slot chan struct{}
+	live chan struct{}
 	exe  string
 }
 
-func newReads(exe string) *reads { return &reads{slot: make(chan struct{}, 1), exe: exe} }
+// maxLiveReads is how many read children may be alive at once: the one reading, and those left behind stopped.
+const maxLiveReads = 4
+
+func newReads(exe string) *reads {
+	return &reads{slot: make(chan struct{}, 1), live: make(chan struct{}, maxLiveReads), exe: exe}
+}
+
+// readCredential is who a read's child runs as: when the agent is root, homerslab-read (readUser) with no groups, or
+// errNoReadUser, so that the agent refuses to read rather than run the child as anyone else; otherwise nil, the
+// agent's own user.
+func readCredential() (*syscall.Credential, error) {
+	if os.Geteuid() != 0 {
+		return nil, nil
+	}
+	uid, gid, err := readIDs()
+	if err != nil {
+		return nil, err
+	}
+	return &syscall.Credential{Uid: uid, Gid: gid, Groups: []uint32{}}, nil
+}
 
 // childCommand is the command that runs one compose read in dir, its own empty folder, for project name, and the
-// agent's ends of the child's control pipe, which the caller closes once the child is done. When the agent is root, the child
-// starts as nobody (65534) with no groups: the IDs are set in the fork, before the exec, so the child never runs as
-// root.
+// agent's ends of the child's control pipe, which the caller closes once the child is done. The child starts as cred
+// (readCredential) when it isn't nil: the IDs are set in the fork, before the exec, so the child never runs as root.
 //
 // The child ends itself at what is left of ctx's deadline (readDeadline if it has none), and when the control pipe's
 // write end closes: at ctx's end (cmd.Cancel), or when the agent dies, however it dies, since the kernel closes it then
 // and the agent alone holds it (close-on-exec, so no other child of the agent inherits it). The agent's unit has no
-// CAP_KILL, so a root agent can't signal a child that runs as nobody (#138): the kill at ctx's end and the
+// CAP_KILL, so a root agent can't signal a child that runs as another user (#138): the kill at ctx's end and the
 // parent-death signal (set after the IDs, so changing them doesn't clear it) hold only where it may.
-func childCommand(ctx context.Context, argv []string, dir, name string, cpuSeconds int) (*exec.Cmd, io.Closer, error) {
+func childCommand(ctx context.Context, argv []string, dir, name string, cpuSeconds int, cred *syscall.Credential) (*exec.Cmd, io.Closer, error) {
 	deadline := readDeadline
 	if at, ok := ctx.Deadline(); ok {
 		deadline = time.Until(at)
@@ -750,10 +774,7 @@ func childCommand(ctx context.Context, argv []string, dir, name string, cpuSecon
 	cmd.Dir = dir
 	cmd.Env = []string{"HOME=" + dir, "TMPDIR=" + dir, "DOCKER_CONFIG=" + filepath.Join(dir, ".docker"), "PATH=/usr/bin:/bin"}
 	cmd.ExtraFiles = []*os.File{r} // fd 3, the read end
-	cmd.SysProcAttr = &syscall.SysProcAttr{Pdeathsig: syscall.SIGKILL, Setpgid: true}
-	if os.Geteuid() == 0 {
-		cmd.SysProcAttr.Credential = &syscall.Credential{Uid: nobody, Gid: nobody, Groups: []uint32{}}
-	}
+	cmd.SysProcAttr = &syscall.SysProcAttr{Pdeathsig: syscall.SIGKILL, Setpgid: true, Credential: cred}
 	cmd.Cancel = func() error {
 		w.Close()
 		_ = cmd.Process.Kill() // best effort: EPERM under the agent's unit
@@ -772,14 +793,14 @@ func (c controlEnds) Close() error {
 	return c.r.Close()
 }
 
-// childDir is a read's own empty folder, owned by the user its child runs as.
-func childDir() (string, error) {
+// childDir is a read's own empty folder, owned by the user its child runs as, cred (readCredential) if not nil.
+func childDir(cred *syscall.Credential) (string, error) {
 	dir, err := os.MkdirTemp("", "homerslab-read-")
 	if err != nil {
 		return "", err
 	}
-	if os.Geteuid() == 0 {
-		if err := os.Chown(dir, nobody, nobody); err != nil {
+	if cred != nil {
+		if err := os.Chown(dir, int(cred.Uid), int(cred.Gid)); err != nil {
 			os.RemoveAll(dir)
 			return "", err
 		}
@@ -803,12 +824,16 @@ func (rs *reads) read(ctx context.Context, name string, file []byte) (engine.Pro
 	if err != nil {
 		return engine.Project{}, fmt.Errorf("%w: %w", errNoReader, err)
 	}
-	dir, err := childDir()
+	cred, err := readCredential()
+	if err != nil {
+		return engine.Project{}, fmt.Errorf("%w: %w", errNoReader, err)
+	}
+	dir, err := childDir(cred)
 	if err != nil {
 		return engine.Project{}, fmt.Errorf("%w: %w", errNoReader, err)
 	}
 	defer os.RemoveAll(dir)
-	cmd, control, err := childCommand(ctx, argv, dir, name, readCPUSeconds())
+	cmd, control, err := childCommand(ctx, argv, dir, name, readCPUSeconds(), cred)
 	if err != nil {
 		return engine.Project{}, fmt.Errorf("%w: %w", errNoReader, err)
 	}
@@ -816,7 +841,37 @@ func (rs *reads) read(ctx context.Context, name string, file []byte) (engine.Pro
 	cmd.Stdin = bytes.NewReader(file)
 	var out, errOut capped
 	cmd.Stdout, cmd.Stderr = &out, &errOut
-	runErr := cmd.Run()
+	select {
+	case rs.live <- struct{}{}:
+	default:
+		return engine.Project{}, errBusy // as many children left behind, stopped, as reads may have
+	}
+	if err := cmd.Start(); err != nil {
+		<-rs.live
+		if ctx.Err() != nil {
+			return engine.Project{}, errReadTimeout
+		}
+		return engine.Project{}, fmt.Errorf("%w: %w", errNoReader, err)
+	}
+	// A child that is stopped (SIGSTOP) runs neither its deadline nor its control pipe, its CPU limit doesn't count,
+	// and a root agent without CAP_KILL can't end it, so Wait could block for good (#183). Past the deadline and the
+	// child's WaitDelay, the slot is free again; Wait goes on in its goroutine and reaps the child whenever it ends.
+	waited := make(chan error, 1)
+	go func() {
+		err := cmd.Wait()
+		<-rs.live
+		waited <- err
+	}()
+	var runErr error
+	select {
+	case runErr = <-waited:
+	case <-ctx.Done():
+		select {
+		case runErr = <-waited:
+		case <-time.After(cmd.WaitDelay):
+			return engine.Project{}, errReadTimeout
+		}
+	}
 	if ctx.Err() != nil {
 		return engine.Project{}, errReadTimeout
 	}

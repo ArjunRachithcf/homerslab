@@ -132,6 +132,10 @@ func TestTheManagerRunsUnprivilegedAndTheAgentAsRoot(t *testing.T) {
 	if err != nil || !strings.Contains(string(sysusers), "u homerslab ") {
 		t.Errorf("sysusers.d/homerslab.conf should create the homerslab user: %v %q", err, sysusers)
 	}
+	// The agent's compose reads run as a user of their own, never the shared nobody (#183): no home, no login.
+	if !strings.Contains(string(sysusers), "\nu homerslab-read - \"HomersLab compose reads\" / /usr/sbin/nologin\n") {
+		t.Errorf("sysusers.d doesn't make the reads' own user:\n%s", sysusers)
+	}
 }
 
 func unitSection(unit, name string) string {
