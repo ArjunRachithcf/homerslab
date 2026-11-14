@@ -60,6 +60,7 @@ services:
       - /var/lib/homerslab-edge:uid=4100,gid=4100,mode=0700
     volumes:
       - admin:/run/homerslab-admin
+      - home:/run/homerslab-home
     stop_grace_period: 2s
     networks:
       mesh:
@@ -81,12 +82,27 @@ services:
     cap_add: [NET_ADMIN]
     stop_grace_period: 1s
 
-  # The manager's Admin, as a stub on its socket: the manager's user, the socket's group the edge's.
+  # The manager's Admin, as a stub on its socket: the manager's user, the socket's group the edge's. It also keeps the
+  # manager's control socket and database, as the manager's unit does: for its own user only.
   admin:
     <<: *machine
     user: "4200:4100"
     volumes:
       - admin:/run/homerslab-admin
+      - manager-run:/run/homerslab
+      - manager-state:/var/lib/homerslab
+    network_mode: none
+
+  # Home (#21): the real Home on its socket, as its own user in no group but its own; the manager's socket and
+  # database are in its view here (its unit hides them), so only their modes keep it out.
+  home:
+    <<: *machine
+    user: "4300:4300"
+    volumes:
+      - home:/run/homerslab-home
+      - admin:/run/homerslab-admin
+      - manager-run:/run/homerslab
+      - manager-state:/var/lib/homerslab
     network_mode: none
 
   # The sign-in's server, as a stub on the sign-in network: it answers what reached it.
@@ -123,3 +139,6 @@ services:
 
 volumes:
   admin:
+  home:
+  manager-run:
+  manager-state:
