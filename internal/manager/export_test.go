@@ -1,6 +1,7 @@
 package manager
 
 import (
+	"context"
 	"time"
 
 	"github.com/ArjunRachithcf/homerslab/internal/dns"
@@ -18,4 +19,9 @@ func (m *Manager) Boot() string { return m.cfg.Boot() }
 // IssuanceZone is the zone the real domains give the certificate authority for an issuance, on provider p.
 func IssuanceZone(i Issuance, p dns.Provider, b dns.Book) *dns.Owned {
 	return realDomains{book: b}.owned(i, p)
+}
+
+// ReconcileZone is the real domains' Reconcile, on provider p.
+func ReconcileZone(ctx context.Context, i Issuance, p dns.Provider, b dns.Book) error {
+	return realDomains{book: b}.reconcile(ctx, i, p)
 }

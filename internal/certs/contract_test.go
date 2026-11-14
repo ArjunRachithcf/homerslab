@@ -213,6 +213,52 @@ func TestTheDNSProviderContractOnThePrimary(t *testing.T) {
 		}
 	})
 
+	// RFC 2136 reports every delete as done, and its listing joins a TXT record's strings into one value, so neither says
+	// whether a delete matched a record someone else's tool stored in its other form: two strings, the same text (#179).
+	t.Run("a record kept at the provider in another form stays in the book while a listing shows it (#179)", func(t *testing.T) {
+		for _, emptyFirst := range []bool{false, true} {
+			p, err := dns.Open(settings, tsig)
+			if err != nil {
+				t.Fatal(err)
+			}
+			e, b := &emptyOnce{Provider: p}, &book{}
+			o := &dns.Owned{Provider: e, Zone: "example.test.", Domain: "example.test", Book: b}
+			r := dns.Record{Name: "_acme-challenge", Type: "TXT", Value: "split-by-another-tool", TTL: time.Minute}
+			if err := o.Create(ctx, r); err != nil {
+				t.Fatal(err)
+			}
+			txt := func(s ...string) mdns.RR {
+				return &mdns.TXT{Hdr: mdns.RR_Header{Name: "_acme-challenge.example.test.", Rrtype: mdns.TypeTXT, Class: mdns.ClassINET, Ttl: 60}, Txt: s}
+			}
+			split := txt("split-by-", "another-tool")
+			update(t, tsig, []mdns.RR{txt(r.Value)}, []mdns.RR{split})
+			e.empty.Store(emptyFirst)
+			err = o.Delete(ctx, r)
+			recs, _ := p.GetRecords(ctx, "example.test.")
+			there := slices.ContainsFunc(recs, func(x libdns.Record) bool {
+				rr := x.RR()
+				return rr.Name == r.Name && rr.Type == "TXT" && rr.Data == r.Value
+			})
+			kept, _ := b.Records(ctx, "example.test.")
+			inBook := slices.Contains(kept, r)
+			if !there || !inBook || !errors.Is(err, dns.ErrNotDeleted) {
+				t.Errorf("after an empty listing %v: the delete %v, at the provider %v, in the book %v; want ErrNotDeleted, there and kept",
+					emptyFirst, err, there, inBook)
+			}
+			// Once it is gone (by hand), the next delete drops it from the book, and nothing of HomersLab's is left.
+			update(t, tsig, []mdns.RR{split}, nil)
+			if err := o.Delete(ctx, r); err != nil {
+				t.Errorf("the delete once the record is gone: %v", err)
+			}
+			if kept, _ := b.Records(ctx, "example.test."); len(kept) != 0 {
+				t.Errorf("the book still lists %v", kept)
+			}
+			if recs, _ := p.GetRecords(ctx, "example.test."); hasRR(recs, "_homerslab", "TXT") || hasRR(recs, "_acme-challenge", "TXT") {
+				t.Errorf("HomersLab's records stayed: %v", recs)
+			}
+		}
+	})
+
 	t.Run("CAA records that don't allow the authority are named", func(t *testing.T) {
 		o, _ := open(t, tsig, theBook)
 		caa := libdns.CAA{Name: "@", TTL: time.Minute, Tag: "issue", Value: "sectigo.com"}
@@ -351,6 +397,37 @@ func (c *counting) DeleteRecords(ctx context.Context, zone string, recs []libdns
 type emptyListing struct{ dns.Provider }
 
 func (emptyListing) GetRecords(context.Context, string) ([]libdns.Record, error) { return nil, nil }
+
+// emptyOnce is a provider whose next listing comes back empty, when empty is set.
+type emptyOnce struct {
+	dns.Provider
+	empty atomic.Bool
+}
+
+func (e *emptyOnce) GetRecords(ctx context.Context, zone string) ([]libdns.Record, error) {
+	if e.empty.Swap(false) {
+		return nil, nil
+	}
+	return e.Provider.GetRecords(ctx, zone)
+}
+
+// update is an RFC 2136 update sent straight to BIND, as another tool would: the records removed, then inserted.
+func update(t *testing.T, tsig mesh.Secret, remove, insert []mdns.RR) {
+	t.Helper()
+	m := new(mdns.Msg)
+	m.SetUpdate("example.test.")
+	if len(remove) > 0 {
+		m.Remove(remove)
+	}
+	if len(insert) > 0 {
+		m.Insert(insert)
+	}
+	m.SetTsig("homerslab.", mdns.HmacSHA256, 300, time.Now().Unix())
+	c := &mdns.Client{Net: "tcp", TsigSecret: map[string]string{"homerslab.": tsig.Reveal()}}
+	if r, _, err := c.Exchange(m, dnsServer); err != nil || r.Rcode != mdns.RcodeSuccess {
+		t.Fatalf("the update: %v %v", r, err)
+	}
+}
 
 // book is the manager's list of HomersLab's records, in memory.
 type book struct {

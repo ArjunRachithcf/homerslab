@@ -44,7 +44,8 @@ var (
 	ErrNotOurs = errors.New("the record isn't HomersLab's")
 	// ErrNoValue is a record without its value: with libdns, a delete without one deletes every value at the name.
 	ErrNoValue = errors.New("a record needs its value")
-	// ErrNotDeleted is a delete the provider did nothing for: the record stays in the book, so it is found again.
+	// ErrNotDeleted is a delete the provider did nothing for, or that no listing after it shows done: the record stays
+	// in the book, so it is found again (#179).
 	ErrNotDeleted = errors.New("the provider deleted nothing")
 	// ErrBadName is a name that isn't valid IDNA: it is refused, never compared in another form (#153).
 	ErrBadName = errors.New("not a valid domain name")
@@ -305,10 +306,10 @@ func (e *edit) delete(ctx context.Context, r Record) error {
 		}
 		return fmt.Errorf("%w: %s %s", ErrNotOurs, r.Type, r.Name)
 	}
-	// Looked up first: a provider such as RFC 2136's reports every delete as done, so only the listing says whether the
-	// record was still there. Gone, from a listing that holds the zone's other records, means someone deleted it by
-	// hand. An empty listing, like a failed one, says nothing: the record is deleted as HomersLab wrote it, and never
-	// left at the provider untracked (#166).
+	// Looked up first, and again after (settle): a provider such as RFC 2136's reports every delete as done, so only a
+	// listing says whether the record was there, and whether it is gone. Gone before, from a listing that holds the
+	// zone's other records, means someone deleted it by hand. An empty listing, like a failed one, says nothing: the
+	// record is deleted as HomersLab wrote it, and never left at the provider untracked (#166).
 	there, raw, empty, err := e.look(ctx, r.Name)
 	if err == nil && empty && e.Log != nil {
 		e.Log.Warn("the DNS provider listed nothing in the zone: that isn't taken as the record deleted by hand", "zone", e.zone, "name", r.Name, "type", r.Type)
@@ -330,26 +331,27 @@ func (e *edit) delete(ctx context.Context, r Record) error {
 	if err != nil {
 		return fmt.Errorf("deleting %s %s: %w", r.Type, r.Name, err)
 	}
-	if len(deleted) == 0 {
-		return e.nothingDeleted(ctx, ours, i, kept[i], exact)
-	}
-	return e.Book.Forget(ctx, e.zone, kept[i])
+	return e.settle(ctx, ours, i, kept[i], exact, len(deleted) > 0, true)
 }
 
-// nothingDeleted handles a delete the provider did nothing for. The name is looked up again in the provider's
-// listing:
+// settle reads the provider's listing after a delete, and keeps or drops the record's entry in the book by what it
+// shows, never by what the delete reported: RFC 2136 reports every delete as done, whatever it matched, and lists a TXT
+// record's strings as one value, so a record someone else's tool stored in its other form (two strings) lists as ours
+// and isn't matched by the delete (internal/certs's contract suite, against BIND; #179). The name is looked up again:
 //   - our value is still there (in the provider's own form, it may be): when that form isn't the one the delete was
-//     sent in (HomersLab's own, after a listing that failed or came back empty), the delete is sent once more in it;
-//     otherwise, or when that deletes nothing either, the record stays in the book (ErrNotDeleted);
+//     sent in (HomersLab's own, after a listing that failed or came back empty) and resend allows it, the delete is sent
+//     once more in it, and settled again without another; otherwise the record stays in the book (ErrNotDeleted);
 //   - the lookup fails: nothing is known, and the record stays too;
-//   - the provider lists nothing in the zone, which holds at least this record: nothing is known either, the record
-//     stays, and the drift report says the listing looked empty (#166);
-//   - nothing of that name and type is left, or only HomersLab's other values (or, at the challenge's name, which other
-//     ACME clients share, anyone's): someone deleted it by hand;
-//   - someone else's value of that name and type is: someone replaced it by hand (#153).
+//   - the provider lists nothing in the zone: nothing is known either, the record stays, the drift report says the
+//     listing looked empty (#166), and the error is ErrListingEmpty too, which callers try again quietly (#175);
+//   - our value is gone, after a delete the provider reported done: it is deleted, and leaves the book;
+//   - our value is gone, after a delete the provider did nothing for: nothing of that name and type is left, or only
+//     HomersLab's other values (or, at the challenge's name, which other ACME clients share, anyone's), so someone
+//     deleted it by hand; or someone else's value of that name and type is, so someone replaced it by hand (#153). Both
+//     drop it from the book, and the drift report says so.
 //
-// The last two drop it from the book, and the drift report says so. The provider's other records are never touched.
-func (e *edit) nothingDeleted(ctx context.Context, ours []Record, i int, kept Record, sent libdns.RR) error {
+// The provider's other records are never touched.
+func (e *edit) settle(ctx context.Context, ours []Record, i int, kept Record, sent libdns.RR, reported, resend bool) error {
 	r := ours[i]
 	there, raw, empty, err := e.look(ctx, r.Name)
 	foreign := func(rr libdns.RR) bool {
@@ -359,30 +361,32 @@ func (e *edit) nothingDeleted(ctx context.Context, ours []Record, i int, kept Re
 	switch {
 	case err != nil:
 		if e.Log != nil {
-			e.Log.Warn("the DNS provider deleted nothing, and the lookup failed: the record stays listed as HomersLab's", "zone", e.zone, "name", r.Name, "type", r.Type, "err", err)
+			e.Log.Warn("the DNS provider's listing after a delete failed: the record stays listed as HomersLab's", "zone", e.zone, "name", r.Name, "type", r.Type, "err", err)
 		}
 		return fmt.Errorf("%w: %s %s (%v)", ErrNotDeleted, r.Type, r.Name, err)
 	case empty:
 		if e.Log != nil {
-			e.Log.Warn("the DNS provider deleted nothing, and listed nothing in the zone: the record stays listed as HomersLab's", "zone", e.zone, "name", r.Name, "type", r.Type)
+			e.Log.Warn("the DNS provider listed nothing in the zone after a delete: the record stays listed as HomersLab's", "zone", e.zone, "name", r.Name, "type", r.Type)
 		}
 		e.note(r, DriftListingLookedEmpty)
-		return fmt.Errorf("%w: %s %s (%v)", ErrNotDeleted, r.Type, r.Name, ErrListingEmpty)
+		return fmt.Errorf("%w: %s %s (%w)", ErrNotDeleted, r.Type, r.Name, ErrListingEmpty) // tried again, as an empty listing
 	case slices.ContainsFunc(there, r.matches):
 		exact := raw[slices.IndexFunc(there, r.matches)]
-		if exact.TTL = 0; exact.Data != "" && exact != sent {
+		if exact.TTL = 0; resend && exact.Data != "" && exact != sent {
 			deleted, err := e.Provider.DeleteRecords(ctx, e.zone, []libdns.Record{exact})
 			if err != nil {
 				return fmt.Errorf("deleting %s %s: %w", r.Type, r.Name, err)
 			}
 			if len(deleted) > 0 {
-				return e.Book.Forget(ctx, e.zone, kept)
+				return e.settle(ctx, ours, i, kept, exact, true, false)
 			}
 		}
 		if e.Log != nil {
 			e.Log.Warn("the DNS provider deleted nothing: the record stays listed as HomersLab's", "zone", e.zone, "name", r.Name, "type", r.Type)
 		}
 		return fmt.Errorf("%w: %s %s", ErrNotDeleted, r.Type, r.Name)
+	case reported:
+		return e.Book.Forget(ctx, e.zone, kept)
 	case !shared && slices.ContainsFunc(there, foreign):
 		return e.drop(ctx, r, kept, DriftReplacedByHand)
 	default:
@@ -416,21 +420,20 @@ func (e *edit) note(r Record, what string) {
 
 // deletedByUs says whether the book's inventory record lists a name and type that no record of the book has any more:
 // a record HomersLab wrote and deleted, whose inventory update didn't finish (#176). A record at that name and type that
-// someone else holds is no record of the book's, and nothing is changed for it: only the inventory is rewritten.
+// someone else holds is no record of the book's, and nothing is changed for it: only the inventory is rewritten. (The
+// inventory record itself is never one: the book holds it whenever it lists anything. A record of another type at its
+// name is a record like any other.)
 func (e *edit) deletedByUs(ours []Record, r Record) bool {
-	if r.Name == e.rel(Inventory) {
-		return false
-	}
 	key := r.Name + " " + strings.ToUpper(r.Type)
 	if slices.ContainsFunc(ours, func(k Record) bool { return k.Name == r.Name && strings.EqualFold(k.Type, r.Type) }) {
 		return false
 	}
-	for _, k := range ours {
-		if k.Name == e.rel(Inventory) && strings.EqualFold(k.Type, "TXT") && slices.Contains(inventoried(k.Value), key) {
-			return true
-		}
-	}
-	return false
+	return slices.ContainsFunc(ours, func(k Record) bool { return e.isInventory(k) && slices.Contains(inventoried(k.Value), key) })
+}
+
+// isInventory says whether a record of the book's is the inventory record: the TXT record at the inventory's name.
+func (e *edit) isInventory(r Record) bool {
+	return r.Name == e.rel(Inventory) && strings.EqualFold(r.Type, "TXT")
 }
 
 // inventoried is the "name TYPE" entries an inventory record's value lists.
@@ -443,8 +446,9 @@ func inventoried(value string) []string {
 }
 
 // Reconcile rewrites the inventory record from the book, without any other write: for a create or delete whose
-// inventory update failed or met an empty listing, the periodic check calls it (#176). It fails as any write does,
-// ErrListingEmpty included, and is a no-op when the inventory is right.
+// inventory update failed or met an empty listing. The manager's scheduler calls it at every run, beside the
+// certificate's renewal (#176, #179). It fails as any write does, ErrListingEmpty included, and is a no-op that reads
+// only the book when the inventory is right.
 func (o *Owned) Reconcile(ctx context.Context) error {
 	e, err := o.edit()
 	if err != nil {
@@ -463,7 +467,7 @@ func (e *edit) inventory(ctx context.Context) error {
 	var listed []string
 	var old []Record
 	for _, r := range ours {
-		if r.Name == name && strings.EqualFold(r.Type, "TXT") {
+		if e.isInventory(r) {
 			old = append(old, r)
 			continue
 		}

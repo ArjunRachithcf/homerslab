@@ -49,6 +49,11 @@ type fakeDomains struct {
 	last   manager.Issuance
 	drift  []dns.Drift // the dns package's drift notes, given to the issuance's Drift at every Ensure
 	fail   error       // what an issuance fails with, when it isn't nil
+	// reconciled are the zones whose inventory the manager had put right, as their issuances; reconcileDrift the
+	// drift notes, and reconcileFail the failure, of each.
+	reconciled     []manager.Issuance
+	reconcileDrift []dns.Drift
+	reconcileFail  error
 }
 
 func newFakeDomains() *fakeDomains { return &fakeDomains{token: dnsToken, life: 90 * 24 * time.Hour} }
@@ -100,6 +105,24 @@ func (f *fakeDomains) Ensure(_ context.Context, i manager.Issuance, have *certs.
 	chain, key := issue(i.Domain, int64(f.issued), now, f.life)
 	c, err := certs.Parse(i.Domain, chain, key)
 	return c, err == nil, err
+}
+
+func (f *fakeDomains) Reconcile(_ context.Context, i manager.Issuance) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.reconciled = append(f.reconciled, i)
+	for _, d := range f.reconcileDrift {
+		if i.Drift != nil {
+			i.Drift(d)
+		}
+	}
+	return f.reconcileFail
+}
+
+func (f *fakeDomains) reconciles() []manager.Issuance {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return slices.Clone(f.reconciled)
 }
 
 func (f *fakeDomains) Authority() string { return "Let's Encrypt" }
