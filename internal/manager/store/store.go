@@ -588,6 +588,23 @@ func (s *Store) Session(ctx context.Context, tokenHash []byte) (Session, error) 
 	return out, err
 }
 
+// OpenSession reads the session that wasn't revoked, the newest if there were more, or returns ErrNotFound. Whether it
+// is too old or idle is the caller's to say.
+func (s *Store) OpenSession(ctx context.Context) (Session, error) {
+	var out Session
+	var created, seen, openedSince, seenSince int64
+	err := s.db.QueryRowContext(ctx, `SELECT client, created_at, last_seen, boot_id, opened_since_boot, seen_since_boot
+		FROM setup_session WHERE revoked_at IS NULL ORDER BY created_at DESC LIMIT 1`).
+		Scan(&out.Client, &created, &seen, &out.Opened.Boot, &openedSince, &seenSince)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Session{}, ErrNotFound
+	}
+	out.Seen.Boot = out.Opened.Boot
+	out.Opened.Wall, out.Opened.Since = time.UnixMilli(created).UTC(), time.Duration(openedSince)
+	out.Seen.Wall, out.Seen.Since = time.UnixMilli(seen).UTC(), time.Duration(seenSince)
+	return out, err
+}
+
 // SeeSession records when a session was last used, in the boot it was opened in.
 func (s *Store) SeeSession(ctx context.Context, tokenHash []byte, at Moment) error {
 	if err := s.noRoom(); err != nil {

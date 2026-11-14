@@ -7,12 +7,12 @@ import { expect, test } from './primary';
 
 type Step = { id: string; half: 'lan' | 'mesh'; state: string; secret?: string; command?: string };
 
-function setupAt(domain: 'todo' | 'waiting' | 'done', answers: Record<string, string> = {}) {
+function setupAt(domain: 'todo' | 'waiting' | 'checking' | 'done', answers: Record<string, string> = {}) {
   const ids = ['welcome', 'you', 'household', 'signin', 'network', 'domain', 'mail', 'kit', 'join', 'passkey', 'done'];
   const steps: Step[] = ids.map((id, i): Step => {
     const step: Step = { id, half: i < 8 ? 'lan' : 'mesh', state: i < 5 ? 'done' : 'todo' };
     if (id !== 'domain') return step;
-    if (domain === 'waiting') return { ...step, state: 'waiting', secret: 'dns', command: 'sudo homerslab setup secret dns' };
+    if (domain === 'waiting' || domain === 'checking') return { ...step, state: domain, secret: 'dns', command: 'sudo homerslab setup secret dns' };
     return { ...step, state: domain };
   });
   return {
@@ -30,7 +30,7 @@ async function standIn(page: Page, state: () => unknown, onAnswer: (body: Record
 }
 
 test('the domain comes from the mail address, the token goes in the terminal, and the certificate ends the wait', async ({ page, primary }) => {
-  let domain: 'todo' | 'waiting' | 'done' = 'todo';
+  let domain: 'todo' | 'waiting' | 'checking' | 'done' = 'todo';
   const sent: Record<string, unknown>[] = [];
   await standIn(page, () => setupAt(domain, domain === 'todo' ? {} : { domain: 'ferreira.family', dnsProvider: 'infomaniak' }), (body) => {
     sent.push(body);
@@ -53,8 +53,13 @@ test('the domain comes from the mail address, the token goes in the terminal, an
   await expect(page.locator('input')).toHaveCount(0);
   expect(sent).toEqual([{ domain: 'ferreira.family', provider: 'infomaniak' }]);
 
-  domain = 'done'; // the admin ran the command, and the certificate was issued
-  await expect(page.getByRole('heading', { level: 1 })).toContainText('Sending mail', { timeout: 10_000 });
+  domain = 'checking'; // the admin ran the command
+  await expect(page.getByRole('status')).toContainText('Received. Checking it, and getting the certificate…', { timeout: 10_000 });
+  domain = 'done'; // and the certificate was issued
+  await expect(page.getByRole('status')).toContainText('Received and checked', { timeout: 10_000 });
+  await expect(page.getByRole('status')).toContainText('https://admin.ferreira.family:9443');
+  await page.getByRole('button', { name: 'Continue' }).click();
+  await expect(page.getByRole('heading', { level: 1 })).toContainText('Sending mail');
 });
 
 test('a DNS server of the household’s own needs its address and its key’s name, never its key', async ({ page, primary }) => {

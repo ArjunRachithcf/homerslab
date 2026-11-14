@@ -15,8 +15,30 @@ import (
 	"errors"
 	"fmt"
 	"net/netip"
+	"regexp"
 	"slices"
+	"strconv"
 )
+
+// HSTS is the Strict-Transport-Security every name the edge serves answers with (#64): a year, without
+// includeSubDomains or preload, because a household's domain may also carry sites that aren't HomersLab's. It replaces
+// whatever an upstream sent.
+const HSTS = "max-age=31536000"
+
+// Every cookie the edge passes on is Secure (#64): Caddy runs these on each Set-Cookie value, in order. The first takes
+// out a Secure attribute the cookie may have, in any case or spacing; the second puts one at its end.
+var secureCookie = []struct{ search, replace string }{
+	{`(?i);\s*secure\s*(;|$)`, "$1"},
+	{`$`, "; Secure"},
+}
+
+// SecureCookie is a Set-Cookie value as the edge passes it on.
+func SecureCookie(v string) string {
+	for _, r := range secureCookie {
+		v = regexp.MustCompile(r.search).ReplaceAllString(v, r.replace)
+	}
+	return v
+}
 
 // Config is what the edge serves on one node.
 type Config struct {
@@ -64,17 +86,22 @@ func Render(c Config) ([]byte, error) {
 	if c.AdminSocket == "" || c.Storage == "" {
 		return nil, errors.New("the edge needs its admin socket and its storage directory")
 	}
-	if len(c.Listen) == 0 || c.Port <= 0 || c.Port > 65535 {
-		return nil, errors.New("the edge needs the node's mesh addresses and the household's port")
+	if len(c.Listen) == 0 || c.Port <= 0 || c.Port > 65535 || c.Port == 80 {
+		return nil, errors.New("the edge needs the node's mesh addresses and the household's port, which is never 80")
 	}
-	listen := make([]string, 0, len(c.Listen))
+	at := func(port int) []string {
+		listen := make([]string, 0, len(c.Listen))
+		for _, a := range c.Listen {
+			listen = append(listen, netip.AddrPortFrom(a.Unmap(), uint16(port)).String())
+		}
+		slices.Sort(listen)
+		return listen
+	}
 	for _, a := range c.Listen {
 		if !a.IsValid() || a.IsUnspecified() || a.IsLoopback() || a.IsMulticast() {
 			return nil, fmt.Errorf("the edge listens on the node's mesh addresses only, not %v", a)
 		}
-		listen = append(listen, netip.AddrPortFrom(a.Unmap(), uint16(c.Port)).String())
 	}
-	slices.Sort(listen)
 
 	var loads []obj
 	var policies []obj
@@ -89,29 +116,56 @@ func Render(c Config) ([]byte, error) {
 		})
 	}
 
-	var routes []obj
+	// The names the edge serves, each with what answers it: Admin on its socket; the sign-in on its bridge address,
+	// with Authentik's first-admin flow refused before the provider sees it (#84).
+	type served struct {
+		name   string
+		handle obj
+	}
+	var sites []served
 	if c.Admin != nil {
-		routes = append(routes, obj{
-			"match":    []obj{{"host": []string{c.Admin.Name}}},
-			"handle":   []obj{{"handler": "reverse_proxy", "upstreams": []obj{{"dial": "unix/" + c.Admin.Upstream}}}},
-			"terminal": true,
-		})
+		sites = append(sites, served{c.Admin.Name, obj{"handler": "reverse_proxy", "upstreams": []obj{{"dial": "unix/" + c.Admin.Upstream}}}})
 	}
 	if c.SignIn != nil {
 		if _, err := netip.ParseAddrPort(c.SignIn.Dial); err != nil || c.SignIn.Name == "" {
 			return nil, errors.New("the sign-in needs its name and its upstream's address and port")
 		}
+		sites = append(sites, served{c.SignIn.Name, obj{"handler": "subroute", "routes": []obj{
+			{"match": []obj{{"path": FirstAdminPaths}}, "handle": []obj{{"handler": "static_response", "status_code": 403}}, "terminal": true},
+			{"handle": []obj{{"handler": "reverse_proxy", "upstreams": []obj{{"dial": c.SignIn.Dial}}}}},
+		}}})
+	}
+	// Each name the edge serves: HSTS and Secure cookies on whatever it answers, set as the answer is written so they
+	// replace the upstream's, then what answers it. On port 80, a redirect to HTTPS on the same name, and nothing else.
+	var cookies []obj
+	for _, r := range secureCookie {
+		cookies = append(cookies, obj{"search_regexp": r.search, "replace": r.replace})
+	}
+	var routes, redirects []obj
+	for _, site := range sites {
 		routes = append(routes, obj{
-			"match": []obj{{"host": []string{c.SignIn.Name}}},
-			"handle": []obj{{"handler": "subroute", "routes": []obj{
-				{"match": []obj{{"path": FirstAdminPaths}}, "handle": []obj{{"handler": "static_response", "status_code": 403}}, "terminal": true},
-				{"handle": []obj{{"handler": "reverse_proxy", "upstreams": []obj{{"dial": c.SignIn.Dial}}}}},
-			}}},
+			"match": []obj{{"host": []string{site.name}}},
+			"handle": []obj{
+				{"handler": "headers", "response": obj{
+					"set":      obj{"Strict-Transport-Security": []string{HSTS}},
+					"replace":  obj{"Set-Cookie": cookies},
+					"deferred": true,
+				}},
+				site.handle,
+			},
+			"terminal": true,
+		})
+		redirects = append(redirects, obj{
+			"match": []obj{{"host": []string{site.name}}},
+			"handle": []obj{{"handler": "static_response", "status_code": 308,
+				"headers": obj{"Location": []string{"https://" + hostPort(site.name, c.Port) + "{http.request.uri}"}}}},
 			"terminal": true,
 		})
 	}
-	// Any other name: 421 Misdirected Request, never Caddy's empty 200 for a request no route matches (#81).
-	routes = append(routes, obj{"handle": []obj{{"handler": "static_response", "status_code": 421}}})
+	// Any other name: 421 Misdirected Request, never Caddy's empty 200 for a request no route matches (#81), and never
+	// a redirect to a name that isn't the edge's.
+	misdirected := obj{"handle": []obj{{"handler": "static_response", "status_code": 421}}}
+	routes, redirects = append(routes, misdirected), append(redirects, misdirected)
 
 	cfg := obj{
 		"admin":   obj{"listen": AdminListen(c.AdminSocket), "config": obj{"persist": false}},
@@ -121,13 +175,22 @@ func Render(c Config) ([]byte, error) {
 	if loads != nil {
 		cfg["apps"] = obj{
 			"tls": obj{"certificates": obj{"load_files": loads}, "disable_ocsp_stapling": true},
-			"http": obj{"servers": obj{"mesh": obj{
-				"listen":                  listen,
-				"protocols":               []string{"h1", "h2"},
-				"automatic_https":         obj{"disable": true},
-				"tls_connection_policies": policies,
-				"routes":                  routes,
-			}}},
+			"http": obj{"servers": obj{
+				"mesh": obj{
+					"listen":                  at(c.Port),
+					"protocols":               []string{"h1", "h2"},
+					"automatic_https":         obj{"disable": true},
+					"tls_connection_policies": policies,
+					"routes":                  routes,
+				},
+				// Plain HTTP only redirects to HTTPS (#64): it proxies nothing.
+				"redirect": obj{
+					"listen":          at(80),
+					"protocols":       []string{"h1"},
+					"automatic_https": obj{"disable": true},
+					"routes":          redirects,
+				},
+			}},
 		}
 	}
 	var buf bytes.Buffer
@@ -142,3 +205,11 @@ func Render(c Config) ([]byte, error) {
 
 // obj is a JSON object; encoding/json writes its keys in order, so a render is deterministic.
 type obj = map[string]any
+
+// hostPort is a name at a port, leaving out 443.
+func hostPort(name string, port int) string {
+	if port == 443 {
+		return name
+	}
+	return name + ":" + strconv.Itoa(port)
+}

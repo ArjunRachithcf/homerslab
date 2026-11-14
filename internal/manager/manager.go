@@ -97,6 +97,12 @@ type Manager struct {
 	certMu    sync.Mutex // one issuance or renewal at a time
 	signInMu  sync.Mutex // one setting-up of the household account at a time
 	attempts  attempts   // sign-ins to Admin under way
+
+	// given is what the page sees of the secrets the terminal gives (#64): those being checked, and why the last one
+	// given for each was refused. By the secret's name; never the secret.
+	givenMu  sync.Mutex
+	checking map[string]bool
+	refusals map[string]string
 }
 
 // New opens the manager's database.
@@ -233,7 +239,7 @@ func (m *Manager) Control() http.Handler {
 	mux.HandleFunc("GET /api/v1/drift", m.getDrift)
 	mux.HandleFunc("GET /api/v1/mesh", m.getMesh)
 	mux.HandleFunc("GET /api/v1/mesh/owner-password", m.getOwnerPassword)
-	mux.HandleFunc("GET /api/v1/setup", m.getSetup)
+	mux.HandleFunc("GET /api/v1/setup", m.getControlSetup)
 	mux.HandleFunc("GET /api/v1/nodes/primary", m.getPrimary)
 	mux.HandleFunc("GET /api/v1/dns", m.getDNS)
 	mux.HandleFunc("PUT /api/v1/dns/token", m.putDNSToken)
@@ -286,7 +292,57 @@ func (m *Manager) getSetup(w http.ResponseWriter, r *http.Request) {
 		m.internal(w, "reading setup", err)
 		return
 	}
-	writeJSON(w, http.StatusOK, st)
+	writeJSON(w, http.StatusOK, m.withGiven(st))
+}
+
+// getControlSetup is setup for the terminal: the page's state, and who claimed the setup session that is open, so
+// `homerslab setup secret` can say whose answers decide where a secret goes (#64).
+func (m *Manager) getControlSetup(w http.ResponseWriter, r *http.Request) {
+	st, err := m.setup.State(r.Context())
+	if err != nil {
+		m.internal(w, "reading setup", err)
+		return
+	}
+	c, err := m.setup.Claimed(r.Context())
+	if err != nil {
+		m.internal(w, "reading setup's claim", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, struct {
+		setup.State
+		Claim *setup.Claimant `json:"claim,omitempty"`
+	}{m.withGiven(st), c})
+}
+
+// withGiven shows a waiting step's secret as the terminal gives it: checking while it is checked, and why the last one
+// was refused.
+func (m *Manager) withGiven(st setup.State) setup.State {
+	m.givenMu.Lock()
+	defer m.givenMu.Unlock()
+	for i, s := range st.Steps {
+		if s.State != "waiting" || s.Secret == "" {
+			continue
+		}
+		if m.checking[s.Secret] {
+			st.Steps[i].State = "checking"
+		} else {
+			st.Steps[i].Refused = m.refusals[s.Secret]
+		}
+	}
+	return st
+}
+
+// given records a secret's progress: checking it, then done with it, refused for why ("" when it was taken).
+func (m *Manager) given(name string, checking bool, why string) {
+	m.givenMu.Lock()
+	defer m.givenMu.Unlock()
+	if m.checking == nil {
+		m.checking, m.refusals = map[string]bool{}, map[string]string{}
+	}
+	m.checking[name] = checking
+	if !checking {
+		m.refusals[name] = why
+	}
 }
 
 func (m *Manager) getPrimary(w http.ResponseWriter, r *http.Request) {
@@ -339,7 +395,10 @@ func (m *Manager) putStep(w http.ResponseWriter, r *http.Request) {
 	var overHTTP *setup.SecretOverHTTP
 	switch {
 	case err == nil:
-		writeJSON(w, http.StatusOK, st)
+		if secret := setup.Secrets[r.PathValue("id")]; secret != "" {
+			m.given(secret, false, "") // a new answer: a new wait for its secret
+		}
+		writeJSON(w, http.StatusOK, m.withGiven(st))
 	case errors.As(err, &overHTTP):
 		// Refused whatever its value: no secret travels over plain HTTP (#64). The page shows the command.
 		m.log.Warn("refused a secret sent over the LAN page", "step", r.PathValue("id"))

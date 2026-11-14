@@ -8,7 +8,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -19,13 +21,17 @@ import (
 
 // setupSecret is `homerslab setup secret <name>`: first-time setup's secrets never cross the LAN page's plain HTTP
 // (#64), so they come from this machine's terminal, over the control socket. The secret is read from stdin without
-// echo, sent once, and never printed, logged or kept by the CLI. Before it reads one, it says where the secret will go,
-// from the setup's own answers: a stranger who claimed the link first can't send it somewhere else unseen.
+// echo, sent once, and never printed, logged or kept by the CLI.
+//
+// Before it reads one, it says where the secret will go, for which household, and who claimed the setup session whose
+// answers decide that, and on a terminal it asks for a yes: a stranger who claimed the link first can't send it
+// somewhere else unseen. The secret is sent bound to the answers it showed (their revision): if the page changed them
+// meanwhile, the manager refuses it before anything sees it.
 func setupSecret(ctx context.Context, args []string, env Env) error {
 	fs := flags("setup secret", env)
 	socket := fs.String("control-socket", DefaultControlSocket, "the manager's control socket")
 	fs.Usage = func() {
-		fmt.Fprint(fs.Output(), "Usage: sudo homerslab setup secret mesh|dns\n\nReads the secret from stdin, without showing it, and gives it to first-time setup.\n")
+		fmt.Fprint(fs.Output(), "Usage: sudo homerslab setup secret mesh|dns|mail\n\nShows where the secret goes, then reads it from stdin, without showing it, and gives it to first-time setup.\n")
 		fs.PrintDefaults()
 	}
 	var name string
@@ -41,19 +47,25 @@ func setupSecret(ctx context.Context, args []string, env Env) error {
 		return errUsage
 	}
 	c := newControl(*socket)
-	var st struct {
-		Answers map[string]string `json:"answers"`
+	var st setupState
+	if _, err := c.do(ctx, "GET", "/api/v1/setup", 0, &st); err != nil {
+		return refused(name, err)
 	}
-	if name == "dns" {
-		if _, err := c.do(ctx, "GET", "/api/v1/setup", 0, &st); err != nil {
+	if !st.waitingFor(name) {
+		return errors.New(refusal(name, "not-waiting"))
+	}
+	fmt.Fprintln(env.Stderr, context64(name, st))
+	in := lines(env)
+	if in.terminal {
+		yes, err := in.ask(ctx, env, "Send it there? Type yes: ")
+		if err != nil {
 			return err
 		}
-		if st.Answers["domain"] == "" {
-			return errors.New(refusal(name, "not-waiting"))
+		if a := strings.ToLower(yes); a != "yes" && a != "y" {
+			return errors.New("stopped: nothing was read or sent")
 		}
-		fmt.Fprintf(env.Stderr, "This token is for %s, and goes to %s.\n", st.Answers["domain"], where(st.Answers))
 	}
-	value, err := readSecret(ctx, env, prompt)
+	value, err := in.secret(ctx, env, prompt)
 	if err != nil {
 		return err
 	}
@@ -62,10 +74,9 @@ func setupSecret(ctx context.Context, args []string, env Env) error {
 		c = newControlWaiting(*socket, 10*time.Minute)
 	}
 	body, _ := json.Marshal(map[string]string{"value": value})
-	var after struct {
-		Answers map[string]string `json:"answers"`
-	}
-	_, err = c.send(ctx, "PUT", "/api/v1/setup/secrets/"+name, body, &after)
+	var after setupState
+	_, err = c.request(ctx, "PUT", "/api/v1/setup/secrets/"+name, 0, bytes.NewReader(body),
+		http.Header{"If-Match": {strconv.Quote(strconv.FormatInt(st.Revision, 10))}}, &after)
 	clear(body)
 	if err != nil {
 		return refused(name, err)
@@ -76,6 +87,54 @@ func setupSecret(ctx context.Context, args []string, env Env) error {
 	}
 	fmt.Fprintln(env.Stdout, msg)
 	return nil
+}
+
+// setupState is setup as the control socket shows it to the terminal.
+type setupState struct {
+	Revision int64 `json:"revision"`
+	Claim    *struct {
+		From string    `json:"from"`
+		At   time.Time `json:"at"`
+	} `json:"claim"`
+	Steps []struct {
+		ID     string `json:"id"`
+		State  string `json:"state"`
+		Secret string `json:"secret"`
+	} `json:"steps"`
+	Answers map[string]string `json:"answers"`
+}
+
+// waitingFor says whether a step waits for the secret name.
+func (s setupState) waitingFor(name string) bool {
+	for _, st := range s.Steps {
+		if st.State == "waiting" && st.Secret == name {
+			return true
+		}
+	}
+	return false
+}
+
+// context64 is what the terminal says before it reads a secret: where it goes, for which household, and who claimed
+// the setup session whose answers decide that (#64).
+func context64(name string, st setupState) string {
+	a := st.Answers
+	var where string
+	switch name {
+	case "mesh":
+		where = fmt.Sprintf("This token goes to NetBird's cloud, at %s,", a["meshUrl"])
+		if a["meshControlPlane"] == "self-hosted" {
+			where = fmt.Sprintf("This token goes to your own NetBird server, at %s,", a["meshUrl"])
+		}
+	case "dns":
+		where = fmt.Sprintf("This token is for %s, and goes to %s,", a["domain"], where64(a))
+	case "mail":
+		where = fmt.Sprintf("This password is for %s, and goes to the mail server %s,", a["mailFrom"], a["mailServer"])
+	}
+	who := "and no setup session is open now"
+	if c := st.Claim; c != nil {
+		who = fmt.Sprintf("in the setup claimed from %s at %s", c.From, c.At.Local().Format("15:04 MST on 2 January 2006"))
+	}
+	return fmt.Sprintf("%s for %s, %s.\nIf that isn't your setup, press Ctrl-C, and make a new link with sudo homerslab setup link.", where, a["household"], who)
 }
 
 // dnsToken is `homerslab dns token`: the console's way to replace the DNS token outside first-time setup, for when an
@@ -110,7 +169,7 @@ func dnsToken(ctx context.Context, args []string, env Env) error {
 			fmt.Fprintf(env.Stderr, "Renewing it has failed since %s: %s\n", day(c.FailingSince), c.LastError)
 		}
 	}
-	value, err := readSecret(ctx, env, secretPrompts["dns"])
+	value, err := lines(env).secret(ctx, env, secretPrompts["dns"])
 	if err != nil {
 		return err
 	}
@@ -136,8 +195,8 @@ func dnsToken(ctx context.Context, args []string, env Env) error {
 
 func day(t time.Time) string { return t.UTC().Format("2 January 2006") }
 
-// where says where the DNS token goes, from setup's answers.
-func where(ans map[string]string) string {
+// where64 says where the DNS token goes, from setup's answers.
+func where64(ans map[string]string) string {
 	return dns.Settings{Provider: ans["dnsProvider"], Server: ans["dnsServer"], KeyName: ans["dnsKeyName"]}.Where()
 }
 
@@ -155,11 +214,13 @@ func refused(name string, err error) error {
 var secretPrompts = map[string]string{
 	"mesh": "Your mesh's token (it isn't shown as you paste it): ",
 	"dns":  "Your DNS provider's token (it isn't shown as you paste it): ",
+	"mail": "The mailbox's password (it isn't shown as you paste it): ",
 }
 
 var secretDone = map[string]string{
 	"mesh": "Checked. HomersLab made its own token with it, and this machine is on the mesh. Continue on the setup page.",
 	"dns":  "Checked. The certificate for *.%s is issued, and Admin answers at %s over the mesh. Continue on the setup page.",
+	"mail": "Checked. HomersLab sent a test mail with it. Continue on the setup page.",
 }
 
 // refusal is what to do about a refused secret, by the secret and the manager's code.
@@ -173,6 +234,8 @@ func refusal(name, code string) string {
 var secretRefusals = map[string]string{
 	"not-waiting":           "no step of first-time setup is waiting for this: choose your mesh on the setup page first",
 	"dns:not-waiting":       "no step of first-time setup is waiting for this: give your domain on the setup page first",
+	"mail:not-waiting":      "no step of first-time setup is waiting for this: give the mail server on the setup page first",
+	"stale":                 "the answers on the setup page changed after this command showed them, so nothing was sent: run it again, and check where the secret goes",
 	"secret-refused":        "the mesh refused this token: check it, then run the command again",
 	"dns:secret-refused":    "the DNS provider refused this token: check that it may edit the domain's records, then run the command again",
 	"mesh-unreachable":      "the mesh's control plane didn't answer: check the address on the setup page and this machine's internet",
@@ -188,14 +251,59 @@ var secretRefusals = map[string]string{
 	"dns:mesh-unreachable":  "the mesh's control plane didn't answer, so the names weren't made: check this machine's internet",
 }
 
-// readSecret reads one line from stdin. On a terminal it asks with prompt, on stderr, and turns echo off meanwhile;
-// Ctrl-C (ctx) gives up, with the terminal as it was.
-func readSecret(ctx context.Context, env Env, prompt string) (string, error) {
+// lineReader is the command's stdin, read a line at a time, whether it is a terminal.
+type lineReader struct {
+	in       io.Reader
+	r        *bufio.Reader
+	terminal bool
+}
+
+func lines(env Env) *lineReader {
 	in := env.Stdin
 	if in == nil {
 		in = os.Stdin
 	}
+	l := &lineReader{in: in, r: bufio.NewReader(io.LimitReader(in, 64<<10))}
 	if f, ok := in.(*os.File); ok {
+		_, err := unix.IoctlGetTermios(int(f.Fd()), unix.TCGETS)
+		l.terminal = err == nil
+	}
+	return l
+}
+
+// line reads one line; Ctrl-C (ctx) gives up.
+func (l *lineReader) line(ctx context.Context) (string, error) {
+	type read struct {
+		line string
+		err  error
+	}
+	got := make(chan read, 1)
+	go func() {
+		line, err := l.r.ReadString('\n')
+		got <- read{line, err}
+	}()
+	var r read
+	select {
+	case <-ctx.Done():
+		return "", errors.New("stopped: nothing was sent")
+	case r = <-got:
+	}
+	if r.err != nil && !errors.Is(r.err, io.EOF) {
+		return "", r.err
+	}
+	return strings.TrimSpace(r.line), nil
+}
+
+// ask asks a question on stderr, and reads the answer as it is typed.
+func (l *lineReader) ask(ctx context.Context, env Env, question string) (string, error) {
+	fmt.Fprint(env.Stderr, question)
+	return l.line(ctx)
+}
+
+// secret reads one line, a secret. On a terminal it asks with prompt, on stderr, and turns echo off meanwhile; Ctrl-C
+// (ctx) gives up, with the terminal as it was.
+func (l *lineReader) secret(ctx context.Context, env Env, prompt string) (string, error) {
+	if f, ok := l.in.(*os.File); ok && l.terminal {
 		if t, err := unix.IoctlGetTermios(int(f.Fd()), unix.TCGETS); err == nil {
 			fmt.Fprint(env.Stderr, prompt)
 			quiet := *t
@@ -209,25 +317,10 @@ func readSecret(ctx context.Context, env Env, prompt string) (string, error) {
 			}()
 		}
 	}
-	type read struct {
-		line string
-		err  error
+	line, err := l.line(ctx)
+	if err != nil {
+		return "", err
 	}
-	got := make(chan read, 1)
-	go func() {
-		line, err := bufio.NewReader(io.LimitReader(in, 16<<10)).ReadString('\n')
-		got <- read{line, err}
-	}()
-	var r read
-	select {
-	case <-ctx.Done():
-		return "", errors.New("stopped: nothing was sent")
-	case r = <-got:
-	}
-	if r.err != nil && !errors.Is(r.err, io.EOF) {
-		return "", r.err
-	}
-	line := strings.TrimSpace(r.line)
 	if line == "" {
 		return "", errors.New(secretRefusals["no-value"])
 	}
@@ -236,5 +329,5 @@ func readSecret(ctx context.Context, env Env, prompt string) (string, error) {
 
 // send is do with a JSON body, once.
 func (c *control) send(ctx context.Context, method, path string, body []byte, v any) ([]byte, error) {
-	return c.request(ctx, method, path, 0, bytes.NewReader(body), v)
+	return c.request(ctx, method, path, 0, bytes.NewReader(body), nil, v)
 }
