@@ -938,6 +938,19 @@ func (rs *reads) read(ctx context.Context, name string, file []byte) (engine.Pro
 		return engine.Project{}, errBusy
 	}
 	defer func() { <-rs.slot }()
+	// Then a place among the children alive, before anything else: with as many alive as reads may have, those left
+	// behind stopped among them, the read is busy and makes nothing.
+	select {
+	case rs.live <- struct{}{}:
+	default:
+		return engine.Project{}, errBusy
+	}
+	started := false
+	defer func() {
+		if !started {
+			<-rs.live
+		}
+	}()
 	cred, err := readCredential()
 	if err != nil {
 		return engine.Project{}, fmt.Errorf("%w: %w", errNoReader, err)
@@ -959,13 +972,7 @@ func (rs *reads) read(ctx context.Context, name string, file []byte) (engine.Pro
 	cmd.Stdin = bytes.NewReader(file)
 	var out, errOut capped
 	cmd.Stdout, cmd.Stderr = &out, &errOut
-	select {
-	case rs.live <- struct{}{}:
-	default:
-		return engine.Project{}, errBusy // as many children left behind, stopped, as reads may have
-	}
 	if err := startChild(cmd); err != nil {
-		<-rs.live
 		if ctx.Err() != nil {
 			return engine.Project{}, errReadTimeout
 		}
@@ -974,6 +981,7 @@ func (rs *reads) read(ctx context.Context, name string, file []byte) (engine.Pro
 	// A child that is stopped (SIGSTOP) runs neither its deadline nor its control pipe, its CPU limit doesn't count,
 	// and a root agent without CAP_KILL can't end it, so Wait could block for good (#183). Past the deadline and the
 	// child's WaitDelay, the slot is free again; Wait goes on in its goroutine and reaps the child whenever it ends.
+	started = true // its place among the children alive is freed once it is reaped
 	waited := make(chan error, 1)
 	go func() {
 		err := cmd.Wait()

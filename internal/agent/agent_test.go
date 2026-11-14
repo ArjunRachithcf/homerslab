@@ -552,6 +552,8 @@ func TestReadsRunAsAUserOnlyTheyUse(t *testing.T) {
 		"a prefix of ours": "homerslab-reader:x:980:979::/:/usr/sbin/nologin\n",
 		"another's group":  "homerslab-read:x:980:981::/:/usr/sbin/nologin\n",
 		"nogroup":          "homerslab-read:x:980:65534::/:/usr/sbin/nologin\n",
+		// The group is the reads' alone: no other user has it as its primary group, as none may as a member (#190).
+		"another's primary group is its": "homerslab-read:x:980:979::/:/usr/sbin/nologin\nother:x:990:979::/:/bin/sh\n",
 	} {
 		if uid, gid, err := agent.ReadIDsFrom(passwd(name, lines), goodGroup); err == nil {
 			t.Errorf("%s: homerslab-read = %d:%d, want it refused", name, uid, gid)
@@ -597,6 +599,35 @@ func TestReadsRunAsAUserOnlyTheyUse(t *testing.T) {
 	started, _ := os.ReadFile(filepath.Join(marker, "started"))
 	if resp.StatusCode != http.StatusInternalServerError || !strings.Contains(string(out), "no-reader") || len(started) != 0 {
 		t.Errorf("a root agent without homerslab-read: %d %s, a child started as %q; want 500 no-reader and none", resp.StatusCode, out, started)
+	}
+}
+
+// With as many children alive as reads may have (those left behind, stopped), a read is refused as busy before it does
+// anything else: it finds no user for its child, makes no folder, no command and no pipe (#190).
+func TestAReadWithEveryChildAliveDoesNothingElse(t *testing.T) {
+	testenv.Isolate(t)
+	agent.ReadUsersFrom(t, filepath.Join(t.TempDir(), "none")) // a root agent that looked for its read user would fail
+	busy, made := agent.ReadWithEveryChildAlive(t)
+	if !busy || made {
+		t.Errorf("a read with every child alive: busy %v, made its child's command %v; want busy, and nothing made", busy, made)
+	}
+}
+
+// A read that fails before its child starts gives its place among the children alive back: however many fail so, the
+// next one reads.
+func TestAReadThatStartsNoChildGivesItsPlaceBack(t *testing.T) {
+	testenv.Isolate(t)
+	real := agent.NoReadCommand(t)
+	sock := agenttest.Start(t, agenttest.Primary())
+	body := map[string]string{"project": "homerslab-web", "compose": "services: {web: {image: x}}\n"}
+	for i := range agent.MaxLiveReads + 1 {
+		if resp, out := post(t, sock, "/v1/projects/read", body); resp.StatusCode != http.StatusInternalServerError || !strings.Contains(string(out), "no-reader") {
+			t.Fatalf("read %d with no command: %d %s, want 500 no-reader", i, resp.StatusCode, out)
+		}
+	}
+	real()
+	if resp, out := post(t, sock, "/v1/projects/read", body); resp.StatusCode != http.StatusOK {
+		t.Errorf("after reads that started no child: %d %s, want it read", resp.StatusCode, out)
 	}
 }
 

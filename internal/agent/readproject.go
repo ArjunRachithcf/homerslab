@@ -38,8 +38,8 @@ func readIDs() (uid, gid uint32, err error) { return readIDsFrom(passwdFile, gro
 
 // readIDsFrom is readUser's uid and gid from passwd and group files, read directly rather than through NSS, where the
 // packages' sysusers.d writes them. The user must be the reads' own: it refuses a missing or broken entry, root's uid
-// or group, a uid another entry shares (nobody's, say), and a group that isn't readUser's own, with its gid and no
-// members (nogroup, or docker's, which would open the engine).
+// or group, a uid another entry shares (nobody's, say), and a group that isn't readUser's own, with its gid, no
+// members and no other user's as its primary group (nogroup, or docker's, which would open the engine).
 func readIDsFrom(passwd, group string) (uid, gid uint32, err error) {
 	users, err := idEntries(passwd)
 	if err != nil {
@@ -64,6 +64,11 @@ func readIDsFrom(passwd, group string) (uid, gid uint32, err error) {
 		return 0, 0, fmt.Errorf("%w: its group isn't %s", errNoReadUser, readUser)
 	case g.fields[3] != "":
 		return 0, 0, fmt.Errorf("%w: its group has members", errNoReadUser)
+	}
+	for _, o := range users {
+		if o.fields[0] != readUser && o.fields[3] == g.fields[2] {
+			return 0, 0, fmt.Errorf("%w: its group is %s's too", errNoReadUser, o.fields[0])
+		}
 	}
 	return u.id, g.id, nil
 }
