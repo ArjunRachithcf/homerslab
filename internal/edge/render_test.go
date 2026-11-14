@@ -450,7 +450,9 @@ func withTheSignInListener() edge.Config {
 // it carries the sign-in's route only. A handshake for any other name finds no certificate; another Host gets 421.
 func TestTheSignInListenerCarriesTheSignInsRouteOnly(t *testing.T) {
 	testenv.Isolate(t)
-	b, err := edge.Render(withTheSignInListener())
+	withEverySite := withTheSignInListener()
+	withEverySite.Home = withHome().Home // Home is people's, on the mesh; never an app's way in (#21)
+	b, err := edge.Render(withEverySite)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -483,7 +485,7 @@ func TestTheSignInListenerCarriesTheSignInsRouteOnly(t *testing.T) {
 			t.Errorf("the sign-in listener's routes lack %s: %s", want, route)
 		}
 	}
-	for _, bad := range []string{"admin.example.test", "pdf.example.test", "unix/"} {
+	for _, bad := range []string{"admin.example.test", "pdf.example.test", "home.example.test", "unix/"} {
 		if strings.Contains(string(route), bad) {
 			t.Errorf("the sign-in listener carries %s: %s", bad, route)
 		}
