@@ -39,6 +39,9 @@ data:
     service: web
     dump: {command: [pg_dump, --username=postgres, everything], file: everything.sql}
   - {what: Thumbnails, service: web, path: /cache, backup: false, why: They are made again from the library}
+storage:
+  - {id: library, what: The films and series it shows, service: web, path: /media}
+  - {id: uploads, what: Where it saves what people upload, service: web, path: /uploads, access: read-write}
 secrets:
   - {name: db-password, what: the database password, uid: 999}
 health:

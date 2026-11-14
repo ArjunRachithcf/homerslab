@@ -27,6 +27,7 @@ import (
 	"github.com/ArjunRachithcf/homerslab/internal/engine/compose"
 	"github.com/ArjunRachithcf/homerslab/internal/firewall"
 	"github.com/ArjunRachithcf/homerslab/internal/host"
+	"github.com/ArjunRachithcf/homerslab/internal/storage"
 	"github.com/ArjunRachithcf/homerslab/internal/text"
 )
 
@@ -106,6 +107,8 @@ type AppRequest struct {
 	Health  []AppHealth      `json:"health"`
 	// Backups are the app's data its plan backs up, and nothing else (#22).
 	Backups []AppData `json:"backups"`
+	// Storage are the storage locations the plan gives the app (#28).
+	Storage []AppStorage `json:"storage,omitempty"`
 }
 
 // AppHealth is one of an app's health checks: an HTTP request to a service's port, or the compose file's own check.
@@ -130,6 +133,7 @@ type appState struct {
 	Health   []AppHealth      `json:"health"`
 	Backups  []AppData        `json:"backups,omitempty"`
 	Project  engine.Project   `json:"project"`
+	Mounts   []appunit.Mount  `json:"mounts,omitempty"`
 }
 
 // AppStatus is an app as the agent finds it now. None of it is secret.
@@ -179,7 +183,7 @@ func (a *Agent) appDir(id string) string { return filepath.Join(a.cfg.StateDir, 
 
 func (a *Agent) appUnit(id string, s *appState) appunit.App {
 	return appunit.App{ID: id, Product: s.Product, Plan: s.Plan, Project: s.Project, Service: s.Service, Upstream: s.Upstream,
-		Subnet: s.Subnet, Level: s.Level, Slot: slot(s.Level), SELinux: a.selinux(), Secrets: s.Secrets, Dir: a.appDir(id),
+		Subnet: s.Subnet, Level: s.Level, Slot: slot(s.Level), SELinux: a.selinux(), Secrets: s.Secrets, Mounts: s.Mounts, Dir: a.appDir(id),
 		SignIn: a.signInName(), SignInAt: SignInListen}
 }
 
@@ -250,6 +254,13 @@ func validApp(id string, r AppRequest) string {
 		}
 		seen[s.Name] = true
 	}
+	mounted := map[string]bool{}
+	for _, s := range r.Storage {
+		if !storage.ID.MatchString(s.Location) || s.Service == "" || !storage.ValidTarget(s.Path) || mounted[s.Service+" "+s.Path] {
+			return "bad-storage"
+		}
+		mounted[s.Service+" "+s.Path] = true
+	}
 	for _, h := range r.Health {
 		if h.Service == "" || h.Compose == (h.Port != 0) || h.Port < 0 || h.Port > 65535 || (h.Port != 0 && !httpPath.MatchString(h.Path)) {
 			return "bad-health"
@@ -278,6 +289,10 @@ func checkProject(p engine.Project, r AppRequest, signIn string) (code, detail s
 			return "publishes-ports", s.Name
 		case len(s.Relabelled) > 0:
 			return "relabels-a-folder", s.Name
+		case len(s.Binds) > 0:
+			// A folder of the machine reaches an app only as a storage location, bound by the agent as the plan says:
+			// read-only unless the plan says otherwise, and only the location's own folder (#28).
+			return "binds-a-folder", s.Name + ": " + strings.Join(s.Binds, ", ")
 		case s.NetworkMode != "":
 			return "network-mode", s.Name
 		case len(s.Loosened) > 0:
@@ -326,6 +341,11 @@ func checkProject(p engine.Project, r AppRequest, signIn string) (code, detail s
 		// A backed-up folder is exactly one of the service's named volumes, never a folder inside one (onMachine).
 		if d.Path != "" && !slices.Contains(p.Services[i].Volumes, d.Path) {
 			return "not-a-volume", d.Service
+		}
+	}
+	for _, st := range r.Storage {
+		if !slices.ContainsFunc(p.Services, func(s engine.Service) bool { return s.Name == st.Service }) {
+			return "no-such-service", st.Service
 		}
 	}
 	return "", ""
@@ -377,15 +397,25 @@ func (a *Agent) putApp(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusUnprocessableEntity, map[string]string{"error": code})
 		return
 	}
+	data := ""
+	if len(req.Storage) > 0 {
+		data = a.engineData(ctx)
+	}
 	a.mu.Lock()
 	signIn := ""
 	if e := a.state.Edge; e != nil {
 		signIn = e.SignIn // whether this node serves it yet or not
 	}
+	mounts, noStorage := a.appMounts(req, data)
 	a.mu.Unlock()
 	if code, detail := checkProject(p, req, signIn); code != "" {
 		a.log.Warn("refused an app's compose project", "app", id, "why", code, "service", detail)
 		writeJSON(w, http.StatusUnprocessableEntity, map[string]string{"error": code, "detail": detail})
+		return
+	}
+	if noStorage != "" {
+		a.log.Warn("refused an app: a storage location this node doesn't have", "app", id)
+		fail(w, http.StatusUnprocessableEntity, noStorage)
 		return
 	}
 	// Only checking (?check=true): the app would install. The manager asks this before it makes the app's guard.
@@ -410,7 +440,7 @@ func (a *Agent) putApp(w http.ResponseWriter, r *http.Request) {
 	}
 	next.Product, next.Plan, next.Name, next.Service, next.Guard = req.Product, req.Plan, req.Name, req.Service, req.Guard
 	next.Upstream = netip.AddrPortFrom(next.Subnet.Addr().Next().Next(), uint16(req.Port))
-	next.Secrets, next.Health, next.Backups, next.Project = slices.Clone(req.Secrets), slices.Clone(req.Health), slices.Clone(req.Backups), p
+	next.Secrets, next.Health, next.Backups, next.Project, next.Mounts = slices.Clone(req.Secrets), slices.Clone(req.Health), slices.Clone(req.Backups), p, mounts
 	if a.state.Apps == nil {
 		a.state.Apps = map[string]*appState{}
 	}

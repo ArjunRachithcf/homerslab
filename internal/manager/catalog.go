@@ -139,7 +139,16 @@ func (m *Manager) household(ctx context.Context) (plan.Household, error) {
 		m.log.Warn("asking the agent for its facts", "err", err)
 		return plan.Household{}, errAgent
 	}
+	ls, err := m.db.Locations(ctx)
+	if err != nil {
+		return plan.Household{}, err
+	}
+	var locations []plan.Location
+	for _, l := range ls {
+		locations = append(locations, plan.Location{ID: l.ID, Name: l.Name, Kind: l.Kind, Node: l.Node, Backup: l.Backup})
+	}
 	return plan.Household{
+		Storage:  locations,
 		Name:     a["household"],
 		Domain:   strings.ToLower(domain),
 		Meshes:   []string{"NetBird"},
@@ -154,6 +163,8 @@ func (m *Manager) newPlan(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Catalog string `json:"catalog"`
 		App     string `json:"app"`
+		// Storage is the location chosen for each the app asks for, by the ask's id (#28).
+		Storage map[string]string `json:"storage"`
 	}
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4<<10)).Decode(&body); err != nil {
 		fail(w, http.StatusBadRequest, "not-json")
@@ -192,8 +203,8 @@ func (m *Manager) newPlan(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusServiceUnavailable, errAgent.Error())
 		return
 	}
-	p, err := plan.Make(a, plan.From{ID: m.catalog.ID, Publisher: m.catalog.Publisher}, project, h, m.cfg.Now())
-	if errors.Is(err, plan.ErrNoSignInMethod) || errors.Is(err, plan.ErrDefinition) {
+	p, err := plan.MakeWith(a, plan.From{ID: m.catalog.ID, Publisher: m.catalog.Publisher}, project, h, m.cfg.Now(), body.Storage)
+	if errors.Is(err, plan.ErrNoSignInMethod) || errors.Is(err, plan.ErrDefinition) || errors.Is(err, plan.ErrStorageNeeded) || errors.Is(err, plan.ErrNoSuchLocation) {
 		m.log.Error("planning an app", "app", a.ID, "err", err)
 		fail(w, http.StatusUnprocessableEntity, strings.SplitN(err.Error(), ":", 2)[0])
 		return

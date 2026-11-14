@@ -269,6 +269,9 @@ jobs:
         env:
           GOPROXY: https://proxy.golang.org,direct
         run: sh .github/scripts/stop-commands.sh go mod download
+      # Storage locations' folders (#28) may not be under /home or /tmp: a throwaway folder of the runner's own in /srv.
+      - name: A folder for the storage locations
+        run: sudo install -d -o "$(id -u)" -g "$(id -g)" /srv/homerslab-test
       # Apps' compose projects run as their units run them (the standard compose command on the catalog's file and the
       # agent's), on the runner's Docker, which nothing else uses; the adapter reads their state, health and logs through
       # the Compose SDK (#19). Only the harness and the adapter under test reach that engine, by its endpoint
@@ -276,6 +279,7 @@ jobs:
       - name: The contract suite
         env:
           HOMERSLAB_TEST_DOCKER_HOST: unix:///var/run/docker.sock
+          HOMERSLAB_TEST_STORAGE_DIR: /srv/homerslab-test
           DOCKER_HOST: unix:///nonexistent
           CONTAINER_HOST: unix:///nonexistent
         # The containers' logs, which the suite reads, are third-party text too.

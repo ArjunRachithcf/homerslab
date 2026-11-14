@@ -25,6 +25,8 @@ type Plan struct {
 	Placement Placement `json:"placement"`
 	Extras    []Extra   `json:"extras"`
 	Secrets   []Secret  `json:"secrets"`
+	// Storage is the storage locations the app uses, none when it asks for none (#28).
+	Storage   []Storage `json:"storage,omitempty"`
 	Resources Resources `json:"resources"`
 	// Risky says applying needs the admin's passkey: the plan gives the app an extra.
 	Risky bool `json:"risky"`
@@ -77,6 +79,29 @@ type Backups struct {
 	RestoreTest string        `json:"restoreTest"` // week
 	Data        []BackedUp    `json:"data"`
 	Left        []NotBackedUp `json:"left"`
+	// Locations are the storage locations the app uses, and whether each is backed up: only where the admin opted in,
+	// per location (#28).
+	Locations []LocationBackup `json:"locations,omitempty"`
+}
+
+// LocationBackup is a storage location the app uses, and whether the household backs it up.
+type LocationBackup struct {
+	Location string `json:"location"`
+	Name     string `json:"name"`
+	BackedUp bool   `json:"backedUp"`
+}
+
+// Storage is one storage location the app asked for (Ask, from its manifest): which location it gets, which of its
+// services sees it at which path, and whether that service only reads it.
+type Storage struct {
+	Ask      string `json:"ask"`
+	What     string `json:"what"`
+	Service  string `json:"service"`
+	Path     string `json:"path"`
+	Location string `json:"location"`
+	Name     string `json:"name"`
+	Kind     string `json:"kind"` // folder or share
+	ReadOnly bool   `json:"readOnly"`
 }
 
 // BackedUp is one thing of the app's that is backed up: a folder, or a database dump.
@@ -168,6 +193,15 @@ type Household struct {
 	Primary  Node
 	// Installed are the apps already in the household, with what they take of the primary.
 	Installed []Installed
+	// Storage are the household's storage locations (#28).
+	Storage []Location
+}
+
+// Location is a storage location: a folder on a node, or a network share on the mesh, which any node reaches. Backup
+// says the admin opted in to backing it up.
+type Location struct {
+	ID, Name, Kind, Node string
+	Backup               bool
 }
 
 // Provider is the household's identity provider and the sign-in methods it reports it provides.

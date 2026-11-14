@@ -57,6 +57,11 @@ type Service struct {
 	NetworkMode string   `json:"networkMode,omitempty"`
 	Published   []string `json:"published,omitempty"`
 	Relabelled  []string `json:"relabelled,omitempty"`
+	// Binds are what it mounts of the machine's own: every mount that isn't one of the project's volumes or a tmpfs (a
+	// bind of a folder, in the long form or the short), and every config taken from a file or from outside the
+	// project. None, for a catalog's app (#28): a folder of the machine reaches an app only as a storage location,
+	// which the agent binds as the plan says.
+	Binds []string `json:"binds,omitempty"`
 	// Volumes are where the service has the project's named volumes, inside it: the only folders backups take (#22).
 	Volumes  []string `json:"volumes,omitempty"`
 	Loosened []string `json:"loosened,omitempty"`
