@@ -7,6 +7,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -67,7 +68,7 @@ func TestSetupSecretSaysWhereTheSecretGoesAndWhoseAnswersSayIt(t *testing.T) {
 		{"mesh", "network", `,"meshControlPlane":"cloud","meshUrl":"https://api.netbird.io"`, "This token goes to NetBird's cloud, at https://api.netbird.io,"},
 		{"mesh", "network", `,"meshControlPlane":"self-hosted","meshUrl":"https://nb.example.org"`, "This token goes to your own NetBird server, at https://nb.example.org,"},
 		{"dns", "domain", `,"domain":"example.test","dnsProvider":"infomaniak"`, "This token is for example.test, and goes to Infomaniak's API,"},
-		{"mail", "mail", `,"mailServer":"smtp.example.test:587","mailFrom":"homerslab@example.test"`, "This password is for homerslab@example.test, and goes to the mail server smtp.example.test:587,"},
+		{"mail", "mail", ``, "This password goes to the mail server the setup page names,"},
 	} {
 		sock, got := headerControl(t, map[string][2]string{
 			"GET /api/v1/setup":                   {"", at(c.step, c.name, c.answers)},
@@ -137,7 +138,7 @@ func TestSetupSecretOnATerminalAsksForAYesFirst(t *testing.T) {
 		answer string
 		code   int
 		sent   int
-	}{{"no", 1, 0}, {"", 1, 0}, {"yes", 0, 1}, {"y", 0, 1}} {
+	}{{"no", 1, 0}, {"", 1, 0}, {"yes", 0, 1}, {"y", 0, 1}, {token, 1, 0}} {
 		sock, got := headerControl(t, map[string][2]string{
 			"GET /api/v1/setup":              {"", at("network", "mesh", `,"meshControlPlane":"cloud","meshUrl":"https://api.netbird.io"`)},
 			"PUT /api/v1/setup/secrets/mesh": {"", `{}`},
@@ -149,6 +150,7 @@ func TestSetupSecretOnATerminalAsksForAYesFirst(t *testing.T) {
 			done <- cli.Main(context.Background(), []string{"setup", "secret", "mesh", "--control-socket", sock},
 				cli.Env{Stdin: tty, Stdout: io.Discard, Stderr: &errOut, Euid: func() int { return 0 }})
 		}()
+		waitForNoEcho(t, tty) // the yes is read without echo too: a token pasted a step early isn't shown
 		if _, err := master.WriteString(c.answer + "\n"); err != nil {
 			t.Fatal(err)
 		}
@@ -166,6 +168,9 @@ func TestSetupSecretOnATerminalAsksForAYesFirst(t *testing.T) {
 		case <-time.After(5 * time.Second):
 			t.Fatalf("answering %q: the command didn't end", c.answer)
 		}
+		if shown := readAll(master); strings.Contains(shown, "FROMTHETERMINAL") || strings.Contains(errOut.String(), "FROMTHETERMINAL") {
+			t.Errorf("answering %q: the token was shown: %q", "the token", shown+errOut.String())
+		}
 		puts := 0
 		for _, r := range *got {
 			if strings.HasPrefix(r, "PUT ") {
@@ -175,6 +180,23 @@ func TestSetupSecretOnATerminalAsksForAYesFirst(t *testing.T) {
 		if puts != c.sent || !strings.Contains(errOut.String(), "Send it there? Type yes: ") {
 			t.Errorf("answering %q: sent %d, stderr %q", c.answer, puts, errOut.String())
 		}
+	}
+}
+
+// readAll is what the terminal showed so far: everything its master side can read now, without blocking.
+func readAll(master *os.File) string {
+	time.Sleep(50 * time.Millisecond)
+	fd := int(master.Fd())
+	_ = unix.SetNonblock(fd, true)
+	defer func() { _ = unix.SetNonblock(fd, false) }()
+	var out []byte
+	for {
+		buf := make([]byte, 4096)
+		n, err := unix.Read(fd, buf)
+		if n <= 0 || err != nil {
+			return string(out)
+		}
+		out = append(out, buf[:n]...)
 	}
 }
 

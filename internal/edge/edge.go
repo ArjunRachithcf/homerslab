@@ -165,8 +165,10 @@ func Render(c Config) ([]byte, error) {
 			},
 			"terminal": true,
 		})
+		// Only an origin-form target, a path: an opaque absolute-form one (`GET http:@evil.test`) has none, and would
+		// otherwise follow the name in the Location, making it another host's.
 		redirects = append(redirects, obj{
-			"match": []obj{{"host": []string{site.name}}},
+			"match": []obj{{"host": []string{site.name}, "path": []string{"/*"}}},
 			"handle": []obj{{"handler": "static_response", "status_code": 308,
 				"headers": obj{"Location": []string{"https://" + hostPort(site.name, c.Port) + "{http.request.uri}"}}}},
 			"terminal": true,

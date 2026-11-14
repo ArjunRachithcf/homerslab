@@ -10,6 +10,7 @@ package edge_test
 
 import (
 	"archive/tar"
+	"bufio"
 	"bytes"
 	"cmp"
 	"context"
@@ -137,12 +138,18 @@ type request struct {
 	Path            string // as sent, escapes and all; "/" when empty
 	Plain           bool   // plain HTTP, no TLS
 	CA              string
+	// Target is a plain HTTP request's target, written on the wire as it is (an absolute-form one, say): Go's client
+	// never sends some of them.
+	Target string
 }
 
 // shownHeaders are the answer's headers a row may look at, after its status and body.
 var shownHeaders = []string{"Location", "Strict-Transport-Security", "Set-Cookie"}
 
 func (q request) do(ctx context.Context) string {
+	if q.Target != "" {
+		return q.raw(ctx)
+	}
 	roots := x509.NewCertPool()
 	roots.AppendCertsFromPEM([]byte(q.CA))
 	tr := &http.Transport{
@@ -269,6 +276,13 @@ func TestTheEdgesRequestMatrix(t *testing.T) {
 			q: request{Addr: edgeMesh + ":80", Host: "photos.example.test", Plain: true}, want: "421 ", notWants: "Location"},
 		{name: "a name outside the household's domains, over port 80: 421, never a redirect to it", from: "phone",
 			q: request{Addr: edgeMesh + ":80", Host: "evil.other.test", Plain: true}, want: "421 ", notWants: "Location"},
+		{name: "an origin-form target on the wire, over port 80: the same-name redirect", from: "phone",
+			q:    request{Addr: edgeMesh + ":80", Host: "admin.example.test", Target: "/apps?x=1", Plain: true},
+			want: "308 ", wants: []string{"\nLocation: https://admin.example.test/apps?x=1"}},
+		{name: "an opaque absolute-form target, http:@evil, over port 80: 421, never a Location at another host", from: "phone",
+			q: request{Addr: edgeMesh + ":80", Host: "admin.example.test", Target: "http:@evil.test", Plain: true}, want: "421 ", notWants: "Location"},
+		{name: "an opaque absolute-form target, http:evil/x, over port 80: 421, never a Location at another host", from: "phone",
+			q: request{Addr: edgeMesh + ":80", Host: "admin.example.test", Target: "http:evil.test/x", Plain: true}, want: "421 ", notWants: "Location"},
 		{name: "a redirect sets no HSTS: browsers ignore it over HTTP", from: "phone",
 			q: request{Addr: edgeMesh + ":80", Host: "admin.example.test", Plain: true}, want: "308 ", notWants: "Strict-Transport-Security"},
 		{name: "port 80 from the LAN, at the edge's LAN address: nothing listens", from: "laptop-on-the-lan",
@@ -372,6 +386,30 @@ func TestTheEdgesRequestMatrix(t *testing.T) {
 			t.Errorf("after the push again: %q", got)
 		}
 	})
+}
+
+// raw sends a plain HTTP request line as written, and reads the answer as do does.
+func (q request) raw(ctx context.Context) string {
+	c, err := (&net.Dialer{Timeout: 3 * time.Second}).DialContext(ctx, "tcp", q.Addr)
+	if err != nil {
+		return "error: " + err.Error()
+	}
+	defer c.Close()
+	_ = c.SetDeadline(time.Now().Add(8 * time.Second))
+	fmt.Fprintf(c, "GET %s HTTP/1.1\r\nHost: %s\r\nConnection: close\r\n\r\n", q.Target, q.Host)
+	resp, err := http.ReadResponse(bufio.NewReader(c), nil)
+	if err != nil {
+		return "error: " + err.Error()
+	}
+	defer resp.Body.Close()
+	b, _ := io.ReadAll(io.LimitReader(resp.Body, 200))
+	out := fmt.Sprintf("%d %s", resp.StatusCode, b)
+	for _, h := range shownHeaders {
+		for _, v := range resp.Header.Values(h) {
+			out += "\n" + h + ": " + v
+		}
+	}
+	return out
 }
 
 // secure says whether a Set-Cookie value has the Secure attribute, once.

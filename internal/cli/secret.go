@@ -139,7 +139,8 @@ func context64(name string, st setupState) string {
 	case "dns":
 		where = fmt.Sprintf("This token is for %s, and goes to %s,", a["domain"], where64(a))
 	case "mail":
-		where = fmt.Sprintf("This password is for %s, and goes to the mail server %s,", a["mailFrom"], a["mailServer"])
+		// The mail step, which says which mail server, comes with its own ticket: until then no step waits for it.
+		where = "This password goes to the mail server the setup page names,"
 	}
 	step := st.waitingStep(name)
 	who := "as the setup page answered"
@@ -311,15 +312,24 @@ func (l *lineReader) line(ctx context.Context) (string, error) {
 	return strings.TrimSpace(r.line), nil
 }
 
-// ask asks a question on stderr, and reads the answer as it is typed.
+// ask asks a question on stderr, and reads the answer without echo: a secret pasted a step early never reaches the
+// terminal's scrollback. Only a yes or a no is shown back.
 func (l *lineReader) ask(ctx context.Context, env Env, question string) (string, error) {
-	fmt.Fprint(env.Stderr, question)
-	return l.line(ctx)
+	answer, err := l.quiet(ctx, env, question)
+	if err != nil {
+		return "", err
+	}
+	switch strings.ToLower(answer) {
+	case "yes", "y", "no", "n":
+		fmt.Fprint(env.Stderr, answer)
+	}
+	fmt.Fprintln(env.Stderr)
+	return answer, nil
 }
 
-// secret reads one line, a secret. On a terminal it asks with prompt, on stderr, and turns echo off meanwhile; Ctrl-C
-// (ctx) gives up, with the terminal as it was.
-func (l *lineReader) secret(ctx context.Context, env Env, prompt string) (string, error) {
+// quiet reads one line with prompt, on stderr. On a terminal it turns echo off meanwhile; Ctrl-C (ctx) gives up, with
+// the terminal as it was.
+func (l *lineReader) quiet(ctx context.Context, env Env, prompt string) (string, error) {
 	if f, ok := l.in.(*os.File); ok && l.terminal {
 		if t, err := unix.IoctlGetTermios(int(f.Fd()), unix.TCGETS); err == nil {
 			fmt.Fprint(env.Stderr, prompt)
@@ -328,13 +338,18 @@ func (l *lineReader) secret(ctx context.Context, env Env, prompt string) (string
 			if err := unix.IoctlSetTermios(int(f.Fd()), unix.TCSETS, &quiet); err != nil {
 				return "", err
 			}
-			defer func() {
-				_ = unix.IoctlSetTermios(int(f.Fd()), unix.TCSETS, t)
-				fmt.Fprintln(env.Stderr)
-			}()
+			defer func() { _ = unix.IoctlSetTermios(int(f.Fd()), unix.TCSETS, t) }()
 		}
 	}
-	line, err := l.line(ctx)
+	return l.line(ctx)
+}
+
+// secret reads one line, a secret, without echo on a terminal (quiet).
+func (l *lineReader) secret(ctx context.Context, env Env, prompt string) (string, error) {
+	line, err := l.quiet(ctx, env, prompt)
+	if l.terminal {
+		fmt.Fprintln(env.Stderr)
+	}
 	if err != nil {
 		return "", err
 	}

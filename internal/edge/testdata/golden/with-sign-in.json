@@ -187,6 +187,9 @@
                 {
                   "host": [
                     "admin.example.test"
+                  ],
+                  "path": [
+                    "/*"
                   ]
                 }
               ],
@@ -208,6 +211,9 @@
                 {
                   "host": [
                     "auth.example.test"
+                  ],
+                  "path": [
+                    "/*"
                   ]
                 }
               ],

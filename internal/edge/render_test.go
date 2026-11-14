@@ -312,7 +312,7 @@ func TestPort80OnlyRedirectsAndEveryNameHasHSTSAndSecureCookies(t *testing.T) {
 			}
 		}
 		first := plain.Routes[0]
-		if hosts := first.Match[0]["host"]; len(hosts) != 1 || hosts[0] != "admin.example.test" ||
+		if hosts := first.Match[0]["host"]; len(hosts) != 1 || hosts[0] != "admin.example.test" || strings.Join(first.Match[0]["path"], " ") != "/*" ||
 			first.Handle[0].StatusCode != float64(308) || strings.Join(first.Handle[0].Headers["Location"], "") != location {
 			t.Errorf("port %d: port 80's first route is %+v, want Admin's name redirected to %s", port, first, location)
 		}

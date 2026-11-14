@@ -114,6 +114,9 @@
                 {
                   "host": [
                     "admin.example.test"
+                  ],
+                  "path": [
+                    "/*"
                   ]
                 }
               ],
