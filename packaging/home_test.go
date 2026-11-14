@@ -13,6 +13,9 @@ import (
 // privilegedPaths are where Home must never reach (story 69, ADR 0013): the manager's control socket and runtime
 // folder, its database, Admin's socket, the agent's socket and its sealed credentials, the edge's admin API and its
 // storage.
+// hidden are the folders Home sees empty (#21): wherever sockets and state live. Only the projection is bound back in.
+var hidden = []string{"/run", "/var", "/srv", "/opt", "/mnt", "/media", "/dev/shm"}
+
 var privilegedPaths = []string{"/run/homerslab", "/var/lib/homerslab", "/run/homerslab-admin.sock", "/run/homerslab-agent",
 	"/var/lib/homerslab-agent", "/run/homerslab-edge", "/var/lib/homerslab-edge", "/etc/homerslab"}
 
@@ -28,8 +31,9 @@ func TestHomeRunsUnprivilegedAndReachesNothingPrivileged(t *testing.T) {
 		"ProtectProc": "invisible", "ProcSubset": "pid", "ProtectKernelTunables": "yes", "ProtectKernelModules": "yes",
 		"ProtectKernelLogs": "yes", "ProtectControlGroups": "yes", "ProtectClock": "yes", "ProtectHostname": "yes",
 		"RestrictSUIDSGID": "yes", "RestrictRealtime": "yes", "RestrictNamespaces": "yes", "LockPersonality": "yes",
-		"MemoryDenyWriteExecute": "yes", "RestrictAddressFamilies": "AF_UNIX AF_INET AF_INET6", "SystemCallArchitectures": "native",
+		"MemoryDenyWriteExecute": "yes", "RestrictAddressFamilies": "AF_INET AF_INET6", "SystemCallArchitectures": "native",
 		"SystemCallFilter": "@system-service", "SystemCallErrorNumber": "EPERM", "UMask": "0077", "IPAddressDeny": "any",
+		"TemporaryFileSystem": strings.Join(hidden, " "), "BindReadOnlyPaths": "-/run/homerslab-projection",
 		"IPAddressAllow":          strings.Split(agent.SignInUpstream, ":")[0],
 		"LoadCredentialEncrypted": "manager-home-client-secret:/var/lib/homerslab-agent/credentials/manager-home-client-secret.cred"} {
 		if got := home[k]; len(got) != 1 || got[0] != want {
@@ -41,8 +45,8 @@ func TestHomeRunsUnprivilegedAndReachesNothingPrivileged(t *testing.T) {
 	}
 	gone := strings.Fields(strings.Join(home["InaccessiblePaths"], " "))
 	for _, p := range privilegedPaths {
-		if !slices.Contains(gone, "-"+p) {
-			t.Errorf("Home's unit leaves %s in its view (InaccessiblePaths = %v)", p, gone)
+		if !slices.Contains(gone, "-"+p) && !slices.ContainsFunc(hidden, func(h string) bool { return strings.HasPrefix(p+"/", h+"/") }) {
+			t.Errorf("Home's unit leaves %s in its view (TemporaryFileSystem = %v, InaccessiblePaths = %v)", p, hidden, gone)
 		}
 	}
 

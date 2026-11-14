@@ -108,6 +108,49 @@ jobs:
             sh .github/scripts/as-unit.sh packaging/systemd/homerslab-agent.service \
             "$SRC/agent.test" -test.v -test.count=1 -test.timeout=5m
 
+  home-unit:
+    name: Home's unit, as systemd runs it (as root)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    # Modules come only from the step that fetches them, as in the Go job.
+    env:
+      GOPROXY: "off"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - name: Fetch the modules
+        env:
+          GOPROXY: https://proxy.golang.org,direct
+        run: sh .github/scripts/stop-commands.sh go mod download
+      - name: Build HomersLab and the packaging tests
+        env:
+          CGO_ENABLED: "0"
+        run: |
+          go build -trimpath -o homerslab ./cmd/homerslab
+          go test -c -o packaging.test ./packaging
+      # Where Home's unit finds them: HomersLab where its ExecStart says, the test (which is also the probe it runs in
+      # Home's unit) under /usr, which the unit sees; and the packages' users, from their own sysusers.d file.
+      - name: Install them, and the packages' users
+        run: |
+          sudo install -m 0755 homerslab /usr/bin/homerslab
+          sudo install -D -m 0755 packaging.test /usr/local/libexec/homerslab-test/packaging.test
+          sudo systemd-sysusers "$PWD/packaging/sysusers.d/homerslab.conf"
+      # A probe in Home's unit can't connect to a world-writable Unix socket in /run, under /var/lib or in the abstract
+      # namespace, each of the unit's two fences alone holds, and Home answers on its activated socket (#21).
+      - name: Home's unit reaches no Unix socket
+        env:
+          HOMERSLAB_TEST_HOME_UNIT: "1"
+          DOCKER_HOST: unix:///nonexistent
+          CONTAINER_HOST: unix:///nonexistent
+        working-directory: packaging
+        run: |
+          sudo --preserve-env=HOMERSLAB_TEST_HOME_UNIT,DOCKER_HOST,CONTAINER_HOST \
+            /usr/local/libexec/homerslab-test/packaging.test -test.v -test.count=1 -test.run '^TestHomesUnitReachesNoUnixSocket$'
+
   firewall:
     name: Firewall table (network namespaces)
     runs-on: ubuntu-24.04
