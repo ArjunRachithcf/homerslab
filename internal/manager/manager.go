@@ -97,6 +97,12 @@ type Manager struct {
 	certMu    sync.Mutex // one issuance or renewal at a time
 	signInMu  sync.Mutex // one setting-up of the household account at a time
 	attempts  attempts   // sign-ins to Admin under way
+
+	// given is what the page sees of the secrets the terminal gives (#64): those being checked, and why the last one
+	// given for each was refused. By the secret's name; never the secret.
+	givenMu  sync.Mutex
+	checking map[string]int // how many are being checked
+	refusals map[string]string
 }
 
 // New opens the manager's database.
@@ -286,7 +292,54 @@ func (m *Manager) getSetup(w http.ResponseWriter, r *http.Request) {
 		m.internal(w, "reading setup", err)
 		return
 	}
-	writeJSON(w, http.StatusOK, st)
+	writeJSON(w, http.StatusOK, m.withGiven(st))
+}
+
+// withGiven shows a waiting step's secret as the terminal gives it: checking while it is checked, and why the last one
+// was refused.
+func (m *Manager) withGiven(st setup.State) setup.State {
+	m.givenMu.Lock()
+	defer m.givenMu.Unlock()
+	for i, s := range st.Steps {
+		if s.State != "waiting" || s.Secret == "" {
+			continue
+		}
+		if m.checking[s.Secret] > 0 {
+			st.Steps[i].State = "checking"
+		} else {
+			st.Steps[i].Refused = m.refusals[s.Secret]
+		}
+	}
+	return st
+}
+
+// checkingSecret records that a secret arrived and is being checked; done, that its check ended, refused for why (""
+// when it was taken).
+func (m *Manager) checkingSecret(name string) {
+	m.givenMu.Lock()
+	defer m.givenMu.Unlock()
+	if m.checking == nil {
+		m.checking, m.refusals = map[string]int{}, map[string]string{}
+	}
+	m.checking[name]++
+}
+
+func (m *Manager) forgetRefusal(name string) {
+	m.givenMu.Lock()
+	defer m.givenMu.Unlock()
+	delete(m.refusals, name)
+}
+
+func (m *Manager) checkedSecret(name, why string) {
+	m.givenMu.Lock()
+	defer m.givenMu.Unlock()
+	if m.checking == nil {
+		m.checking, m.refusals = map[string]int{}, map[string]string{}
+	}
+	if m.checking[name] > 0 {
+		m.checking[name]--
+	}
+	m.refusals[name] = why
 }
 
 func (m *Manager) getPrimary(w http.ResponseWriter, r *http.Request) {
@@ -334,12 +387,18 @@ func (m *Manager) putStep(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusBadRequest, "not-json")
 		return
 	}
+	if from, ok := client(r); ok {
+		basis.From = from.String()
+	}
 	st, err := m.setup.Answer(r.Context(), r.PathValue("id"), setup.LAN, raw, basis)
 	var invalid *setup.Invalid
 	var overHTTP *setup.SecretOverHTTP
 	switch {
 	case err == nil:
-		writeJSON(w, http.StatusOK, st)
+		if secret := setup.Secrets[r.PathValue("id")]; secret != "" {
+			m.forgetRefusal(secret) // a new answer: a new wait for its secret, nothing refused yet
+		}
+		writeJSON(w, http.StatusOK, m.withGiven(st))
 	case errors.As(err, &overHTTP):
 		// Refused whatever its value: no secret travels over plain HTTP (#64). The page shows the command.
 		m.log.Warn("refused a secret sent over the LAN page", "step", r.PathValue("id"))

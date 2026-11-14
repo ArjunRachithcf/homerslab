@@ -51,21 +51,27 @@ func fakeControl(t *testing.T, status int, answer string) (string, *[]string) {
 	return sock, &got
 }
 
+// atNetworkStep is setup waiting for the mesh's token.
+const atNetworkStep = `{"revision":5,"steps":[{"id":"network","state":"waiting","secret":"mesh"}],"answers":{"household":"The Ferreira household","meshControlPlane":"cloud","meshUrl":"https://api.netbird.io"}}`
+
 func TestSetupSecretSendsTheSecretFromStdinOverTheControlSocket(t *testing.T) {
 	testenv.Isolate(t)
-	sock, got := fakeControl(t, http.StatusOK, `{"half":"lan","current":"domain"}`)
+	sock, got := routedControl(t, map[string][2]string{
+		"GET /api/v1/setup":              {"", atNetworkStep},
+		"PUT /api/v1/setup/secrets/mesh": {"", `{"half":"lan","current":"domain"}`},
+	})
 	code, out, errOut := runWith(t, token+"\n", "setup", "secret", "mesh", "--control-socket", sock)
 	if code != 0 {
 		t.Fatalf("exit %d: %s", code, errOut)
 	}
-	if len(*got) != 1 {
+	if len(*got) != 2 {
 		t.Fatalf("requests: %v", *got)
 	}
-	req := strings.SplitN((*got)[0], " ", 4)
+	req := strings.SplitN((*got)[1], " ", 3)
 	var body struct{ Value string }
-	_ = json.Unmarshal([]byte(req[3]), &body)
-	if req[0] != "PUT" || req[1] != "/api/v1/setup/secrets/mesh" || req[2] != "application/json" || body.Value != token {
-		t.Errorf("sent %s %s %s, value right: %v", req[0], req[1], req[2], body.Value == token)
+	_ = json.Unmarshal([]byte(req[2]), &body)
+	if req[0] != "PUT" || req[1] != "/api/v1/setup/secrets/mesh" || body.Value != token {
+		t.Errorf("sent %s %s, value right: %v", req[0], req[1], body.Value == token)
 	}
 	if strings.Contains(out+errOut, token) {
 		t.Error("the CLI printed the secret")
@@ -81,7 +87,10 @@ func TestSetupSecretSaysWhatToDoWhenRefused(t *testing.T) {
 		"not-waiting":    "choose your mesh on the setup page first",
 		"secret-refused": "the mesh refused this token",
 	} {
-		sock, _ := fakeControl(t, http.StatusBadRequest, `{"error":"`+code+`"}`)
+		sock, _ := routedControl(t, map[string][2]string{
+			"GET /api/v1/setup":              {"", atNetworkStep},
+			"PUT /api/v1/setup/secrets/mesh": {"400", `{"error":"` + code + `"}`},
+		})
 		exit, out, errOut := runWith(t, token, "setup", "secret", "mesh", "--control-socket", sock)
 		if exit != 1 || !strings.Contains(errOut, want) || strings.Contains(out+errOut, token) {
 			t.Errorf("%s: exit %d, %q", code, exit, errOut)
@@ -91,7 +100,7 @@ func TestSetupSecretSaysWhatToDoWhenRefused(t *testing.T) {
 
 func TestSetupSecretWantsAKnownNameAndAValue(t *testing.T) {
 	testenv.Isolate(t)
-	sock, got := fakeControl(t, http.StatusOK, `{}`)
+	sock, got := routedControl(t, map[string][2]string{"GET /api/v1/setup": {"", atNetworkStep}})
 	if code, _, _ := runWith(t, token, "setup", "secret", "--control-socket", sock); code != 2 {
 		t.Errorf("no name: exit %d, want 2", code)
 	}
@@ -101,8 +110,10 @@ func TestSetupSecretWantsAKnownNameAndAValue(t *testing.T) {
 	if code, _, errOut := runWith(t, "\n", "setup", "secret", "mesh", "--control-socket", sock); code != 1 || !strings.Contains(errOut, "nothing was read") {
 		t.Errorf("an empty line: exit %d %q", code, errOut)
 	}
-	if len(*got) != 0 {
-		t.Errorf("sent %v", *got)
+	for _, r := range *got {
+		if !strings.HasPrefix(r, "GET ") {
+			t.Errorf("sent %v", r)
+		}
 	}
 }
 
@@ -140,7 +151,10 @@ func openPTY(t *testing.T) (master, tty *os.File) {
 
 func TestSetupSecretOnATerminalNeverEchoesTheSecret(t *testing.T) {
 	testenv.Isolate(t)
-	sock, got := fakeControl(t, http.StatusOK, `{}`)
+	sock, got := routedControl(t, map[string][2]string{
+		"GET /api/v1/setup":              {"", atNetworkStep},
+		"PUT /api/v1/setup/secrets/mesh": {"", `{}`},
+	})
 	master, tty := openPTY(t)
 	before, err := unix.IoctlGetTermios(int(tty.Fd()), unix.TCGETS)
 	if err != nil || before.Lflag&unix.ECHO == 0 {
@@ -153,14 +167,12 @@ func TestSetupSecretOnATerminalNeverEchoesTheSecret(t *testing.T) {
 		done <- cli.Main(context.Background(), []string{"setup", "secret", "mesh", "--control-socket", sock},
 			cli.Env{Stdin: tty, Stdout: &out, Stderr: &errOut, Euid: func() int { return 0 }})
 	}()
-	// Type once the CLI has asked: it turns echo off before it prompts... on stderr, which isn't the terminal here,
-	// so wait for echo to go off.
-	for range 200 {
-		if tio, err := unix.IoctlGetTermios(int(tty.Fd()), unix.TCGETS); err == nil && tio.Lflag&unix.ECHO == 0 {
-			break
-		}
-		time.Sleep(5 * time.Millisecond)
+	// The yes, then the secret once the CLI asks for it: it turns echo off before it prompts... on stderr, which isn't
+	// the terminal here, so wait for echo to go off.
+	if _, err := master.WriteString("yes\n"); err != nil {
+		t.Fatal(err)
 	}
+	waitForNoEcho(t, tty)
 	if _, err := master.WriteString(token + "\n"); err != nil {
 		t.Fatal(err)
 	}
@@ -191,15 +203,15 @@ func TestSetupSecretOnATerminalNeverEchoesTheSecret(t *testing.T) {
 	if after, _ := unix.IoctlGetTermios(int(tty.Fd()), unix.TCGETS); after.Lflag&unix.ECHO == 0 {
 		t.Error("the terminal was left without echo")
 	}
-	if len(*got) != 1 || !strings.Contains((*got)[0], token) {
+	if len(*got) != 2 || !strings.Contains((*got)[1], token) {
 		t.Errorf("sent %d requests", len(*got))
 	}
 }
 
 func TestCtrlCAtThePromptStopsAndLeavesTheTerminalAsItWas(t *testing.T) {
 	testenv.Isolate(t)
-	sock, got := fakeControl(t, http.StatusOK, `{}`)
-	_, tty := openPTY(t)
+	sock, got := routedControl(t, map[string][2]string{"GET /api/v1/setup": {"", atNetworkStep}})
+	master, tty := openPTY(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	var errOut bytes.Buffer
 	done := make(chan int, 1)
@@ -207,12 +219,10 @@ func TestCtrlCAtThePromptStopsAndLeavesTheTerminalAsItWas(t *testing.T) {
 		done <- cli.Main(ctx, []string{"setup", "secret", "mesh", "--control-socket", sock},
 			cli.Env{Stdin: tty, Stdout: io.Discard, Stderr: &errOut, Euid: func() int { return 0 }})
 	}()
-	for range 200 {
-		if tio, err := unix.IoctlGetTermios(int(tty.Fd()), unix.TCGETS); err == nil && tio.Lflag&unix.ECHO == 0 {
-			break
-		}
-		time.Sleep(5 * time.Millisecond)
+	if _, err := master.WriteString("yes\n"); err != nil {
+		t.Fatal(err)
 	}
+	waitForNoEcho(t, tty)
 	cancel() // Ctrl-C
 	select {
 	case code := <-done:
@@ -225,8 +235,8 @@ func TestCtrlCAtThePromptStopsAndLeavesTheTerminalAsItWas(t *testing.T) {
 	if tio, _ := unix.IoctlGetTermios(int(tty.Fd()), unix.TCGETS); tio.Lflag&unix.ECHO == 0 {
 		t.Error("the terminal was left without echo")
 	}
-	if len(*got) != 0 {
-		t.Error("something was sent")
+	if len(*got) != 1 {
+		t.Errorf("something was sent: %v", *got)
 	}
 }
 

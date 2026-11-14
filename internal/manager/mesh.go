@@ -358,12 +358,28 @@ func (m *Manager) putSecret(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusBadRequest, "no-value")
 		return
 	}
-	st, err := m.setup.Secret(r.Context(), r.PathValue("name"), body.Value)
-	if err != nil {
-		m.secretFailed(w, err)
+	basis, bad := stepBasis(r)
+	if bad != "" {
+		status := http.StatusBadRequest
+		if bad == "revision-required" {
+			status = http.StatusPreconditionRequired
+		}
+		fail(w, status, bad)
 		return
 	}
-	writeJSON(w, http.StatusOK, st)
+	name := r.PathValue("name")
+	m.checkingSecret(name)
+	st, err := m.setup.Secret(r.Context(), name, body.Value, basis.Revision)
+	if err != nil {
+		why := m.secretFailed(w, err)
+		if errors.Is(err, setup.ErrStale) || errors.Is(err, setup.ErrNotWaiting) {
+			why = "" // it was never checked
+		}
+		m.checkedSecret(name, why)
+		return
+	}
+	m.checkedSecret(name, "")
+	writeJSON(w, http.StatusOK, m.withGiven(st))
 }
 
 // rotate replaces HomersLab's mesh token before it expires. The two overlap (#88): the old token is revoked only

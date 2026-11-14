@@ -53,10 +53,10 @@ func (e *apiError) Error() string {
 
 // do sends a request and decodes the JSON answer into v; with wait, it waits that long for the manager to start.
 func (c *control) do(ctx context.Context, method, path string, wait time.Duration, v any) ([]byte, error) {
-	return c.request(ctx, method, path, wait, nil, v)
+	return c.request(ctx, method, path, wait, nil, nil, v)
 }
 
-func (c *control) request(ctx context.Context, method, path string, wait time.Duration, body *bytes.Reader, v any) ([]byte, error) {
+func (c *control) request(ctx context.Context, method, path string, wait time.Duration, body *bytes.Reader, hdr http.Header, v any) ([]byte, error) {
 	deadline := time.Now().Add(wait)
 	for {
 		var r io.Reader
@@ -67,6 +67,9 @@ func (c *control) request(ctx context.Context, method, path string, wait time.Du
 		req, err := http.NewRequestWithContext(ctx, method, "http://manager"+path, r)
 		if err != nil {
 			return nil, err
+		}
+		for k, vs := range hdr {
+			req.Header[k] = vs
 		}
 		if body != nil {
 			req.Header.Set("Content-Type", "application/json")

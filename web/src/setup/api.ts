@@ -50,7 +50,12 @@ export function newNonce(): string {
 }
 
 export type Half = 'lan' | 'mesh';
-export type StepState = { id: string; half: Half; state: 'todo' | 'waiting' | 'done'; revision: number; secret?: string; command?: string; confirm?: string };
+// A step waiting for a secret is "checking" while the secret the terminal gave is checked; refused says why the last one
+// wasn't taken (the manager's code, never the secret).
+export type StepState = {
+  id: string; half: Half; state: 'todo' | 'waiting' | 'checking' | 'done'; revision: number;
+  secret?: string; command?: string; confirm?: string; refused?: string;
+};
 export type Setup = { half: Half; current: string; steps: StepState[]; answers: Record<string, string> };
 
 export type Facts = {

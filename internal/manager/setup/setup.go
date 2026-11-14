@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -102,18 +103,36 @@ var Secrets = map[string]string{"network": "mesh", "domain": "dns", "mail": "mai
 // Command is the terminal command that gives a secret.
 func Command(secret string) string { return "sudo homerslab setup secret " + secret }
 
-// secretParts are what the name of a field holding a secret contains, whatever its case. An answer from the LAN page
-// with such a field is refused, whatever its value.
-var secretParts = []string{"token", "secret", "password", "passwd", "key", "credential", "pat"}
+// AnyCommand is the command for a secret sent where no step names which: it lists them.
+var AnyCommand = Command("mesh|dns|mail")
 
-// secretName says whether a field's name says it holds a secret.
-func secretName(k string) bool {
+// CommandFor is the command that gives the secret a step needs, or AnyCommand for a step that needs none.
+func CommandFor(step string) string {
+	if s := Secrets[step]; s != "" {
+		return Command(s)
+	}
+	return AnyCommand
+}
+
+// secretParts are what the name of a field holding a secret contains, whatever its case. A request on the LAN
+// listener with such a field is refused, whatever its value.
+var secretParts = []string{"token", "secret", "password", "passwd", "key", "credential"}
+
+// notSecrets are the fields whose names look like a secret's but which never hold one: the TSIG key's name (the
+// domain step's keyName) names the key, which is given in the terminal.
+var notSecrets = []string{"keyname"}
+
+// SecretField says whether a field's name says it holds a secret.
+func SecretField(k string) bool {
 	k = strings.ToLower(k)
 	if k == "pat" {
 		return true
 	}
+	if slices.Contains(notSecrets, k) {
+		return false
+	}
 	for _, p := range secretParts {
-		if p != "pat" && strings.Contains(k, p) {
+		if strings.Contains(k, p) {
 			return true
 		}
 	}
@@ -225,17 +244,22 @@ func StoreSteps() []store.Step {
 
 // State is where setup stands: every step's state, the first one still open, and the answers so far.
 type State struct {
-	Half    Half              `json:"half"`
-	Current string            `json:"current"`
-	Steps   []StepState       `json:"steps"`
-	Answers map[string]string `json:"answers"`
+	Half    Half   `json:"half"`
+	Current string `json:"current"`
+	// Revision counts every change to setup's answers: the sum of its steps' revisions, each of which only goes up. A
+	// secret is given at the revision of the answers the terminal showed with it (#64).
+	Revision int64             `json:"revision"`
+	Steps    []StepState       `json:"steps"`
+	Answers  map[string]string `json:"answers"`
 }
 
 // StepState is one step and whether it is done.
 type StepState struct {
-	ID    string `json:"id"`
-	Half  Half   `json:"half"`
-	State string `json:"state"` // todo, waiting (for Secret, given in the terminal) or done
+	ID   string `json:"id"`
+	Half Half   `json:"half"`
+	// State is todo, waiting (for Secret, given in the terminal, or for the admin's Confirm), checking (its secret
+	// arrived, and is being checked) or done.
+	State string `json:"state"`
 	// Revision counts the step's changes. An answer carries the one its page last saw: if the step changed since (in
 	// another tab, say), the answer is refused as stale.
 	Revision int64 `json:"revision"`
@@ -243,6 +267,8 @@ type StepState struct {
 	Secret  string `json:"secret,omitempty"`
 	Command string `json:"command,omitempty"`
 	Confirm string `json:"confirm,omitempty"`
+	// Refused is why the last secret given for a waiting step was refused (the manager's code, never the secret).
+	Refused string `json:"refused,omitempty"`
 }
 
 // State reads where setup stands.
@@ -258,6 +284,7 @@ func (s *Setup) State(ctx context.Context) (State, error) {
 	st := State{Steps: make([]StepState, 0, len(rows)), Answers: answers}
 	for _, r := range rows {
 		ss := StepState{ID: r.ID, Half: Half(r.Half), State: "todo", Revision: r.Revision}
+		st.Revision += r.Revision
 		if r.Done {
 			ss.State = "done"
 		} else {
@@ -291,7 +318,14 @@ func (s *Setup) LANHalfDone(ctx context.Context) (bool, error) {
 type Basis struct {
 	Revision int64
 	Edit     bool
+	// From is the device the answer came from, kept with the step's answers: the terminal says whose answers decide
+	// where a secret goes (#64).
+	From string
 }
+
+// AnsweredFrom and AnsweredAt are the answers' keys for where and when a step was last answered from.
+func AnsweredFrom(step string) string { return "answeredFrom:" + step }
+func AnsweredAt(step string) string   { return "answeredAt:" + step }
 
 // Answer takes a step's answer, given over the half "over", and returns the new state. It changes nothing unless the
 // step is still at basis.Revision (ErrStale), and a step that is done only when basis says it is an edit (ErrStepDone).
@@ -326,18 +360,27 @@ func (s *Setup) Answer(ctx context.Context, id string, over Half, answer json.Ra
 	if st.Steps[i].State == "done" && !basis.Edit {
 		return State{}, ErrStepDone
 	}
-	if over == LAN && carriesSecret(answer) {
-		secret := Secrets[id]
-		if secret == "" {
-			secret = "<name>"
-		}
-		return State{}, &SecretOverHTTP{Command: Command(secret)}
+	if over == LAN && CarriesSecret(answer) {
+		return State{}, &SecretOverHTTP{Command: CommandFor(id)}
 	}
 	h := s.handlers[id]
 	if h == nil {
 		return State{}, ErrNotBuilt
 	}
 	keep, err := h(ctx, answer, st.Answers)
+	if basis.From != "" && Secrets[id] != "" { // a step whose answers decide where its secret goes
+		at := s.clock.Now().UTC().Format(time.RFC3339)
+		var secret *NeedsSecret
+		var confirm *NeedsConfirm
+		switch {
+		case errors.As(err, &secret):
+			secret.Keep = withAnswer(secret.Keep, id, basis.From, at)
+		case errors.As(err, &confirm):
+			confirm.Keep = withAnswer(confirm.Keep, id, basis.From, at)
+		case err == nil:
+			keep = withAnswer(keep, id, basis.From, at)
+		}
+	}
 	return s.settle(ctx, id, keep, err, basis.Revision)
 }
 
@@ -363,41 +406,56 @@ func (s *Setup) settle(ctx context.Context, id string, keep map[string]string, e
 	return s.State(ctx)
 }
 
-// carriesSecret says whether an answer has a field named like a secret, at any depth.
-func carriesSecret(raw json.RawMessage) bool {
+// withAnswer is what a step keeps, with where and when it was answered from.
+func withAnswer(keep map[string]string, id, from, at string) map[string]string {
+	out := make(map[string]string, len(keep)+2)
+	for k, v := range keep {
+		out[k] = v
+	}
+	out[AnsweredFrom(id)], out[AnsweredAt(id)] = from, at
+	return out
+}
+
+// CarriesSecret says whether a JSON body has a field named like a secret, at any depth. The top-level fields named in
+// allowed are a request's own (a claim's link key), though what they hold is looked into all the same.
+func CarriesSecret(raw []byte, allowed ...string) bool {
 	var v any
 	if json.Unmarshal(raw, &v) != nil {
 		return false
 	}
-	var walk func(any) bool
-	walk = func(v any) bool {
+	var walk func(v any, top bool) bool
+	walk = func(v any, top bool) bool {
 		switch x := v.(type) {
 		case map[string]any:
 			for k, inner := range x {
-				if secretName(k) || walk(inner) {
+				if (SecretField(k) && !(top && slices.Contains(allowed, k))) || walk(inner, false) {
 					return true
 				}
 			}
 		case []any:
 			for _, inner := range x {
-				if walk(inner) {
+				if walk(inner, false) {
 					return true
 				}
 			}
 		}
 		return false
 	}
-	return walk(v)
+	return walk(v, true)
 }
 
 // Secret takes a secret, by name, for the step waiting for it, and finishes that step. It comes from this machine's
-// terminal over the control socket, never from the LAN page.
-func (s *Setup) Secret(ctx context.Context, name, value string) (State, error) {
+// terminal over the control socket, never from the LAN page, given at the revision of the answers the terminal showed
+// with it: if they changed since, it is refused (ErrStale) before anything sees it.
+func (s *Setup) Secret(ctx context.Context, name, value string, revision int64) (State, error) {
 	s.acting.Lock()
 	defer s.acting.Unlock()
 	st, err := s.State(ctx)
 	if err != nil {
 		return State{}, err
+	}
+	if st.Revision != revision {
+		return State{}, ErrStale
 	}
 	var step string
 	for _, ss := range st.Steps {

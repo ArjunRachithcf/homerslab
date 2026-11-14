@@ -134,8 +134,8 @@ func TestTheEdgeListensOnTheMeshOnlyAndAnswersOtherNames421(t *testing.T) {
 	if err := json.Unmarshal(b, &cfg); err != nil {
 		t.Fatal(err)
 	}
-	if len(cfg.Apps.HTTP.Servers) != 1 {
-		t.Fatalf("servers: %v, want the mesh listener only", cfg.Apps.HTTP.Servers)
+	if len(cfg.Apps.HTTP.Servers) != 2 {
+		t.Fatalf("servers: %v, want the mesh listener and its port 80, which only redirects", cfg.Apps.HTTP.Servers)
 	}
 	s := cfg.Apps.HTTP.Servers["mesh"]
 	if len(s.Listen) != 1 || s.Listen[0] != "100.88.7.186:9443" {
@@ -159,6 +159,7 @@ func TestTheEdgeListensOnTheMeshOnlyAndAnswersOtherNames421(t *testing.T) {
 		{Port: 443},
 		{Listen: []netip.Addr{netip.MustParseAddr("0.0.0.0")}, Port: 443},
 		{Listen: []netip.Addr{netip.MustParseAddr("192.168.1.20")}, Port: 0},
+		{Listen: []netip.Addr{netip.MustParseAddr("100.88.7.186")}, Port: 80}, // port 80 only redirects
 	} {
 		bad.AdminSocket, bad.Storage = "/run/homerslab-edge/admin.sock", "/var/lib/homerslab-edge"
 		if _, err := edge.Render(bad); err == nil {
@@ -219,8 +220,10 @@ func TestTheSignInIsServedWithTheFirstAdminFlowCutOff(t *testing.T) {
 		Handle []map[string]any
 	}
 	for _, r := range cfg.Apps.HTTP.Servers["mesh"].Routes {
-		if len(r.Match) == 1 && strings.Join(r.Match[0]["host"], ",") == "auth.example.test" && len(r.Handle) == 1 && r.Handle[0].Handler == "subroute" {
-			subs := r.Handle[0].Routes
+		// Its HSTS and Secure cookies first (#64), then the subroute.
+		if len(r.Match) == 1 && strings.Join(r.Match[0]["host"], ",") == "auth.example.test" && len(r.Handle) == 2 &&
+			r.Handle[0].Handler == "headers" && r.Handle[1].Handler == "subroute" {
+			subs := r.Handle[1].Routes
 			if len(subs) != 2 {
 				t.Fatalf("the sign-in's subroutes: %+v", subs)
 			}
@@ -299,7 +302,8 @@ func TestAGuardedAppsSiteAsksTheGuardFirst(t *testing.T) {
 		if len(r.Match) == 0 || len(r.Match[0].Host) == 0 || r.Match[0].Host[0] != "pdf.example.test" {
 			continue
 		}
-		for _, sub := range r.Handle[0].Routes {
+		h := r.Handle[len(r.Handle)-1] // after the headers every name gets (HSTS, Secure cookies)
+		for _, sub := range h.Routes {
 			for _, h := range sub.Handle {
 				step := h["handler"].(string)
 				if ups, ok := h["upstreams"].([]any); ok {
@@ -341,7 +345,103 @@ func TestAGuardedAppsSiteAsksTheGuardFirst(t *testing.T) {
 	}
 }
 
+// HTTPS only, once the certificate exists (#64): port 80 answers every name the edge serves with a redirect to HTTPS
+// on the same name, at the household's port, and proxies nothing; any other name gets 421. Each name it serves has
+// HSTS for a year, without includeSubDomains or preload, and every cookie it passes on is Secure.
+func TestPort80OnlyRedirectsAndEveryNameHasHSTSAndSecureCookies(t *testing.T) {
+	testenv.Isolate(t)
+	type handler struct {
+		Handler    string              `json:"handler"`
+		StatusCode any                 `json:"status_code"`
+		Headers    map[string][]string `json:"headers"`
+		Response   *struct {
+			Set     map[string][]string `json:"set"`
+			Replace map[string][]struct {
+				SearchRegexp string `json:"search_regexp"`
+				Replace      string `json:"replace"`
+			} `json:"replace"`
+			Deferred bool `json:"deferred"`
+		} `json:"response"`
+	}
+	type server struct {
+		Listen []string
+		Routes []struct {
+			Match  []map[string][]string
+			Handle []handler
+		}
+		TLS []any `json:"tls_connection_policies"`
+	}
+	for port, location := range map[int]string{443: "https://admin.example.test{http.request.uri}", 9443: "https://admin.example.test:9443{http.request.uri}"} {
+		c := thePrimary()
+		c.Port = port
+		b, err := edge.Render(c)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var cfg struct {
+			Apps struct {
+				HTTP struct{ Servers map[string]server }
+			}
+		}
+		if err := json.Unmarshal(b, &cfg); err != nil {
+			t.Fatal(err)
+		}
+		plain, ok := cfg.Apps.HTTP.Servers["redirect"]
+		if !ok || len(plain.Listen) != 1 || plain.Listen[0] != "100.88.7.186:80" || plain.TLS != nil {
+			t.Fatalf("port %d: the plain server is %+v, want one on the mesh address's port 80, without TLS", port, plain)
+		}
+		for _, r := range plain.Routes {
+			for _, h := range r.Handle {
+				if h.Handler != "static_response" {
+					t.Errorf("port %d: port 80 has a %s handler: it only redirects", port, h.Handler)
+				}
+			}
+		}
+		first := plain.Routes[0]
+		if hosts := first.Match[0]["host"]; len(hosts) != 1 || hosts[0] != "admin.example.test" || strings.Join(first.Match[0]["path"], " ") != "/*" ||
+			first.Handle[0].StatusCode != float64(308) || strings.Join(first.Handle[0].Headers["Location"], "") != location {
+			t.Errorf("port %d: port 80's first route is %+v, want Admin's name redirected to %s", port, first, location)
+		}
+		if last := plain.Routes[len(plain.Routes)-1]; len(last.Match) != 0 || last.Handle[0].StatusCode != float64(421) {
+			t.Errorf("port %d: port 80's last route is %+v, want a catch-all 421", port, last)
+		}
+
+		admin := cfg.Apps.HTTP.Servers["mesh"].Routes[0]
+		h := admin.Handle[0]
+		if h.Handler != "headers" || h.Response == nil || !h.Response.Deferred {
+			t.Fatalf("port %d: Admin's route starts with %+v, want the headers set as the answer is written", port, h)
+		}
+		if sts := h.Response.Set["Strict-Transport-Security"]; len(sts) != 1 || sts[0] != "max-age=31536000" {
+			t.Errorf("port %d: HSTS is %v, want max-age=31536000 only", port, sts)
+		}
+		if len(h.Response.Replace["Set-Cookie"]) == 0 {
+			t.Errorf("port %d: Admin's cookies aren't made Secure", port)
+		}
+		if catchAll := cfg.Apps.HTTP.Servers["mesh"].Routes[len(cfg.Apps.HTTP.Servers["mesh"].Routes)-1]; len(catchAll.Handle) != 1 {
+			t.Errorf("port %d: the catch-all has %+v, want its 421 alone, no HSTS for names that aren't HomersLab's here", port, catchAll.Handle)
+		}
+	}
+}
+
 func fmt_(m []map[string]any) string {
 	b, _ := json.Marshal(m)
 	return strings.NewReplacer(`"`, "").Replace(string(b))
+}
+
+// The edge's rule for cookies, as Caddy runs it on each Set-Cookie value: Secure, once, whatever the upstream sent.
+func TestEveryCookieThroughTheEdgeIsSecure(t *testing.T) {
+	testenv.Isolate(t)
+	for in, want := range map[string]string{
+		"a=1":                        "a=1; Secure",
+		"a=1; Path=/; HttpOnly":      "a=1; Path=/; HttpOnly; Secure",
+		"a=1; Secure":                "a=1; Secure",
+		"a=1; secure; Path=/":        "a=1; Path=/; Secure",
+		"a=1;Secure;HttpOnly":        "a=1;HttpOnly; Secure",
+		"a=1; SECURE ; SameSite=Lax": "a=1; SameSite=Lax; Secure",
+		"secure=1; Path=/":           "secure=1; Path=/; Secure",
+	} {
+		if got := edge.SecureCookie(in); got != want {
+			t.Errorf("%q through the edge: %q, want %q", in, got, want)
+		}
+	}
 }

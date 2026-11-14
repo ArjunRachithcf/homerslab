@@ -231,8 +231,10 @@ function useStep(id: string, setup: Setup, facts: Facts | null, next: () => void
   const [keyName, setKeyName] = useState(a.dnsKeyName ?? '');
   const network = setup.steps.find((s) => s.id === 'network');
   const step = setup.steps.find((s) => s.id === id);
-  // A step that waits for a secret, which arrives in this machine's terminal (#64).
-  const waiting = (id === 'network' || id === 'domain') && step?.state === 'waiting' && !!step.secret;
+  // A step that waits for a secret, which arrives in this machine's terminal (#64): waiting for it, then checking it.
+  // Checked is the step whose secret this page saw arrive and be checked: it stays on screen, done, until Continue.
+  const waiting = (id === 'network' || id === 'domain') && (step?.state === 'waiting' || step?.state === 'checking') && !!step.secret;
+  const [checked, setChecked] = useState<string | null>(null);
   const confirming = id === 'network' && network?.state === 'waiting' && network.confirm === 'mesh-policies';
   const atMesh = id === 'join' || id === 'passkey' || id === 'done';
   const [moved, setMoved] = useState(false);
@@ -241,12 +243,13 @@ function useStep(id: string, setup: Setup, facts: Facts | null, next: () => void
     latest.current = { onAnswered, next };
   });
   useEffect(() => {
-    // The token arrives in this machine's terminal, never through this page: wait for the step to turn done.
+    // The token arrives in this machine's terminal, never through this page: follow the step as it is received,
+    // checked, and done (or refused, and waiting again).
     if (!waiting) return;
     const timer = window.setInterval(() => {
       void getSetup().then((s) => {
+        if (s.steps.find((x) => x.id === id)?.state === 'done') setChecked(id);
         latest.current.onAnswered(s);
-        if (s.steps.find((x) => x.id === id)?.state === 'done') latest.current.next();
       }).catch(() => undefined);
     }, 2000);
     return () => window.clearInterval(timer);
@@ -262,6 +265,35 @@ function useStep(id: string, setup: Setup, facts: Facts | null, next: () => void
     }, 3000);
     return () => window.clearInterval(timer);
   }, [atMesh]);
+
+  /** The screen of a step whose secret is given in the terminal: the command, then the secret's progress, live. */
+  const secretWait = (prefix: 'step.network' | 'step.domain', fallback: string, doneText: string, help: Key[]): StepView => {
+    const done = checked === id && step?.state === 'done';
+    const checking = step?.state === 'checking';
+    const k = (suffix: string) => `${prefix}.${suffix}` as Key;
+    return {
+      illo: id, title: t(k('waitTitle')), lead: done ? undefined : t(k('waitLead')),
+      body: <>
+        {!done && <div className="cmd"><code>{step?.command ?? fallback}</code></div>}
+        <div role="status">
+          {done
+            ? <div className="as-check"><Icon name="check" /><span><b>{t('step.secret.checked')}</b> {doneText}</span></div>
+            : <p className="hint as-waiting"><span className="spinner" aria-hidden="true" />{t(k(checking ? 'checking' : 'waiting'))}</p>}
+        </div>
+      </>,
+      notice: !done && !checking && step?.refused
+        ? <div className="notice notice-warn" role="alert"><Icon name="alert" />
+          <span className="notice-body">{t(step.refused === 'secret-refused' ? 'step.secret.refused' : 'step.secret.failed')}</span></div>
+        : undefined,
+      moreLabel: done ? undefined : t(k('help')),
+      more: done ? undefined : <>
+        <ol className="group help-steps">{help.map((h) => <li key={h}><span>{t(h)}</span></li>)}</ol>
+        <p className="subhead">{t(k('helpWhy'))}</p>
+      </>,
+      primary: done ? { label: t('setup.continue') } : { label: t('setup.continue'), ok: false, why: t(k('waitWhy')) },
+      onPrimary: done ? () => { setChecked(null); next(); } : undefined, // back here later: the step's own answer
+    };
+  };
 
   const send = async (body: Record<string, string | boolean>) => {
     setBusy(true);
@@ -355,22 +387,9 @@ function useStep(id: string, setup: Setup, facts: Facts | null, next: () => void
           onPrimary: () => send({ ...answerNow, switchOff: true }),
         };
       }
-      if (waiting) {
-        return {
-          illo: 'network', title: t('step.network.waitTitle'), lead: t('step.network.waitLead'),
-          body: <>
-            <div className="cmd"><code>{network?.command ?? 'sudo homerslab setup secret mesh'}</code></div>
-            <p className="hint as-waiting" role="status"><span className="spinner" aria-hidden="true" />{t('step.network.waiting')}</p>
-          </>,
-          moreLabel: t('step.network.help'),
-          more: <>
-            <ol className="group help-steps">
-              {(['step.network.help1', 'step.network.help2', 'step.network.help3'] as Key[]).map((k) => <li key={k}><span>{t(k)}</span></li>)}
-            </ol>
-            <p className="subhead">{t('step.network.helpWhy')}</p>
-          </>,
-          primary: { label: t('setup.continue'), ok: false, why: t('step.network.waitWhy') },
-        };
+      if (waiting || checked === id) {
+        return secretWait('step.network', 'sudo homerslab setup secret mesh', t('step.network.done'),
+          ['step.network.help1', 'step.network.help2', 'step.network.help3']);
       }
       return {
         illo: 'network', title: t('step.network.title'), lead: t('step.network.lead'),
@@ -396,23 +415,13 @@ function useStep(id: string, setup: Setup, facts: Facts | null, next: () => void
     case 'domain': {
       const example = <span className="host">{`photos.${domain.trim() || 'ferreira.family'}`}</span>;
       const lead = rich('step.domain.lead', { example });
-      if (waiting) {
+      const port = a.householdPort && a.householdPort !== '443' ? `:${a.householdPort}` : '';
+      if (waiting || checked === id) {
         const help: Key[] = provider === 'rfc2136'
           ? ['step.domain.helpRfc21361', 'step.domain.helpRfc21362']
           : ['step.domain.helpInfomaniak1', 'step.domain.helpInfomaniak2', 'step.domain.helpInfomaniak3'];
-        return {
-          illo: 'domain', title: t('step.domain.waitTitle'), lead: t('step.domain.waitLead'),
-          body: <>
-            <div className="cmd"><code>{step?.command ?? 'sudo homerslab setup secret dns'}</code></div>
-            <p className="hint as-waiting" role="status"><span className="spinner" aria-hidden="true" />{t('step.domain.waiting')}</p>
-          </>,
-          moreLabel: t('step.domain.help'),
-          more: <>
-            <ol className="group help-steps">{help.map((k) => <li key={k}><span>{t(k)}</span></li>)}</ol>
-            <p className="subhead">{t('step.domain.helpWhy')}</p>
-          </>,
-          primary: { label: t('setup.continue'), ok: false, why: t('step.domain.waitWhy') },
-        };
+        return secretWait('step.domain', 'sudo homerslab setup secret dns',
+          t('step.domain.done', { domain: a.domain ?? '', admin: `https://admin.${a.domain ?? ''}${port}` }), help);
       }
       const own = provider === 'rfc2136';
       const choices: ['infomaniak' | 'rfc2136', Key, Key][] = [
@@ -421,7 +430,6 @@ function useStep(id: string, setup: Setup, facts: Facts | null, next: () => void
       const body: Record<string, string> = own
         ? { domain: domain.trim(), provider, server: server.trim(), keyName: keyName.trim() }
         : { domain: domain.trim(), provider };
-      const port = a.householdPort && a.householdPort !== '443' ? `:${a.householdPort}` : '';
       return {
         illo: 'domain', title: t('step.domain.title'), lead,
         body: <>

@@ -586,34 +586,42 @@ func (m *Manager) putDNSToken(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"renewed": issued, "certificate": now})
 }
 
-// secretFailed answers a secret that didn't do its work, saying what to fix and never what it was.
-func (m *Manager) secretFailed(w http.ResponseWriter, err error) {
+// secretFailed answers a secret that didn't do its work, saying what to fix and never what it was, and returns the code
+// it answered with.
+func (m *Manager) secretFailed(w http.ResponseWriter, err error) string {
 	var forbids *certs.CAAForbids
+	code, status := "", http.StatusBadGateway
 	switch {
 	case errors.Is(err, setup.ErrNotWaiting):
-		fail(w, http.StatusConflict, err.Error())
+		code, status = err.Error(), http.StatusConflict
+	case errors.Is(err, setup.ErrStale):
+		code, status = err.Error(), http.StatusConflict // the answers changed since the terminal showed them
 	case errors.Is(err, mesh.ErrTokenRefused), errors.Is(err, ErrDNSRefused):
-		fail(w, http.StatusBadRequest, "secret-refused")
+		code, status = "secret-refused", http.StatusBadRequest
 	case errors.Is(err, dns.ErrNoZone):
-		fail(w, http.StatusBadRequest, "no-zone")
+		code, status = "no-zone", http.StatusBadRequest
 	case errors.As(err, &forbids):
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "caa-forbids", "authority": forbids.Authority, "allowed": forbids.Allowed})
+		return "caa-forbids"
 	case errors.Is(err, mesh.ErrUnreachable):
-		fail(w, http.StatusBadGateway, "mesh-unreachable")
+		code = "mesh-unreachable"
 	case errors.Is(err, errJoin):
-		fail(w, http.StatusBadGateway, "join-failed")
+		code = "join-failed"
 	case errors.Is(err, dns.ErrListingEmpty):
 		w.Header().Set("Retry-After", "300") // a moment's answer, most often: nothing was written
-		fail(w, http.StatusServiceUnavailable, "dns-listing-empty")
+		code, status = "dns-listing-empty", http.StatusServiceUnavailable
 	case errors.Is(err, errIssue):
-		fail(w, http.StatusBadGateway, "issuance-failed")
+		code = "issuance-failed"
 	case errors.Is(err, errEdge):
-		fail(w, http.StatusBadGateway, "edge-failed")
+		code = "edge-failed"
 	case errors.Is(err, errNames):
-		fail(w, http.StatusBadGateway, "names-failed")
+		code = "names-failed"
 	default:
 		m.internal(w, "taking a secret", err)
+		return "internal"
 	}
+	fail(w, status, code)
+	return code
 }
 
 func (m *Manager) getWarnings(w http.ResponseWriter, r *http.Request) {
