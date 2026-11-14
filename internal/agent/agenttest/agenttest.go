@@ -81,6 +81,13 @@ func StartWith(t testing.TB, c agent.Config) (string, *Host) {
 	if c.Run == nil {
 		c.Run = h.Run
 	}
+	c.FolderOwner = os.Getuid() // the test's folders are its user's, as a machine's are root's
+	if c.EngineData == nil {
+		c.EngineData = func(context.Context) (string, error) { return "/var/lib/docker", nil }
+	}
+	if c.NoSetuid == nil {
+		c.NoSetuid = func(string) (bool, error) { return true, nil }
+	}
 	if c.Engine == nil {
 		c.Engine = h
 	}

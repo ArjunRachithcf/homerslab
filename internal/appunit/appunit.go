@@ -22,6 +22,7 @@ import (
 	"strings"
 
 	"github.com/ArjunRachithcf/homerslab/internal/engine"
+	"github.com/ArjunRachithcf/homerslab/internal/storage"
 )
 
 // UpstreamNetwork is the network of the app's one upstream, in its compose project.
@@ -47,6 +48,8 @@ type App struct {
 	SignInAt netip.Addr
 	SELinux  bool
 	Secrets  []Secret
+	// Mounts are the storage locations the app's services see (#28).
+	Mounts []Mount
 	// Dir is where the agent keeps the app's compose files and sealed credentials.
 	Dir string
 }
@@ -56,6 +59,40 @@ type Secret struct {
 	Name string `json:"name"`
 	UID  int    `json:"uid"`
 }
+
+// Mount is a storage location one of the app's services sees (#28): its source on this machine (the location's
+// folder), the path in the container, and whether the service only reads it.
+type Mount struct {
+	Location string `json:"location"`
+	Service  string `json:"service"`
+	Source   string `json:"source"`
+	Target   string `json:"target"`
+	ReadOnly bool   `json:"readOnly"`
+}
+
+// Checked says whether the mount is one the agent's files may name: a folder its checks allow, at a plain path in the
+// container. Anything else is written as a bind of a folder that is never there, so the app doesn't start without its
+// storage, and nothing of it reaches the file: compose would interpolate a ${...}.
+func (m Mount) Checked() bool {
+	return storage.ID.MatchString(m.Location) && storage.ValidTarget(m.Target) && storage.Allowed(m.Source) == nil
+}
+
+// folders are the folders of the machine the mounts bind, each once, in order: only checked ones, whose paths carry
+// nothing a unit's line would read as its own (no quote, backslash, specifier or variable: storage.Allowed).
+func folders(mounts []Mount) []string {
+	var out []string
+	for _, m := range mounts {
+		if m.Checked() {
+			out = append(out, m.Source)
+		}
+	}
+	slices.Sort(out)
+	return slices.Compact(out)
+}
+
+// RefusedMount is the bind a mount no check passed is written as: a folder that is never there, so the engine refuses
+// to start the app, rather than start it without its storage.
+const RefusedMount = "/nonexistent/homerslab-refused-mount"
 
 // ID is an app's id as the agent takes it: what a unit, a project and a runtime directory can be named after.
 var ID = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,38}[a-z0-9])?$`)
@@ -127,7 +164,9 @@ func Override(a App) []byte {
 	w("#   - the app's one upstream, a fixed address on a network of its own, which only the edge and the agent may open;")
 	w("#   - every network's bridge named by the agent, so the firewall table knows it before it is made;")
 	w("#   - the sign-in's name, at the sign-in listener's address: the one thing of this machine's the app may open;")
-	w("#   - its secrets, as files its unit copies from the credentials the agent sealed.")
+	w("#   - its secrets, as files its unit copies from the credentials the agent sealed;")
+	w("#   - its storage locations, each a bind of the location's folder, read-only unless the plan says otherwise; a")
+	w("#     service that writes to one can't make a device.")
 	w("name: %s", q(Project(a.ID)))
 	w("services:")
 	services := slices.Clone(a.Project.Services)
@@ -143,6 +182,30 @@ func Override(a App) []byte {
 		if a.SignIn != "" && a.SignInAt.IsValid() {
 			w("    extra_hosts:")
 			w("      - %s", q(a.SignIn+"="+a.SignInAt.String()))
+		}
+		mounts := slices.DeleteFunc(slices.Clone(a.Mounts), func(m Mount) bool { return m.Service != s.Name })
+		for i, m := range mounts {
+			if !m.Checked() {
+				mounts[i] = Mount{Source: RefusedMount, Target: RefusedMount, ReadOnly: true}
+			}
+		}
+		slices.SortFunc(mounts, func(x, y Mount) int { return strings.Compare(x.Target, y.Target) })
+		if len(mounts) > 0 {
+			w("    volumes:")
+		}
+		for _, m := range mounts {
+			w("      - type: \"bind\"")
+			w("        source: %s", q(m.Source))
+			w("        target: %s", q(m.Target))
+			w("        read_only: %t", m.ReadOnly)
+			w("        bind:")
+			w("          create_host_path: false")
+		}
+		if slices.ContainsFunc(mounts, func(m Mount) bool { return !m.ReadOnly }) {
+			// What it writes to a location stays on the machine: no device among it (the location's filesystem is
+			// nodev and nosuid besides, which the agent checked).
+			w("    cap_drop:")
+			w("      - \"MKNOD\"")
 		}
 		if s.Name != a.Service {
 			continue
@@ -211,7 +274,7 @@ func UnitFile(a App) []byte {
 	w("RuntimeDirectory=%s", path.Base(run))
 	w("RuntimeDirectoryMode=0700")
 	w("UMask=0077")
-	for _, p := range a.secretProperties() {
+	for _, p := range a.startProperties() {
 		w("%s", p)
 	}
 	w("ExecStart=%s up --no-log-prefix --quiet-pull --abort-on-container-exit", compose)
@@ -251,14 +314,25 @@ func (a App) secretProperties() []string {
 	return out
 }
 
+// startProperties are the unit's lines before its start: the secrets, and each storage location's folder checked again.
+func (a App) startProperties() []string {
+	out := a.secretProperties()
+	for _, p := range folders(a.Mounts) {
+		// Before every start: the folder is still one, reached without a symlink through folders only root can change.
+		out = append(out, "ExecStartPre=/usr/bin/homerslab agent check-storage "+strconv.Quote(p))
+	}
+	return out
+}
+
 // ServicesRun is systemd-run's arguments for running only some of the app's services, as its unit runs them all (the
 // same compose command, the same secrets in the same runtime directory), while the app's own unit is stopped: a
-// restore hands a dump to its database with nothing else of the app running (#22). Its unit's name is unit.
+// restore hands a dump to its database with nothing else of the app running (#22): storage locations' folders are
+// checked before the start as the unit checks them. Its unit's name is unit.
 func (a App) ServicesRun(unit string, services []string) []string {
 	args := []string{"--unit=" + unit, "--quiet", "--collect", "--service-type=exec",
 		"-p", "RuntimeDirectory=" + path.Base(RunDir(a.ID)), "-p", "RuntimeDirectoryMode=0700", "-p", "UMask=0077",
 		"-p", "StandardOutput=null", "-p", "StandardError=null", "-p", "Requires=docker.service", "-p", "After=docker.service"}
-	for _, p := range a.secretProperties() {
+	for _, p := range a.startProperties() {
 		args = append(args, "-p", p)
 	}
 	args = append(args, "-p", "ExecStopPost="+strings.Join(append(a.Compose(), "stop"), " "), "--")

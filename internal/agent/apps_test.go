@@ -346,6 +346,15 @@ func TestAnAppsProjectIsRefusedWhenItCantBeWired(t *testing.T) {
 		"a relabelled folder": {"ledger", edit(func(r *agent.AppRequest) {
 			r.Compose = strings.Replace(r.Compose, "  db:\n", "  db:\n    volumes: [\"/srv/ledger:/var/lib/postgresql/data:z\"]\n", 1)
 		}), 422, "relabels-a-folder"},
+		"a folder of the machine, bound by the catalog's file": {"ledger", edit(func(r *agent.AppRequest) {
+			r.Compose = strings.Replace(r.Compose, "  db:\n", "  db:\n    volumes: [\"/etc:/host-etc\"]\n", 1)
+		}), 422, "binds-a-folder"},
+		"a bind in the long form": {"ledger", edit(func(r *agent.AppRequest) {
+			r.Compose = strings.Replace(r.Compose, "  db:\n", "  db:\n    volumes: [{type: bind, source: /srv/media, target: /media}]\n", 1)
+		}), 422, "binds-a-folder"},
+		"a config from a file of the machine": {"ledger", edit(func(r *agent.AppRequest) {
+			r.Compose = strings.Replace(r.Compose, "  db:\n", "  db:\n    configs: [shadow]\n", 1) + "configs:\n  shadow:\n    file: /etc/shadow\n"
+		}), 422, "binds-a-folder"},
 		"a network mode": {"ledger", edit(func(r *agent.AppRequest) {
 			r.Compose = strings.Replace(r.Compose, "  db:\n", "  db:\n    network_mode: host\n", 1)
 		}), 422, "network-mode"},

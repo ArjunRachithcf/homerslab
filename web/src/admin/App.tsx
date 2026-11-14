@@ -131,7 +131,10 @@ function GetButton({ app, go, primary }: { app: { id: string; name: string }; go
       go(`/plans/${(await makePlan(app.id)).id}`);
     } catch (e) {
       const code = e instanceof Refused ? e.code : 'unknown';
-      setState({ why: code === 'household-not-set-up' ? t('store.notSetUp') : t('store.cantPlan', { why: code }) });
+      // An app that asks for a storage location (#28): this page can't choose one yet, and says so, not a code.
+      const why = code === 'household-not-set-up' ? t('store.notSetUp')
+        : code === 'storage-location-needed' ? t('store.needsStorage') : t('store.cantPlan', { why: code });
+      setState({ why });
     }
   };
   return (

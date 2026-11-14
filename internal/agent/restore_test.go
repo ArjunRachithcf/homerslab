@@ -222,6 +222,8 @@ func TestARestoreNeverWritesOutsideTheAppsOwnVolume(t *testing.T) {
 	for name, m := range map[string]engine.Mount{
 		"another app's volume": {Name: "homerslab-immich_library", Driver: "local", Source: "/var/lib/docker/volumes/homerslab-immich_library/_data"},
 		"bound elsewhere":      {Name: "homerslab-ledger_library", Driver: "local", Source: "/etc"},
+		// A storage location is a bind of a folder of the machine (#28), never an app's volume: no restore writes it.
+		"a storage location's folder": {Source: "/srv/media/Films"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			sock, h, _ := signedIn(t, agent.Config{})
@@ -229,7 +231,7 @@ func TestARestoreNeverWritesOutsideTheAppsOwnVolume(t *testing.T) {
 			if code, body := call(t, sock, "PUT", "/v1/backups", s3Target()); code != http.StatusOK {
 				t.Fatalf("the target: %d %s", code, body)
 			}
-			m.Destination, m.Volume = "/data/library", true
+			m.Destination, m.Volume = "/data/library", m.Name != ""
 			_ = os.MkdirAll(filepath.Join(h.Root, m.Source), 0o755)
 			h.MountAs("homerslab-ledger", "web", m)
 			library := h.AddSnapshot(yesterday, libraryVolume, 4096, "app=ledger", "data=web:/data/library")

@@ -135,10 +135,21 @@ func (r *Reader) load(ctx context.Context, name string, file []byte) (engine.Pro
 			if v.Type == "bind" && v.Bind != nil && v.Bind.SELinux != "" {
 				svc.Relabelled = append(svc.Relabelled, v.Source)
 			}
+			if v.Type != "volume" && v.Type != "tmpfs" {
+				svc.Binds = append(svc.Binds, cmp.Or(v.Source, v.Type))
+			}
 			if v.Type == "volume" && v.Source != "" && (v.Volume == nil || v.Volume.Subpath == "") {
 				svc.Volumes = append(svc.Volumes, v.Target)
 			}
 		}
+		for _, c := range s.Configs {
+			// A config's content written in the compose file is the catalog's own; one from a file, the environment or
+			// outside the project is the machine's.
+			if def, ok := p.Configs[c.Source]; !ok || def.Content == "" || def.File != "" || def.Environment != "" || bool(def.External) {
+				svc.Binds = append(svc.Binds, "config:"+c.Source)
+			}
+		}
+		slices.Sort(svc.Binds)
 		slices.Sort(svc.Volumes)
 		svc.Loosened = loosened(s)
 		for name := range s.ExtraHosts {

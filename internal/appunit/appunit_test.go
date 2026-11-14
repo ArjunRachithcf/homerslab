@@ -41,13 +41,23 @@ func withSecrets() appunit.App {
 		Secrets: []appunit.Secret{{Name: "secret-key", UID: 1000}, {Name: "db-password", UID: 999}}}
 }
 
+// withStorage is an app given two storage locations (#28): a folder it only reads, and one it writes.
+func withStorage() appunit.App {
+	a := withSecrets()
+	a.Mounts = []appunit.Mount{
+		{Location: "films", Service: "web", Source: "/srv/media/Films", Target: "/media", ReadOnly: true},
+		{Location: "uploads", Service: "worker", Source: "/srv/uploads", Target: "/uploads"},
+	}
+	return a
+}
+
 // Golden renders (spec: Testing Decisions): the unit and the compose file the agent writes for an app, byte for byte.
 // A deliberate change runs `go test ./internal/appunit -update` and explains the diff.
 func TestAnAppsUnitAndComposeFileAreTheirGoldenRenders(t *testing.T) {
 	testenv.Isolate(t)
 	noSELinux := withSecrets()
 	noSELinux.SELinux = false
-	for name, a := range map[string]appunit.App{"bentopdf": bentoPDF(), "with-secrets": withSecrets(), "without-selinux": noSELinux} {
+	for name, a := range map[string]appunit.App{"bentopdf": bentoPDF(), "with-secrets": withSecrets(), "without-selinux": noSELinux, "with-storage": withStorage()} {
 		for file, got := range map[string][]byte{name + ".service": appunit.UnitFile(a), name + ".compose.yaml": appunit.Override(a)} {
 			t.Run(file, func(t *testing.T) {
 				path := filepath.Join("testdata", file)
@@ -200,7 +210,7 @@ func TestNoTextOfTheAppsEndsALineOfItsFiles(t *testing.T) {
 			}
 			for svc, v := range services {
 				for k := range v.(map[string]any) {
-					if !slices.Contains([]string{"restart", "deploy", "security_opt", "extra_hosts", "networks"}, k) {
+					if !slices.Contains([]string{"restart", "deploy", "security_opt", "extra_hosts", "networks", "volumes"}, k) {
 						t.Errorf("%q has %q:\n%s", svc, k, o)
 					}
 				}
@@ -253,7 +263,7 @@ func TestEveryContainerResolvesTheSignInToItsListener(t *testing.T) {
 // compose command and secrets, the same runtime directory, its services without the others (--no-deps).
 func TestSomeServicesRunAsTheUnitRunsThem(t *testing.T) {
 	testenv.Isolate(t)
-	a := withSecrets()
+	a := withStorage()
 	args := a.ServicesRun("homerslab-restore-1", []string{"db"})
 	at := slices.Index(args, "--")
 	if at < 0 || args[0] != "--unit=homerslab-restore-1" {
@@ -261,14 +271,76 @@ func TestSomeServicesRunAsTheUnitRunsThem(t *testing.T) {
 	}
 	props := strings.Join(args[:at], "\n") + "\n"
 	for _, line := range strings.Split(string(appunit.UnitFile(a)), "\n") {
+		// The secrets, and every storage location's folder checked again before the start (#28).
 		for _, key := range []string{"LoadCredentialEncrypted=", "ExecStartPre=", "RuntimeDirectory=", "RuntimeDirectoryMode=", "UMask="} {
 			if strings.HasPrefix(line, key) && !strings.Contains(props, "\n"+line+"\n") {
 				t.Errorf("the unit has %q, the services' run doesn't:\n%s", line, props)
 			}
 		}
 	}
+	if !strings.Contains(props, "check-storage") || !strings.Contains(props, "/usr/bin/install") {
+		t.Errorf("the services' run checks no location, or hands over no secret:\n%s", props)
+	}
 	want := append(a.Compose(), "up", "--no-log-prefix", "--no-deps", "--abort-on-container-exit", "db")
 	if got := args[at+1:]; !slices.Equal(got, want) {
 		t.Errorf("the services' command:\n got %q\nwant %q", got, want)
+	}
+}
+
+// A storage location reaches only the service that asked for it, as a bind of exactly its folder, read-only where the
+// plan says so, and never made where it isn't there (#28).
+func TestAStorageLocationIsABindOfItsFolderReadOnlyWhereThePlanSays(t *testing.T) {
+	testenv.Isolate(t)
+	a := withStorage()
+	o := string(appunit.Override(a))
+	for _, want := range []string{
+		"  \"web\":\n", "    volumes:\n      - type: \"bind\"\n        source: \"/srv/media/Films\"\n        target: \"/media\"\n        read_only: true\n" +
+			"        bind:\n          create_host_path: false\n",
+		"        source: \"/srv/uploads\"\n        target: \"/uploads\"\n        read_only: false\n",
+	} {
+		if !strings.Contains(o, want) {
+			t.Errorf("the agent's compose file lacks %q:\n%s", want, o)
+		}
+	}
+	if db := o[strings.Index(o, "  \"db\":\n"):strings.Index(o, "  \"web\":\n")]; strings.Contains(db, "volumes") {
+		t.Errorf("a service that didn't ask sees a location:\n%s", db)
+	}
+	// A service that writes to a location can't make a device there; one that only reads keeps its capabilities.
+	if n := strings.Count(o, "    cap_drop:\n      - \"MKNOD\"\n"); n != 1 {
+		t.Errorf("MKNOD dropped for %d services, want the one that writes:\n%s", n, o)
+	}
+	ro := withStorage()
+	for i := range ro.Mounts {
+		ro.Mounts[i].ReadOnly = true
+	}
+	if strings.Contains(string(appunit.Override(ro)), "cap_drop") {
+		t.Error("a service that only reads its locations lost a capability")
+	}
+	// Before every start the unit has each folder checked again: the engine binds the path as root, following symlinks.
+	u := string(appunit.UnitFile(a))
+	for _, want := range []string{"ExecStartPre=/usr/bin/homerslab agent check-storage \"/srv/media/Films\"\n", "ExecStartPre=/usr/bin/homerslab agent check-storage \"/srv/uploads\"\n"} {
+		if !strings.Contains(u, want) || strings.Index(u, want) > strings.Index(u, "ExecStart=") {
+			t.Errorf("the unit lacks %q before its start:\n%s", want, u)
+		}
+	}
+	// A source or a target no check passed is never written (compose would read ${...} as a variable), and the app
+	// doesn't start without it: the engine refuses a bind of a folder that is never there.
+	for _, m := range []appunit.Mount{
+		{Location: "films", Service: "web", Source: "/srv/${HOME}", Target: "/media", ReadOnly: true},
+		{Location: "films", Service: "web", Source: "/etc", Target: "/media", ReadOnly: true},
+		{Location: "films", Service: "web", Source: "/srv/media", Target: "/media/../etc", ReadOnly: true},
+		{Location: "x", Service: "web", Source: "/var/lib/homerslab-storage/y", Target: "/media"},
+		{Location: "../x", Service: "web", Source: "/srv/media", Target: "/media"},
+	} {
+		b := withSecrets()
+		b.Mounts = []appunit.Mount{m}
+		o := string(appunit.Override(b))
+		if strings.Contains(o, m.Source) || strings.Contains(o, m.Target+"\"") ||
+			!strings.Contains(o, "        source: \""+appunit.RefusedMount+"\"\n        target: \""+appunit.RefusedMount+"\"\n        read_only: true\n") {
+			t.Errorf("%+v written:\n%s", m, o)
+		}
+		if u := string(appunit.UnitFile(b)); strings.Contains(u, "check-storage") {
+			t.Errorf("%+v reached the unit:\n%s", m, u)
+		}
 	}
 }
