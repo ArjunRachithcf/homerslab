@@ -237,7 +237,8 @@ func defaultsReady(ctx context.Context, a *api) error {
 	}
 	n := 0
 	for _, b := range bs {
-		if !b.Enabled || !(strings.HasPrefix(b.Path, "default/") || strings.HasPrefix(b.Path, "system/")) {
+		// An orphaned one's file is gone, an upgrade removed it: nothing is left to apply.
+		if !b.Enabled || b.Status == "orphaned" || !(strings.HasPrefix(b.Path, "default/") || strings.HasPrefix(b.Path, "system/")) {
 			continue
 		}
 		n++

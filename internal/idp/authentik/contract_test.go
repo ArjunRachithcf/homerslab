@@ -68,33 +68,6 @@ func TestTheIdentityProviderContractOnAuthentik(t *testing.T) {
 	w := up(t, engine)
 	ctx := context.Background()
 
-	t.Run("claim (#84): Authentik's WebAuthn stages don't require user verification unless told to", func(t *testing.T) {
-		// Reported, not verified (spec: Testing Decisions): why HomersLab's stages set it.
-		type setup struct {
-			Name string `json:"name"`
-			UV   string `json:"user_verification"`
-		}
-		type validate struct {
-			Name string `json:"name"`
-			UV   string `json:"webauthn_user_verification"`
-		}
-		var s struct{ Results []setup }
-		var v struct{ Results []validate }
-		w.raw(t, w.bootstrap, "GET", "/api/v3/stages/authenticator/webauthn/", nil, &s)
-		w.raw(t, w.bootstrap, "GET", "/api/v3/stages/authenticator/validate/", nil, &v)
-		var fresh setup
-		w.raw(t, w.bootstrap, "POST", "/api/v3/stages/authenticator/webauthn/", map[string]any{"name": "hltest-fresh"}, &fresh)
-		t.Logf("the default enrolment stages: %+v; validation stages: %+v; a new stage with no setting: %q", s.Results, v.Results, fresh.UV)
-		if fresh.UV == "required" {
-			t.Errorf("the claim doesn't hold: a new WebAuthn stage requires user verification by itself")
-		}
-		for _, x := range s.Results {
-			if x.UV == "required" {
-				t.Errorf("the claim doesn't hold: %s requires user verification", x.Name)
-			}
-		}
-	})
-
 	var own idp.Secret
 	t.Run("bootstrap: HomersLab's own account from Authentik's bootstrap token, which then stops working", func(t *testing.T) {
 		var err error
@@ -124,7 +97,7 @@ func TestTheIdentityProviderContractOnAuthentik(t *testing.T) {
 		}
 		w.raw(t, own, "GET", "/api/v3/managed/blueprints/?page_size=500", nil, &bs)
 		for _, b := range bs.Results {
-			if (strings.HasPrefix(b.Path, "default/") || strings.HasPrefix(b.Path, "system/")) && b.Status != "successful" {
+			if (strings.HasPrefix(b.Path, "default/") || strings.HasPrefix(b.Path, "system/")) && b.Status != "successful" && b.Status != "orphaned" {
 				t.Errorf("the blueprint %s, once bootstrap was done: %s", b.Path, b.Status)
 			}
 		}
@@ -147,6 +120,35 @@ func TestTheIdentityProviderContractOnAuthentik(t *testing.T) {
 	if own == "" {
 		t.Fatal("no token: nothing else can be checked")
 	}
+
+	t.Run("claim (#84): Authentik's WebAuthn stages don't require user verification unless told to", func(t *testing.T) {
+		// Reported, not verified (spec: Testing Decisions): why HomersLab's stages set it. Read once Authentik has
+		// made its defaults (bootstrap waits for them), with HomersLab's own token, and before Prepare.
+		type setup struct {
+			Name string `json:"name"`
+			UV   string `json:"user_verification"`
+		}
+		type validate struct {
+			Name string `json:"name"`
+			UV   string `json:"webauthn_user_verification"`
+		}
+		var s struct{ Results []setup }
+		var v struct{ Results []validate }
+		w.raw(t, own, "GET", "/api/v3/stages/authenticator/webauthn/?name=default-authenticator-webauthn-setup", nil, &s)
+		w.raw(t, own, "GET", "/api/v3/stages/authenticator/validate/?name=default-authentication-mfa-validation", nil, &v)
+		var fresh setup
+		w.raw(t, own, "POST", "/api/v3/stages/authenticator/webauthn/", map[string]any{"name": "hltest-fresh"}, &fresh)
+		t.Logf("the default passkey setup stage: %+v; the default validation stage: %+v; a new stage with no setting: %q", s.Results, v.Results, fresh.UV)
+		if len(s.Results) != 1 || len(v.Results) != 1 {
+			t.Fatalf("Authentik's default passkey stages aren't there: %+v %+v", s.Results, v.Results)
+		}
+		if fresh.UV == "required" {
+			t.Errorf("the claim doesn't hold: a new WebAuthn stage requires user verification by itself")
+		}
+		if s.Results[0].UV == "required" || v.Results[0].UV == "required" {
+			t.Errorf("the claim doesn't hold: Authentik's default passkey stages require user verification: %+v %+v", s.Results, v.Results)
+		}
+	})
 
 	t.Run("a restart keeps the bootstrap token dead, even if the unit still handed it over", func(t *testing.T) {
 		w.compose(t, "restart", "server")
