@@ -36,6 +36,8 @@ type issuer struct {
 	now   func() time.Time
 	// reauth: the person signs in again when an authorize URL asks for a recent sign-in.
 	reauth bool
+	// discovered counts the reads of its discovery document.
+	discovered int
 }
 
 func newIssuer(t *testing.T, now func() time.Time) *issuer {
@@ -54,6 +56,9 @@ func (is *issuer) serve(w http.ResponseWriter, r *http.Request) {
 	}
 	switch r.URL.Path {
 	case "/application/o/homerslab-home/.well-known/openid-configuration":
+		is.mu.Lock()
+		is.discovered++
+		is.mu.Unlock()
 		_ = json.NewEncoder(w).Encode(map[string]string{"issuer": issuerURL, "authorization_endpoint": signInOrigin + "/application/o/authorize/",
 			"token_endpoint": signInOrigin + "/application/o/token/", "jwks_uri": signInOrigin + "/application/o/homerslab-home/jwks/"})
 	case "/application/o/homerslab-home/jwks/":

@@ -2,6 +2,8 @@ package home
 
 import (
 	"context"
+	"crypto/aes"
+	"crypto/cipher"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
@@ -38,10 +40,12 @@ const (
 	SessionLife = 12 * time.Hour
 	// attemptLife is how long a sign-in may take, from Home to the sign-in and back.
 	attemptLife = 10 * time.Minute
-	// maxAttempts and maxSessions bound what Home keeps in memory. Beyond them, a new one is refused rather than
-	// ending a live one.
-	maxAttempts = 1024
+	// maxSessions bounds the sessions Home keeps in memory. Beyond it, a new one is refused rather than ending a live
+	// one. Only a person the sign-in let in makes one.
 	maxSessions = 4096
+	// discoveryLife is how long Home keeps the sign-in's discovery document; a failure to read it, discoveryRetry.
+	discoveryLife  = 10 * time.Minute
+	discoveryRetry = 5 * time.Second
 )
 
 // Groups are the household account's groups of Home's roles (idp.RoleGroup; a test holds them equal, as Home is built
@@ -66,19 +70,30 @@ type Config struct {
 
 // Home is a running Home. Its sessions live in memory only: a Home that restarts sends people to the sign-in again.
 type Home struct {
-	cfg      Config
+	cfg Config
+	// seal seals a sign-in under way into the browser's own cookie, with a key that lives in Home's memory only: anyone
+	// may start sign-ins, as many as they like, and none of it takes a place a person's sign-in needs.
+	seal     cipher.AEAD
 	mu       sync.Mutex
-	attempts map[string]attempt
 	sessions map[string]session
 	read     struct {
 		p  *Projection
 		fi os.FileInfo
 	}
+	// discovery is the sign-in's discovery document as Home last read it, for the client it read it with.
+	discovery struct {
+		sync.Mutex
+		client string
+		e      oidc.Endpoints
+		err    error
+		until  time.Time
+	}
 }
 
+// attempt is a sign-in under way, as its cookie carries it, sealed.
 type attempt struct {
 	oidc.Attempt
-	expires time.Time
+	Expires time.Time `json:"expires"`
 }
 
 // session is a signed-in person, as the sign-in named them.
@@ -97,7 +112,54 @@ func New(c Config) *Home {
 	if c.Log == nil {
 		c.Log = slog.New(slog.DiscardHandler)
 	}
-	return &Home{cfg: c, attempts: map[string]attempt{}, sessions: map[string]session{}}
+	k := make([]byte, 32)
+	_, _ = rand.Read(k)
+	b, _ := aes.NewCipher(k) // a 32-byte key: AES-256
+	seal, _ := cipher.NewGCM(b)
+	return &Home{cfg: c, seal: seal, sessions: map[string]session{}}
+}
+
+// sealAttempt is a's cookie value: sealed and authenticated with Home's key, bound to the sign-in cookie's name.
+func (h *Home) sealAttempt(a attempt) string {
+	plain, _ := json.Marshal(a)
+	nonce := make([]byte, h.seal.NonceSize())
+	_, _ = rand.Read(nonce)
+	return base64.RawURLEncoding.EncodeToString(h.seal.Seal(nonce, nonce, plain, []byte(signInCookie)))
+}
+
+// openAttempt is the sign-in under way that v carries, if Home sealed it.
+func (h *Home) openAttempt(v string) (attempt, bool) {
+	var a attempt
+	b, err := base64.RawURLEncoding.DecodeString(v)
+	if err != nil || len(b) < h.seal.NonceSize() {
+		return a, false
+	}
+	n := h.seal.NonceSize()
+	plain, err := h.seal.Open(nil, b[:n], b[n:], []byte(signInCookie))
+	if err != nil || json.Unmarshal(plain, &a) != nil {
+		return attempt{}, false
+	}
+	return a, true
+}
+
+// discover is the sign-in's discovery document, read again at most every discoveryLife (and after a failure, at
+// most every discoveryRetry), or when the projection names another client.
+func (h *Home) discover(ctx context.Context, c oidc.Client, p Projection) (oidc.Endpoints, error) {
+	d := &h.discovery
+	d.Lock()
+	defer d.Unlock()
+	who, now := c.Issuer+"\x00"+c.ID+"\x00"+p.SignIn.Upstream, h.cfg.Now()
+	if d.client == who && now.Before(d.until) {
+		return d.e, d.err
+	}
+	d.client = who
+	d.e, d.err = c.Discover(context.WithoutCancel(ctx)) // one person leaving doesn't fail the others waiting
+	if d.err != nil {
+		d.until = now.Add(discoveryRetry)
+	} else {
+		d.until = now.Add(discoveryLife)
+	}
+	return d.e, d.err
 }
 
 type ctxKey int
@@ -251,8 +313,9 @@ func (h *Home) client(p Projection) (oidc.Client, error) {
 		HTTP:     &http.Client{Timeout: 15 * time.Second, Transport: oidc.Through(iss.Scheme+"://"+iss.Host, p.SignIn.Upstream)}}, nil
 }
 
-// signInStart sends the browser to the sign-in, with a fresh attempt bound to it by a cookie. Unlike Admin's, it isn't
-// a fresh sign-in: a person signed in at the sign-in already comes straight back.
+// signInStart sends the browser to the sign-in, with a new attempt that the browser carries itself, sealed in a cookie:
+// Home keeps nothing of it. Unlike Admin's, it isn't a fresh sign-in: a person signed in at the sign-in already comes
+// straight back.
 func (h *Home) signInStart(w http.ResponseWriter, r *http.Request) {
 	c, err := h.client(projection(r))
 	if err != nil {
@@ -260,37 +323,23 @@ func (h *Home) signInStart(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusServiceUnavailable, "no-sign-in-yet")
 		return
 	}
-	e, err := c.Discover(r.Context())
+	e, err := h.discover(r.Context(), c, projection(r))
 	if err != nil {
 		h.cfg.Log.Warn("the sign-in's discovery document", "err", err)
 		fail(w, http.StatusBadGateway, "sign-in-unreachable")
 		return
 	}
-	a, id, now := oidc.NewAttempt(), random(), h.cfg.Now()
+	a, now := oidc.NewAttempt(), h.cfg.Now()
 	if ck, err := r.Cookie(signedOutCookie); err == nil && ck.Value != "" {
 		a = oidc.FreshAttempt(now)
 	}
-	h.mu.Lock()
-	for k, v := range h.attempts {
-		if now.After(v.expires) {
-			delete(h.attempts, k)
-		}
-	}
-	full := len(h.attempts) >= maxAttempts
-	if !full {
-		h.attempts[key(id)] = attempt{Attempt: a, expires: now.Add(attemptLife)}
-	}
-	h.mu.Unlock()
-	if full {
-		fail(w, http.StatusTooManyRequests, "too-many-sign-ins")
-		return
-	}
-	setCookie(w, signInCookie, id, attemptLife)
+	setCookie(w, signInCookie, h.sealAttempt(attempt{Attempt: a, Expires: now.Add(attemptLife)}), attemptLife)
 	http.Redirect(w, r, c.AuthorizeURL(e, a), http.StatusSeeOther)
 }
 
 // signInDone takes the browser back from the sign-in: the attempt must be this browser's, the code good, the ID token
-// verified, and the person in one of the household's roles. Then Home opens a session.
+// verified, and the person in one of the household's roles. Then Home opens a session. A return comes once: the cookie
+// goes with it, and the sign-in takes a code only once, for this attempt's PKCE verifier.
 func (h *Home) signInDone(w http.ResponseWriter, r *http.Request) {
 	ck, err := r.Cookie(signInCookie)
 	setCookie(w, signInCookie, "", 0)
@@ -299,11 +348,8 @@ func (h *Home) signInDone(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	now := h.cfg.Now()
-	h.mu.Lock()
-	a, ok := h.attempts[key(ck.Value)]
-	delete(h.attempts, key(ck.Value))
-	h.mu.Unlock()
-	if !ok || !now.Before(a.expires) {
+	a, ok := h.openAttempt(ck.Value)
+	if !ok || !now.Before(a.Expires) {
 		fail(w, http.StatusForbidden, "no-sign-in-attempt")
 		return
 	}
@@ -312,7 +358,7 @@ func (h *Home) signInDone(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusServiceUnavailable, "no-sign-in-yet")
 		return
 	}
-	e, err := c.Discover(r.Context())
+	e, err := h.discover(r.Context(), c, projection(r))
 	if err != nil {
 		fail(w, http.StatusBadGateway, "sign-in-unreachable")
 		return

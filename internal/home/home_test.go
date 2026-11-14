@@ -410,3 +410,72 @@ func TestHomesRolesAreTheHouseholdAccountsGroups(t *testing.T) {
 		}
 	}
 }
+
+// Anyone may start a sign-in to Home (a mesh peer, an <img> on any app's page), as often as they like, and none of it
+// stops the household's people from signing in (#21): a sign-in under way is carried by the browser's own sealed
+// cookie, not a slot of Home's, and the sign-in's discovery document is read once, not at every start.
+func TestStartingSignInsCantStopARealOne(t *testing.T) {
+	testenv.Isolate(t)
+	w := newWorld(t)
+	for i := range 2000 {
+		if r := w.browser().do("GET", "/auth/sign-in"); r.Code != http.StatusSeeOther {
+			t.Fatalf("start %d: %d %s", i, r.Code, r.Body)
+		}
+	}
+	if r := w.browser().signIn(rui); r.Code != http.StatusSeeOther || r.Header().Get("Location") != "/" {
+		t.Fatalf("Rui's sign-in after 2000 strangers' starts: %d %s", r.Code, r.Body)
+	}
+	if w.is.discovered != 1 {
+		t.Errorf("2001 sign-ins read the discovery document %d times, want once", w.is.discovered)
+	}
+}
+
+// A sign-in under way lasts ten minutes, from Home to the sign-in and back, whatever the browser keeps; and its cookie
+// is Home's own: one made up, or another of Home's cookies' values, isn't one.
+func TestASignInUnderWayLastsTenMinutes(t *testing.T) {
+	testenv.Isolate(t)
+	w := newWorld(t)
+	start := w.now
+	for _, c := range []struct {
+		after time.Duration
+		want  int
+	}{{10*time.Minute - time.Second, http.StatusSeeOther}, {10 * time.Minute, http.StatusForbidden}} {
+		w.now = start
+		b := w.browser()
+		rec := b.do("GET", "/auth/sign-in")
+		w.now = start.Add(c.after) // the person signs in at the sign-in, and comes back
+		state, code := w.is.code(t, rec.Header().Get("Location"), rui)
+		if r := b.do("GET", "/auth/callback?state="+url.QueryEscape(state)+"&code="+url.QueryEscape(code)); r.Code != c.want {
+			t.Errorf("back %s after starting: %d %s, want %d", c.after, r.Code, r.Body, c.want)
+		}
+	}
+	w.now = start
+	b := w.browser()
+	rec := b.do("GET", "/auth/sign-in")
+	state, code := w.is.code(t, rec.Header().Get("Location"), rui)
+	real := b.cookies["__Host-homerslab-home-sign-in"].Value
+	for name, v := range map[string]string{"made up": "made-up", "cut short": real[:len(real)-1],
+		"one byte changed": real[:10] + map[bool]string{true: "B", false: "A"}[real[10] == 'A'] + real[11:]} {
+		b.cookies["__Host-homerslab-home-sign-in"] = &http.Cookie{Name: "__Host-homerslab-home-sign-in", Value: v}
+		if r := b.do("GET", "/auth/callback?state="+url.QueryEscape(state)+"&code="+url.QueryEscape(code)); r.Code != http.StatusForbidden {
+			t.Errorf("a sign-in cookie %s: %d %s", name, r.Code, r.Body)
+		}
+	}
+}
+
+// Home serves an app's icon only as a picture: an icon of another type in the projection isn't served at all.
+func TestHomeServesIconsOnlyAsPictures(t *testing.T) {
+	testenv.Isolate(t)
+	w := newWorld(t)
+	p := theProjection(w.is)
+	p.Apps[1].Icon = &home.Icon{Type: "text/html", Data: []byte("<script>alert(1)</script>")}
+	w.write(p)
+	b := w.browser()
+	b.signIn(rui)
+	if r := b.do("GET", "/api/v1/apps/bentopdf/icon"); r.Code != http.StatusOK || r.Header().Get("Content-Type") != "image/svg+xml" {
+		t.Errorf("a picture's icon: %d %s", r.Code, r.Header().Get("Content-Type"))
+	}
+	if r := b.do("GET", "/api/v1/apps/donetick/icon"); r.Code != http.StatusNotFound || strings.Contains(r.Body.String(), "<script>") {
+		t.Errorf("an HTML icon: %d %s %s", r.Code, r.Header().Get("Content-Type"), r.Body)
+	}
+}
