@@ -157,6 +157,15 @@ func newKey() []byte {
 	return []byte(hex.EncodeToString(b))
 }
 
+// ensure makes the node's repository unless the target has it, as the agent does.
+func ensure(ctx context.Context, r backup.Repo) error {
+	there, err := r.Exists(ctx)
+	if err == nil && !there {
+		err = r.Init(ctx)
+	}
+	return err
+}
+
 // repo is the node's repository at the target, its credentials folder written as systemd would write the unit's.
 func repo(t *testing.T, s *seen, target backup.Target, creds backup.Credentials, node string, key []byte) backup.Repo {
 	t.Helper()
@@ -183,7 +192,7 @@ func contract(t *testing.T, target backup.Target, creds backup.Credentials, secr
 	primary := repo(t, s, target, creds, "primary", primaryKey)
 	var err error
 	for range 10 { // the servers may still be starting
-		if err = primary.Init(ctx); err == nil {
+		if err = ensure(ctx, primary); err == nil {
 			break
 		}
 		time.Sleep(time.Second)
@@ -193,24 +202,28 @@ func contract(t *testing.T, target backup.Target, creds backup.Credentials, secr
 	}
 
 	t.Run("each node has its own repository, which only its own key opens", func(t *testing.T) {
-		if err := primary.Init(ctx); err != nil {
+		if err := ensure(ctx, primary); err != nil {
 			t.Fatalf("making it again: %v", err)
 		}
 		pi := repo(t, s, target, creds, "pi", piKey)
-		if err := pi.Init(ctx); err != nil {
+		if err := ensure(ctx, pi); err != nil {
 			t.Fatal(err)
 		}
 		withPrimarysKey := repo(t, s, target, creds, "pi", primaryKey)
 		if _, err := withPrimarysKey.Snapshots(ctx); !errors.Is(err, backup.ErrWrongKey) {
 			t.Errorf("the primary's key on the Pi's repository: %v", err)
 		}
-		if err := withPrimarysKey.Init(ctx); !errors.Is(err, backup.ErrWrongKey) {
+		if err := ensure(ctx, withPrimarysKey); !errors.Is(err, backup.ErrWrongKey) {
 			t.Errorf("making the Pi's repository again with another key: %v", err)
 		}
 	})
 
 	data := t.TempDir()
 	if err := os.WriteFile(filepath.Join(data, "photo.jpg"), []byte("the photo"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// The app's own link, to the machine's /etc: restic, as root, must store it as a link and never follow it.
+	if err := os.Symlink("/etc", filepath.Join(data, "etc")); err != nil {
 		t.Fatal(err)
 	}
 	library := backup.Item{Tags: []string{"app=immich", "data=server:/data"}, Paths: []string{data}}
@@ -239,6 +252,12 @@ func contract(t *testing.T, target backup.Target, creds backup.Credentials, secr
 		}
 		if b, err := os.ReadFile(filepath.Join(into, data, "photo.jpg")); err != nil || string(b) != "the photo" {
 			t.Errorf("the library restored: %q %v", b, err)
+		}
+		if fi, err := os.Lstat(filepath.Join(into, data, "etc")); err != nil || fi.Mode()&os.ModeSymlink == 0 {
+			t.Errorf("the app's link restored as %v %v, not a link", fi, err)
+		}
+		if ls, err := backup.Raw(ctx, primary, "ls", lib); err != nil || strings.Contains(string(ls), "passwd") {
+			t.Errorf("the snapshot holds what the link points at: %v", err)
 		}
 		if b, err := backup.Raw(ctx, primary, "dump", db, "/immich.sql"); err != nil || string(b) != "the-dump" {
 			t.Errorf("the dump restored: %q %v", b, err)
@@ -295,7 +314,10 @@ func contract(t *testing.T, target backup.Target, creds backup.Credentials, secr
 		if _, err := backup.Raw(ctx, primary, "prune"); !errors.Is(err, backup.ErrLocked) {
 			t.Fatalf("prune past the crashed run's lock, without clearing it: %v", err)
 		}
-		if err := primary.Prune(ctx); err != nil {
+		if err := primary.Unlock(ctx); err != nil {
+			t.Fatal(err)
+		}
+		if err := primary.Prune(ctx, backup.DefaultRetention); err != nil {
 			t.Fatalf("prune after a crashed run: %v", err)
 		}
 	})
@@ -304,7 +326,10 @@ func contract(t *testing.T, target backup.Target, creds backup.Credentials, secr
 		done := make(chan error, 1)
 		go func() { _, err := primary.Backup(ctx, slow); done <- err }()
 		held(t)
-		if err := primary.Prune(ctx); !errors.Is(err, backup.ErrLocked) {
+		if err := primary.Unlock(ctx); err != nil {
+			t.Fatal(err)
+		}
+		if err := primary.Prune(ctx, backup.DefaultRetention); !errors.Is(err, backup.ErrLocked) {
 			t.Errorf("prune during a live run: %v", err)
 		}
 		if err := <-done; err != nil {
@@ -328,7 +353,7 @@ func contract(t *testing.T, target backup.Target, creds backup.Credentials, secr
 			}
 			ids = append(ids, id)
 		}
-		if err := primary.Prune(ctx); err != nil {
+		if err := primary.Prune(ctx, backup.DefaultRetention); err != nil {
 			t.Fatal(err)
 		}
 		// Within one hour, the schedule keeps the hour's latest snapshot, and the oldest while it has fewer hours than

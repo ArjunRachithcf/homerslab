@@ -73,6 +73,9 @@ type Config struct {
 	SignInUpstream string
 	SignInWait     time.Duration
 	SignInPoll     time.Duration
+	// BackupWait is the longest one backup run may take before it is ended and the next one is due (13 hours when 0:
+	// a first photo library takes hours, and each item's own run in the agent ends at 12).
+	BackupWait time.Duration
 	// ScheduleEvery is how often the scheduler looks for due jobs.
 	ScheduleEvery time.Duration
 	Web           fs.FS // the built pages; surfaces.Dist() when nil
@@ -157,6 +160,9 @@ func New(c Config) (*Manager, error) {
 	}
 	if c.SignInPoll == 0 {
 		c.SignInPoll = 3 * time.Second
+	}
+	if c.BackupWait == 0 {
+		c.BackupWait = 13 * time.Hour
 	}
 	if c.ScheduleEvery == 0 {
 		c.ScheduleEvery = time.Hour

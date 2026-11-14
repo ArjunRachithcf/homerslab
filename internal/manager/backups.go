@@ -30,6 +30,7 @@ import (
 const (
 	ansBackupTarget = "backupTarget"   // the target, as JSON: none of it is secret
 	ansBackupAt     = "backupAt"       // when the last run started
+	ansBackupDone   = "backupDoneAt"   // when the last run that got to its end ended, or the target was set
 	ansPrunedAt     = "backupPrunedAt" // when the last prune ran
 	credTarget      = "manager-backup-target"
 	warnBackup      = "backup:"
@@ -44,6 +45,7 @@ const (
 	backupEvery = time.Hour
 	pruneEvery  = 24 * time.Hour
 	early       = 5 * time.Minute
+	late        = 2 * time.Hour // no run has got to its end for this long: a warning
 	targetWait  = 3 * time.Minute
 )
 
@@ -107,7 +109,11 @@ func (m *Manager) putBackupTarget(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	target, _ := json.Marshal(req.Target)
-	if err := m.db.SaveAnswers(ctx, map[string]string{ansBackupTarget: string(target)}); err != nil {
+	save := map[string]string{ansBackupTarget: string(target)}
+	if ans, err := m.db.Answers(ctx); err == nil && ans[ansBackupDone] == "" {
+		save[ansBackupDone] = m.cfg.Now().UTC().Format(time.RFC3339) // lateness counts from here
+	}
+	if err := m.db.SaveAnswers(ctx, save); err != nil {
 		m.internal(w, "keeping the backup target", err)
 		return
 	}
@@ -118,15 +124,23 @@ func (m *Manager) putBackupTarget(w http.ResponseWriter, r *http.Request) {
 // BackUpDue backs up the household when an hour has passed since the last run, and prunes once a day. The scheduler
 // runs it beside its other jobs, so a long first backup holds none of them up.
 func (m *Manager) BackUpDue(ctx context.Context) {
-	if !m.backingUp.CompareAndSwap(false, true) {
-		return
-	}
-	defer m.backingUp.Store(false)
 	ans, err := m.db.Answers(ctx)
 	if err != nil || ans[ansBackupTarget] == "" {
 		return
 	}
 	now := m.cfg.Now()
+	// A run that hangs, or never gets to its end, never stops backups quietly: it is ended at BackupWait, and once no
+	// run has ended for a while, the admins hear of it, whatever is under way.
+	if due(ans[ansBackupDone], now, late+early) {
+		m.warnOnce(ctx, warnBackup+"late", "backup-late")
+	}
+	if !m.backingUp.CompareAndSwap(false, true) {
+		return
+	}
+	defer m.backingUp.Store(false)
+	// The run's calls end at BackupWait; what the manager keeps of it, it keeps whatever ended them.
+	run, cancel := context.WithTimeout(ctx, m.cfg.BackupWait)
+	defer cancel()
 	if !due(ans[ansBackupAt], now, backupEvery) {
 		return
 	}
@@ -134,15 +148,19 @@ func (m *Manager) BackUpDue(ctx context.Context) {
 		m.log.Error("keeping when backups ran", "err", err)
 		return
 	}
-	results := []agent.BackupResult{m.backUpManager(ctx)}
-	var run agent.Backups
-	if err := m.agent.with(m.agent.backups).call(ctx, http.MethodPost, "/v1/backups", nil, &run); err != nil {
+	results := []agent.BackupResult{m.backUpManager(run)}
+	var node agent.Backups
+	if err := m.agent.with(m.agent.backups).call(run, http.MethodPost, "/v1/backups", nil, &node); err != nil {
 		m.log.Error("the node's backups", "err", err)
-		results = append(results, agent.BackupResult{Platform: "node", Data: primaryNode, Error: "agent-unreachable"})
+		why := "agent-unreachable"
+		if run.Err() != nil {
+			why = "too-long"
+		}
+		results = append(results, agent.BackupResult{Platform: "node", Data: primaryNode, Error: why})
 	} else {
 		_ = m.db.ResolveWarnings(ctx, warnBackup+"node", now)
 	}
-	results = append(results, run.Results...)
+	results = append(results, node.Results...)
 	failed := 0
 	bySource := map[string][]agent.BackupResult{}
 	var sources []string
@@ -168,10 +186,14 @@ func (m *Manager) BackUpDue(ctx context.Context) {
 		}
 	}
 	m.log.Info("backed up the household", "items", len(results), "failed", failed)
+	if run.Err() == nil {
+		_ = m.db.SaveAnswers(ctx, map[string]string{ansBackupDone: m.cfg.Now().UTC().Format(time.RFC3339)})
+		_ = m.db.ResolveWarnings(ctx, warnBackup+"late", now)
+	}
 	if !due(ans[ansPrunedAt], now, pruneEvery) {
 		return
 	}
-	if err := m.agent.with(m.agent.backups).call(ctx, http.MethodPost, "/v1/backups/prune", nil, nil); err != nil {
+	if err := m.agent.with(m.agent.backups).call(run, http.MethodPost, "/v1/backups/prune", nil, nil); err != nil {
 		m.log.Error("pruning the node's repository", "err", err)
 		m.warnOnce(ctx, warnBackup+"prune", "prune-failed")
 		return

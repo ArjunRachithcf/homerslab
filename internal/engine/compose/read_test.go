@@ -103,7 +103,7 @@ volumes: {data: {}}
 	want := []engine.Service{
 		{Name: "db", Image: "docker.io/library/postgres:16@sha256:2222222222222222222222222222222222222222222222222222222222222222", NetworkMode: "host"},
 		{Name: "web", Image: "ghcr.io/example/web:1@sha256:1111111111111111111111111111111111111111111111111111111111111111",
-			Networks: []string{"back", "front"}, Published: []string{"127.0.0.1:8080:80/tcp", "9000/tcp"}, Relabelled: []string{"/srv/a", "/srv/b"}},
+			Networks: []string{"back", "front"}, Published: []string{"127.0.0.1:8080:80/tcp", "9000/tcp"}, Relabelled: []string{"/srv/a", "/srv/b"}, Volumes: []string{"/data"}},
 	}
 	if !reflect.DeepEqual(got.Services[0], want[0]) || !reflect.DeepEqual(got.Services[3], want[1]) || got.Services[1].Name != "quiet" ||
 		got.Services[1].Loosened != nil || !reflect.DeepEqual(got.Services[1].Hosts, []string{"auth.example.test", "other.test"}) {

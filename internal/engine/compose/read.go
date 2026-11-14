@@ -135,7 +135,11 @@ func (r *Reader) load(ctx context.Context, name string, file []byte) (engine.Pro
 			if v.Type == "bind" && v.Bind != nil && v.Bind.SELinux != "" {
 				svc.Relabelled = append(svc.Relabelled, v.Source)
 			}
+			if v.Type == "volume" && v.Source != "" {
+				svc.Volumes = append(svc.Volumes, v.Target)
+			}
 		}
+		slices.Sort(svc.Volumes)
 		svc.Loosened = loosened(s)
 		for name := range s.ExtraHosts {
 			svc.Hosts = append(svc.Hosts, strings.ToLower(name))

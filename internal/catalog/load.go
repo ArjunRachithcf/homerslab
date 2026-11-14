@@ -181,6 +181,7 @@ func loadApp(fsys fs.FS, dir string, categories map[string]bool, digestOf func(m
 		checkHost(&p, a.Host)
 	default:
 		a.Compose = compose
+		checkVolumes(&p, a.Data, compose)
 	}
 	a.Digest = digestOf(manifest, a.Compose)
 	return a, p.err()
@@ -285,6 +286,47 @@ func checkData(p *problems, data []Data) {
 		}
 		if !d.BackedUp() && d.Why == "" {
 			p.add("data %q: why it isn't backed up", d.What)
+		}
+	}
+}
+
+// checkVolumes says which backed-up folder isn't exactly one of its service's named volumes in the compose file. Only a
+// volume's own root is backed up, never a folder inside it: a folder inside is the app's to replace with a link, which
+// restic, as root, would follow out of the volume (#205's review). The agent checks it again against the project it
+// reads, and against the engine at every run.
+func checkVolumes(p *problems, data []Data, compose []byte) {
+	var f struct {
+		Services map[string]struct {
+			Volumes []yaml.Node `yaml:"volumes"`
+		} `yaml:"services"`
+	}
+	if err := yaml.Unmarshal(compose, &f); err != nil {
+		p.add("compose.yaml: %v", err)
+		return
+	}
+	for _, d := range data {
+		if d.Path == "" || !d.BackedUp() {
+			continue
+		}
+		named := false
+		for _, v := range f.Services[d.Service].Volumes {
+			var source, target string
+			switch v.Kind {
+			case yaml.ScalarNode: // name:/target[:mode]
+				parts := strings.Split(v.Value, ":")
+				if len(parts) >= 2 {
+					source, target = parts[0], parts[1]
+				}
+			case yaml.MappingNode:
+				var long struct{ Type, Source, Target string }
+				if v.Decode(&long) == nil && long.Type == "volume" {
+					source, target = long.Source, long.Target
+				}
+			}
+			named = named || (target == d.Path && source != "" && !strings.ContainsAny(source[:1], "/.~$"))
+		}
+		if !named {
+			p.add("data %q: a backed-up path is exactly one of its service's named volumes", d.What)
 		}
 	}
 }

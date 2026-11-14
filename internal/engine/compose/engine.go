@@ -116,7 +116,7 @@ func (e *Engine) Mounts(ctx context.Context, name string) (map[string][]engine.M
 		ms := []engine.Mount{}
 		for _, m := range r.Container.Mounts {
 			if m.Source != "" && (m.Type == mount.TypeVolume || m.Type == mount.TypeBind) {
-				ms = append(ms, engine.Mount{Destination: m.Destination, Source: m.Source})
+				ms = append(ms, engine.Mount{Destination: m.Destination, Source: m.Source, Volume: m.Type == mount.TypeVolume})
 			}
 		}
 		out[c.Service] = ms

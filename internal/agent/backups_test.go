@@ -29,9 +29,11 @@ func s3Target() agent.BackupTarget {
 		Credentials: backup.Credentials{AccessKeyID: "HLACCESSKEY", SecretAccessKey: s3Secret}}
 }
 
-// withBackups is the ledger app, with what its plan backs up: its library's folder and its database's dump.
+// withBackups is the ledger app with volumes, and what its plan backs up: its library's volume and its database's dump.
 func withBackups() agent.AppRequest {
 	r := withSecrets()
+	r.Compose = strings.Replace(r.Compose, "    secrets: [db-password]\n  db:", "    secrets: [db-password]\n    volumes: [library:/data/library, cache:/cache]\n  db:", 1) +
+		"volumes: {library: {}, cache: {}}\n"
 	r.Backups = []agent.AppData{{Service: "web", Path: "/data/library"},
 		{Service: "db", Dump: []string{"pg_dump", "--username=postgres", "ledger"}, File: "ledger.sql"}}
 	return r
@@ -43,7 +45,7 @@ func backingUp(t *testing.T) (string, *agenttest.Host, string) {
 	t.Helper()
 	sock, h, state := signedIn(t, agent.Config{})
 	install(t, sock, "ledger", withBackups())
-	h.Mount("homerslab-ledger", "web", "/data", "/var/lib/docker/volumes/homerslab-ledger_data/_data")
+	h.Mount("homerslab-ledger", "web", "/data/library", "/var/lib/docker/volumes/homerslab-ledger_library/_data")
 	h.Mount("homerslab-ledger", "web", "/cache", "/var/lib/docker/volumes/homerslab-ledger_cache/_data")
 	h.Mount("homerslab-ledger", "db", "/var/lib/postgresql/data", "/var/lib/docker/volumes/homerslab-ledger_db/_data")
 	if code, body := call(t, sock, "PUT", "/v1/backups", s3Target()); code != http.StatusOK || !strings.Contains(string(body), "s3:https://s3.example.test/household/homerslab/primary") {
@@ -132,6 +134,10 @@ func TestARunBacksUpExactlyWhatThePlanSaid(t *testing.T) {
 	if !slices.Equal(said, []string{"ledger web:/data/library", "ledger db:ledger.sql", "sign-in postgresql:authentik.sql"}) {
 		t.Errorf("the run's items: %q", said)
 	}
+	// A run's first step clears the stale locks a crashed run left (never a live run's: no --remove-all).
+	if first := h.Restic()[before].Argv; !slices.Contains(first, "unlock") || slices.Contains(first, "--remove-all") {
+		t.Errorf("the run began with %q", first)
+	}
 	var backups [][]string
 	units := map[string]bool{}
 	for _, r := range h.Restic()[before:] {
@@ -151,7 +157,7 @@ func TestARunBacksUpExactlyWhatThePlanSaid(t *testing.T) {
 	}
 	dir := filepath.Join(state, "apps", "ledger")
 	want := [][]string{
-		{"backup", "--host", "primary", "--tag", "app=ledger", "--tag", "data=web:/data/library", "--", "/var/lib/docker/volumes/homerslab-ledger_data/_data/library"},
+		{"backup", "--host", "primary", "--tag", "app=ledger", "--tag", "data=web:/data/library", "--", "/var/lib/docker/volumes/homerslab-ledger_library/_data"},
 		{"backup", "--host", "primary", "--tag", "app=ledger", "--tag", "data=db:ledger.sql", "--stdin-from-command", "--stdin-filename", "ledger.sql", "--",
 			"/usr/bin/docker", "compose", "--project-name", "homerslab-ledger", "--project-directory", dir, "--file", filepath.Join(dir, "compose.yaml"),
 			"--file", filepath.Join(dir, "homerslab.yaml"), "exec", "-T", "db", "pg_dump", "--username=postgres", "ledger"},
@@ -196,8 +202,45 @@ func TestAFolderInNoVolumeIsAFailedItemNotASilentOne(t *testing.T) {
 	if err := json.Unmarshal(body, &got); err != nil {
 		t.Fatal(err)
 	}
-	if len(got.Results) != 3 || got.Results[0].Error != "not-in-a-volume" || got.Results[1].Error != "locked" || got.Results[2].Snapshot == "" {
+	if len(got.Results) != 3 || got.Results[0].Error != "not-a-volume" || got.Results[1].Error != "locked" || got.Results[2].Snapshot == "" {
 		t.Errorf("the run: %+v", got.Results)
+	}
+}
+
+// restic runs as root, so the folder it is handed is only ever a volume's own root, where the engine made it: a link
+// on the way there (here, a volume's folder that leads to the machine's /etc) is refused, and nothing is backed up
+// through it. Inside the volume, the app's own links are stored as links (the contract suite).
+func TestAFolderReachedThroughALinkIsNeverBackedUp(t *testing.T) {
+	testenv.Isolate(t)
+	sock, h, _ := signedIn(t, agent.Config{})
+	install(t, sock, "ledger", withBackups())
+	if code, body := call(t, sock, "PUT", "/v1/backups", s3Target()); code != http.StatusOK {
+		t.Fatalf("the target: %d %s", code, body)
+	}
+	volumes := filepath.Join(h.Root, "var/lib/docker/volumes")
+	if err := os.MkdirAll(filepath.Join(h.Root, "etc/secret"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(volumes, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("../../../../etc", filepath.Join(volumes, "homerslab-ledger_library")); err != nil {
+		t.Fatal(err)
+	}
+	h.Mount("homerslab-ledger", "web", "/data/library", "/var/lib/docker/volumes/homerslab-ledger_library/secret")
+	before := len(h.Restic())
+	_, body := call(t, sock, "POST", "/v1/backups", nil)
+	var got agent.Backups
+	if err := json.Unmarshal(body, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Results[0].Error != "a-link-in-its-path" {
+		t.Errorf("a volume reached through a link: %+v", got.Results[0])
+	}
+	for _, r := range h.Restic()[before:] {
+		if strings.Contains(strings.Join(r.Argv, " "), "homerslab-ledger_library") {
+			t.Errorf("restic was handed the linked folder: %q", r.Argv)
+		}
 	}
 }
 
@@ -213,8 +256,10 @@ func TestAnAppsBackupsAreCheckedBeforeItIsInstalled(t *testing.T) {
 		"bad-backups   ":  {Service: "web", Path: "/data", Dump: []string{"pg_dump"}, File: "x.sql"},
 		"bad-backups    ": {Service: "-web", Path: "/data"},
 		"no-such-service": {Service: "worker", Path: "/data"},
+		"not-a-volume":    {Service: "web", Path: "/data/library/inside"},
+		"not-a-volume ":   {Service: "web", Path: "/etc"},
 	} {
-		r := withSecrets()
+		r := withBackups()
 		r.Backups = []agent.AppData{d}
 		if code, body := call(t, sock, "PUT", "/v1/apps/ledger", r); !strings.Contains(string(body), strings.TrimSpace(want)) {
 			t.Errorf("%+v: %d %s", d, code, body)

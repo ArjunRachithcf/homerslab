@@ -44,7 +44,9 @@ type Service struct {
 	NetworkMode string   `json:"networkMode,omitempty"`
 	Published   []string `json:"published,omitempty"`
 	Relabelled  []string `json:"relabelled,omitempty"`
-	Loosened    []string `json:"loosened,omitempty"`
+	// Volumes are where the service has the project's named volumes, inside it: the only folders backups take (#22).
+	Volumes  []string `json:"volumes,omitempty"`
+	Loosened []string `json:"loosened,omitempty"`
 	// Hosts are the names its extra_hosts give an address to, lowercase and sorted.
 	Hosts []string `json:"hosts,omitempty"`
 }
@@ -67,8 +69,10 @@ type Container struct {
 }
 
 // Mount is a volume, or a folder of the machine, that one of a service's containers has: Destination inside it, Source
-// on the machine.
+// on the machine, and whether it is one of the engine's volumes (whose Source the engine made, and no container can
+// change: it sees only what is inside).
 type Mount struct {
 	Destination string `json:"destination"`
 	Source      string `json:"source"`
+	Volume      bool   `json:"volume,omitempty"`
 }

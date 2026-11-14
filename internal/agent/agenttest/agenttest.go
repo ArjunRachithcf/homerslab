@@ -194,8 +194,9 @@ type ResticRun struct {
 	Stdin      []byte
 }
 
-// Mount gives a project's service a volume at dest, which is source on the machine.
+// Mount gives a project's service a volume at dest, which is source on the machine: a folder made under Root.
 func (h *Host) Mount(project, service, dest, source string) {
+	_ = os.MkdirAll(filepath.Join(h.Root, source), 0o755)
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if h.mounts == nil {
@@ -204,7 +205,7 @@ func (h *Host) Mount(project, service, dest, source string) {
 	if h.mounts[project] == nil {
 		h.mounts[project] = map[string][]engine.Mount{}
 	}
-	h.mounts[project][service] = append(h.mounts[project][service], engine.Mount{Destination: dest, Source: source})
+	h.mounts[project][service] = append(h.mounts[project][service], engine.Mount{Destination: dest, Source: source, Volume: true})
 }
 
 // Mounts is AppEngine's: the volumes Mount gave each running service.
@@ -475,6 +476,13 @@ func (h *Host) Hang(prefix string) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.hang = append(h.hang, prefix)
+}
+
+// Unhang makes the commands Hang held answer again.
+func (h *Host) Unhang() {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.hang = nil
 }
 
 // DockerState makes systemd describe docker.service so (ActiveState, LoadState: "activating", "loaded"), whatever

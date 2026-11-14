@@ -24,6 +24,9 @@ func bentoWithData(t *testing.T) *primary {
     dump: {command: [pg_dump, --username=postgres, bento], file: bento.sql}
   - {what: Its previews, service: web, path: /cache, backup: false, why: They are made again}
 `, 1))
+	}, "apps/bentopdf/compose.yaml": func(b []byte) []byte {
+		return []byte(strings.Replace(string(b), "    security_opt: [no-new-privileges:true]\n",
+			"    security_opt: [no-new-privileges:true]\n    volumes: [documents:/data/documents, previews:/cache]\n", 1) + "volumes: {documents: {}, previews: {}}\n")
 	}})
 	p, _ := installable(t, cat)
 	return p
@@ -75,8 +78,8 @@ func TestEveryHourTheHouseholdIsBackedUpAsThePlansSaid(t *testing.T) {
 	if r := p.control("POST", "/api/v1/plans/"+made.ID+"/apply", nil); r.Code != http.StatusAccepted {
 		t.Fatalf("applying: %d %s", r.Code, r.Body)
 	}
-	p.host.Mount("homerslab-bentopdf", "web", "/data", "/var/lib/docker/volumes/homerslab-bentopdf_data/_data")
-	p.host.Mount("homerslab-bentopdf", "web", "/cache", "/var/lib/docker/volumes/homerslab-bentopdf_cache/_data")
+	p.host.Mount("homerslab-bentopdf", "web", "/data/documents", "/var/lib/docker/volumes/homerslab-bentopdf_documents/_data")
+	p.host.Mount("homerslab-bentopdf", "web", "/cache", "/var/lib/docker/volumes/homerslab-bentopdf_previews/_data")
 
 	ctx := context.Background()
 	p.m.BackUpDue(ctx)
@@ -104,7 +107,7 @@ func TestEveryHourTheHouseholdIsBackedUpAsThePlansSaid(t *testing.T) {
 	if !slices.Equal(items, []string{"data=manager:manager.db", "data=web:/data/documents", "data=web:bento.sql", "data=postgresql:authentik.sql"}) {
 		t.Errorf("an hour's run backed up %q", items)
 	}
-	if !slices.Contains(runs[1], "/var/lib/docker/volumes/homerslab-bentopdf_data/_data/documents") || strings.Contains(fmtRuns(runs), "_cache") {
+	if !slices.Contains(runs[1], "/var/lib/docker/volumes/homerslab-bentopdf_documents/_data") || strings.Contains(fmtRuns(runs), "previews") {
 		t.Errorf("the app's folders: %q", runs)
 	}
 	for _, r := range p.host.Restic() {
@@ -147,7 +150,7 @@ func TestAFailedBackupIsAWarningUntilOneWorks(t *testing.T) {
 	if r := p.control("POST", "/api/v1/plans/"+made.ID+"/apply", nil); r.Code != http.StatusAccepted {
 		t.Fatalf("applying: %d %s", r.Code, r.Body)
 	}
-	p.host.Mount("homerslab-bentopdf", "web", "/data", "/var/lib/docker/volumes/homerslab-bentopdf_data/_data")
+	p.host.Mount("homerslab-bentopdf", "web", "/data/documents", "/var/lib/docker/volumes/homerslab-bentopdf_documents/_data")
 	withTarget(t, p)
 	p.host.FailRestic("data=web:bento.sql", 1)
 	warnings := func() []struct{ Source, What, Resolved string } {
@@ -181,5 +184,40 @@ func TestABadTargetIsRefused(t *testing.T) {
 	}
 	if len(p.host.Restic()) != 0 {
 		t.Error("restic ran for a bad target")
+	}
+}
+
+// A run that hangs is ended, and once no run has got to its end for two hours, the admins hear of it; a run that does
+// resolves it.
+func TestBackupsThatStopEndingAreAWarning(t *testing.T) {
+	testenv.Isolate(t)
+	p := bentoWithData(t)
+	withTarget(t, p)
+	late := func() (open, resolved bool) {
+		var w []struct{ Source, Resolved string }
+		_ = json.Unmarshal(p.control("GET", "/api/v1/warnings", nil).Body, &w)
+		for _, x := range w {
+			if x.Source == "backup:late" {
+				open, resolved = x.Resolved == "", x.Resolved != ""
+			}
+		}
+		return open, resolved
+	}
+	p.host.Hang("systemd-run")
+	for range 3 {
+		start := time.Now()
+		p.m.BackUpDue(context.Background())
+		if time.Since(start) > 30*time.Second {
+			t.Fatal("a hung run wasn't ended")
+		}
+		p.clock.Add(time.Hour)
+	}
+	if open, _ := late(); !open {
+		t.Fatal("three hours of hung runs, and no warning")
+	}
+	p.host.Unhang()
+	p.m.BackUpDue(context.Background())
+	if open, resolved := late(); open || !resolved {
+		t.Errorf("after a run that got to its end: open %v, resolved %v", open, resolved)
 	}
 }

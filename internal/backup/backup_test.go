@@ -145,19 +145,22 @@ func TestSecretsAreFilesNeverArgumentsOrEnvironment(t *testing.T) {
 	}
 }
 
-// restic's cache is on the app-data disk (#22's review: counted in that disk's use), and every run first clears the
-// stale locks a crashed run of HomersLab's left, as restic tells them (the same host, a process that is gone), and no
-// other; prune frees space with a bound on what it repacks, so it still works on a nearly full target.
+// restic's cache is on the app-data disk (#22's review: counted in that disk's use); unlocking clears only the locks
+// restic finds stale (a crashed run of this machine's, a process that is gone), never a live one's; prune keeps the
+// household's schedule and bounds what it repacks, so it still works on a nearly full target.
 func TestEveryRunClearsStaleLocksAndPruneBoundsItsRepack(t *testing.T) {
 	testenv.Isolate(t)
 	rec := &recorder{answer: func(argv []string) ([]byte, error) {
 		return []byte(`{"message_type":"summary","snapshot_id":"1f2e3d4c"}` + "\n"), nil
 	}}
 	r := backup.Repo{Restic: "restic", Target: targets["disk"], Node: "primary", Dir: "/creds", Cache: "/var/lib/homerslab/backup-cache", Run: rec.run}
+	if err := r.Unlock(context.Background()); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := r.Backup(context.Background(), backup.Item{Tags: []string{"app=a", "data=web:/data"}, Paths: []string{"/v"}}); err != nil {
 		t.Fatal(err)
 	}
-	if err := r.Prune(context.Background()); err != nil {
+	if err := r.Prune(context.Background(), backup.DefaultRetention); err != nil {
 		t.Fatal(err)
 	}
 	var subs []string
@@ -174,11 +177,11 @@ func TestEveryRunClearsStaleLocksAndPruneBoundsItsRepack(t *testing.T) {
 			t.Errorf("an unlock removes live locks too: %q", a)
 		}
 	}
-	if !slices.Equal(subs, []string{"unlock", "backup", "unlock", "forget"}) {
+	if !slices.Equal(subs, []string{"unlock", "backup", "forget"}) {
 		t.Errorf("the runs: %q", subs)
 	}
 	forget := rec.sub("forget")[0]
-	if !slices.Contains(forget, "--prune") || !slices.Contains(forget, "--max-repack-size") {
+	if !slices.Contains(forget, "--prune") || !slices.Contains(forget, "--max-repack-size") || !strings.Contains(strings.Join(forget, " "), "--keep-hourly 48 --keep-daily 30 --keep-weekly 8 --keep-monthly 12") {
 		t.Errorf("prune: %q", forget)
 	}
 }

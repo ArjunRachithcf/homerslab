@@ -190,6 +190,7 @@ func (p *primary) open() {
 		SignInWait:     300 * time.Millisecond,
 		SignInPoll:     10 * time.Millisecond,
 		Projection:     p.projection,
+		BackupWait:     2 * time.Second,
 		Log:            p.log,
 	})
 	if err != nil {

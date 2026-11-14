@@ -301,12 +301,20 @@ func (r Repo) runWith(ctx context.Context, stdin []byte, args ...string) ([]byte
 	return out, err
 }
 
-// Init makes the node's repository with its key, unless the target has it already: then the key must open it.
-func (r Repo) Init(ctx context.Context) error {
+// Every method runs restic once, so each run can be a unit of its own (the agent's).
+
+// Exists says whether the target has the node's repository, which the key opens (ErrWrongKey when it doesn't).
+func (r Repo) Exists(ctx context.Context) (bool, error) {
 	_, err := r.run(ctx, "cat", "config")
 	if errors.Is(err, ErrNoRepository) {
-		_, err = r.run(ctx, "init")
+		return false, nil
 	}
+	return err == nil, err
+}
+
+// Init makes the node's repository with its key. The caller asks Exists first: a repository is never made twice.
+func (r Repo) Init(ctx context.Context) error {
+	_, err := r.run(ctx, "init")
 	return err
 }
 
@@ -327,7 +335,7 @@ type Item struct {
 	File    string
 }
 
-// Backup saves one snapshot of the item, after clearing stale locks, and returns its id.
+// Backup saves one snapshot of the item, and returns its id. A run clears stale locks first (Unlock), once.
 func (r Repo) Backup(ctx context.Context, it Item) (string, error) {
 	args := []string{"backup", "--host", r.Node}
 	for _, t := range it.Tags {
@@ -351,9 +359,6 @@ func (r Repo) Backup(ctx context.Context, it Item) (string, error) {
 		}
 	default:
 		return "", errors.New("backup: folders, or a dump's command and its file")
-	}
-	if err := r.Unlock(ctx); err != nil {
-		return "", err
 	}
 	out, err := r.runWith(ctx, it.Stdin, args...)
 	id := summary(out)
@@ -405,18 +410,22 @@ func (r Repo) Snapshots(ctx context.Context, tags ...string) ([]Snapshot, error)
 	return s, json.Unmarshal(out, &s)
 }
 
-// The schedule snapshots are kept by, for each app's item on its own (proposed in the PR: two days of hours, then
-// days, weeks and months), and the most prune repacks in one run, so that it keeps freeing space on a target that is
-// nearly full.
-var keep = []string{"--keep-hourly", "48", "--keep-daily", "30", "--keep-weekly", "8", "--keep-monthly", "12"}
+// Retention is how many of each item's snapshots are kept: the latest of each of its last hours, days, weeks and
+// months that have one.
+type Retention struct{ Hourly, Daily, Weekly, Monthly int }
 
+// DefaultRetention is the household's schedule, the one place it is set: two days of hours, then a month of days, two
+// months of weeks and a year of months (proposed in #205; the maintainer's choice on #22).
+var DefaultRetention = Retention{Hourly: 48, Daily: 30, Weekly: 8, Monthly: 12}
+
+// maxRepack is the most prune repacks in one run, so it keeps freeing space on a target that is nearly full.
 const maxRepack = "2G"
 
-// Prune forgets the snapshots the schedule no longer keeps and frees their data, after clearing stale locks.
-func (r Repo) Prune(ctx context.Context) error {
-	if err := r.Unlock(ctx); err != nil {
-		return err
-	}
-	_, err := r.run(ctx, append([]string{"forget", "--prune", "--max-repack-size", maxRepack, "--group-by", "host,tags"}, keep...)...)
+// Prune forgets the snapshots that k no longer keeps, for each item (host and tags) on its own, and frees their data.
+// A run clears stale locks first (Unlock).
+func (r Repo) Prune(ctx context.Context, k Retention) error {
+	_, err := r.run(ctx, "forget", "--prune", "--max-repack-size", maxRepack, "--group-by", "host,tags",
+		"--keep-hourly", strconv.Itoa(k.Hourly), "--keep-daily", strconv.Itoa(k.Daily),
+		"--keep-weekly", strconv.Itoa(k.Weekly), "--keep-monthly", strconv.Itoa(k.Monthly))
 	return err
 }

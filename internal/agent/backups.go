@@ -14,6 +14,8 @@ import (
 	"strings"
 	"time"
 
+	"golang.org/x/sys/unix"
+
 	"github.com/ArjunRachithcf/homerslab/internal/appunit"
 	"github.com/ArjunRachithcf/homerslab/internal/backup"
 	"github.com/ArjunRachithcf/homerslab/internal/engine"
@@ -97,19 +99,21 @@ func (a *Agent) backupDir() string { return filepath.Join(a.cfg.StateDir, "backu
 // The longest the agent waits for one restic run: a first backup of a photo library takes hours.
 const backupWait = 12 * time.Hour
 
-// repo is the node's repository as one run of restic in a unit of its own sees it, with the credentials sealed in dir.
+// repo is the node's repository for one run of restic, in a unit of its own, with the credentials sealed in dir: a
+// new unit's name, and the credentials folder systemd makes for it, each time.
 func (a *Agent) repo(st backupState, dir string) backup.Repo {
 	restic := a.cfg.Restic
 	if restic == "" {
 		restic = backup.Restic
 	}
-	// The credentials folder restic is told of is the one systemd makes for the unit: each run gets a unit of its own,
-	// named as it starts, and its own folder's name in place of this placeholder.
-	const dirOf = "/run/credentials/homerslab-backup.service"
-	r := backup.Repo{Restic: restic, Target: st.Target, Node: st.Node, Dir: dirOf, Cache: backupCache}
+	unit := fmt.Sprintf("homerslab-backup-%d-%d", a.cfg.Now().UnixNano(), a.backupRuns.Add(1))
+	r := backup.Repo{Restic: restic, Target: st.Target, Node: st.Node, Dir: "/run/credentials/" + unit + ".service", Cache: backupCache}
+	ran := false
 	r.Run = func(ctx context.Context, argv, env []string, stdin []byte) ([]byte, error) {
-		unit := fmt.Sprintf("homerslab-backup-%d-%d", a.cfg.Now().UnixNano(), a.backupRuns.Add(1))
-		here := func(s string) string { return strings.ReplaceAll(s, dirOf, "/run/credentials/"+unit+".service") }
+		if ran { // a unit's name is never used twice
+			return nil, errors.New("backup: one run of restic per unit")
+		}
+		ran = true
 		args := []string{"--unit=" + unit, "--quiet", "--wait", "--pipe", "--collect", "--service-type=exec",
 			"-p", "StateDirectory=" + strings.TrimPrefix(backupCache, "/var/lib/"), "-p", "ProtectSystem=strict", "-p", "PrivateTmp=yes",
 			"-p", "NoNewPrivileges=yes", "-p", "CapabilityBoundingSet=CAP_DAC_READ_SEARCH"}
@@ -120,15 +124,11 @@ func (a *Agent) repo(st backupState, dir string) backup.Repo {
 			args = append(args, "-p", "LoadCredentialEncrypted="+f+":"+filepath.Join(dir, f+".cred"))
 		}
 		for _, e := range env {
-			args = append(args, "-E", here(e))
-		}
-		args = append(args, "--")
-		for _, v := range argv {
-			args = append(args, here(v))
+			args = append(args, "-E", e)
 		}
 		ctx, cancel := context.WithTimeout(ctx, backupWait)
 		defer cancel()
-		out, err := a.cfg.Run(ctx, host.Cmd{Name: "systemd-run", Args: args, Stdin: stdin})
+		out, err := a.cfg.Run(ctx, host.Cmd{Name: "systemd-run", Args: append(append(args, "--"), argv...), Stdin: stdin})
 		if ctx.Err() != nil {
 			// Only systemd-run was ended: its unit, and restic in it, are stopped too, so no run outlives its turn.
 			stop, cancel := context.WithTimeout(context.WithoutCancel(ctx), time.Minute)
@@ -140,6 +140,13 @@ func (a *Agent) repo(st backupState, dir string) backup.Repo {
 		return out, err
 	}
 	return r
+}
+
+// unlock clears the stale locks a crashed run left, as a run's first step; a run goes on whatever it says.
+func (a *Agent) unlock(ctx context.Context, st backupState) {
+	if err := a.repo(st, a.backupDir()).Unlock(ctx); err != nil {
+		a.log.Error("clearing the repository's stale locks", "err", err)
+	}
 }
 
 // putBackups takes the household's target, seals this node's key and the target's credentials, and makes the node's
@@ -183,7 +190,11 @@ func (a *Agent) putBackups(w http.ResponseWriter, r *http.Request) {
 	}
 	slices.Sort(st.Files)
 	// The new credentials are tried from their own folder, then take the old ones' place.
-	if err := a.repo(st, next).Init(ctx); err != nil {
+	there, err := a.repo(st, next).Exists(ctx)
+	if err == nil && !there {
+		err = a.repo(st, next).Init(ctx)
+	}
+	if err != nil {
 		a.log.Error("making the node's repository at the target", "err", err)
 		_ = os.RemoveAll(next)
 		if errors.Is(err, backup.ErrWrongKey) {
@@ -270,6 +281,7 @@ func (a *Agent) postBackups(w http.ResponseWriter, r *http.Request) {
 	signIn := a.state.SignIn != nil
 	a.mu.Unlock()
 
+	a.unlock(ctx, *st)
 	out := Backups{Results: []BackupResult{}}
 	for _, id := range ids {
 		var mounts map[string][]engine.Mount
@@ -283,7 +295,7 @@ func (a *Agent) postBackups(w http.ResponseWriter, r *http.Request) {
 					mounts, mountsErr = a.cfg.Engine.Mounts(asked, appunit.Project(id))
 					cancel()
 				}
-				src, why := onMachine(mounts, mountsErr, d)
+				src, why := a.onMachine(mounts, mountsErr, d)
 				if why != "" {
 					res.Error = why
 					a.log.Error("backing up an app's folder", "app", id, "data", res.Data, "why", why, "err", mountsErr)
@@ -306,9 +318,12 @@ func (a *Agent) postBackups(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, out)
 }
 
-// onMachine is where a declared folder is on the machine: under the service's volume or folder that holds it. A
-// folder that is in no volume (in the container's own layer) can't be backed up, and says so.
-func onMachine(mounts map[string][]engine.Mount, err error, d AppData) (string, string) {
+// onMachine is where a declared folder is on the machine: exactly the root of one of its service's volumes, whose path
+// the engine made, under folders no container can reach (it sees only what is inside), and in which no component is a
+// link (openat2 with RESOLVE_NO_SYMLINKS, from the machine's root). A folder inside a volume is never taken: the app
+// could make one of its components a link, which restic, as root, would follow out of the volume (#205's review). What
+// is inside the volume, links included, restic stores as it is and never follows.
+func (a *Agent) onMachine(mounts map[string][]engine.Mount, err error, d AppData) (string, string) {
 	if err != nil {
 		return "", "engine-unreachable"
 	}
@@ -316,20 +331,35 @@ func onMachine(mounts map[string][]engine.Mount, err error, d AppData) (string, 
 	if !ok {
 		return "", "no-container"
 	}
-	best := -1
-	for i, m := range ms {
-		if (m.Destination == d.Path || strings.HasPrefix(d.Path, strings.TrimSuffix(m.Destination, "/")+"/")) && (best < 0 || len(m.Destination) > len(ms[best].Destination)) {
-			best = i
+	for _, m := range ms {
+		if m.Destination != d.Path {
+			continue
 		}
+		if !m.Volume || !backup.ValidPath(m.Source) {
+			return "", "not-a-volume"
+		}
+		if err := noLinks(a.cfg.Root, m.Source); err != nil {
+			a.log.Error("a volume's path on the machine", "path", m.Source, "err", err)
+			return "", "a-link-in-its-path"
+		}
+		return m.Source, ""
 	}
-	if best < 0 {
-		return "", "not-in-a-volume"
+	return "", "not-a-volume"
+}
+
+// noLinks says whether dir, under root, is a folder reached through no link.
+func noLinks(root, dir string) error {
+	r, err := unix.Open(root, unix.O_PATH|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return err
 	}
-	src := strings.TrimSuffix(ms[best].Source, "/") + strings.TrimPrefix(d.Path, strings.TrimSuffix(ms[best].Destination, "/"))
-	if !backup.ValidPath(src) {
-		return "", "not-in-a-volume"
+	defer unix.Close(r)
+	fd, err := unix.Openat2(r, strings.TrimPrefix(dir, "/"), &unix.OpenHow{Flags: unix.O_PATH | unix.O_DIRECTORY | unix.O_CLOEXEC,
+		Resolve: unix.RESOLVE_NO_SYMLINKS | unix.RESOLVE_NO_MAGICLINKS | unix.RESOLVE_BENEATH})
+	if err != nil {
+		return err
 	}
-	return src, ""
+	return unix.Close(fd)
 }
 
 // backUp runs one item and says how it went, in a word.
@@ -374,6 +404,7 @@ func (a *Agent) putManagerBackup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer a.backingUp.Unlock()
+	a.unlock(r.Context(), *st)
 	it := backup.Item{Tags: []string{"platform=manager", "data=manager:manager.db"}, Stdin: b, File: "manager.db"}
 	writeJSON(w, http.StatusOK, a.backUp(r.Context(), *st, it, BackupResult{Platform: "manager", Data: "manager:manager.db"}))
 }
@@ -390,7 +421,8 @@ func (a *Agent) postPrune(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer a.backingUp.Unlock()
-	if err := a.repo(*st, a.backupDir()).Prune(r.Context()); err != nil {
+	a.unlock(r.Context(), *st)
+	if err := a.repo(*st, a.backupDir()).Prune(r.Context(), backup.DefaultRetention); err != nil {
 		a.log.Error("pruning the node's repository", "err", err)
 		code := "failed"
 		if errors.Is(err, backup.ErrLocked) {

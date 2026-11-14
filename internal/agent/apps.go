@@ -312,8 +312,13 @@ func checkProject(p engine.Project, r AppRequest, signIn string) (code, detail s
 		}
 	}
 	for _, d := range r.Backups {
-		if !slices.ContainsFunc(p.Services, func(s engine.Service) bool { return s.Name == d.Service }) {
+		i := slices.IndexFunc(p.Services, func(s engine.Service) bool { return s.Name == d.Service })
+		if i < 0 {
 			return "no-such-service", d.Service
+		}
+		// A backed-up folder is exactly one of the service's named volumes, never a folder inside one (onMachine).
+		if d.Path != "" && !slices.Contains(p.Services[i].Volumes, d.Path) {
+			return "not-a-volume", d.Service
 		}
 	}
 	return "", ""
