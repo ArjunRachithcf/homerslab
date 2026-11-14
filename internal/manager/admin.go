@@ -18,9 +18,9 @@ func (m *Manager) Admin() http.Handler {
 	// The Store and the plans want an Admin session, as every page of Admin does (#17); the control socket serves the
 	// same resources to the machine's terminal.
 	store := http.NewServeMux()
-	m.catalogRoutes(store)
+	m.catalogRoutes(store, false)
 	m.storageRoutes(store)
-	for _, p := range []string{"/api/v1/catalog", "/api/v1/catalog/", "/api/v1/plans", "/api/v1/plans/", "/api/v1/apps", "/api/v1/storage", "/api/v1/storage/"} {
+	for _, p := range []string{"/api/v1/catalog", "/api/v1/catalog/", "/api/v1/plans", "/api/v1/plans/", "/api/v1/apps", "/api/v1/apps/", "/api/v1/storage", "/api/v1/storage/"} {
 		mux.Handle(p, m.signedIn(store))
 	}
 	mux.HandleFunc("/api/", notFound)

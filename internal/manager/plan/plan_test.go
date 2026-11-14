@@ -108,7 +108,7 @@ func TestAPlanSaysWhatInstallingDoes(t *testing.T) {
 	check("audience", p.Audience, plan.Audience{Default: "adults", People: []plan.Person{{Name: "Inês Ferreira", Role: "admin"}, {Name: "Rui Ferreira", Role: "adult"}}})
 	check("sign-in", p.SignIn, plan.SignIn{Method: catalog.OIDC, Provider: authentik(), Creates: "oidc-client"})
 	check("backups", p.Backups, plan.Backups{Every: "hour", RestoreTest: "week",
-		Data: []plan.BackedUp{{What: "The library", Kind: "folder"}, {What: "Its database", Kind: "dump"}},
+		Data: []plan.BackedUp{{What: "The library", Kind: "folder", Data: "web:/data"}, {What: "Its database", Kind: "dump", Data: "db:db.sql"}},
 		Left: []plan.NotBackedUp{{What: "Thumbnails", Why: "Made again from the library"}}})
 	check("placement", p.Placement, plan.Placement{Node: "study-pc", Architecture: "x86_64", Engine: catalog.Docker, Project: "homerslab-pictures",
 		Services: []plan.Service{{Name: "db", Image: "postgres:16@" + digestB, Digest: digestB}, {Name: "web", Image: "example/pictures:v2.0.1@" + digestA, Digest: digestA}}})

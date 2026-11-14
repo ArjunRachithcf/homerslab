@@ -105,6 +105,8 @@ type Manager struct {
 	signInMu  sync.Mutex  // one setting-up of the household account at a time
 	attempts  attempts    // sign-ins to Admin under way
 	backingUp atomic.Bool // a backup run is under way
+	restoring sync.Map    // the apps being restored, by id
+	restores  sync.WaitGroup
 
 	// given is what the page sees of the secrets the terminal gives (#64): those being checked, and why the last one
 	// given for each was refused. By the secret's name; never the secret.
@@ -260,7 +262,7 @@ func (m *Manager) Control() http.Handler {
 	mux.HandleFunc("PUT /api/v1/dns/token", m.putDNSToken)
 	mux.HandleFunc("PUT /api/v1/backups/target", m.putBackupTarget)
 	mux.HandleFunc("GET /api/v1/warnings", m.getWarnings)
-	m.catalogRoutes(mux)
+	m.catalogRoutes(mux, true)
 	m.storageRoutes(mux)
 	mux.HandleFunc("/", notFound)
 	return mux

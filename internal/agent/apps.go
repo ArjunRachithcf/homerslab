@@ -192,6 +192,9 @@ func (a *Agent) appUnit(id string, s *appState) appunit.App {
 // listener. The caller holds a.mu.
 func (a *Agent) appsFollowSignIn(ctx context.Context) {
 	for _, id := range slices.Sorted(maps.Keys(a.state.Apps)) {
+		if a.restoringApps[id] {
+			continue // never restarted mid-restore: it follows once its restore ends
+		}
 		u := a.appUnit(id, a.state.Apps[id])
 		want := appunit.Override(u)
 		have, err := os.ReadFile(u.OverrideFile())
@@ -379,8 +382,12 @@ func (a *Agent) putApp(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.mu.Lock()
-	prev := a.state.Apps[id]
+	prev, restoring := a.state.Apps[id], a.restoringApps[id]
 	a.mu.Unlock()
+	if restoring {
+		fail(w, http.StatusConflict, "restore-running")
+		return
+	}
 	if _, there := states[project]; there && prev == nil {
 		a.log.Warn("refused to install over a compose project HomersLab didn't create", "project", project)
 		fail(w, http.StatusConflict, "not-ours")

@@ -108,6 +108,9 @@ type Storage struct {
 type BackedUp struct {
 	What string `json:"what"`
 	Kind string `json:"kind"` // folder or dump
+	// Data is its name among the app's backups (its service and folder, or its dump's file): what its backups are
+	// tagged with, and what a restore names.
+	Data string `json:"data"`
 }
 
 // NotBackedUp is persistent data the backups leave out, and why.

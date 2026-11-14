@@ -155,10 +155,12 @@ type Storage struct {
 // ReadOnly says whether the app only reads the location.
 func (s Storage) ReadOnly() bool { return s.Access != "read-write" }
 
-// Dump is the command that writes a database dump to its standard output.
+// Dump is the command that writes a database dump to its standard output, and the command that puts one back: it runs
+// in the same service and reads the dump on its standard input, when the app is restored to an earlier point (#22).
 type Dump struct {
 	Command []string `yaml:"command" json:"command"`
 	File    string   `yaml:"file" json:"file"`
+	Restore []string `yaml:"restore" json:"restore"`
 }
 
 // Secret is one secret HomersLab generates for the app, and the UID that reads it.

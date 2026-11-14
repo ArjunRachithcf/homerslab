@@ -553,7 +553,8 @@ One folder per app: a manifest, a plain compose file (none for a host app), icon
 - **names and exposure**: the default exposure, whether a public path is allowed, and a cookie for the whole domain
   where the app truly needs one (#83);
 - **audience**: the default audience, and the kid view;
-- **data to back up**: paths, and database dumps through declared commands;
+- **data to back up**: paths, and database dumps through declared commands, each with the command that puts it back
+  (#22);
 - **secrets to generate**, and the UID that reads them;
 - **health checks**;
 - **resources**: memory, disk, GPU, and whether the app can pause when a disk is nearly full;

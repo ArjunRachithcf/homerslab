@@ -249,9 +249,9 @@ func backups(data []catalog.Data) Backups {
 		case !d.BackedUp():
 			b.Left = append(b.Left, NotBackedUp{What: d.What, Why: d.Why})
 		case d.Dump != nil:
-			b.Data = append(b.Data, BackedUp{What: d.What, Kind: "dump"})
+			b.Data = append(b.Data, BackedUp{What: d.What, Kind: "dump", Data: d.Service + ":" + d.Dump.File})
 		default:
-			b.Data = append(b.Data, BackedUp{What: d.What, Kind: "folder"})
+			b.Data = append(b.Data, BackedUp{What: d.What, Kind: "folder", Data: d.Service + ":" + d.Path})
 		}
 	}
 	return b

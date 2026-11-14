@@ -106,7 +106,13 @@ func (m *Manager) current(ctx context.Context, p plan.Plan) (catalog.App, error)
 	return a, nil
 }
 
-func (m *Manager) applyPlan(w http.ResponseWriter, r *http.Request) {
+// applyPlan applies a plan by its id; terminal says the request came on the control socket, from the machine's
+// terminal, where a risky restore needs no step-up.
+func (m *Manager) applyPlan(terminal bool) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) { m.apply(w, r, terminal) }
+}
+
+func (m *Manager) apply(w http.ResponseWriter, r *http.Request, terminal bool) {
 	ctx := r.Context()
 	b, err := m.db.Plan(ctx, r.PathValue("id"))
 	if errors.Is(err, store.ErrNotFound) {
@@ -120,6 +126,10 @@ func (m *Manager) applyPlan(w http.ResponseWriter, r *http.Request) {
 	var p plan.Plan
 	if err := json.Unmarshal(b, &p); err != nil {
 		m.internal(w, "reading a plan", err)
+		return
+	}
+	if p.Kind == "restore" {
+		m.applyRestore(w, r, b, terminal)
 		return
 	}
 	switch {
@@ -172,7 +182,7 @@ func (m *Manager) applyPlan(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case !d.BackedUp():
 		case d.Dump != nil:
-			req.Backups = append(req.Backups, agent.AppData{Service: d.Service, Dump: d.Dump.Command, File: d.Dump.File})
+			req.Backups = append(req.Backups, agent.AppData{Service: d.Service, Dump: d.Dump.Command, File: d.Dump.File, Restore: d.Dump.Restore})
 		default:
 			req.Backups = append(req.Backups, agent.AppData{Service: d.Service, Path: d.Path})
 		}

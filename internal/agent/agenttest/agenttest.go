@@ -192,9 +192,66 @@ type Host struct {
 	restic     []ResticRun
 	resticFail map[string]int  // restic's exit codes, for runs whose command line has the key
 	repos      map[string]bool // the repositories restic made
+	holds      map[string]gate // runs held until the test lets them go, by what their command line has
+	snaps      []Snapshot      // the snapshots restic made, and the test's
+	restored   []string        // what restic and the apps' restore commands put back, in order
 	// routes are the interfaces the kernel routes addresses through, when a test says (Route); otherwise the mesh's
 	// range is wt0's, and everything else the LAN's.
 	routes map[string]string
+}
+
+// Snapshot is a snapshot in the stub's repository.
+type Snapshot struct {
+	ID    string    `json:"id"`
+	Time  time.Time `json:"time"`
+	Paths []string  `json:"paths"`
+	Tags  []string  `json:"tags"`
+	Host  string    `json:"hostname"`
+	Sum   struct {
+		Bytes uint64 `json:"total_bytes_processed"`
+	} `json:"summary"`
+}
+
+type gate struct{ held, release chan struct{} }
+
+// Hold holds the next run in a unit whose command line has has, until the test lets it go: held is sent on once it is
+// held, and release lets it (and any later one) run.
+func (h *Host) Hold(has string) (held <-chan struct{}, release func()) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.holds == nil {
+		h.holds = map[string]gate{}
+	}
+	g := gate{held: make(chan struct{}, 1), release: make(chan struct{})}
+	h.holds[has] = g
+	return g.held, func() {
+		h.mu.Lock()
+		delete(h.holds, has)
+		h.mu.Unlock()
+		close(g.release)
+	}
+}
+
+// AddSnapshot puts a snapshot of path, made at a time, into the stub's repository, and returns its id.
+func (h *Host) AddSnapshot(at time.Time, path string, size uint64, tags ...string) string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.addSnapshot(at, path, size, tags)
+}
+
+func (h *Host) addSnapshot(at time.Time, path string, size uint64, tags []string) string {
+	s := Snapshot{ID: fmt.Sprintf("%064x", len(h.snaps)+0xa1), Time: at.UTC(), Paths: []string{path}, Tags: tags, Host: "primary"}
+	s.Sum.Bytes = size
+	h.snaps = append(h.snaps, s)
+	return s.ID
+}
+
+// Restored is what restores put back, in order: "restore <snapshot>:<from> <into>" for a folder, and
+// "command <service> <the app's restore command>" for a dump handed to it.
+func (h *Host) Restored() []string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return slices.Clone(h.restored)
 }
 
 // ResticRun is one run of restic, in a unit of its own: systemd-run's arguments (the unit's properties), restic's own
@@ -273,13 +330,64 @@ func (h *Host) runRestic(c host.Cmd) ([]byte, error) {
 		return nil, &host.Error{Cmd: c.String(), Err: errors.New("exit status 1")}
 	}
 	run := ResticRun{Unit: slices.Clone(c.Args[:at]), Argv: slices.Clone(c.Args[at+1:]), Stdin: c.Stdin}
-	h.restic = append(h.restic, run)
 	line := strings.Join(run.Argv, " ")
-	for has, code := range h.resticFail {
-		if strings.Contains(line, has) {
-			err := exec.Command("sh", "-c", fmt.Sprintf("exit %d", code)).Run()
-			return nil, &host.Error{Cmd: c.String(), Err: err}
+	fails := func() error {
+		for has, code := range h.resticFail {
+			if strings.Contains(line, has) {
+				err := exec.Command("sh", "-c", fmt.Sprintf("exit %d", code)).Run()
+				return &host.Error{Cmd: c.String(), Err: err}
+			}
 		}
+		return nil
+	}
+	// A dump's file removed after its restore.
+	if run.Argv[0] == "/usr/bin/rm" {
+		h.restored = append(h.restored, "remove "+run.Argv[len(run.Argv)-1])
+		return nil, nil
+	}
+	// Some of an app's services alone, as its unit would run them: the engine runs those.
+	if i := slices.Index(run.Argv, "up"); run.Argv[0] == "/usr/bin/docker" && i >= 0 && slices.Contains(run.Argv, "--no-deps") {
+		project := run.Argv[slices.Index(run.Argv, "--project-name")+1]
+		st := engine.State{Name: project}
+		for _, svc := range run.Argv[i+1:] {
+			if !strings.HasPrefix(svc, "--") {
+				st.Containers = append(st.Containers, engine.Container{Service: svc, Name: project + "-" + svc + "-1", State: "running", Health: cmp.Or(h.sick[project], "healthy")})
+			}
+		}
+		if h.projects == nil {
+			h.projects = map[string]engine.State{}
+		}
+		h.projects[project] = st
+		h.restored = append(h.restored, "run "+strings.Join(run.Argv[i+4:], " "))
+		return nil, nil
+	}
+	// An app's own restore command, in a unit of its own, reading a dump: not restic.
+	if i := slices.Index(run.Argv, "exec"); run.Argv[0] == "/usr/bin/docker" && i >= 0 {
+		if err := fails(); err != nil {
+			return nil, err
+		}
+		h.restored = append(h.restored, "command "+strings.Join(run.Argv[i+2:], " "))
+		return nil, nil
+	}
+	h.restic = append(h.restic, run)
+	tagged := func() []string {
+		var tags []string
+		for i, a := range run.Argv {
+			if a == "--tag" && i+1 < len(run.Argv) {
+				tags = append(tags, strings.Split(run.Argv[i+1], ",")...)
+			}
+		}
+		return tags
+	}
+	failed := fails()
+	var exit *exec.ExitError
+	if errors.As(failed, &exit) && exit.ExitCode() == 3 && slices.Contains(run.Argv, "backup") {
+		// restic's "some files couldn't be read": a snapshot is saved all the same.
+		id := h.addSnapshot(time.Now(), run.Argv[len(run.Argv)-1], 1, tagged())
+		return fmt.Appendf(nil, `{"message_type":"summary","snapshot_id":"%s"}`+"\n", id), failed
+	}
+	if failed != nil {
+		return nil, failed
 	}
 	repo := ""
 	if i := slices.Index(run.Argv, "--repo"); i >= 0 && i+1 < len(run.Argv) {
@@ -295,9 +403,26 @@ func (h *Host) runRestic(c host.Cmd) ([]byte, error) {
 		err := exec.Command("sh", "-c", "exit 10").Run()
 		return nil, &host.Error{Cmd: c.String(), Err: err}
 	case slices.Contains(run.Argv, "backup"):
-		return fmt.Appendf(nil, `{"message_type":"status"}`+"\n"+`{"message_type":"summary","snapshot_id":"snap%d"}`+"\n", len(h.restic)), nil
+		path := run.Argv[len(run.Argv)-1]
+		if i := slices.Index(run.Argv, "--stdin-filename"); i >= 0 {
+			path = "/" + run.Argv[i+1]
+		}
+		id := h.addSnapshot(time.Now(), path, 1024, tagged())
+		return fmt.Appendf(nil, `{"message_type":"status"}`+"\n"+`{"message_type":"summary","snapshot_id":"%s"}`+"\n", id), nil
 	case slices.Contains(run.Argv, "snapshots"):
-		return []byte("[]"), nil
+		out := []Snapshot{}
+		want := tagged()
+		for _, s := range h.snaps {
+			if !slices.ContainsFunc(want, func(t string) bool { return !slices.Contains(s.Tags, t) }) {
+				out = append(out, s)
+			}
+		}
+		return json.Marshal(out)
+	case slices.Contains(run.Argv, "restore"):
+		i := slices.Index(run.Argv, "--target")
+		h.restored = append(h.restored, "restore "+run.Argv[len(run.Argv)-1]+" "+run.Argv[i+1])
+	case slices.Contains(run.Argv, "dump"):
+		h.restored = append(h.restored, "dump "+strings.Join(run.Argv[len(run.Argv)-2:], " "))
 	}
 	return nil, nil
 }
@@ -566,6 +691,17 @@ func (h *Host) Run(ctx context.Context, c host.Cmd) ([]byte, error) {
 		<-ctx.Done()
 		return nil, ctx.Err()
 	}
+	if c.Name == "systemd-run" {
+		for has, gate := range h.holds {
+			if strings.Contains(c.String(), has) {
+				h.mu.Unlock()
+				gate.held <- struct{}{}
+				<-gate.release
+				h.mu.Lock()
+				break
+			}
+		}
+	}
 	defer h.mu.Unlock()
 	h.cmds = append(h.cmds, c)
 	line := c.String()
@@ -591,6 +727,22 @@ func (h *Host) Run(ctx context.Context, c host.Cmd) ([]byte, error) {
 		return nil, nil
 	case strings.HasPrefix(line, "systemctl --no-block restart homerslab-app-"):
 		h.startApp(c.Args[2])
+		return nil, nil
+	case len(c.Args) == 2 && (c.Args[0] == "start" || c.Args[0] == "restart") && strings.HasPrefix(c.Args[1], "homerslab-app-"):
+		h.startApp(c.Args[1])
+		return nil, nil
+	case len(c.Args) == 2 && c.Args[0] == "stop" && strings.HasPrefix(c.Args[1], "homerslab-app-"):
+		// systemd stops the unit, and compose the containers (they stay, stopped).
+		if h.stopped == nil {
+			h.stopped = map[string]bool{}
+		}
+		h.stopped[c.Args[1]] = true
+		project := "homerslab-" + strings.TrimSuffix(strings.TrimPrefix(c.Args[1], "homerslab-app-"), ".service")
+		if st, ok := h.projects[project]; ok {
+			for i := range st.Containers {
+				st.Containers[i].State = "exited"
+			}
+		}
 		return nil, nil
 	case len(c.Args) == 3 && line == "systemctl is-active --quiet "+c.Args[2] && h.stopped[c.Args[2]]:
 		return nil, &host.Error{Cmd: line, Err: errors.New("exit status 3")}

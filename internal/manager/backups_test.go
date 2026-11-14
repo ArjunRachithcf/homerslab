@@ -21,7 +21,7 @@ func bentoWithData(t *testing.T) *primary {
   - {what: Its documents, service: web, path: /data/documents}
   - what: Its database
     service: web
-    dump: {command: [pg_dump, --username=postgres, bento], file: bento.sql}
+    dump: {command: [pg_dump, --username=postgres, bento], file: bento.sql, restore: [psql, --username=postgres, bento]}
   - {what: Its previews, service: web, path: /cache, backup: false, why: They are made again}
 `, 1))
 	}, "apps/bentopdf/compose.yaml": func(b []byte) []byte {

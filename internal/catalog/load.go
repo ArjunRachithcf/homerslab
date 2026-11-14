@@ -286,6 +286,10 @@ func checkData(p *problems, data []Data) {
 		if d.Dump != nil && d.Dump.File != "" && !backup.ValidFile(d.Dump.File) {
 			p.add("data %q: a dump's file, a plain name", d.What)
 		}
+		// A dump that is backed up can be put back: the app's own command, never one HomersLab guesses.
+		if d.Dump != nil && d.BackedUp() && !backup.ValidCommand(d.Dump.Restore) {
+			p.add("data %q: a dump's restore command, which reads the dump on its standard input, of plain arguments, no shell", d.What)
+		}
 		if !d.BackedUp() && d.Why == "" {
 			p.add("data %q: why it isn't backed up", d.What)
 		}
