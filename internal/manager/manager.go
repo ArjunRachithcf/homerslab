@@ -108,8 +108,8 @@ type Manager struct {
 	checking map[string]int // how many are being checked
 	refusals map[string]string
 
-	homeMu    sync.Mutex // one writing of Home's projection at a time, and the hash of what it last wrote
-	homeSum   [32]byte
+	homeMu  sync.Mutex // one writing of Home's projection at a time, and the hash of what it last wrote
+	homeSum [32]byte
 }
 
 // New opens the manager's database.
