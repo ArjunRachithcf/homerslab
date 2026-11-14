@@ -245,6 +245,12 @@ var migrations = []string{
 		expires_at INTEGER NOT NULL,
 		revoked_at INTEGER
 	);`,
+	// The household's apps (#19): each by its id, with the plan last applied to it, which says what it is.
+	`CREATE TABLE app (
+		id         TEXT PRIMARY KEY,
+		plan_id    TEXT NOT NULL REFERENCES plan (id),
+		applied_at INTEGER NOT NULL
+	);`,
 }
 
 // Moment is when something happened: by the wall clock, for display and audit, and by the time since the machine
@@ -645,4 +651,38 @@ func (s *Store) AdminSession(ctx context.Context, tokenHash []byte, now time.Tim
 func (s *Store) EndAdminSession(ctx context.Context, tokenHash []byte, now time.Time) error {
 	_, err := s.db.ExecContext(ctx, `UPDATE admin_session SET revoked_at = ? WHERE token_hash = ? AND revoked_at IS NULL`, now.UnixMilli(), tokenHash)
 	return err
+}
+
+// App is an app of the household, and the plan last applied to it.
+type App struct {
+	ID        string
+	Plan      string
+	AppliedAt time.Time
+}
+
+// SaveApp keeps that a plan was applied to an app.
+func (s *Store) SaveApp(ctx context.Context, id, plan string, at time.Time) error {
+	_, err := s.db.ExecContext(ctx, `INSERT INTO app (id, plan_id, applied_at) VALUES (?, ?, ?)
+		ON CONFLICT (id) DO UPDATE SET plan_id = excluded.plan_id, applied_at = excluded.applied_at`, id, plan, at.UnixMilli())
+	return err
+}
+
+// Apps are the household's apps, by id.
+func (s *Store) Apps(ctx context.Context) ([]App, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT id, plan_id, applied_at FROM app ORDER BY id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []App
+	for rows.Next() {
+		var a App
+		var at int64
+		if err := rows.Scan(&a.ID, &a.Plan, &at); err != nil {
+			return nil, err
+		}
+		a.AppliedAt = time.UnixMilli(at).UTC()
+		out = append(out, a)
+	}
+	return out, rows.Err()
 }

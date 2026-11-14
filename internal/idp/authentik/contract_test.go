@@ -7,6 +7,7 @@ package authentik_test
 // explicitly.
 
 import (
+	"cmp"
 	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
@@ -49,8 +50,11 @@ import (
 	"github.com/ArjunRachithcf/homerslab/internal/testenv"
 )
 
+// project is the suite's compose project: hltest-17, or another of a test's own on a machine where that one may run
+// beside it (HOMERSLAB_TEST_IDP_PROJECT).
+var project = cmp.Or(os.Getenv("HOMERSLAB_TEST_IDP_PROJECT"), "hltest-17")
+
 const (
-	project = "hltest-17"
 	// The test's own range for the sign-in network, instead of the package's 172.31.250.0/28.
 	upstream = "http://10.217.0.10:9000"
 	landing  = "https://admin.example.test/"
@@ -388,6 +392,22 @@ type world struct {
 	bootstrap   idp.Secret
 	own         idp.Secret
 	provider    *authentik.Authentik
+}
+
+// AskGuard is the edge's forward-auth request to Authentik's embedded outpost, for a request to host.
+func (w *world) AskGuard(t *testing.T, host string) (int, string) {
+	t.Helper()
+	req, _ := http.NewRequest("GET", upstream+"/outpost.goauthentik.io/auth/caddy", nil)
+	for k, v := range map[string]string{"X-Forwarded-Host": host, "X-Forwarded-Proto": "https", "X-Forwarded-Uri": "/", "X-Forwarded-Method": "GET"} {
+		req.Header.Set(k, v)
+	}
+	c := &http.Client{Timeout: 20 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	resp, err := c.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	return resp.StatusCode, resp.Header.Get("Location")
 }
 
 func (w *world) Provider() idp.Provider   { return w.provider }

@@ -48,6 +48,9 @@ type World interface {
 	// OIDC is the relying party's HTTP client for server-to-server calls (token, keys), the way the manager reaches
 	// the sign-in.
 	OIDC() oidc.Client
+	// AskGuard asks the provider's forward-auth for a request to host, as the edge does before it lets a request
+	// reach a guarded app, from a browser with no session there; it returns the answer's status and Location.
+	AskGuard(t *testing.T, host string) (status int, location string)
 }
 
 // Enrolment is what a provider asked the browser for when it made a passkey.
@@ -306,6 +309,35 @@ func Run(t *testing.T, w World, version string) {
 		}
 		if _, err := signIn(t, laptop, "rui"); err == nil {
 			t.Error("an adult signed in to Admin's client")
+		}
+	})
+
+	t.Run("a guard per app: its own name only, and a stranger is sent to sign in (#19, #83)", func(t *testing.T) {
+		g := idp.Guard{Slug: "homerslab-bentopdf", Name: "BentoPDF", URL: "https://pdf." + h.Domain, Roles: []idp.Role{idp.Admin, idp.Adult}}
+		if err := p.EnsureGuard(ctx, g); err != nil {
+			t.Fatal(err)
+		}
+		if err := p.EnsureGuard(ctx, g); err != nil { // brought in line, not made twice
+			t.Fatalf("again: %v", err)
+		}
+		var status int
+		var location string
+		for deadline := time.Now().Add(time.Minute); ; time.Sleep(2 * time.Second) { // the outpost takes its provider in a while
+			if status, location = w.AskGuard(t, "pdf."+h.Domain); status/100 == 3 || time.Now().After(deadline) {
+				break
+			}
+		}
+		if status/100 != 3 || location == "" {
+			t.Errorf("the guard, asked for its app with no session: %d %q, want a redirect to sign in", status, location)
+		}
+		if status, _ := w.AskGuard(t, "other."+h.Domain); status/100 == 2 {
+			t.Errorf("a name no guard is for: %d, let on", status)
+		}
+		for _, bad := range []idp.Guard{{Slug: "bentopdf", URL: g.URL}, {Slug: g.Slug, URL: "http://pdf." + h.Domain}, {Slug: g.Slug, URL: "https://*." + h.Domain},
+			{Slug: g.Slug, URL: "https://pdf." + h.Domain + "/path"}} {
+			if err := p.EnsureGuard(ctx, bad); err == nil {
+				t.Errorf("made the guard %+v", bad)
+			}
 		}
 	})
 

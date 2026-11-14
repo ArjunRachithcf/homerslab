@@ -19,7 +19,7 @@ import (
 
 // agentClient asks the primary's agent, over its socket. Compose reads get longer than the agent's own deadline for
 // them, so the manager hears the agent's read-timeout instead of giving up first.
-type agentClient struct{ http, reads *http.Client }
+type agentClient struct{ http, reads, installs *http.Client }
 
 func newAgentClient(socket string) *agentClient {
 	t := &http.Transport{
@@ -33,6 +33,8 @@ func newAgentClient(socket string) *agentClient {
 	return &agentClient{
 		http:  &http.Client{Timeout: 5 * time.Second, Transport: t},
 		reads: &http.Client{Timeout: agent.ReadDeadline + 5*time.Second, Transport: t},
+		// An install reads the compose file, asks the engine and seals the app's secrets.
+		installs: &http.Client{Timeout: agent.ReadDeadline + 30*time.Second, Transport: t},
 	}
 }
 

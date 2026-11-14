@@ -103,6 +103,18 @@ type Client struct {
 	PasskeyOnly bool
 }
 
+// Guard is an app's forward-auth guard at the edge: its own, for its one name and its audience (#83: never one for the
+// whole domain). The edge asks it before any request reaches the app.
+type Guard struct {
+	// Slug names the guard in the provider, homerslab-<app>; Name is what the sign-in shows.
+	Slug string
+	Name string
+	// URL is the app's one URL, https://<name>.<domain>[:port] (ADR 0021): the only name the guard answers for.
+	URL string
+	// Roles may open the app; nobody else.
+	Roles []Role
+}
+
 // ClientCredentials are what an app needs of its OIDC client. Secret is a credential.
 type ClientCredentials struct {
 	ID     string
@@ -152,6 +164,8 @@ type Provider interface {
 	EnrolmentLink(ctx context.Context, username string) (Link, error)
 	// EnsureClient makes an app's OIDC client, or brings it in line.
 	EnsureClient(ctx context.Context, c Client) (ClientCredentials, error)
+	// EnsureGuard makes an app's guard, or brings it in line: only its roles get past it, at its URL only.
+	EnsureGuard(ctx context.Context, g Guard) error
 }
 
 // Errors an adapter returns, so callers can say what to fix.
