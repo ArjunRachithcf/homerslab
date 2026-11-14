@@ -213,6 +213,9 @@ var DefaultFlows = []string{"default-authentication-flow", "default-authenticato
 	consentFlow, invalidateFlow, "default-request", "default-source-authentication", "default-source-enrollment",
 	"default-source-pre-authentication", "default-user-settings-flow", firstAdminFlow, "default-password-change"}
 
+// retryEvery is how long a failed default blueprint is left before it is applied again.
+const retryEvery = 20 * time.Second
+
 // defaultsReady says whether Authentik's worker has made its default objects, which HomersLab's own build on or
 // guard: every flow of its default blueprints, with every default and system blueprint applied (they come one by one,
 // a fresh Authentik answers before they are), and the signing key. Prepare guards the flows it finds, so it must not
@@ -228,24 +231,39 @@ func defaultsReady(ctx context.Context, a *api) error {
 		}
 	}
 	type instance struct {
-		Path    string `json:"path"`
-		Status  string `json:"status"`
-		Enabled bool   `json:"enabled"`
+		PK          string    `json:"pk"`
+		Path        string    `json:"path"`
+		Status      string    `json:"status"`
+		Enabled     bool      `json:"enabled"`
+		LastApplied time.Time `json:"last_applied"`
 	}
 	bs, err := list[instance](ctx, a, "/managed/blueprints/")
 	if err != nil {
 		return err
 	}
 	n := 0
+	var notYet error
 	for _, b := range bs {
 		// An orphaned one's file is gone, an upgrade removed it: nothing is left to apply.
 		if !b.Enabled || b.Status == "orphaned" || !(strings.HasPrefix(b.Path, "default/") || strings.HasPrefix(b.Path, "system/")) {
 			continue
 		}
 		n++
-		if b.Status != "successful" {
-			return fmt.Errorf("%w: its blueprint %s is %s", idp.ErrNotReady, b.Path, b.Status)
+		if b.Status == "successful" {
+			continue
 		}
+		// One that failed is applied again, as Authentik's worker would only within the hour: at its first start the
+		// worker may apply a blueprint before the ones it builds on (#195's CI: default/flow-oobe.yaml). Not more often
+		// than every retryEvery, while the caller waits.
+		if b.Status == "error" && b.PK != "" && time.Since(b.LastApplied) > retryEvery {
+			_ = a.call(ctx, http.MethodPost, "/managed/blueprints/"+b.PK+"/apply/", nil, nil)
+		}
+		if notYet == nil {
+			notYet = fmt.Errorf("%w: its blueprint %s is %s", idp.ErrNotReady, b.Path, b.Status)
+		}
+	}
+	if notYet != nil {
+		return notYet
 	}
 	if n == 0 {
 		return fmt.Errorf("%w: it hasn't found its blueprints yet", idp.ErrNotReady)

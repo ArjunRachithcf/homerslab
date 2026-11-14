@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ArjunRachithcf/homerslab/internal/idp"
 	"github.com/ArjunRachithcf/homerslab/internal/testenv"
@@ -65,5 +66,50 @@ func TestDefaultsAreReadyOnceTheBlueprintsHaveApplied(t *testing.T) {
 		if err != nil && strings.Contains(err.Error(), "token-PLACEHOLDER") {
 			t.Errorf("%s: the error holds the token", c.name)
 		}
+	}
+}
+
+// A default blueprint that failed (Authentik's worker applies them in no set order at its first start, and one may come
+// before what it builds on) is applied again while the caller waits, at most every so often; one applied just now is
+// left to finish.
+func TestAFailedDefaultBlueprintIsAppliedAgain(t *testing.T) {
+	testenv.Isolate(t)
+	var applied []string
+	var lastApplied string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var results []any
+		switch {
+		case r.Method == http.MethodPost:
+			applied = append(applied, r.URL.Path)
+			_, _ = w.Write([]byte("{}"))
+			return
+		case r.URL.Path == "/api/v3/flows/instances/":
+			results = []any{map[string]string{"pk": "f", "slug": r.URL.Query().Get("slug")}}
+		case r.URL.Path == "/api/v3/managed/blueprints/":
+			results = []any{map[string]any{"pk": "b-ok", "path": "default/flow-a.yaml", "status": "successful", "enabled": true},
+				map[string]any{"pk": "b-oobe", "path": "default/flow-oobe.yaml", "status": "error", "enabled": true, "last_applied": lastApplied}}
+		default:
+			http.NotFound(w, r)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"pagination": map[string]any{"next": 0}, "results": results})
+	}))
+	defer srv.Close()
+	a, err := newAPI(srv.URL, idp.Household{Name: "x", Domain: "example.test"}, "token-PLACEHOLDER")
+	if err != nil {
+		t.Fatal(err)
+	}
+	lastApplied = time.Now().Add(-time.Minute).UTC().Format(time.RFC3339Nano)
+	if err := defaultsReady(context.Background(), a); !errors.Is(err, idp.ErrNotReady) {
+		t.Fatalf("with a failed blueprint: %v", err)
+	}
+	if len(applied) != 1 || applied[0] != "/api/v3/managed/blueprints/b-oobe/apply/" {
+		t.Errorf("applied again: %q", applied)
+	}
+	applied = nil
+	lastApplied = time.Now().UTC().Format(time.RFC3339Nano)
+	_ = defaultsReady(context.Background(), a)
+	if len(applied) != 0 {
+		t.Errorf("applied again right after it was: %q", applied)
 	}
 }
