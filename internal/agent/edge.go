@@ -105,6 +105,7 @@ func (a *Agent) edgeConfig() (cfg []byte, ok bool, err error) {
 	if e.SignIn != "" && a.state.SignIn != nil {
 		c.SignIn = &edge.Site{Name: e.SignIn, Dial: a.upstream()}
 	}
+	c.Apps = a.edgeApps()
 	b, err := edge.Render(c)
 	return b, err == nil, err
 }

@@ -81,6 +81,14 @@ type Config struct {
 	Log            *slog.Logger
 	// Executable is the agent's own program, which it runs as each compose read's child; os.Executable() when "".
 	Executable string
+	// Engine reads the apps' compose projects (#19): the Compose SDK on the environment's engine endpoint when nil (the
+	// agent's unit sets none: Docker's own socket).
+	Engine AppEngine
+	// Users finds a user's uid by name, for the firewall table (the edge's and the manager's): /etc/passwd when nil.
+	Users func(name string) (uint32, bool)
+	// Probe asks an app's upstream for a health check's path, as the edge would for the app's name: an HTTP request
+	// when nil.
+	Probe func(ctx context.Context, upstream netip.AddrPort, name, path string) (ok bool, detail string)
 }
 
 // Agent is a running agent.
@@ -97,6 +105,7 @@ type Agent struct {
 	refused    map[string]bool  // engine bridge names refused, reported once each
 	meshDrift  []firewall.Drift // what the agent found changed in the mesh client, and put back
 	reads      *reads           // compose reads, one at a time
+	installs   sync.Mutex       // apps' installs, one at a time, outside mu
 	edgeDown   string           // the edge's last check's error, so a down edge is logged once
 	network    lan.Network      // the network's last reading, which the table keeps while the kernel can't be asked
 	networkErr bool             // the network can't be read, which is logged once
@@ -120,6 +129,8 @@ type state struct {
 	SetupPort int        `json:"setupPort,omitempty"`
 	// SignIn is the household account's provider, once the manager has installed it.
 	SignIn *signInState `json:"signIn,omitempty"`
+	// Apps are the apps installed on this node, by id (#19).
+	Apps map[string]*appState `json:"apps,omitempty"`
 	// Bridges are the engines' bridges as each engine last confirmed them: what the table uses until an engine
 	// answers again (at boot, before any of them runs; while one hangs).
 	Bridges map[string][]string `json:"engineBridges,omitempty"`
@@ -203,6 +214,19 @@ func New(ctx context.Context, c Config) (*Agent, error) {
 	}
 	if c.Resolve == nil {
 		c.Resolve = net.DefaultResolver.LookupHost
+	}
+	if c.Users == nil {
+		c.Users = passwdUsers(passwdFile)
+	}
+	if c.Probe == nil {
+		c.Probe = probe
+	}
+	if c.Engine == nil {
+		e, err := compose.NewEngine("")
+		if err != nil {
+			return nil, err
+		}
+		c.Engine = e
 	}
 	if c.Network == nil {
 		c.Network = lan.ReadNetwork
@@ -325,7 +349,8 @@ func (a *Agent) firewallState(context.Context) firewall.State {
 	}
 	n := a.network
 	s := firewall.State{Mesh: a.state.Mesh, WireGuard: a.state.WireGuard, LAN: n.LAN, LANPrefixes: n.Prefixes,
-		Uplinks4: n.Uplinks4, Uplinks6: n.Uplinks6, Virtual: n.Virtual, Bridges: a.bridges(), Resolvers: resolvers(a.cfg.Sysroot)}
+		Uplinks4: n.Uplinks4, Uplinks6: n.Uplinks6, Virtual: n.Virtual, Bridges: a.bridges(), Resolvers: resolvers(a.cfg.Sysroot),
+		Upstreams: a.appsFirewall()}
 	if !a.state.SetupClosed {
 		s.SetupPort = a.setupPort()
 	}
@@ -413,6 +438,9 @@ func (a *Agent) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/sign-in/logs", a.getSignInLogs)
 	mux.HandleFunc("DELETE /v1/sign-in/bootstrap-token", a.deleteBootstrapToken)
 	mux.HandleFunc("POST /v1/projects/read", a.readProject)
+	mux.HandleFunc("PUT /v1/apps/{id}", a.putApp)
+	mux.HandleFunc("GET /v1/apps", a.getApps)
+	mux.HandleFunc("GET /v1/apps/{id}/logs", a.getAppLogs)
 	mux.HandleFunc("/", func(w http.ResponseWriter, _ *http.Request) { fail(w, http.StatusNotFound, "not-found") })
 	return mux
 }

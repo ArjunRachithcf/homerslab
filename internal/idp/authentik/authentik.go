@@ -26,6 +26,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"slices"
 	"strings"
 	"time"
@@ -212,6 +213,9 @@ var DefaultFlows = []string{"default-authentication-flow", "default-authenticato
 	consentFlow, invalidateFlow, "default-request", "default-source-authentication", "default-source-enrollment",
 	"default-source-pre-authentication", "default-user-settings-flow", firstAdminFlow, "default-password-change"}
 
+// retryEvery is how long a failed default blueprint is left before it is applied again.
+const retryEvery = 20 * time.Second
+
 // defaultsReady says whether Authentik's worker has made its default objects, which HomersLab's own build on or
 // guard: every flow of its default blueprints, with every default and system blueprint applied (they come one by one,
 // a fresh Authentik answers before they are), and the signing key. Prepare guards the flows it finds, so it must not
@@ -227,24 +231,39 @@ func defaultsReady(ctx context.Context, a *api) error {
 		}
 	}
 	type instance struct {
-		Path    string `json:"path"`
-		Status  string `json:"status"`
-		Enabled bool   `json:"enabled"`
+		PK          string    `json:"pk"`
+		Path        string    `json:"path"`
+		Status      string    `json:"status"`
+		Enabled     bool      `json:"enabled"`
+		LastApplied time.Time `json:"last_applied"`
 	}
 	bs, err := list[instance](ctx, a, "/managed/blueprints/")
 	if err != nil {
 		return err
 	}
 	n := 0
+	var notYet error
 	for _, b := range bs {
 		// An orphaned one's file is gone, an upgrade removed it: nothing is left to apply.
 		if !b.Enabled || b.Status == "orphaned" || !(strings.HasPrefix(b.Path, "default/") || strings.HasPrefix(b.Path, "system/")) {
 			continue
 		}
 		n++
-		if b.Status != "successful" {
-			return fmt.Errorf("%w: its blueprint %s is %s", idp.ErrNotReady, b.Path, b.Status)
+		if b.Status == "successful" {
+			continue
 		}
+		// One that failed is applied again, as Authentik's worker would only within the hour: at its first start the
+		// worker may apply a blueprint before the ones it builds on (#195's CI: default/flow-oobe.yaml). Not more often
+		// than every retryEvery, while the caller waits.
+		if b.Status == "error" && b.PK != "" && time.Since(b.LastApplied) > retryEvery {
+			_ = a.call(ctx, http.MethodPost, "/managed/blueprints/"+b.PK+"/apply/", nil, nil)
+		}
+		if notYet == nil {
+			notYet = fmt.Errorf("%w: its blueprint %s is %s", idp.ErrNotReady, b.Path, b.Status)
+		}
+	}
+	if notYet != nil {
+		return notYet
 	}
 	if n == 0 {
 		return fmt.Errorf("%w: it hasn't found its blueprints yet", idp.ErrNotReady)
@@ -287,7 +306,10 @@ func (a *Authentik) closeFirstAdmin(ctx context.Context) error {
 	if err != nil || f == nil {
 		return err // no first-admin flow: nothing to close
 	}
-	if err := a.api.call(ctx, http.MethodPatch, "/flows/instances/"+firstAdminFlow+"/", map[string]any{"authentication": "require_superuser"}, nil); err != nil {
+	// Every binding must pass ("all"), and the one there is never does: whatever binding appears on the flow later
+	// (Authentik applies its blueprint for it again at its worker's start, after an upgrade, hourly), it stays closed.
+	if err := a.api.call(ctx, http.MethodPatch, "/flows/instances/"+firstAdminFlow+"/",
+		map[string]any{"authentication": "require_superuser", "policy_engine_mode": "all"}, nil); err != nil {
 		return err
 	}
 	never, err := a.ensure(ctx, "/policies/expression/", policyNever, map[string]any{"name": policyNever,
@@ -309,10 +331,11 @@ func randomPassword() string {
 type flow struct {
 	PK string `json:"pk"`
 	// PBM is the flow as a target of policy bindings.
-	PBM            string `json:"policybindingmodel_ptr_id"`
-	Slug           string `json:"slug"`
-	Designation    string `json:"designation"`
-	Authentication string `json:"authentication"`
+	PBM              string `json:"policybindingmodel_ptr_id"`
+	Slug             string `json:"slug"`
+	Designation      string `json:"designation"`
+	Authentication   string `json:"authentication"`
+	PolicyEngineMode string `json:"policy_engine_mode"`
 }
 
 func (a *Authentik) flow(ctx context.Context, slug string) (*flow, error) {
@@ -1001,41 +1024,105 @@ func (a *Authentik) EnsureClient(ctx context.Context, c idp.Client) (idp.ClientC
 	if err != nil {
 		return idp.ClientCredentials{}, err
 	}
-	app := map[string]any{"name": c.Name, "slug": c.Slug, "provider": p.PK, "policy_engine_mode": "any", "meta_hide": false}
+	if err := a.ensureApp(ctx, c.Slug, c.Name, p.PK, c.Roles); err != nil {
+		return idp.ClientCredentials{}, err
+	}
+	return idp.ClientCredentials{ID: p.ID, Secret: idp.Secret(p.Secret), Issuer: a.h.URL("/application/o/" + c.Slug + "/")}, nil
+}
+
+// embeddedOutpost is Authentik's own outpost, which its server runs: the guards' forward-auth endpoint.
+const embeddedOutpost = "goauthentik.io/outposts/embedded"
+
+// EnsureGuard makes an app's guard: a proxy provider of its own in forward_single mode, at the app's one URL, its
+// application, which only the guard's roles may open, on Authentik's embedded outpost (#83: never forward_domain).
+func (a *Authentik) EnsureGuard(ctx context.Context, g idp.Guard) error {
+	if u, err := url.Parse(g.URL); !strings.HasPrefix(g.Slug, "homerslab-") || err != nil || u.Scheme != "https" || u.Hostname() == "" ||
+		u.User != nil || u.Path != "" || u.RawQuery != "" || u.Fragment != "" || strings.Contains(u.Host, "*") {
+		return errors.New("authentik: a guard needs a homerslab- slug and the app's own https:// URL")
+	}
+	consent, err := a.flow(ctx, consentFlow)
+	if err != nil {
+		return err
+	}
+	inval, err := a.flow(ctx, invalidateFlow)
+	if err != nil {
+		return err
+	}
+	if consent == nil || inval == nil {
+		return errors.New("authentik: its default provider flows are missing")
+	}
+	body := map[string]any{"name": g.Slug, "authorization_flow": consent.PK, "invalidation_flow": inval.PK, "mode": "forward_single",
+		"external_host": g.URL, "internal_host": "", "basic_auth_enabled": false, "intercept_header_auth": false, "cookie_domain": "",
+		"access_token_validity": "hours=12", "authentication_flow": nil}
+	type provider struct {
+		PK int `json:"pk"`
+	}
+	p, err := one[provider](ctx, a.api, "/providers/proxy/?name="+q(g.Slug))
+	if err != nil {
+		return err
+	}
+	if p == nil {
+		p = &provider{}
+		err = a.api.call(ctx, http.MethodPost, "/providers/proxy/", body, p)
+	} else {
+		err = a.api.call(ctx, http.MethodPatch, fmt.Sprintf("/providers/proxy/%d/", p.PK), body, p)
+	}
+	if err != nil {
+		return err
+	}
+	if err := a.ensureApp(ctx, g.Slug, g.Name, p.PK, g.Roles); err != nil {
+		return err
+	}
+	type outpost struct {
+		PK        string `json:"pk"`
+		Providers []int  `json:"providers"`
+	}
+	o, err := one[outpost](ctx, a.api, "/outposts/instances/?managed__iexact="+q(embeddedOutpost))
+	if err != nil || o == nil {
+		return fmt.Errorf("authentik: its embedded outpost is missing: %v", err)
+	}
+	if slices.Contains(o.Providers, p.PK) {
+		return nil
+	}
+	providers := append(slices.Clone(o.Providers), p.PK)
+	slices.Sort(providers)
+	return a.api.call(ctx, http.MethodPatch, "/outposts/instances/"+o.PK+"/", map[string]any{"providers": providers}, nil)
+}
+
+// ensureApp makes an application for a provider, or brings it in line, which only roles may open.
+func (a *Authentik) ensureApp(ctx context.Context, slug, name string, provider int, roles []idp.Role) error {
+	app := map[string]any{"name": name, "slug": slug, "provider": provider, "policy_engine_mode": "any", "meta_hide": false}
 	var have struct {
 		Slug string `json:"slug"`
 	}
-	err = a.api.call(ctx, http.MethodGet, "/core/applications/"+c.Slug+"/", nil, &have)
+	err := a.api.call(ctx, http.MethodGet, "/core/applications/"+slug+"/", nil, &have)
 	switch {
 	case notFound(err):
 		err = a.api.call(ctx, http.MethodPost, "/core/applications/", app, nil)
 	case err == nil:
-		err = a.api.call(ctx, http.MethodPatch, "/core/applications/"+c.Slug+"/", app, nil)
+		err = a.api.call(ctx, http.MethodPatch, "/core/applications/"+slug+"/", app, nil)
 	}
 	if err != nil {
-		return idp.ClientCredentials{}, err
+		return err
 	}
 	var full struct {
 		PK string `json:"pbm_uuid"`
 	}
-	if err := a.api.call(ctx, http.MethodGet, "/core/applications/"+c.Slug+"/", nil, &full); err != nil {
-		return idp.ClientCredentials{}, err
+	if err := a.api.call(ctx, http.MethodGet, "/core/applications/"+slug+"/", nil, &full); err != nil {
+		return err
 	}
 	var bs []binding
-	for _, r := range c.Roles {
+	for _, r := range roles {
 		g, err := one[group](ctx, a.api, "/core/groups/?name="+q(idp.RoleGroup(r)))
 		if err != nil || g == nil {
-			return idp.ClientCredentials{}, fmt.Errorf("authentik: the group of %s is missing: %v", r, err)
+			return fmt.Errorf("authentik: the group of %s is missing: %v", r, err)
 		}
 		bs = append(bs, binding{Group: g.PK})
 	}
 	if len(bs) == 0 {
 		bs = []binding{{Policy: a.neverPK(ctx)}} // nobody: an application with no binding is open to everyone
 	}
-	if err := a.bindPolicies(ctx, full.PK, bs); err != nil {
-		return idp.ClientCredentials{}, err
-	}
-	return idp.ClientCredentials{ID: p.ID, Secret: idp.Secret(p.Secret), Issuer: a.h.URL("/application/o/" + c.Slug + "/")}, nil
+	return a.bindPolicies(ctx, full.PK, bs)
 }
 
 func (a *Authentik) neverPK(ctx context.Context) string {
@@ -1118,6 +1205,6 @@ func (a *Authentik) Report(ctx context.Context) (idp.Report, error) {
 	if err != nil {
 		return idp.Report{}, err
 	}
-	r.FirstAdminOff = (ak == nil || !ak.IsActive) && (f == nil || f.Authentication == "require_superuser")
+	r.FirstAdminOff = (ak == nil || !ak.IsActive) && (f == nil || f.Authentication == "require_superuser" && f.PolicyEngineMode == "all")
 	return r, nil
 }

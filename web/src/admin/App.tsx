@@ -4,7 +4,7 @@ import { useCallback, useEffect, useState, type MouseEvent, type ReactNode } fro
 import { flushSync } from 'react-dom';
 import { icon } from '../design';
 import { rich, t, type Key } from '../i18n/t';
-import { getApp, getCatalog, getPlan, makePlan, Refused, type Plan, type StoreApp, type Warning } from './api';
+import { applyPlan, getApp, getApps, getCatalog, getPlan, makePlan, Refused, type InstalledApp, type Plan, type StoreApp, type Warning } from './api';
 import { and, disk, lower, memory } from './format';
 
 type Route = { page: 'store' } | { page: 'app'; id: string } | { page: 'plan'; id: string } | { page: 'none' };
@@ -409,9 +409,61 @@ function PlanSections({ p }: { p: Plan }) {
   );
 }
 
+/** The app this plan installed, once applied: its health, asked again every few seconds while it starts. */
+function useInstalled(p: Plan): [InstalledApp | undefined, (a: InstalledApp) => void] {
+  const [app, setApp] = useState<InstalledApp>();
+  useEffect(() => {
+    let stop = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const ask = async () => {
+      try {
+        const found = (await getApps()).apps.find((a) => a.id === p.app.id && a.plan === p.id);
+        if (stop) return;
+        setApp(found);
+        if (found && found.health !== 'healthy') timer = setTimeout(() => void ask(), 3000);
+      } catch {
+        if (!stop) timer = setTimeout(() => void ask(), 3000);
+      }
+    };
+    void ask();
+    return () => { stop = true; clearTimeout(timer); };
+  }, [p.app.id, p.id, app?.appliedAt]);
+  return [app, setApp];
+}
+
+function Installed({ p, app }: { p: Plan; app: InstalledApp }) {
+  const good = app.health === 'healthy';
+  return (
+    <div className={`notice ${good ? 'notice-ok' : 'notice-warn'} plan-installed`} role="status">
+      <Icon name={good ? 'check' : 'clock'} />
+      <span className="notice-body">
+        <b>{t('plan.installed', { app: p.app.name, node: app.node })}</b>
+        <span>{t('plan.health')}: {t(`plan.health.${app.health}` as Key, { node: app.node })}</span>
+        {good && <a href={app.url} target="_blank" rel="noreferrer">{t('plan.installed.open', { host: app.host })}</a>}
+      </span>
+    </div>
+  );
+}
+
 function PlanCard({ p }: { p: Plan }) {
   const vars = { app: p.app.name, provider: p.signIn.provider.name, node: p.placement.node };
   const people = p.audience.people.map((x) => x.name);
+  const [app, setApp] = useInstalled(p);
+  const [state, setState] = useState<{ busy?: boolean; why?: string }>({});
+  const can = !p.risky && p.signIn.method === 'guard';
+  const install = async () => {
+    setState({ busy: true });
+    try {
+      setApp(await applyPlan(p.id));
+      setState({});
+    } catch (e) {
+      const code = e instanceof Refused ? e.code : 'unknown';
+      const key = `plan.install.refused.${code}` as Key;
+      const known = ['sign-in-not-ready', 'stale-plan', 'not-ours', 'agent-unreachable'].includes(code);
+      setState({ why: known ? t(key, { node: p.placement.node }) : t('plan.install.refused', { why: code }) });
+    }
+  };
+  const why = p.risky ? 'plan.install.risky' : p.signIn.method !== 'guard' ? 'plan.install.native' : undefined;
   return (
     <div className="card plan-card">
       <h2 className="card-title">{t('plan.creates')}</h2>
@@ -422,10 +474,16 @@ function PlanCard({ p }: { p: Plan }) {
         {p.backups.data.length > 0 && <li><Icon name="backups" /><span>{t('plan.creates.backups')}</span></li>}
         {people.length > 0 && <li><Icon name="home" /><span>{rich('plan.creates.home', { people: peopleNames(people) })}</span></li>}
       </ul>
-      <button type="button" className="btn btn-primary btn-lg btn-block" disabled aria-describedby="install-why">
-        {p.risky && <Icon name="key" />}{t(p.risky ? 'plan.installKey' : 'plan.install')}
-      </button>
-      <p className="btn-why" id="install-why">{t('plan.install.later')}</p>
+      {app ? <Installed p={p} app={app} /> : (
+        <>
+          <button type="button" className="btn btn-primary btn-lg btn-block" disabled={!can || state.busy} aria-describedby={why ? 'install-why' : undefined}
+            onClick={() => void install()}>
+            {p.risky && <Icon name="key" />}{state.busy ? t('plan.install.working') : t(p.risky ? 'plan.installKey' : 'plan.install')}
+          </button>
+          {why && <p className="btn-why" id="install-why">{t(why as Key)}</p>}
+          {state.why && <p className="notice notice-warn a-get-why" role="alert">{state.why}</p>}
+        </>
+      )}
       <p className="stepup-bound"><Icon name="lock" /><span>{rich(p.risky ? 'plan.boundKey' : 'plan.bound', { id: <span className="plan-id">{p.id}</span> })}</span></p>
     </div>
   );

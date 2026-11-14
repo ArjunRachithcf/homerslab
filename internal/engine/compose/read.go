@@ -2,6 +2,7 @@ package compose
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -10,6 +11,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/compose-spec/compose-go/v2/cli"
@@ -97,6 +99,10 @@ func (r *Reader) load(ctx context.Context, name string, file []byte) (engine.Pro
 		return engine.Project{}, fmt.Errorf("%w: a service only a profile runs", ErrNotPlain)
 	}
 	out := engine.Project{Name: p.Name, Services: []engine.Service{}}
+	for name := range p.Secrets {
+		out.Secrets = append(out.Secrets, name)
+	}
+	slices.Sort(out.Secrets)
 	for _, s := range p.Services {
 		if s.Extends != nil {
 			return engine.Project{}, fmt.Errorf("%w: %s extends another service", ErrNotPlain, s.Name)
@@ -104,10 +110,82 @@ func (r *Reader) load(ctx context.Context, name string, file []byte) (engine.Pro
 		if err := ownNamespaces(s); err != nil {
 			return engine.Project{}, err
 		}
-		out.Services = append(out.Services, engine.Service{Name: s.Name, Image: s.Image})
+		svc := engine.Service{Name: s.Name, Image: s.Image, NetworkMode: s.NetworkMode}
+		if s.NetworkMode == "" {
+			for n := range s.Networks {
+				if n != "default" || len(s.Networks) > 1 {
+					svc.Networks = append(svc.Networks, n)
+				}
+			}
+			slices.Sort(svc.Networks)
+		}
+		for _, port := range s.Ports {
+			if port.Published == "" {
+				// Compose publishes a port without a host port at one the engine picks.
+				svc.Published = append(svc.Published, fmt.Sprintf("%d/%s", port.Target, cmp.Or(port.Protocol, "tcp")))
+				continue
+			}
+			pub := port.Published + ":" + strconv.Itoa(int(port.Target))
+			if port.HostIP != "" {
+				pub = port.HostIP + ":" + pub
+			}
+			svc.Published = append(svc.Published, pub+"/"+cmp.Or(port.Protocol, "tcp"))
+		}
+		for _, v := range s.Volumes {
+			if v.Type == "bind" && v.Bind != nil && v.Bind.SELinux != "" {
+				svc.Relabelled = append(svc.Relabelled, v.Source)
+			}
+		}
+		svc.Loosened = loosened(s)
+		out.Services = append(out.Services, svc)
 	}
 	slices.SortFunc(out.Services, func(a, b engine.Service) int { return strings.Compare(a.Name, b.Name) })
+	for key, n := range p.Networks {
+		nw := engine.Network{Name: key, Driver: n.Driver}
+		switch {
+		case bool(n.External):
+			nw.Joined = cmp.Or(n.Name, key)
+		case n.Name != "" && n.Name != p.Name+"_"+key:
+			nw.Joined = n.Name
+		}
+		nw.Configured = len(n.DriverOpts) > 0 || n.Ipam.Driver != "" || len(n.Ipam.Config) > 0 || len(n.Ipam.Options) > 0
+		out.Networks = append(out.Networks, nw)
+	}
+	slices.SortFunc(out.Networks, func(a, b engine.Network) int { return strings.Compare(a.Name, b.Name) })
 	return out, nil
+}
+
+// tightens says whether a security option only takes from a container: no-new-privileges, the one the floor's
+// hardening uses. Any other (a label, seccomp or AppArmor profile, unconfined system paths) is the engine's to set.
+func tightens(o string) bool {
+	switch strings.ReplaceAll(o, "=", ":") {
+	case "no-new-privileges", "no-new-privileges:true":
+		return true
+	}
+	return false
+}
+
+// loosened is what a service asks for that loosens its container's confinement, each as its compose key says it: what
+// the floor and the extras speak of (privileged; a device or a capability, until extras are approved) and what would
+// undo the app's own level or limits. The namespaces are the floor's, refused as the project is read (ownNamespaces).
+func loosened(s types.ServiceConfig) []string {
+	var out []string
+	add := func(on bool, what string) {
+		if on {
+			out = append(out, what)
+		}
+	}
+	add(s.Privileged, "privileged")
+	add(len(s.CapAdd) > 0, "cap_add")
+	add(len(s.Devices) > 0, "devices")
+	add(s.Deploy != nil && s.Deploy.Resources.Reservations != nil && len(s.Deploy.Resources.Reservations.Devices) > 0, "deploy.resources.reservations.devices")
+	add(len(s.Gpus) > 0, "gpus")
+	add(slices.ContainsFunc(s.SecurityOpt, func(o string) bool { return !tightens(o) }), "security_opt")
+	add(s.CgroupParent != "", "cgroup_parent")
+	add(s.Runtime != "", "runtime")
+	add(len(s.Sysctls) > 0, "sysctls")
+	add(slices.ContainsFunc(s.VolumesFrom, func(v string) bool { return strings.HasPrefix(v, "container:") }), "volumes_from")
+	return out
 }
 
 // namespaces are the values a service's namespace keys may have, each a namespace of the app's own: its own

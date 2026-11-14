@@ -52,6 +52,8 @@ type fakeSignIn struct {
 	// beforeKeep and afterKeep run around the manager's keeping of its new token; unkept counts the ones it couldn't.
 	beforeKeep, afterKeep func()
 	unkept                int
+	// guards are the apps' guards the manager made, in order.
+	guards []idp.Guard
 }
 
 func newFakeSignIn(t *testing.T) *fakeSignIn {
@@ -233,6 +235,13 @@ func (f *fakeSignIn) EnsureClient(_ context.Context, c idp.Client) (idp.ClientCr
 		return idp.ClientCredentials{}, fmt.Errorf("Admin's client: %+v", c)
 	}
 	return idp.ClientCredentials{ID: "admin-client", Secret: clientSecret, Issuer: issuer}, nil
+}
+
+func (f *fakeSignIn) EnsureGuard(_ context.Context, g idp.Guard) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.guards = append(f.guards, g)
+	return nil
 }
 
 // atJoin is a primary whose first half is done: Authentik chosen, NetBird's cloud joined (household port 9443), the

@@ -18,6 +18,7 @@ import (
 	"regexp"
 	"slices"
 	"strconv"
+	"strings"
 )
 
 // HSTS is the Strict-Transport-Security every name the edge serves answers with (#64): a year, without
@@ -64,7 +65,49 @@ type Config struct {
 	Admin *Site
 	// SignIn is the sign-in, auth.<main domain>, on the primary only: the identity provider's server.
 	SignIn *Site
+	// Apps are this node's apps' sites.
+	Apps []App
 }
+
+// App is an app's site: its name, proxied to the app's one upstream (Dial: an address on its bridge, which only the
+// edge's user and the agent's may open, ADR 0020). Guard is the forward-auth the edge asks before any request reaches
+// the app: every app so far is guarded (its sign-in method is the guard); apps that sign people in themselves come with
+// their own ticket (#20).
+type App struct {
+	Name  string
+	Dial  string
+	Guard *Guard
+}
+
+// Guard is an identity provider's forward-auth, as the edge asks it (spec: Modules → Edge).
+type Guard struct {
+	// Dial is the provider's server; AuthURI the path the edge asks, with the request's method and URI in
+	// X-Forwarded-Method and X-Forwarded-Uri; a 2xx answer lets the request on, anything else goes back to the browser
+	// (a redirect to the sign-in).
+	Dial    string
+	AuthURI string
+	// Paths are the provider's own paths on the app's name (its callback), proxied to it, never to the app.
+	Paths []string
+	// Copy are the identity headers the provider's 2xx answer names, handed to the app; nothing else is.
+	Copy []string
+	// Cookie is the prefix of the provider's own cookies on the app's name, which the app never sees (#83).
+	Cookie string
+}
+
+// AuthentikGuard is Authentik's embedded outpost, on its server, as the guard of an app with its own proxy provider in
+// forward_single mode (#83: never one for the whole domain).
+func AuthentikGuard(dial string) *Guard {
+	return &Guard{Dial: dial, AuthURI: "/outpost.goauthentik.io/auth/caddy", Paths: []string{"/outpost.goauthentik.io/*"},
+		Copy:   []string{"X-Authentik-Username", "X-Authentik-Groups", "X-Authentik-Email", "X-Authentik-Name", "X-Authentik-Uid"},
+		Cookie: "authentik_proxy_"}
+}
+
+// IdentityHeaders are the request headers that name a person to an app behind a guard, Authentik's and those other
+// providers and apps read: a client could forge any of them, so the edge deletes them all from every request to a
+// guarded app before anything else, and only the guard's answer sets any again.
+var IdentityHeaders = []string{"X-Authentik-*", "Remote-*", "X-Remote-*", "X-Forwarded-User", "X-Forwarded-Email",
+	"X-Forwarded-Groups", "X-Forwarded-Preferred-Username", "X-Forwarded-Access-Token", "X-Auth-Request-*", "X-Webauth-*",
+	"X-Token-User-*", "X-User", "X-Email", "X-Username"}
 
 // Certificate is one domain's wildcard certificate, loaded from files.
 type Certificate struct {
@@ -145,6 +188,17 @@ func Render(c Config) ([]byte, error) {
 			{"handle": []obj{{"handler": "reverse_proxy", "upstreams": []obj{{"dial": c.SignIn.Dial}}}}},
 		}}})
 	}
+	domains := make([]string, 0, len(c.Certificates))
+	for _, crt := range c.Certificates {
+		domains = append(domains, crt.Domain)
+	}
+	for _, app := range c.Apps {
+		h, err := appRoute(app, domains)
+		if err != nil {
+			return nil, err
+		}
+		sites = append(sites, served{app.Name, h})
+	}
 	// Each name the edge serves: HSTS and Secure cookies on whatever it answers, set as the answer is written so they
 	// replace the upstream's, then what answers it. On port 80, a redirect to HTTPS on the same name, and nothing else.
 	var cookies []obj
@@ -213,6 +267,72 @@ func Render(c Config) ([]byte, error) {
 		return nil, err
 	}
 	return buf.Bytes(), nil
+}
+
+// appRoute is a guarded app's site: the client's identity headers deleted first; the provider's own paths to the
+// provider; then the guard, whose 2xx answer sets the identity it names (and passes on the provider's refreshed cookie,
+// ADR 0006); then the app, without the provider's cookie, and without any cookie it sets for a whole household domain
+// (#83). It is the site's handler, which Render serves at the app's name with HSTS and Secure cookies, as every name.
+func appRoute(a App, domains []string) (obj, error) {
+	g := a.Guard
+	if a.Name == "" || !validDial(a.Dial) || g == nil || !validDial(g.Dial) || g.AuthURI == "" || g.Cookie == "" {
+		return nil, fmt.Errorf("an app's site needs its name, its upstream and its guard: %+v", a)
+	}
+	notEmpty := func(v string) []obj { return []obj{{"not": []obj{{"vars": obj{v: []string{""}}}}}} }
+	copied := []obj{{"handle": []obj{{"handler": "vars"}}}}
+	for _, h := range g.Copy {
+		v := "{http.reverse_proxy.header." + h + "}"
+		copied = append(copied, obj{"match": notEmpty(v), "handle": []obj{{"handler": "headers", "request": obj{"set": obj{h: []string{v}}}}}})
+	}
+	// The provider's refreshed cookies, each its own header: a placeholder would join them into one with commas.
+	copied = append(copied, obj{"handle": []obj{{"handler": "copy_response_headers", "include": []string{"Set-Cookie"}}}})
+	guard := obj{"handler": "reverse_proxy", "upstreams": []obj{{"dial": g.Dial}},
+		"rewrite":         obj{"method": "GET", "uri": g.AuthURI},
+		"headers":         obj{"request": obj{"set": obj{"X-Forwarded-Method": []string{"{http.request.method}"}, "X-Forwarded-Uri": []string{"{http.request.uri}"}}}},
+		"handle_response": []obj{{"match": obj{"status_code": []int{2}}, "routes": copied}}}
+	// The provider's cookies, out of the Cookie header the app gets; a Set-Cookie of the app's for a household domain,
+	// emptied (a browser ignores an empty one).
+	cookie := regexp.QuoteMeta(g.Cookie) + `[^=;]*=[^;]*(;\s*|$)`
+	// A household domain, or any domain above it (a browser takes a cookie for example.com on home.example.com's names),
+	// with or without its dots at either end.
+	var ownDomain []obj
+	if wide := parents(domains); len(wide) > 0 {
+		ownDomain = []obj{{"search_regexp": `(?i)^.*;\s*domain\s*=\s*\.?(` + strings.Join(wide, "|") + `)\.?\s*(;.*)?$`, "replace": ""}}
+	}
+	app := obj{"handler": "headers", "request": obj{"replace": obj{"Cookie": []obj{{"search_regexp": cookie, "replace": ""}}}}}
+	if ownDomain != nil {
+		app["response"] = obj{"replace": obj{"Set-Cookie": ownDomain}, "deferred": true}
+	}
+	var own []obj
+	if len(g.Paths) > 0 {
+		own = []obj{{"match": []obj{{"path": g.Paths}}, "handle": []obj{{"handler": "reverse_proxy", "upstreams": []obj{{"dial": g.Dial}}}}, "terminal": true}}
+	}
+	sub := slices.Concat(
+		[]obj{{"handle": []obj{{"handler": "headers", "request": obj{"delete": IdentityHeaders}}}}},
+		own,
+		[]obj{{"handle": []obj{guard}}, {"handle": []obj{app, {"handler": "reverse_proxy", "upstreams": []obj{{"dial": a.Dial}}}}}},
+	)
+	return obj{"handler": "subroute", "routes": sub}, nil
+}
+
+// parents are the household's domains and every domain above them, quoted for a regular expression, in order.
+func parents(domains []string) []string {
+	var out []string
+	for _, d := range domains {
+		labels := strings.Split(strings.Trim(strings.ToLower(d), "."), ".")
+		for i := range labels {
+			if p := strings.Join(labels[i:], "."); p != "" {
+				out = append(out, regexp.QuoteMeta(p))
+			}
+		}
+	}
+	slices.Sort(out)
+	return slices.Compact(out)
+}
+
+func validDial(d string) bool {
+	_, err := netip.ParseAddrPort(d)
+	return err == nil
 }
 
 // obj is a JSON object; encoding/json writes its keys in order, so a render is deterministic.

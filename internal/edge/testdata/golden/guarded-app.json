@@ -1,0 +1,589 @@
+{
+  "admin": {
+    "config": {
+      "persist": false
+    },
+    "listen": "unix//run/homerslab-edge/admin.sock|0660"
+  },
+  "apps": {
+    "http": {
+      "servers": {
+        "mesh": {
+          "automatic_https": {
+            "disable": true
+          },
+          "listen": [
+            "100.88.7.186:443"
+          ],
+          "protocols": [
+            "h1",
+            "h2"
+          ],
+          "routes": [
+            {
+              "handle": [
+                {
+                  "handler": "headers",
+                  "response": {
+                    "deferred": true,
+                    "replace": {
+                      "Set-Cookie": [
+                        {
+                          "replace": "$1",
+                          "search_regexp": "(?i);\\s*secure\\s*(;|$)"
+                        },
+                        {
+                          "replace": "; Secure",
+                          "search_regexp": "$"
+                        }
+                      ]
+                    },
+                    "set": {
+                      "Strict-Transport-Security": [
+                        "max-age=31536000"
+                      ]
+                    }
+                  }
+                },
+                {
+                  "handler": "reverse_proxy",
+                  "upstreams": [
+                    {
+                      "dial": "unix//run/homerslab-admin.sock"
+                    }
+                  ]
+                }
+              ],
+              "match": [
+                {
+                  "host": [
+                    "admin.example.test"
+                  ]
+                }
+              ],
+              "terminal": true
+            },
+            {
+              "handle": [
+                {
+                  "handler": "headers",
+                  "response": {
+                    "deferred": true,
+                    "replace": {
+                      "Set-Cookie": [
+                        {
+                          "replace": "$1",
+                          "search_regexp": "(?i);\\s*secure\\s*(;|$)"
+                        },
+                        {
+                          "replace": "; Secure",
+                          "search_regexp": "$"
+                        }
+                      ]
+                    },
+                    "set": {
+                      "Strict-Transport-Security": [
+                        "max-age=31536000"
+                      ]
+                    }
+                  }
+                },
+                {
+                  "handler": "subroute",
+                  "routes": [
+                    {
+                      "handle": [
+                        {
+                          "handler": "static_response",
+                          "status_code": 403
+                        }
+                      ],
+                      "match": [
+                        {
+                          "path": [
+                            "/if/flow/initial-setup",
+                            "/if/flow/initial-setup/*",
+                            "/api/v3/flows/executor/initial-setup",
+                            "/api/v3/flows/executor/initial-setup/*",
+                            "/api/v3/flows/instances/initial-setup",
+                            "/api/v3/flows/instances/initial-setup/*"
+                          ]
+                        }
+                      ],
+                      "terminal": true
+                    },
+                    {
+                      "handle": [
+                        {
+                          "handler": "reverse_proxy",
+                          "upstreams": [
+                            {
+                              "dial": "172.31.250.10:9000"
+                            }
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ],
+              "match": [
+                {
+                  "host": [
+                    "auth.example.test"
+                  ]
+                }
+              ],
+              "terminal": true
+            },
+            {
+              "handle": [
+                {
+                  "handler": "headers",
+                  "response": {
+                    "deferred": true,
+                    "replace": {
+                      "Set-Cookie": [
+                        {
+                          "replace": "$1",
+                          "search_regexp": "(?i);\\s*secure\\s*(;|$)"
+                        },
+                        {
+                          "replace": "; Secure",
+                          "search_regexp": "$"
+                        }
+                      ]
+                    },
+                    "set": {
+                      "Strict-Transport-Security": [
+                        "max-age=31536000"
+                      ]
+                    }
+                  }
+                },
+                {
+                  "handler": "subroute",
+                  "routes": [
+                    {
+                      "handle": [
+                        {
+                          "handler": "headers",
+                          "request": {
+                            "delete": [
+                              "X-Authentik-*",
+                              "Remote-*",
+                              "X-Remote-*",
+                              "X-Forwarded-User",
+                              "X-Forwarded-Email",
+                              "X-Forwarded-Groups",
+                              "X-Forwarded-Preferred-Username",
+                              "X-Forwarded-Access-Token",
+                              "X-Auth-Request-*",
+                              "X-Webauth-*",
+                              "X-Token-User-*",
+                              "X-User",
+                              "X-Email",
+                              "X-Username"
+                            ]
+                          }
+                        }
+                      ]
+                    },
+                    {
+                      "handle": [
+                        {
+                          "handler": "reverse_proxy",
+                          "upstreams": [
+                            {
+                              "dial": "172.31.250.10:9000"
+                            }
+                          ]
+                        }
+                      ],
+                      "match": [
+                        {
+                          "path": [
+                            "/outpost.goauthentik.io/*"
+                          ]
+                        }
+                      ],
+                      "terminal": true
+                    },
+                    {
+                      "handle": [
+                        {
+                          "handle_response": [
+                            {
+                              "match": {
+                                "status_code": [
+                                  2
+                                ]
+                              },
+                              "routes": [
+                                {
+                                  "handle": [
+                                    {
+                                      "handler": "vars"
+                                    }
+                                  ]
+                                },
+                                {
+                                  "handle": [
+                                    {
+                                      "handler": "headers",
+                                      "request": {
+                                        "set": {
+                                          "X-Authentik-Username": [
+                                            "{http.reverse_proxy.header.X-Authentik-Username}"
+                                          ]
+                                        }
+                                      }
+                                    }
+                                  ],
+                                  "match": [
+                                    {
+                                      "not": [
+                                        {
+                                          "vars": {
+                                            "{http.reverse_proxy.header.X-Authentik-Username}": [
+                                              ""
+                                            ]
+                                          }
+                                        }
+                                      ]
+                                    }
+                                  ]
+                                },
+                                {
+                                  "handle": [
+                                    {
+                                      "handler": "headers",
+                                      "request": {
+                                        "set": {
+                                          "X-Authentik-Groups": [
+                                            "{http.reverse_proxy.header.X-Authentik-Groups}"
+                                          ]
+                                        }
+                                      }
+                                    }
+                                  ],
+                                  "match": [
+                                    {
+                                      "not": [
+                                        {
+                                          "vars": {
+                                            "{http.reverse_proxy.header.X-Authentik-Groups}": [
+                                              ""
+                                            ]
+                                          }
+                                        }
+                                      ]
+                                    }
+                                  ]
+                                },
+                                {
+                                  "handle": [
+                                    {
+                                      "handler": "headers",
+                                      "request": {
+                                        "set": {
+                                          "X-Authentik-Email": [
+                                            "{http.reverse_proxy.header.X-Authentik-Email}"
+                                          ]
+                                        }
+                                      }
+                                    }
+                                  ],
+                                  "match": [
+                                    {
+                                      "not": [
+                                        {
+                                          "vars": {
+                                            "{http.reverse_proxy.header.X-Authentik-Email}": [
+                                              ""
+                                            ]
+                                          }
+                                        }
+                                      ]
+                                    }
+                                  ]
+                                },
+                                {
+                                  "handle": [
+                                    {
+                                      "handler": "headers",
+                                      "request": {
+                                        "set": {
+                                          "X-Authentik-Name": [
+                                            "{http.reverse_proxy.header.X-Authentik-Name}"
+                                          ]
+                                        }
+                                      }
+                                    }
+                                  ],
+                                  "match": [
+                                    {
+                                      "not": [
+                                        {
+                                          "vars": {
+                                            "{http.reverse_proxy.header.X-Authentik-Name}": [
+                                              ""
+                                            ]
+                                          }
+                                        }
+                                      ]
+                                    }
+                                  ]
+                                },
+                                {
+                                  "handle": [
+                                    {
+                                      "handler": "headers",
+                                      "request": {
+                                        "set": {
+                                          "X-Authentik-Uid": [
+                                            "{http.reverse_proxy.header.X-Authentik-Uid}"
+                                          ]
+                                        }
+                                      }
+                                    }
+                                  ],
+                                  "match": [
+                                    {
+                                      "not": [
+                                        {
+                                          "vars": {
+                                            "{http.reverse_proxy.header.X-Authentik-Uid}": [
+                                              ""
+                                            ]
+                                          }
+                                        }
+                                      ]
+                                    }
+                                  ]
+                                },
+                                {
+                                  "handle": [
+                                    {
+                                      "handler": "copy_response_headers",
+                                      "include": [
+                                        "Set-Cookie"
+                                      ]
+                                    }
+                                  ]
+                                }
+                              ]
+                            }
+                          ],
+                          "handler": "reverse_proxy",
+                          "headers": {
+                            "request": {
+                              "set": {
+                                "X-Forwarded-Method": [
+                                  "{http.request.method}"
+                                ],
+                                "X-Forwarded-Uri": [
+                                  "{http.request.uri}"
+                                ]
+                              }
+                            }
+                          },
+                          "rewrite": {
+                            "method": "GET",
+                            "uri": "/outpost.goauthentik.io/auth/caddy"
+                          },
+                          "upstreams": [
+                            {
+                              "dial": "172.31.250.10:9000"
+                            }
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "handle": [
+                        {
+                          "handler": "headers",
+                          "request": {
+                            "replace": {
+                              "Cookie": [
+                                {
+                                  "replace": "",
+                                  "search_regexp": "authentik_proxy_[^=;]*=[^;]*(;\\s*|$)"
+                                }
+                              ]
+                            }
+                          },
+                          "response": {
+                            "deferred": true,
+                            "replace": {
+                              "Set-Cookie": [
+                                {
+                                  "replace": "",
+                                  "search_regexp": "(?i)^.*;\\s*domain\\s*=\\s*\\.?(example\\.test|test)\\.?\\s*(;.*)?$"
+                                }
+                              ]
+                            }
+                          }
+                        },
+                        {
+                          "handler": "reverse_proxy",
+                          "upstreams": [
+                            {
+                              "dial": "172.31.240.2:8080"
+                            }
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ],
+              "match": [
+                {
+                  "host": [
+                    "pdf.example.test"
+                  ]
+                }
+              ],
+              "terminal": true
+            },
+            {
+              "handle": [
+                {
+                  "handler": "static_response",
+                  "status_code": 421
+                }
+              ]
+            }
+          ],
+          "tls_connection_policies": [
+            {
+              "certificate_selection": {
+                "any_tag": [
+                  "example.test"
+                ]
+              },
+              "match": {
+                "sni": [
+                  "*.example.test"
+                ]
+              }
+            }
+          ]
+        },
+        "redirect": {
+          "automatic_https": {
+            "disable": true
+          },
+          "listen": [
+            "100.88.7.186:80"
+          ],
+          "protocols": [
+            "h1"
+          ],
+          "routes": [
+            {
+              "handle": [
+                {
+                  "handler": "static_response",
+                  "headers": {
+                    "Location": [
+                      "https://admin.example.test{http.request.uri}"
+                    ]
+                  },
+                  "status_code": 308
+                }
+              ],
+              "match": [
+                {
+                  "host": [
+                    "admin.example.test"
+                  ],
+                  "path": [
+                    "/*"
+                  ]
+                }
+              ],
+              "terminal": true
+            },
+            {
+              "handle": [
+                {
+                  "handler": "static_response",
+                  "headers": {
+                    "Location": [
+                      "https://auth.example.test{http.request.uri}"
+                    ]
+                  },
+                  "status_code": 308
+                }
+              ],
+              "match": [
+                {
+                  "host": [
+                    "auth.example.test"
+                  ],
+                  "path": [
+                    "/*"
+                  ]
+                }
+              ],
+              "terminal": true
+            },
+            {
+              "handle": [
+                {
+                  "handler": "static_response",
+                  "headers": {
+                    "Location": [
+                      "https://pdf.example.test{http.request.uri}"
+                    ]
+                  },
+                  "status_code": 308
+                }
+              ],
+              "match": [
+                {
+                  "host": [
+                    "pdf.example.test"
+                  ],
+                  "path": [
+                    "/*"
+                  ]
+                }
+              ],
+              "terminal": true
+            },
+            {
+              "handle": [
+                {
+                  "handler": "static_response",
+                  "status_code": 421
+                }
+              ]
+            }
+          ]
+        }
+      }
+    },
+    "tls": {
+      "certificates": {
+        "load_files": [
+          {
+            "certificate": "/run/credentials/homerslab-edge.service/tls-example.test.crt",
+            "key": "/run/credentials/homerslab-edge.service/tls-example.test.key",
+            "tags": [
+              "example.test"
+            ]
+          }
+        ]
+      },
+      "disable_ocsp_stapling": true
+    }
+  },
+  "storage": {
+    "module": "file_system",
+    "root": "/var/lib/homerslab-edge"
+  }
+}

@@ -9,8 +9,8 @@ import (
 	"strings"
 )
 
-// catalogRoutes are the catalog's and the install plans' resources, the same on Admin's socket and the control
-// socket.
+// catalogRoutes are the catalog's, the install plans' and the apps' resources, the same on Admin's socket and the
+// control socket.
 func (m *Manager) catalogRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v1/catalog", m.getCatalog)
 	mux.HandleFunc("GET /api/v1/catalog/apps/{id}", m.getCatalogApp)
@@ -18,6 +18,8 @@ func (m *Manager) catalogRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v1/catalog/apps/{id}/screenshots/{n}", m.getScreenshot)
 	mux.HandleFunc("POST /api/v1/plans", m.newPlan)
 	mux.HandleFunc("GET /api/v1/plans/{id}", m.getPlan)
+	mux.HandleFunc("POST /api/v1/plans/{id}/apply", m.applyPlan)
+	mux.HandleFunc("GET /api/v1/apps", m.getApps)
 }
 
 // adminOrigin takes a change on Admin only as JSON sent by Admin's own page, which the edge serves over HTTPS at

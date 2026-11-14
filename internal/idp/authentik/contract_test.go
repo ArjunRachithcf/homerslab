@@ -7,6 +7,7 @@ package authentik_test
 // explicitly.
 
 import (
+	"cmp"
 	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
@@ -49,8 +50,11 @@ import (
 	"github.com/ArjunRachithcf/homerslab/internal/testenv"
 )
 
+// project is the suite's compose project: hltest-17, or another of a test's own on a machine where that one may run
+// beside it (HOMERSLAB_TEST_IDP_PROJECT).
+var project = cmp.Or(os.Getenv("HOMERSLAB_TEST_IDP_PROJECT"), "hltest-17")
+
 const (
-	project = "hltest-17"
 	// The test's own range for the sign-in network, instead of the package's 172.31.250.0/28.
 	upstream = "http://10.217.0.10:9000"
 	landing  = "https://admin.example.test/"
@@ -168,6 +172,41 @@ func TestTheIdentityProviderContractOnAuthentik(t *testing.T) {
 	w.own = own
 	w.provider = a
 	idptest.Run(t, w, authentik.Version)
+
+	// Authentik applies its own blueprints again when its worker likes (at its start, after an upgrade, hourly). Its
+	// first-admin blueprint must apply over HomersLab's closing of that flow, and the flow stay closed (#195's CI:
+	// the sign-in waited on that blueprint, which had failed at Authentik's first start).
+	t.Run("Authentik applies its first-admin blueprint again: it succeeds, and the flow still applies to nobody (#84)", func(t *testing.T) {
+		var bs struct {
+			Results []struct {
+				PK     string `json:"pk"`
+				Path   string `json:"path"`
+				Status string `json:"status"`
+			}
+		}
+		w.raw(t, own, "GET", "/api/v3/managed/blueprints/?path=default/flow-oobe.yaml", nil, &bs)
+		if len(bs.Results) != 1 {
+			t.Fatalf("the first-admin blueprint: %+v", bs.Results)
+		}
+		w.raw(t, own, "POST", "/api/v3/managed/blueprints/"+bs.Results[0].PK+"/apply/", nil, nil)
+		status := ""
+		for range 60 {
+			w.raw(t, own, "GET", "/api/v3/managed/blueprints/?path=default/flow-oobe.yaml", nil, &bs)
+			if status = bs.Results[0].Status; status == "successful" {
+				break
+			}
+			time.Sleep(time.Second)
+		}
+		if status != "successful" {
+			t.Errorf("the first-admin blueprint, applied again: %s", status)
+		}
+		if in := w.FirstAdmin(t); len(in) > 0 {
+			t.Errorf("after the blueprint again, a stranger became an admin through: %v", in)
+		}
+		if r, err := a.Report(ctx); err != nil || !r.FirstAdminOff {
+			t.Errorf("the report: %+v %v", r, err)
+		}
+	})
 
 	t.Run("drift: the report reads the household policy's expression too, and Prepare puts it back", func(t *testing.T) {
 		var ps struct {
@@ -388,6 +427,22 @@ type world struct {
 	bootstrap   idp.Secret
 	own         idp.Secret
 	provider    *authentik.Authentik
+}
+
+// AskGuard is the edge's forward-auth request to Authentik's embedded outpost, for a request to host.
+func (w *world) AskGuard(t *testing.T, host string) (int, string) {
+	t.Helper()
+	req, _ := http.NewRequest("GET", upstream+"/outpost.goauthentik.io/auth/caddy", nil)
+	for k, v := range map[string]string{"X-Forwarded-Host": host, "X-Forwarded-Proto": "https", "X-Forwarded-Uri": "/", "X-Forwarded-Method": "GET"} {
+		req.Header.Set(k, v)
+	}
+	c := &http.Client{Timeout: 20 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	resp, err := c.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	return resp.StatusCode, resp.Header.Get("Location")
 }
 
 func (w *world) Provider() idp.Provider   { return w.provider }

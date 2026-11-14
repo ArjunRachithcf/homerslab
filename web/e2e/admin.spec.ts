@@ -55,6 +55,27 @@ test('a guarded app’s plan says the edge signs people in', async ({ page, prim
   await expect(page.getByText('pdf.ferreira.family').first()).toBeVisible();
 });
 
+test('a guarded app’s plan installs from its page; before the household account is set up, Install says so', async ({ page, primary }) => {
+  await primary.setUp();
+  await page.goto(await primary.adminURL());
+  await page.getByRole('button', { name: 'Get BentoPDF: see its install plan' }).click();
+  await expect(page.getByRole('heading', { level: 1 })).toHaveText('Install BentoPDF');
+  const install = page.getByRole('button', { name: 'Install', exact: true });
+  await expect(install).toBeEnabled();
+  await install.click();
+  await expect(page.getByRole('alert')).toContainText('the household account isn’t set up yet');
+  await expect(install).toBeEnabled(); // nothing changed: the same plan can be applied once the account is there
+});
+
+test('an app that signs people in itself, or one with an extra, can’t be installed yet, and says why', async ({ page, primary }) => {
+  await primary.setUp();
+  await page.goto(await primary.adminURL());
+  await page.getByRole('button', { name: 'Get Immich: see its install plan' }).click();
+  await expect(page.getByRole('heading', { level: 1 })).toHaveText('Install Immich');
+  await expect(page.getByRole('button', { name: 'Install', exact: true })).toBeDisabled();
+  await expect(page.getByText('Apps that sign people in themselves come with a later version of HomersLab.')).toBeVisible();
+});
+
 test('before first-time setup, Get says what’s missing', async ({ page, primary }) => {
   primary.withDomain();
   await page.goto(await primary.adminURL());

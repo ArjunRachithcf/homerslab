@@ -208,6 +208,36 @@ jobs:
         # The containers' logs, which the suites print when they fail, are third-party text too.
         run: sh .github/scripts/stop-commands.sh go test -count=1 -v -run 'TestTheDNSProviderContract$|TestTheEdgesRequestMatrix' ./internal/certs/ ./internal/edge/
 
+  engine:
+    name: Container-engine contract (Docker, the runner's own, a throwaway engine)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    # Modules come only from the step that fetches them, as in the Go job.
+    env:
+      GOPROXY: "off"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - name: Fetch the modules
+        env:
+          GOPROXY: https://proxy.golang.org,direct
+        run: sh .github/scripts/stop-commands.sh go mod download
+      # Apps' compose projects run as their units run them (the standard compose command on the catalog's file and the
+      # agent's), on the runner's Docker, which nothing else uses; the adapter reads their state, health and logs through
+      # the Compose SDK (#19). Only the harness and the adapter under test reach that engine, by its endpoint
+      # (HOMERSLAB_TEST_DOCKER_HOST); DOCKER_HOST points at nowhere. The image is pinned by digest in the test.
+      - name: The contract suite
+        env:
+          HOMERSLAB_TEST_DOCKER_HOST: unix:///var/run/docker.sock
+          DOCKER_HOST: unix:///nonexistent
+          CONTAINER_HOST: unix:///nonexistent
+        # The containers' logs, which the suite reads, are third-party text too.
+        run: sh .github/scripts/stop-commands.sh go test -count=1 -v -run TestTheContainerEngineContractOnDocker ./internal/engine/compose/
+
   identity:
     name: Identity provider contract (Authentik in containers, Chromium's virtual authenticator)
     runs-on: ubuntu-24.04

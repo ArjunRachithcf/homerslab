@@ -20,7 +20,6 @@
   "setup.full.lead": "HomersLab can’t keep anything you answer until there’s room on it. Free some space on this machine, then try again.",
   "setup.full.answer": "This machine’s disk is full, so your answer wasn’t kept. Free some space on it, then continue again.",
   "setup.error.unbuilt": "This step comes with a later version of HomersLab. What you’ve chosen so far is kept.",
-
   "setup.fail.server": "HomersLab couldn’t save this. What you typed is still here: try again in a moment.",
   "setup.fail.offline": "This device couldn’t reach HomersLab. Check its connection, then try again: what you typed is still here.",
   "setup.fail.moved": "Setup moved on in another tab or browser. Reload to carry on from where it is now.",
@@ -30,7 +29,6 @@
   "setup.fail.refused": "HomersLab didn’t take this answer. Reload this page to carry on from where setup is.",
   "setup.fail.here": "HomersLab takes setup only from this machine or your home network, on its own page. Open the link again from there.",
   "setup.fail.reload": "Reload",
-
   "step.welcome.title": "Let’s set up HomersLab",
   "step.welcome.lead": "This machine, {host}, will run your household’s apps. It takes about 20 minutes, and you can stop at any time.",
   "step.welcome.backTitle": "Welcome back",
@@ -74,7 +72,6 @@
   "step.you.nameMarks": "Your name has too many accents or marks on one letter: four at most. Type it again.",
   "step.you.mailTooLong": "A mail address can be 254 characters at most.",
   "step.you.mailHidden": "This mail address has an invisible character, often pasted along with it. Type it again.",
-
   "step.household.title": "Name your household",
   "step.household.lead": "Everyone you invite joins it. You can change its name later.",
   "step.household.name": "The household’s name",
@@ -84,7 +81,6 @@
   "step.household.tooLong": "The household’s name can be 64 characters at most. An accent or an emoji can count as more than one.",
   "step.household.marks": "The name has too many accents or marks on one letter: four at most. Type it again.",
   "step.household.hidden": "The name has an invisible character, or one a name can’t use, often pasted along with it. Type it again.",
-
   "step.signin.title": "How everyone signs in",
   "step.signin.lead": "One household account and a passkey for every app, on the TV too.",
   "step.signin.choose": "The household account",
@@ -186,7 +182,6 @@
   "account.failed": "HomersLab couldn’t finish setup. Try again in a moment.",
   "account.done.title": "You’re all set",
   "account.done.lead": "Your household account is ready, with two ways in.",
-
   "admin.title": "{title} · Admin · HomersLab",
   "admin.skip": "Skip to the content",
   "admin.nav": "Admin",
@@ -199,7 +194,6 @@
   "admin.notFound.title": "Nothing here",
   "admin.notFound.lead": "There’s no such page in Admin.",
   "admin.back.store": "Store",
-
   "store.title": "Store",
   "store.sub": "{catalog}, from {publisher}",
   "store.get": "Get",
@@ -239,7 +233,6 @@
   "store.planning": "Making its plan…",
   "store.notSetUp": "Finish first-time setup first: a plan needs the household’s name and your mail address.",
   "store.cantPlan": "HomersLab can’t plan this app: {why}.",
-
   "plan.title": "Install {app}",
   "plan.sub": "What installing {app} will do, in plain words. Nothing happens until you press Install.",
   "plan.meta": "Plan {id} · made {when} · {app} {version}, {tier}, from the {catalog} catalog by {publisher}",
@@ -324,13 +317,27 @@
   "plan.creates.home": "A place on Home for {people}",
   "plan.install": "Install",
   "plan.installKey": "Install with your passkey",
-  "plan.install.later": "Installing comes with a later version of HomersLab.",
+  "plan.install.risky": "Your passkey approves extras with a later version of HomersLab.",
+  "plan.install.native": "Apps that sign people in themselves come with a later version of HomersLab.",
+  "plan.install.working": "Installing…",
+  "plan.install.refused": "Not installed: {why}",
+  "plan.install.refused.sign-in-not-ready": "Not installed: the household account isn’t set up yet. Finish first-time setup first.",
+  "plan.install.refused.stale-plan": "Not installed: the household or the catalog changed since this plan was made. Make the plan again.",
+  "plan.install.refused.not-ours": "Not installed: something HomersLab didn’t create already runs under this app’s name on {node}.",
+  "plan.install.refused.agent-unreachable": "Not installed: {node} didn’t answer. Try again in a moment.",
+  "plan.installed": "{app} is installed on {node}",
+  "plan.installed.open": "Open {host}",
+  "plan.health": "Health",
+  "plan.health.healthy": "Healthy",
+  "plan.health.starting": "Starting",
+  "plan.health.unhealthy": "Unhealthy",
+  "plan.health.stopped": "Stopped",
+  "plan.health.unknown": "Not known: {node} didn’t answer",
   "plan.bound": "Plan {id}. Change anything and it becomes a new plan.",
   "plan.boundKey": "One passkey approves plan {id} and nothing else. Change anything and it becomes a new plan.",
   "plan.missing.title": "No such plan",
   "plan.missing.lead": "HomersLab has no plan with this id.",
   "plan.and": "{a} and {b}",
-
   "engine.docker": "Docker",
   "engine.podman": "Podman"
 }

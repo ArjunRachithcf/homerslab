@@ -35,6 +35,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -59,6 +60,8 @@ const (
 	credDir    = "/run/credentials/homerslab-edge.service"
 	helperBin  = "/hl.test"
 	signInStub = "10.216.3.10:9000"
+	appStub    = "10.216.4.10:8080"
+	edgeApps   = "10.216.4.20"
 	helperMode = "HLTEST16_HELPER"
 )
 
@@ -92,7 +95,30 @@ func helper(mode, arg string) int {
 		}))
 	case "authentik": // the sign-in's server, on the sign-in network: it says what reached it
 		_ = http.ListenAndServe(signInStub, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path == "/outpost.goauthentik.io/auth/caddy" { // its embedded outpost, as the guard
+				guard(w, r)
+				return
+			}
 			fmt.Fprintf(w, "Authentik, at %s %s", r.Host, r.URL.RequestURI())
+		}))
+	case "app": // a guarded app: it says who the request names, and which cookies reached it
+		_ = http.ListenAndServe(appStub, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path == "/cookies" {
+				http.SetCookie(w, &http.Cookie{Name: "wide", Value: "1", Domain: "example.test", Path: "/"})
+				http.SetCookie(w, &http.Cookie{Name: "WIDE2", Value: "1", Domain: ".EXAMPLE.test", Path: "/"})
+				http.SetCookie(w, &http.Cookie{Name: "narrow", Value: "1", Path: "/"})
+				w.Header().Add("Set-Cookie", "top=1; Path=/; Domain=test")             // above the household's domain
+				w.Header().Add("Set-Cookie", "dotted=1; Path=/; Domain=example.test.") // with a dot at its end
+				w.Header().Add("Set-Cookie", "own=1; Path=/; Domain=pdf.example.test") // the app's own name
+			}
+			var named []string
+			for k, v := range r.Header {
+				if k != "Cookie" && k != "Accept-Encoding" && k != "User-Agent" && !strings.HasPrefix(k, "X-Forwarded-") && k != "Via" {
+					named = append(named, k+"="+strings.Join(v, ","))
+				}
+			}
+			slices.Sort(named)
+			fmt.Fprintf(w, "App, at %s, as [%s], cookies [%s]", r.Host, strings.Join(named, " "), r.Header.Get("Cookie"))
 		}))
 	case "load", "config": // the agent, on the edge's admin socket
 		c := edge.NewClient(adminFile)
@@ -131,6 +157,21 @@ func helper(mode, arg string) int {
 	return 0
 }
 
+// guard is the stub of Authentik's embedded outpost: a request with the guard's cookie for ines is let on, as ines; any
+// other goes to the sign-in.
+func guard(w http.ResponseWriter, r *http.Request) {
+	if c, err := r.Cookie("authentik_proxy_7f3a"); err == nil && c.Value == "ines-session" && r.Header.Get("X-Forwarded-Host") == "pdf.example.test" {
+		w.Header().Set("X-Authentik-Username", "ines")
+		w.Header().Set("X-Authentik-Groups", "homerslab-adults")
+		// The session, refreshed (an expiry has a comma in it), and a second cookie: each reaches the browser whole.
+		w.Header().Add("Set-Cookie", "authentik_proxy_7f3a=ines-session; Path=/; Expires=Wed, 21 Oct 2026 07:28:00 GMT; HttpOnly; Secure")
+		w.Header().Add("Set-Cookie", "authentik_proxy_7f3a_csrf=c; Path=/; HttpOnly; Secure")
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+	http.Redirect(w, r, "https://auth.example.test/application/o/authorize/?client_id=homerslab-bentopdf", http.StatusFound)
+}
+
 // request is one request a browser makes: to an address, with a TLS server name and a Host, for a path ("/" when
 // empty).
 type request struct {
@@ -138,6 +179,9 @@ type request struct {
 	Path            string // as sent, escapes and all; "/" when empty
 	Plain           bool   // plain HTTP, no TLS
 	CA              string
+	// Headers are sent as they are, a cookie or a forged identity among them; the answer then also says where it
+	// redirects and which cookies it sets.
+	Headers map[string]string
 	// Target is a plain HTTP request's target, written on the wire as it is (an absolute-form one, say): Go's client
 	// never sends some of them.
 	Target string
@@ -167,6 +211,9 @@ func (q request) do(ctx context.Context) string {
 		req.URL.Opaque = "//" + q.Host + q.Path // sent exactly as written
 	}
 	req.Host = q.Host
+	for k, v := range q.Headers {
+		req.Header.Set(k, v)
+	}
 	// A redirect is an answer to look at, never followed.
 	client := &http.Client{Transport: tr, Timeout: 8 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 	resp, err := client.Do(req)
@@ -174,7 +221,7 @@ func (q request) do(ctx context.Context) string {
 		return "error: " + err.Error()
 	}
 	defer resp.Body.Close()
-	b, _ := io.ReadAll(io.LimitReader(resp.Body, 200))
+	b, _ := io.ReadAll(io.LimitReader(resp.Body, 400))
 	out := fmt.Sprintf("%d %s", resp.StatusCode, b)
 	for _, h := range shownHeaders {
 		for _, v := range resp.Header.Values(h) {
@@ -195,7 +242,8 @@ func TestTheEdgesRequestMatrix(t *testing.T) {
 
 	cfg := edge.Config{AdminSocket: adminFile, Storage: "/var/lib/homerslab-edge", Listen: []netip.Addr{netip.MustParseAddr(edgeMesh)},
 		Port: 443, Certificates: []edge.Certificate{{Domain: "example.test", CertFile: credDir + "/tls-example.test.crt", KeyFile: credDir + "/tls-example.test.key"}},
-		Admin: &edge.Site{Name: "admin.example.test", Upstream: adminSock}, SignIn: &edge.Site{Name: "auth.example.test", Dial: signInStub}}
+		Admin: &edge.Site{Name: "admin.example.test", Upstream: adminSock}, SignIn: &edge.Site{Name: "auth.example.test", Dial: signInStub},
+		Apps: []edge.App{{Name: "pdf.example.test", Dial: appStub, Guard: edge.AuthentikGuard(signInStub)}}}
 	want, err := edge.Render(cfg)
 	if err != nil {
 		t.Fatal(err)
@@ -231,7 +279,19 @@ func TestTheEdgesRequestMatrix(t *testing.T) {
 			t.Fatalf("the LAN host's route to the mesh address: %q", got)
 		}
 	})
+	toApp := request{Addr: appStub, Host: "pdf.example.test", Plain: true, Headers: map[string]string{"X-Authentik-Username": "ines-the-admin", "Remote-User": "ines-the-admin"}}
+	t.Run("control: without the firewall table, a local unprivileged process reaches the app's upstream, its forged identity with it", func(t *testing.T) {
+		// So the row below is red without the table: the app would believe the header.
+		if got := w.helper(t, "edge", otherUID+":"+otherUID, "request", nil, toJSON(toApp)); !strings.Contains(got, "X-Authentik-Username=ines-the-admin") {
+			t.Fatalf("a local process, straight to the app: %q", got)
+		}
+	})
 	w.firewall(t)
+	t.Run("a local unprivileged process connects to the app's upstream with a forged identity header: refused before the app sees anything (#82)", func(t *testing.T) {
+		if got := w.helper(t, "edge", otherUID+":"+otherUID, "request", nil, toJSON(toApp)); !strings.HasPrefix(got, "error: ") || strings.Contains(got, "App,") {
+			t.Errorf("a local process, straight to the app: %q", got)
+		}
+	})
 	t.Run("the agent's configuration is what the edge runs, and holds no key", func(t *testing.T) {
 		got := w.helper(t, "edge", "0:"+edgeUID, "config", nil, "")
 		if !edge.Same([]byte(got), want) {
@@ -327,6 +387,47 @@ func TestTheEdgesRequestMatrix(t *testing.T) {
 					if c, ok := strings.CutPrefix(line, "Set-Cookie: "); ok && !secure(c) {
 						t.Errorf("a cookie through the edge without Secure: %q", c)
 					}
+				}
+			}
+		})
+	}
+
+	// A guarded app (#19): the guard is asked first, the client's identity never reaches the app, nor the guard's cookie,
+	// nor a cookie the app sets for the whole household domain (#83).
+	signedIn := map[string]string{"Cookie": "authentik_proxy_7f3a=ines-session; theme=dark",
+		"X-Authentik-Username": "ines-the-admin", "Remote-User": "ines-the-admin", "X-Forwarded-User": "ines-the-admin"}
+	app := func(path string, headers map[string]string) request {
+		return request{Addr: edgeMesh + ":443", SNI: "pdf.example.test", Host: "pdf.example.test", Path: path, Headers: headers}
+	}
+	for _, row := range []struct {
+		name            string
+		q               request
+		wants, notWants []string
+	}{
+		{name: "without the guard's cookie: a redirect to the sign-in, never the app", q: app("/", map[string]string{"X-Authentik-Username": "ines-the-admin"}),
+			wants: []string{"302 ", "Location: https://auth.example.test/application/o/authorize/"}, notWants: []string{"App,"}},
+		{name: "signed in, with a forged identity: the app sees only the guard's person", q: app("/", signedIn),
+			wants: []string{"200 App, at pdf.example.test, as [X-Authentik-Groups=homerslab-adults X-Authentik-Username=ines]"}, notWants: []string{"ines-the-admin", "Remote-User"}},
+		{name: "signed in: the app gets the household's cookies but never the guard's", q: app("/", signedIn),
+			wants: []string{"cookies [theme=dark]\n"}, notWants: []string{"cookies [authentik_proxy", "dark; authentik_proxy"}},
+		{name: "a cookie the app sets for the household's domain never reaches the browser; its own name's does", q: app("/cookies", signedIn),
+			wants: []string{"narrow=1", "own=1"}, notWants: []string{"wide=1", "WIDE2=1", "top=1", "dotted=1"}},
+		{name: "the guard's refreshed cookies reach the browser, each whole", q: app("/", signedIn),
+			wants: []string{"\nSet-Cookie: authentik_proxy_7f3a=ines-session; Path=/; Expires=Wed, 21 Oct 2026 07:28:00 GMT; HttpOnly; Secure\n",
+				"\nSet-Cookie: authentik_proxy_7f3a_csrf=c; Path=/; HttpOnly; Secure"}},
+		{name: "the provider's own paths go to the provider, never the app", q: app("/outpost.goauthentik.io/callback?X-authentik-auth-callback=true", signedIn),
+			wants: []string{"200 Authentik, at pdf.example.test /outpost.goauthentik.io/callback"}, notWants: []string{"App,"}},
+	} {
+		t.Run("a guarded app, "+row.name, func(t *testing.T) {
+			got := ask("phone", row.q)
+			for _, want := range row.wants {
+				if !strings.Contains(got, want) {
+					t.Errorf("%q, want %q", got, want)
+				}
+			}
+			for _, bad := range row.notWants {
+				if strings.Contains(got, bad) {
+					t.Errorf("%q has %q", got, bad)
 				}
 			}
 		})
@@ -431,7 +532,7 @@ func (w *world) firewall(t *testing.T) {
 	if err != nil {
 		t.Fatalf("the edge's interfaces: %v %s", err, out)
 	}
-	var meshIf, lanIf string
+	var meshIf, lanIf, appsIf string
 	for _, line := range strings.Split(string(out), "\n") {
 		f := strings.Fields(line)
 		if len(f) < 4 {
@@ -443,13 +544,20 @@ func (w *world) firewall(t *testing.T) {
 			meshIf = name
 		case strings.HasPrefix(f[3], edgeLAN+"/"):
 			lanIf = name
+		case strings.HasPrefix(f[3], edgeApps+"/"):
+			appsIf = name
 		}
 	}
-	if meshIf == "" || lanIf == "" {
-		t.Fatalf("the edge's mesh and LAN interfaces aren't there:\n%s", out)
+	if meshIf == "" || lanIf == "" || appsIf == "" {
+		t.Fatalf("the edge's mesh, LAN and apps' interfaces aren't there:\n%s", out)
 	}
+	// The apps' network stands in for an engine's bridge; the app's upstream and the sign-in's server are opened only by
+	// the edge's user and root (the agent).
+	edgeID, _ := strconv.Atoi(edgeUID)
+	users := []uint32{uint32(edgeID), 0}
 	table := firewall.Render(firewall.State{Mesh: []string{meshIf}, LAN: []string{lanIf},
-		LANPrefixes: []netip.Prefix{netip.MustParsePrefix("10.216.2.0/24")}})
+		LANPrefixes: []netip.Prefix{netip.MustParsePrefix("10.216.2.0/24")}, Bridges: []string{appsIf}, Virtual: []string{appsIf},
+		Upstreams: []firewall.Upstream{{Addr: netip.MustParseAddrPort(appStub), UIDs: users}, {Addr: netip.MustParseAddrPort(signInStub), UIDs: users}}})
 	if out, err := w.cmd(strings.NewReader(table), "exec", "-i", container("firewall"), "nft", "-f", "-").CombinedOutput(); err != nil {
 		t.Fatalf("applying the firewall table: %v %s\n%s", err, out, table)
 	}
@@ -518,13 +626,14 @@ func up(t *testing.T, engine, chain, key string) *world {
 		{path: strings.TrimPrefix(credDir, "/") + "/tls-example.test.key", body: []byte(key), mode: 0o400, uid: 4100},
 		{path: strings.TrimPrefix(helperBin, "/"), body: bin, mode: 0o755},
 	})
-	for _, m := range []string{"admin", "authentik", "phone", "laptop-on-the-lan"} {
+	for _, m := range []string{"admin", "authentik", "app", "phone", "laptop-on-the-lan"} {
 		w.copy(t, m, []file{{path: strings.TrimPrefix(helperBin, "/"), body: bin, mode: 0o755}})
 	}
 	w.compose(t, "start")
 	w.docker(t, nil, "exec", "-u", "0", container("admin"), "sh", "-c", "chown 4200:4100 /run/homerslab-admin && chmod 0750 /run/homerslab-admin")
 	w.docker(t, nil, "exec", "-d", "-u", "4200:4100", "-e", helperMode+"=admin", container("admin"), helperBin, "-")
 	w.docker(t, nil, "exec", "-d", "-e", helperMode+"=authentik", container("authentik"), helperBin, "-")
+	w.docker(t, nil, "exec", "-d", "-e", helperMode+"=app", container("app"), helperBin, "-")
 	for range 100 {
 		if _, err := w.helperErr("edge", "0:"+edgeUID, "config", nil, ""); err == nil {
 			return w
@@ -632,4 +741,9 @@ func (w *world) compose(t *testing.T, args ...string) {
 	if out, err := w.composeOut(args...); err != nil {
 		t.Fatalf("docker compose %s: %v\n%s", strings.Join(args, " "), err, out)
 	}
+}
+
+func toJSON(v any) string {
+	b, _ := json.Marshal(v)
+	return string(b)
 }

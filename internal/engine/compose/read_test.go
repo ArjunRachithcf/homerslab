@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -48,9 +49,73 @@ func TestAProjectIsReadThroughTheSDKWithoutAnEngine(t *testing.T) {
 	want := engine.Project{Name: "homerslab-example", Services: []engine.Service{
 		{Name: "db", Image: "docker.io/library/postgres:16@sha256:2222222222222222222222222222222222222222222222222222222222222222"},
 		{Name: "web", Image: "ghcr.io/example/web:1.2.3@sha256:1111111111111111111111111111111111111111111111111111111111111111"},
-	}}
-	if len(got.Services) != 2 || got.Name != want.Name || got.Services[0] != want.Services[0] || got.Services[1] != want.Services[1] {
+	}, Secrets: []string{"db-password"}, Networks: []engine.Network{{Name: "default"}}}
+	if !reflect.DeepEqual(got, want) {
 		t.Errorf("read\n %+v\nwant %+v", got, want)
+	}
+}
+
+// What installing must see of a project before it wires it (#19): the networks each service names, its network mode,
+// the ports it would publish on the host, the bind mounts it asks the engine to relabel for SELinux, what loosens a
+// container's confinement, and the networks it joins that aren't its own bridges.
+func TestAProjectSaysWhatInstallingChecks(t *testing.T) {
+	testenv.Isolate(t)
+	file := `
+services:
+  web:
+    image: ghcr.io/example/web:1@sha256:1111111111111111111111111111111111111111111111111111111111111111
+    ports: ["127.0.0.1:8080:80", "9000"]
+    networks: [front, back]
+    volumes:
+      - /srv/a:/a:z
+      - /srv/b:/b:Z
+      - /srv/c:/c:ro
+      - data:/data
+  db:
+    image: docker.io/library/postgres:16@sha256:2222222222222222222222222222222222222222222222222222222222222222
+    network_mode: host
+  tool:
+    image: docker.io/library/alpine:3@sha256:3333333333333333333333333333333333333333333333333333333333333333
+    privileged: true
+    cap_add: [NET_ADMIN]
+    devices: ["/dev/kvm:/dev/kvm"]
+    security_opt: ["no-new-privileges:true", "label=disable"]
+    sysctls: {net.ipv4.ip_forward: 1}
+    volumes_from: ["container:someone-else"]
+    networks: [ak, own, tuned, shared]
+  quiet:
+    image: docker.io/library/alpine:3@sha256:3333333333333333333333333333333333333333333333333333333333333333
+    security_opt: [no-new-privileges:true, no-new-privileges]
+networks:
+  front: {}
+  back: {}
+  ak: {external: true, name: homerslab-authentik_default}
+  own: {name: homerslab-example_own}
+  shared: {name: homerslab-authentik_default}
+  tuned: {driver: macvlan, driver_opts: {parent: eth0}, ipam: {config: [{subnet: 10.0.0.0/24}]}}
+volumes: {data: {}}
+`
+	got, err := reader(t).Read(context.Background(), "homerslab-example", []byte(file))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []engine.Service{
+		{Name: "db", Image: "docker.io/library/postgres:16@sha256:2222222222222222222222222222222222222222222222222222222222222222", NetworkMode: "host"},
+		{Name: "web", Image: "ghcr.io/example/web:1@sha256:1111111111111111111111111111111111111111111111111111111111111111",
+			Networks: []string{"back", "front"}, Published: []string{"127.0.0.1:8080:80/tcp", "9000/tcp"}, Relabelled: []string{"/srv/a", "/srv/b"}},
+	}
+	if !reflect.DeepEqual(got.Services[0], want[0]) || !reflect.DeepEqual(got.Services[3], want[1]) || got.Services[1].Name != "quiet" ||
+		got.Services[1].Loosened != nil {
+		t.Errorf("read\n %+v\nwant %+v", got.Services, want)
+	}
+	if tool := got.Services[2]; !reflect.DeepEqual(tool.Loosened, []string{"privileged", "cap_add", "devices", "security_opt",
+		"sysctls", "volumes_from"}) {
+		t.Errorf("what %s loosens: %q", tool.Name, tool.Loosened)
+	}
+	wantNets := []engine.Network{{Name: "ak", Joined: "homerslab-authentik_default"}, {Name: "back"}, {Name: "default"}, {Name: "front"},
+		{Name: "own"}, {Name: "shared", Joined: "homerslab-authentik_default"}, {Name: "tuned", Driver: "macvlan", Configured: true}}
+	if !reflect.DeepEqual(got.Networks, wantNets) {
+		t.Errorf("networks\n %+v\nwant %+v", got.Networks, wantNets)
 	}
 }
 

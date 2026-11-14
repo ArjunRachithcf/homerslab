@@ -15,6 +15,8 @@ import (
 	"strings"
 
 	"go.yaml.in/yaml/v3"
+
+	"github.com/ArjunRachithcf/homerslab/internal/text"
 )
 
 var (
@@ -116,6 +118,11 @@ func loadApp(fsys fs.FS, dir string, categories map[string]bool, digestOf func(m
 	}
 	p.need(a.Name, "name")
 	p.need(a.Purpose, "purpose")
+	for field, v := range map[string]string{"name": a.Name, "purpose": a.Purpose} {
+		if v != "" && !text.OneLine(v) {
+			p.add("%s: one line of printable text (no control characters, line separators or bidirectional overrides)", field)
+		}
+	}
 	p.need(a.Description, "description")
 	if !categories[a.Category] {
 		p.add("category %q isn't one of the catalog's", a.Category)
