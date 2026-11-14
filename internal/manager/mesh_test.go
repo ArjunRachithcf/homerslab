@@ -50,8 +50,10 @@ type fakeNetBird struct {
 	conflicts     []mesh.Policy // the household's own policies that reach a node
 	disabled      []string
 	broken        map[string]bool // token IDs that NetBird refuses
-	// beforeBootstrap runs as the bootstrap starts, before NetBird has heard of the owner.
+	// beforeBootstrap runs as the bootstrap starts, before NetBird has heard of the owner; beforeAdopt as a token is
+	// given to NetBird.
 	beforeBootstrap func()
+	beforeAdopt     func()
 	// cloudPort is the port the fake's report gives (NetBird's cloud: 9443); port is the one the policies were made
 	// for, and names the household's names made on the mesh, as "domain address".
 	cloudPort int
@@ -107,6 +109,9 @@ func (f *fakeNetBird) RevokeSetup(_ context.Context, _ string, st netbird.SetupT
 }
 
 func (f *fakeNetBird) Adopt(_ context.Context, _ string, given mesh.Secret) (netbird.Adopted, error) {
+	if f.beforeAdopt != nil {
+		f.beforeAdopt()
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.failAdopts > 0 {
@@ -220,8 +225,9 @@ func atNetwork(t *testing.T, nb *fakeNetBird) (*primary, *browser) {
 	return p, b
 }
 
+// secret is `homerslab setup secret`: it gives a secret at the revision of the answers it was shown with.
 func (p *primary) secret(name, value string) response {
-	return p.control("PUT", "/api/v1/setup/secrets/"+name, map[string]string{"value": value})
+	return p.secretAt(name, value, p.controlState().Revision)
 }
 
 func stepState(s state, id string) string {
@@ -282,8 +288,9 @@ func TestOnTheCloudTheTokenIsGivenOnceInTheTerminal(t *testing.T) {
 	if !bytes.Contains(r.Body, []byte(`"secret":"mesh"`)) || !bytes.Contains(r.Body, []byte(`"command":"sudo homerslab setup secret mesh"`)) {
 		t.Errorf("the page isn't told which command to show: %s", r.Body)
 	}
-	if r := b.do("PUT", "/api/v1/setup/secrets/mesh", map[string]string{"value": givenToken}); r.Code != http.StatusNotFound {
-		t.Errorf("the secret over the LAN listener: %d %s, want 404: it's on the control socket only", r.Code, r.Body)
+	if r := b.do("PUT", "/api/v1/setup/secrets/mesh", map[string]string{"value": givenToken}); r.Code != http.StatusBadRequest ||
+		r.errorCode(t) != "secret-over-http" {
+		t.Errorf("the secret over the LAN listener: %d %s, want 400 secret-over-http: it's on the control socket only", r.Code, r.Body)
 	}
 
 	if r := p.secret("mesh", wrongToken); r.Code != http.StatusBadRequest || r.errorCode(t) != "secret-refused" {

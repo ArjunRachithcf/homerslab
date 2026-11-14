@@ -1,13 +1,17 @@
 package manager
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
+	"io"
 	"io/fs"
+	"maps"
 	"mime"
 	"net"
 	"net/http"
 	"net/netip"
+	"net/url"
 	"slices"
 	"strconv"
 	"strings"
@@ -30,7 +34,78 @@ func (m *Manager) Setup() http.Handler {
 	api.HandleFunc("GET /setup", func(w http.ResponseWriter, _ *http.Request) { m.servePage(w, "setup.html") })
 	api.HandleFunc("GET /assets/{file}", m.asset)
 	api.HandleFunc("/", notFound)
-	return securityHeaders(m.open(m.fromHere(m.ownHost(sameOrigin(api)))))
+	return securityHeaders(m.open(m.fromHere(m.ownHost(m.noSecrets(sameOrigin(api))))))
+}
+
+// bodyMax is the largest body the setup listener reads: a step's answer's limit.
+const bodyMax = 64 << 10
+
+// noSecrets refuses every request that carries a secret, before anything else looks at it (its session, its step, its
+// order): no secret travels over the LAN's plain HTTP (#64). A field named like one, in a query, a JSON body at any
+// depth or a form, is refused whatever its value, and so is any request to the control socket's address for secrets.
+// The refusal names the terminal command that gives the secret instead.
+func (m *Manager) noSecrets(next http.Handler) http.Handler {
+	refuse := func(w http.ResponseWriter, r *http.Request, command string) {
+		m.log.Warn("refused a secret sent to the setup listener") // never its path or query: either may hold it
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "secret-over-http", "command": command})
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		command := setup.AnyCommand
+		if id, ok := strings.CutPrefix(r.URL.Path, "/api/v1/setup/steps/"); ok {
+			command = setup.CommandFor(id)
+		}
+		if name, ok := strings.CutPrefix(r.URL.Path, "/api/v1/setup/secrets/"); ok {
+			if slices.Contains(slices.Collect(maps.Values(setup.Secrets)), name) {
+				command = setup.Command(name)
+			}
+			refuse(w, r, command)
+			return
+		}
+		for k := range r.URL.Query() {
+			if setup.SecretField(k) {
+				refuse(w, r, command)
+				return
+			}
+		}
+		if r.Body == nil || r.Body == http.NoBody {
+			next.ServeHTTP(w, r)
+			return
+		}
+		b, err := io.ReadAll(io.LimitReader(r.Body, bodyMax+1))
+		if err != nil {
+			fail(w, http.StatusBadRequest, "unreadable")
+			return
+		}
+		if len(b) > bodyMax {
+			fail(w, http.StatusRequestEntityTooLarge, "too-large")
+			return
+		}
+		r.Body = io.NopCloser(bytes.NewReader(b))
+		var allowed []string
+		if r.URL.Path == "/api/v1/setup/claim" {
+			allowed = []string{"key"} // the link's own key
+		}
+		if setup.CarriesSecret(b, allowed...) || (!json.Valid(b) && formCarriesSecret(b)) {
+			refuse(w, r, command)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// formCarriesSecret says whether a body read as a form has a field named like a secret. The listener takes no form,
+// but a secret in one is refused as a secret, with its command.
+func formCarriesSecret(b []byte) bool {
+	v, err := url.ParseQuery(string(b))
+	if err != nil {
+		return false
+	}
+	for k := range v {
+		if setup.SecretField(k) {
+			return true
+		}
+	}
+	return false
 }
 
 // open answers nothing once the LAN listener is closed for good, at the admin's first sign-in over the mesh.

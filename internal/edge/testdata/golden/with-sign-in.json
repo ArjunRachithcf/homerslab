@@ -23,6 +23,29 @@
             {
               "handle": [
                 {
+                  "handler": "headers",
+                  "response": {
+                    "deferred": true,
+                    "replace": {
+                      "Set-Cookie": [
+                        {
+                          "replace": "$1",
+                          "search_regexp": "(?i);\\s*secure\\s*(;|$)"
+                        },
+                        {
+                          "replace": "; Secure",
+                          "search_regexp": "$"
+                        }
+                      ]
+                    },
+                    "set": {
+                      "Strict-Transport-Security": [
+                        "max-age=31536000"
+                      ]
+                    }
+                  }
+                },
+                {
                   "handler": "reverse_proxy",
                   "upstreams": [
                     {
@@ -42,6 +65,29 @@
             },
             {
               "handle": [
+                {
+                  "handler": "headers",
+                  "response": {
+                    "deferred": true,
+                    "replace": {
+                      "Set-Cookie": [
+                        {
+                          "replace": "$1",
+                          "search_regexp": "(?i);\\s*secure\\s*(;|$)"
+                        },
+                        {
+                          "replace": "; Secure",
+                          "search_regexp": "$"
+                        }
+                      ]
+                    },
+                    "set": {
+                      "Strict-Transport-Security": [
+                        "max-age=31536000"
+                      ]
+                    }
+                  }
+                },
                 {
                   "handler": "subroute",
                   "routes": [
@@ -111,6 +157,75 @@
                   "*.example.test"
                 ]
               }
+            }
+          ]
+        },
+        "redirect": {
+          "automatic_https": {
+            "disable": true
+          },
+          "listen": [
+            "100.88.7.186:80"
+          ],
+          "protocols": [
+            "h1"
+          ],
+          "routes": [
+            {
+              "handle": [
+                {
+                  "handler": "static_response",
+                  "headers": {
+                    "Location": [
+                      "https://admin.example.test{http.request.uri}"
+                    ]
+                  },
+                  "status_code": 308
+                }
+              ],
+              "match": [
+                {
+                  "host": [
+                    "admin.example.test"
+                  ],
+                  "path": [
+                    "/*"
+                  ]
+                }
+              ],
+              "terminal": true
+            },
+            {
+              "handle": [
+                {
+                  "handler": "static_response",
+                  "headers": {
+                    "Location": [
+                      "https://auth.example.test{http.request.uri}"
+                    ]
+                  },
+                  "status_code": 308
+                }
+              ],
+              "match": [
+                {
+                  "host": [
+                    "auth.example.test"
+                  ],
+                  "path": [
+                    "/*"
+                  ]
+                }
+              ],
+              "terminal": true
+            },
+            {
+              "handle": [
+                {
+                  "handler": "static_response",
+                  "status_code": 421
+                }
+              ]
             }
           ]
         }

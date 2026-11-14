@@ -43,7 +43,7 @@ func routedControl(t *testing.T, answers map[string][2]string) (string, *[]strin
 	return sock, &got
 }
 
-const atDomainStep = `{"answers":{"domain":"example.test","dnsProvider":"rfc2136","dnsServer":"192.0.2.53:53","dnsKeyName":"homerslab.","householdPort":"9443","adminUrl":"https://admin.example.test:9443"}}`
+const atDomainStep = `{"revision":9,"steps":[{"id":"domain","state":"waiting","secret":"dns"}],"answers":{"household":"The Ferreira household","domain":"example.test","dnsProvider":"rfc2136","dnsServer":"192.0.2.53:53","dnsKeyName":"homerslab.","householdPort":"9443","adminUrl":"https://admin.example.test:9443"}}`
 
 // Before the DNS token is read, the terminal says where it will go, from the setup's own answers: a stranger who
 // claimed the link first can't send it to a server of theirs unseen (#64).
@@ -57,7 +57,7 @@ func TestSetupSecretDNSSaysWhereTheTokenGoesThenSendsIt(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("exit %d: %s", code, errOut)
 	}
-	if !strings.Contains(errOut, "This token is for example.test, and goes to the DNS server 192.0.2.53:53 (RFC 2136), as the key homerslab.") {
+	if !strings.Contains(errOut, "This token is for example.test, and goes to the DNS server 192.0.2.53:53 (RFC 2136), as the key homerslab., for The Ferreira household") {
 		t.Errorf("the context: %q", errOut)
 	}
 	if !strings.Contains(out, "*.example.test is issued") || !strings.Contains(out, "https://admin.example.test:9443") {
@@ -91,7 +91,7 @@ func TestSetupSecretDNSSaysWhatToDoWhenRefused(t *testing.T) {
 			t.Errorf("%s: exit %d, %q", code, exit, errOut)
 		}
 	}
-	sock, got := routedControl(t, map[string][2]string{"GET /api/v1/setup": {"", `{"answers":{}}`}})
+	sock, got := routedControl(t, map[string][2]string{"GET /api/v1/setup": {"", `{"revision":4,"steps":[{"id":"domain","state":"todo"}],"answers":{}}`}})
 	if exit, _, errOut := runWith(t, dnsTok, "setup", "secret", "dns", "--control-socket", sock); exit != 1 || !strings.Contains(errOut, "give your domain on the setup page first") {
 		t.Errorf("before the domain: exit %d %q", exit, errOut)
 	}

@@ -10,7 +10,9 @@ package edge_test
 
 import (
 	"archive/tar"
+	"bufio"
 	"bytes"
+	"cmp"
 	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
@@ -42,7 +44,9 @@ import (
 	"github.com/ArjunRachithcf/homerslab/internal/testenv"
 )
 
-const project = "hltest-16-edge"
+// project is the compose project; HOMERSLAB_TEST_EDGE_PROJECT names another (hltest-<ticket>) for a ticket's local
+// run.
+var project = cmp.Or(os.Getenv("HOMERSLAB_TEST_EDGE_PROJECT"), "hltest-16-edge")
 
 // The world (testdata/compose.yaml): the edge on the mesh and the LAN, the edge's user and group, Admin's stub.
 const (
@@ -78,6 +82,12 @@ func helper(mode, arg string) int {
 		}
 		_ = os.Chmod(adminSock, 0o660)
 		_ = http.Serve(ln, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			// What an upstream may send that the edge must not pass on as it is: cookies without Secure, and an HSTS
+			// of its own that would cover the household's other names.
+			w.Header().Add("Set-Cookie", "plain=1; Path=/; HttpOnly")
+			w.Header().Add("Set-Cookie", "upper=2; SECURE; Path=/")
+			w.Header().Add("Set-Cookie", "last=3; Path=/; Secure")
+			w.Header().Set("Strict-Transport-Security", "max-age=63072000; includeSubDomains; preload")
 			fmt.Fprintf(w, "Admin, at %s", r.Host)
 		}))
 	case "authentik": // the sign-in's server, on the sign-in network: it says what reached it
@@ -121,15 +131,25 @@ func helper(mode, arg string) int {
 	return 0
 }
 
-// request is one request a browser makes: to an address, with a TLS server name and a Host.
+// request is one request a browser makes: to an address, with a TLS server name and a Host, for a path ("/" when
+// empty).
 type request struct {
 	Addr, SNI, Host string
 	Path            string // as sent, escapes and all; "/" when empty
 	Plain           bool   // plain HTTP, no TLS
 	CA              string
+	// Target is a plain HTTP request's target, written on the wire as it is (an absolute-form one, say): Go's client
+	// never sends some of them.
+	Target string
 }
 
+// shownHeaders are the answer's headers a row may look at, after its status and body.
+var shownHeaders = []string{"Location", "Strict-Transport-Security", "Set-Cookie"}
+
 func (q request) do(ctx context.Context) string {
+	if q.Target != "" {
+		return q.raw(ctx)
+	}
 	roots := x509.NewCertPool()
 	roots.AppendCertsFromPEM([]byte(q.CA))
 	tr := &http.Transport{
@@ -147,13 +167,21 @@ func (q request) do(ctx context.Context) string {
 		req.URL.Opaque = "//" + q.Host + q.Path // sent exactly as written
 	}
 	req.Host = q.Host
-	resp, err := (&http.Client{Transport: tr, Timeout: 8 * time.Second}).Do(req)
+	// A redirect is an answer to look at, never followed.
+	client := &http.Client{Transport: tr, Timeout: 8 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	resp, err := client.Do(req)
 	if err != nil {
 		return "error: " + err.Error()
 	}
 	defer resp.Body.Close()
 	b, _ := io.ReadAll(io.LimitReader(resp.Body, 200))
-	return fmt.Sprintf("%d %s", resp.StatusCode, b)
+	out := fmt.Sprintf("%d %s", resp.StatusCode, b)
+	for _, h := range shownHeaders {
+		for _, v := range resp.Header.Values(h) {
+			out += "\n" + h + ": " + v
+		}
+	}
+	return out
 }
 
 func TestTheEdgesRequestMatrix(t *testing.T) {
@@ -220,7 +248,8 @@ func TestTheEdgesRequestMatrix(t *testing.T) {
 		name     string
 		from     string
 		q        request
-		want     string // the answer's start
+		want     string   // the answer's start
+		wants    []string // lines the answer has too
 		notWants string
 	}{
 		{name: "Admin's name, from the mesh: Admin, with a valid certificate", from: "phone",
@@ -235,6 +264,44 @@ func TestTheEdgesRequestMatrix(t *testing.T) {
 			q: request{Addr: edgeMesh + ":443", SNI: "admin.other.test", Host: "admin.other.test"}, want: "error: ", notWants: "Admin"},
 		{name: "plain HTTP on the household's port: never Admin", from: "phone",
 			q: request{Addr: edgeMesh + ":443", Host: "admin.example.test", Plain: true}, want: "400 ", notWants: "Admin"},
+
+		// HTTPS only (#64): port 80 redirects to HTTPS on the same name, and proxies nothing.
+		{name: "Admin's name over plain HTTP on port 80: a redirect to HTTPS on the same name and path, never Admin", from: "phone",
+			q:    request{Addr: edgeMesh + ":80", Host: "admin.example.test", Path: "/apps/photos?tab=people", Plain: true},
+			want: "308 ", wants: []string{"\nLocation: https://admin.example.test/apps/photos?tab=people"}, notWants: "Admin,"},
+		{name: "Admin's name over plain HTTP on port 80, with its port: the same redirect", from: "phone",
+			q:    request{Addr: edgeMesh + ":80", Host: "admin.example.test:80", Plain: true},
+			want: "308 ", wants: []string{"\nLocation: https://admin.example.test/"}, notWants: "Admin,"},
+		{name: "a name that isn't on this node, over port 80: 421, no redirect", from: "phone",
+			q: request{Addr: edgeMesh + ":80", Host: "photos.example.test", Plain: true}, want: "421 ", notWants: "Location"},
+		{name: "a name outside the household's domains, over port 80: 421, never a redirect to it", from: "phone",
+			q: request{Addr: edgeMesh + ":80", Host: "evil.other.test", Plain: true}, want: "421 ", notWants: "Location"},
+		{name: "an origin-form target on the wire, over port 80: the same-name redirect", from: "phone",
+			q:    request{Addr: edgeMesh + ":80", Host: "admin.example.test", Target: "/apps?x=1", Plain: true},
+			want: "308 ", wants: []string{"\nLocation: https://admin.example.test/apps?x=1"}},
+		{name: "an opaque absolute-form target, http:@evil, over port 80: 421, never a Location at another host", from: "phone",
+			q: request{Addr: edgeMesh + ":80", Host: "admin.example.test", Target: "http:@evil.test", Plain: true}, want: "421 ", notWants: "Location"},
+		{name: "an opaque absolute-form target, http:evil/x, over port 80: 421, never a Location at another host", from: "phone",
+			q: request{Addr: edgeMesh + ":80", Host: "admin.example.test", Target: "http:evil.test/x", Plain: true}, want: "421 ", notWants: "Location"},
+		{name: "a redirect sets no HSTS: browsers ignore it over HTTP", from: "phone",
+			q: request{Addr: edgeMesh + ":80", Host: "admin.example.test", Plain: true}, want: "308 ", notWants: "Strict-Transport-Security"},
+		{name: "port 80 from the LAN, at the edge's LAN address: nothing listens", from: "laptop-on-the-lan",
+			q: request{Addr: edgeLAN + ":80", Host: "admin.example.test", Plain: true}, want: "error: ", notWants: "Location"},
+		{name: "port 80 from the LAN, at the mesh address routed through the edge's machine: the firewall table drops it", from: "laptop-on-the-lan",
+			q: request{Addr: edgeMesh + ":80", Host: "admin.example.test", Plain: true}, want: "error: ", notWants: "Location"},
+
+		// HSTS on every HomersLab name, a year, without includeSubDomains or preload: the household's domain may carry
+		// sites that aren't HomersLab's. Admin's own HSTS is replaced, not passed on.
+		{name: "Admin over HTTPS: HSTS for a year, for its name only", from: "phone",
+			q: request{Addr: edgeMesh + ":443", SNI: "admin.example.test", Host: "admin.example.test"}, want: "200 Admin",
+			wants: []string{"\nStrict-Transport-Security: max-age=31536000\n"}, notWants: "includeSubDomains"},
+		{name: "a name that isn't on this node: no HSTS for it", from: "phone",
+			q: request{Addr: edgeMesh + ":443", SNI: "photos.example.test", Host: "photos.example.test"}, want: "421 ", notWants: "Strict-Transport-Security"},
+
+		// Every cookie through the edge is Secure (#64), whatever the upstream sent.
+		{name: "Admin's cookies through the edge: each Secure, once", from: "phone",
+			q: request{Addr: edgeMesh + ":443", SNI: "admin.example.test", Host: "admin.example.test"}, want: "200 Admin",
+			wants: []string{"\nSet-Cookie: plain=1; Path=/; HttpOnly; Secure", "\nSet-Cookie: upper=2; Path=/; Secure", "\nSet-Cookie: last=3; Path=/; Secure"}},
 		{name: "Admin's name, from the LAN, at the edge's LAN address: nothing listens", from: "laptop-on-the-lan",
 			q: request{Addr: edgeLAN + ":443", SNI: "admin.example.test", Host: "admin.example.test"}, want: "error: ", notWants: "Admin"},
 		{name: "Admin's name, from the LAN, at the mesh address routed through the edge's machine: the firewall table drops it",
@@ -246,9 +313,21 @@ func TestTheEdgesRequestMatrix(t *testing.T) {
 			q: request{Addr: edgeMesh + ":443", SNI: "auth.example.test", Host: "auth.example.test"}, want: "error: ", notWants: "Authentik"},
 	} {
 		t.Run(row.name, func(t *testing.T) {
-			got := ask(row.from, row.q)
+			got := ask(row.from, row.q) + "\n"
 			if !strings.HasPrefix(got, row.want) || (row.notWants != "" && strings.Contains(got, row.notWants)) {
 				t.Errorf("%s asks %+v: %q, want %q…", row.from, row.q.Host, got, row.want)
+			}
+			for _, want := range row.wants {
+				if !strings.Contains(got, want) {
+					t.Errorf("%s asks %+v: %q, want it to have %q", row.from, row.q.Host, got, want)
+				}
+			}
+			if strings.Contains(got, "\nSet-Cookie: ") {
+				for _, line := range strings.Split(got, "\n") {
+					if c, ok := strings.CutPrefix(line, "Set-Cookie: "); ok && !secure(c) {
+						t.Errorf("a cookie through the edge without Secure: %q", c)
+					}
+				}
 			}
 		})
 	}
@@ -307,6 +386,41 @@ func TestTheEdgesRequestMatrix(t *testing.T) {
 			t.Errorf("after the push again: %q", got)
 		}
 	})
+}
+
+// raw sends a plain HTTP request line as written, and reads the answer as do does.
+func (q request) raw(ctx context.Context) string {
+	c, err := (&net.Dialer{Timeout: 3 * time.Second}).DialContext(ctx, "tcp", q.Addr)
+	if err != nil {
+		return "error: " + err.Error()
+	}
+	defer c.Close()
+	_ = c.SetDeadline(time.Now().Add(8 * time.Second))
+	fmt.Fprintf(c, "GET %s HTTP/1.1\r\nHost: %s\r\nConnection: close\r\n\r\n", q.Target, q.Host)
+	resp, err := http.ReadResponse(bufio.NewReader(c), nil)
+	if err != nil {
+		return "error: " + err.Error()
+	}
+	defer resp.Body.Close()
+	b, _ := io.ReadAll(io.LimitReader(resp.Body, 200))
+	out := fmt.Sprintf("%d %s", resp.StatusCode, b)
+	for _, h := range shownHeaders {
+		for _, v := range resp.Header.Values(h) {
+			out += "\n" + h + ": " + v
+		}
+	}
+	return out
+}
+
+// secure says whether a Set-Cookie value has the Secure attribute, once.
+func secure(cookie string) bool {
+	n := 0
+	for _, a := range strings.Split(cookie, ";")[1:] {
+		if strings.EqualFold(strings.TrimSpace(a), "secure") {
+			n++
+		}
+	}
+	return n == 1
 }
 
 // firewall applies the agent's table in the edge's machine: its mesh interface (the stand-in for wt0) and its LAN

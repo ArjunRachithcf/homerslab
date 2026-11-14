@@ -155,7 +155,7 @@ func (a *Agent) putEdge(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusBadRequest, "not-json")
 		return
 	}
-	if req.Port <= 0 || req.Port > 65535 || (req.Admin != "" && !domainName.MatchString(req.Admin)) ||
+	if req.Port <= 0 || req.Port > 65535 || req.Port == 80 || (req.Admin != "" && !domainName.MatchString(req.Admin)) ||
 		(req.SignIn != "" && !domainName.MatchString(req.SignIn)) {
 		fail(w, http.StatusBadRequest, "bad-sites")
 		return

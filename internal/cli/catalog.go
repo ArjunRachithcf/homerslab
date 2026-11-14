@@ -108,7 +108,7 @@ func showPlan(ctx context.Context, env Env, socket string, asJSON bool, method, 
 		}
 		payload = bytes.NewReader(b)
 	}
-	raw, err := newControl(socket).request(ctx, method, path, 0, payload, &p)
+	raw, err := newControl(socket).request(ctx, method, path, 0, payload, nil, &p)
 	var ae *apiError
 	if errors.As(err, &ae) {
 		switch ae.Code {

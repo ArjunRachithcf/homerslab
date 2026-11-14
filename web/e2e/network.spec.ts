@@ -1,17 +1,21 @@
 // The network step's screen. Setup can't reach it in the real flow until the sign-in step is built (#17), so the
 // manager's answers for setup's state are stood in here; the page, the link and its session are the real ones. What it
-// checks: the page sends only non-secret answers, has no field for a token, and shows the terminal command (#64).
+// checks: the page sends only non-secret answers, has no field for a token, and shows the terminal command, then the
+// token's progress as the terminal gives it: received, checking, checked, or refused (#64).
 import type { Page, Route } from '@playwright/test';
+import { accessible } from './a11y';
 import { expect, test } from './primary';
 
-type Step = { id: string; half: 'lan' | 'mesh'; state: string; secret?: string; command?: string; confirm?: string };
+type Step = { id: string; half: 'lan' | 'mesh'; state: string; secret?: string; command?: string; confirm?: string; refused?: string };
+type At = 'todo' | 'waiting' | 'refused' | 'checking' | 'confirm' | 'done';
 
-function setupAt(network: 'todo' | 'waiting' | 'confirm' | 'done', answers: Record<string, string> = {}) {
+function setupAt(network: At, answers: Record<string, string> = {}) {
   const ids = ['welcome', 'you', 'household', 'signin', 'network', 'domain', 'mail', 'kit', 'join', 'passkey', 'done'];
   const steps: Step[] = ids.map((id, i): Step => {
     const step: Step = { id, half: i < 8 ? 'lan' : 'mesh', state: i < 4 ? 'done' : 'todo' };
     if (id !== 'network') return step;
-    if (network === 'waiting') return { ...step, state: 'waiting', secret: 'mesh', command: 'sudo homerslab setup secret mesh' };
+    if (network === 'waiting' || network === 'checking') return { ...step, state: network, secret: 'mesh', command: 'sudo homerslab setup secret mesh' };
+    if (network === 'refused') return { ...step, state: 'waiting', secret: 'mesh', command: 'sudo homerslab setup secret mesh', refused: 'secret-refused' };
     if (network === 'confirm') return { ...step, state: 'waiting', confirm: 'mesh-policies' };
     return { ...step, state: network };
   });
@@ -27,8 +31,8 @@ async function standIn(page: Page, state: () => unknown, onAnswer: (body: Record
   });
 }
 
-test('on NetBird’s cloud the page asks no token, and shows the command for the terminal', async ({ page, primary }) => {
-  let network: 'todo' | 'waiting' | 'done' = 'todo';
+test('on NetBird’s cloud the page asks no token, shows the command for the terminal, and sees the token arrive', async ({ page, primary }) => {
+  let network: At = 'todo';
   const sent: Record<string, unknown>[] = [];
   await standIn(page, () => setupAt(network), (body) => {
     sent.push(body);
@@ -49,9 +53,27 @@ test('on NetBird’s cloud the page asks no token, and shows the command for the
   await expect(page.getByRole('button', { name: 'Continue' })).toBeDisabled();
   await expect(page.locator('input')).toHaveCount(0);
   expect(sent).toEqual([{ mesh: 'netbird', controlPlane: 'cloud' }]);
+  await accessible(page, 'the token, waiting');
 
-  network = 'done'; // the admin ran the command
-  await expect(page.getByRole('heading', { level: 1 })).toContainText('Your domain', { timeout: 10_000 });
+  network = 'refused'; // the admin pasted a token NetBird refused
+  await expect(page.getByRole('alert')).toContainText('That token didn’t work', { timeout: 10_000 });
+  await expect(page.getByRole('status')).toContainText('Waiting for the token');
+  await accessible(page, 'the token, refused');
+  network = 'checking'; // and then the right one
+  await expect(page.getByRole('status')).toContainText('Received. Checking it…', { timeout: 10_000 });
+  await expect(page.getByRole('alert')).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Continue' })).toBeDisabled();
+  await accessible(page, 'the token, checking');
+  network = 'done';
+  await expect(page.getByRole('status')).toContainText('Received and checked', { timeout: 10_000 });
+  await expect(page.getByRole('status')).toContainText('this machine is on the mesh');
+  await expect(page.getByText('sudo homerslab setup secret mesh')).toHaveCount(0);
+  await accessible(page, 'the token, received and checked');
+  await page.getByRole('button', { name: 'Continue' }).click();
+  await expect(page.getByRole('heading', { level: 1 })).toContainText('Your domain');
+  await page.getByRole('button', { name: 'Back' }).click(); // the step's own answer, to change it
+  await expect(page.getByRole('heading', { level: 1 })).toContainText('Your private network');
+  await expect(page.getByRole('radio', { name: /NetBird’s cloud/ })).toBeChecked();
 });
 
 test('a self-hosted NetBird needs its https address, and only that', async ({ page, primary }) => {
