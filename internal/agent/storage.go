@@ -189,9 +189,17 @@ func (a *Agent) inUse(id string) bool {
 	return false
 }
 
-// onTheMesh says whether a server is a mesh peer: outside the LAN's prefixes, and routed through the mesh's interface
-// by the kernel. The caller holds a.mu.
+// meshRange is where the meshes' peers have their addresses (NetBird's and Tailscale's): a share's server is one of
+// them, never a public address the mesh happens to route (an exit node's), which may be a peer's WireGuard endpoint
+// that the table's rule would then cut off.
+var meshRange = netip.MustParsePrefix("100.64.0.0/10")
+
+// onTheMesh says whether a server is a mesh peer: in the meshes' range, outside the LAN's prefixes, and routed through
+// the mesh's interface by the kernel. The caller holds a.mu.
 func (a *Agent) onTheMesh(ctx context.Context, server netip.Addr) bool {
+	if !meshRange.Contains(server) {
+		return false
+	}
 	if n, err := a.cfg.Network(); err == nil {
 		a.network = n
 	}
@@ -213,9 +221,10 @@ func (a *Agent) onTheMesh(ctx context.Context, server netip.Addr) bool {
 	return slices.Contains(a.state.Mesh, routes[0].Dev)
 }
 
-// putStorage adds a storage location, or puts one back as it was added (a manager that didn't keep it, retrying; an SMB
-// share's new password). A folder no app uses yet can become another (the manager kept none); a share, or a location an
-// app uses, can't.
+// putStorage adds a storage location, or answers one as it was added (a manager that didn't keep it, retrying): the same
+// location again changes nothing, a share's mount and credential included. A folder no app uses yet can become another
+// (the manager kept none); a share, or a location an app uses, can't. A share's new password is a rotation of its own
+// (#28's question 3).
 func (a *Agent) putStorage(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	var req StorageRequest
@@ -234,9 +243,9 @@ func (a *Agent) putStorage(w http.ResponseWriter, r *http.Request) {
 		next.Server, _ = storage.CheckServer(req.Server)
 	}
 	prev := a.state.Storage[id]
-	if prev != nil && *prev == *next && next.Kind == "folder" {
+	if prev != nil && *prev == *next {
 		a.mu.Unlock()
-		writeJSON(w, http.StatusOK, next.status(id)) // as it was added, whatever its folder is like now
+		writeJSON(w, http.StatusOK, next.status(id)) // as it was added, whatever its folder or its share is like now
 		return
 	}
 	code, status := a.checkStorage(ctx, id, req)
@@ -272,7 +281,17 @@ func (a *Agent) putStorage(w http.ResponseWriter, r *http.Request) {
 	}
 	if err != nil {
 		a.log.Error("keeping a storage location", "location", id, "err", err)
-		a.forgetShare(context.WithoutCancel(ctx), id, prev)
+		if next.Kind == "share" {
+			a.forgetShare(context.WithoutCancel(ctx), id, prev)
+		} else {
+			a.mu.Lock()
+			if prev == nil {
+				delete(a.state.Storage, id)
+			} else {
+				a.state.Storage[id] = prev
+			}
+			a.mu.Unlock()
+		}
 		fail(w, http.StatusInternalServerError, "state-unsaved")
 		return
 	}

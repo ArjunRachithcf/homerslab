@@ -241,7 +241,8 @@ func ShareUnit(s Share) []byte {
 	default:
 		w("ExecStart=/usr/bin/false") // never a share the agent didn't check
 	}
-	w("ExecStop=/usr/bin/umount %s", at)
+	w("# Lazily: a share whose server is gone never holds up a shutdown.")
+	w("ExecStop=/usr/bin/umount -l %s", at)
 	w("TimeoutStartSec=60s")
 	w("# Until the mesh is up at boot, or the share answers again.")
 	w("Restart=on-failure")

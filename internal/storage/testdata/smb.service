@@ -15,7 +15,8 @@ StateDirectory=homerslab-storage/films
 StateDirectoryMode=0700
 LoadCredentialEncrypted=storage-films:/var/lib/homerslab-agent/storage/films.cred
 ExecStart=/usr/bin/mount -t cifs -o credentials=%d/storage-films,nosuid,nodev,noexec,context=system_u:object_r:container_file_t:s0 //100.64.1.2/media /var/lib/homerslab-storage/films
-ExecStop=/usr/bin/umount /var/lib/homerslab-storage/films
+# Lazily: a share whose server is gone never holds up a shutdown.
+ExecStop=/usr/bin/umount -l /var/lib/homerslab-storage/films
 TimeoutStartSec=60s
 # Until the mesh is up at boot, or the share answers again.
 Restart=on-failure

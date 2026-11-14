@@ -10,6 +10,7 @@ Documentation=https://github.com/ArjunRachithcf/homerslab
 Requires=docker.service
 After=docker.service network-online.target homerslab-agent.service homerslab-storage-uploads.service
 Wants=network-online.target homerslab-storage-uploads.service
+PartOf=homerslab-storage-uploads.service
 
 [Service]
 Type=exec

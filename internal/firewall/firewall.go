@@ -241,13 +241,13 @@ func Render(s State) string {
 	if addrs := upstreamAddrs(s.Upstreams); len(addrs) > 0 {
 		w("\t\tip daddr . meta l4proto . th dport %s jump to_apps", set(addrs))
 	}
+	servers := slices.DeleteFunc(slices.Clone(s.Shares), func(a netip.Addr) bool { return !a.Is4() })
+	slices.SortFunc(servers, netip.Addr.Compare)
 	var shares []string
-	for _, a := range s.Shares {
-		if a.Is4() {
-			shares = append(shares, a.String())
-		}
+	for _, a := range slices.Compact(servers) {
+		shares = append(shares, a.String())
 	}
-	if shares = uniqSorted(shares, func(x, y string) int { return netip.MustParseAddr(x).Compare(netip.MustParseAddr(y)) }); len(shares) > 0 {
+	if len(shares) > 0 {
 		// A share is reached through the mesh only (#28): at boot, before the mesh is up, the route to its server may be
 		// the LAN's default one. Without a mesh, not at all.
 		if len(mesh) > 0 {

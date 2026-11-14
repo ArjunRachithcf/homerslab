@@ -267,6 +267,10 @@ func UnitFile(a App) []byte {
 	w("Requires=docker.service")
 	w("After=docker.service network-online.target homerslab-agent.service%s", units)
 	w("Wants=network-online.target%s", units)
+	if units != "" {
+		// Stopped and restarted with its shares, so it never runs on a mount that went away.
+		w("PartOf=%s", units[1:])
+	}
 	w("")
 	w("[Service]")
 	w("Type=exec")

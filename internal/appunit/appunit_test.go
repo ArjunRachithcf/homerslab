@@ -278,7 +278,7 @@ func TestAStorageLocationIsABindOfItsFolderReadOnlyWhereThePlanSays(t *testing.T
 	if db := o[strings.Index(o, "  \"db\":\n"):strings.Index(o, "  \"web\":\n")]; strings.Contains(db, "volumes") {
 		t.Errorf("a service that didn't ask sees a location:\n%s", db)
 	}
-	for _, want := range []string{"\nWants=network-online.target homerslab-storage-uploads.service\n", "homerslab-agent.service homerslab-storage-uploads.service\n",
+	for _, want := range []string{"\nWants=network-online.target homerslab-storage-uploads.service\n", "\nPartOf=homerslab-storage-uploads.service\n", "homerslab-agent.service homerslab-storage-uploads.service\n",
 		"\nExecStartPre=/usr/bin/mountpoint -q /var/lib/homerslab-storage/uploads\n"} {
 		if !strings.Contains(u, want) {
 			t.Errorf("the unit lacks %q:\n%s", want, u)

@@ -99,6 +99,7 @@ func TestAShareIsMountedOverTheMeshOnly(t *testing.T) {
 		"a mesh-looking address on the LAN":    {"100.64.9.9", "enp5s0", "not-on-the-mesh"},
 		"an address routed through a VPN":      {"100.64.9.10", "tun0", "not-on-the-mesh"},
 		"another private range off the mesh":   {"10.0.0.5", "", "not-on-the-mesh"},
+		"a public address the mesh routes":     {"203.0.113.7", "wt0", "not-on-the-mesh"}, // an exit node's
 		"a name, which could resolve anywhere": {"nas.local", "", "bad-server"},
 	} {
 		if c.route != "" {
@@ -160,6 +161,12 @@ func TestAShareIsMountedOverTheMeshOnly(t *testing.T) {
 		}
 	}
 
+	// The same share again changes nothing: no new credential, no remount of a share apps may be using.
+	seals, mounts := h.Times("systemctl restart homerslab-storage-films.service"), len(h.Cmds())
+	if code, _ := call(t, sock, "PUT", "/v1/storage/films", smbShare()); code != http.StatusOK || len(h.Cmds()) != mounts ||
+		h.Times("systemctl restart homerslab-storage-films.service") != seals {
+		t.Errorf("the same share again: %d, and %d commands", code, len(h.Cmds())-mounts)
+	}
 	// An NFS export takes no credentials; a share that doesn't mount leaves nothing behind.
 	nfs := agent.StorageRequest{Kind: "share", Protocol: storage.NFS, Server: "100.64.1.3", Share: "/volume1/Music"}
 	if code, body := call(t, sock, "PUT", "/v1/storage/music", nfs); code != http.StatusOK {
