@@ -198,6 +198,9 @@ func (m *Manager) applyPlan(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	m.log.Info("applied an install plan", "plan", p.ID, "app", a.ID, "host", p.Name.Host)
+	if err := m.RefreshHome(ctx); err != nil {
+		m.log.Warn("Home's projection, after an install", "err", err)
+	}
 	writeJSON(w, http.StatusAccepted, m.view(store.App{ID: a.ID, Plan: p.ID, AppliedAt: m.cfg.Now().UTC()}, p, ans, &st))
 }
 

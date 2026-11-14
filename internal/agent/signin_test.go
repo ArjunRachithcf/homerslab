@@ -252,3 +252,29 @@ func TestTheEdgeServesTheSignInWhenTheManagerSaysSo(t *testing.T) {
 		t.Errorf("the edge runs:\n%s\nwant:\n%s", got, want)
 	}
 }
+
+// Home is served once the manager says so (#21): its name to Home's own socket, beside Admin and the sign-in. A name
+// that isn't one is refused.
+func TestTheEdgeServesHomeWhenTheManagerSaysSo(t *testing.T) {
+	testenv.Isolate(t)
+	sock, h, _ := joined(t, agent.Config{})
+	chain, key := wildcard(t, "example.test")
+	call(t, sock, "PUT", "/v1/edge/certificates/example.test", map[string]string{"chain": chain, "key": key})
+	call(t, sock, "PUT", "/v1/sign-in", map[string]string{"provider": "authentik", "bootstrapToken": bootstrap})
+	if code, body := call(t, sock, "PUT", "/v1/edge", agent.EdgeSites{Port: 443, Admin: "admin.example.test", SignIn: "auth.example.test", Home: "home example"}); code != http.StatusBadRequest {
+		t.Errorf("a Home that isn't a name: %d %s", code, body)
+	}
+	if code, body := call(t, sock, "PUT", "/v1/edge", agent.EdgeSites{Port: 443, Admin: "admin.example.test", SignIn: "auth.example.test", Home: "home.example.test"}); code != http.StatusOK {
+		t.Fatalf("%d %s", code, body)
+	}
+	want, _ := edge.Render(edge.Config{AdminSocket: agent.DefaultEdge.AdminSocket, Storage: "/var/lib/homerslab-edge",
+		Listen: []netip.Addr{netip.MustParseAddr("100.88.7.186")}, Port: 443,
+		Certificates: []edge.Certificate{{Domain: "example.test", CertFile: "/run/credentials/homerslab-edge.service/tls-example.test.crt",
+			KeyFile: "/run/credentials/homerslab-edge.service/tls-example.test.key"}},
+		Admin:  &edge.Site{Name: "admin.example.test", Upstream: "/run/homerslab-admin.sock"},
+		SignIn: &edge.Site{Name: "auth.example.test", Dial: "172.31.250.10:9000"},
+		Home:   &edge.Site{Name: "home.example.test", Upstream: "/run/homerslab-home.sock"}})
+	if got := h.Edge.Config(); !edge.Same(withoutAdmin(t, got), withoutAdmin(t, want)) {
+		t.Errorf("the edge runs:\n%s\nwant:\n%s", got, want)
+	}
+}

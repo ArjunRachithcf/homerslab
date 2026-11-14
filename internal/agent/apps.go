@@ -81,6 +81,7 @@ const (
 const (
 	edgeUser    = "homerslab-edge"
 	managerUser = "homerslab"
+	homeUser    = "homerslab-home"
 )
 
 // reservedApps are ids an app can't have: their units and projects are HomersLab's own.
@@ -803,16 +804,18 @@ func scrub(line string, secrets [][]byte) string {
 var base64Run = regexp.MustCompile(`[A-Za-z0-9+/_-]{8,}={0,2}`)
 
 // appsFirewall are the apps' upstreams, and the sign-in's, as the firewall table lets them be opened: each app's by the
-// edge's user and root (the agent's probes), the sign-in's by the manager's too. A user the machine doesn't have
-// (yet) is left out, so the upstream is only root's. The caller holds a.mu.
+// edge's user and root (the agent's probes), the sign-in's by the manager's and Home's too (their OIDC clients, #21). A
+// user the machine doesn't have (yet) is left out, so the upstream is only root's. The caller holds a.mu.
 func (a *Agent) appsFirewall() []firewall.Upstream {
 	var edgeUIDs, signInUIDs []uint32
 	if uid, ok := a.cfg.Users(edgeUser); ok {
 		edgeUIDs = append(edgeUIDs, uid)
 	}
 	signInUIDs = slices.Clone(edgeUIDs)
-	if uid, ok := a.cfg.Users(managerUser); ok {
-		signInUIDs = append(signInUIDs, uid)
+	for _, u := range []string{managerUser, homeUser} {
+		if uid, ok := a.cfg.Users(u); ok {
+			signInUIDs = append(signInUIDs, uid)
+		}
 	}
 	var out []firewall.Upstream
 	if a.state.SignIn != nil {

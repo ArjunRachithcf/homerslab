@@ -47,8 +47,10 @@ const (
 	// kept only until Authentik has taken it, so a bootstrap that stopped half-way resumes with it.
 	credSignInToken = "manager-sign-in-token"
 	credBootstrap   = "manager-sign-in-bootstrap"
-	// credAdminClient is the secret of Admin's OIDC client.
+	// credAdminClient is the secret of Admin's OIDC client; credHomeClient Home's, which Home's unit loads as a
+	// credential of its own (packaging/systemd/homerslab-home.service).
 	credAdminClient = "manager-admin-client-secret"
+	credHomeClient  = "manager-home-client-secret"
 )
 
 // The answers the sign-in keeps. None is secret.
@@ -61,7 +63,13 @@ const (
 	ansIssuer             = "adminIssuer"
 	ansSignedInAt         = "adminSignedInAt"  // the first sign-in to Admin, over the mesh
 	ansDeviceKey          = "adminDeviceKeyId" // the mesh key last handed over for the admin\'s device, by its ID
+	ansHomeClientID       = "homeClientId"
+	ansHomeIssuer         = "homeIssuer"
+	ansHomeServed         = "homeServed" // the edge serves home.<main domain>
 )
+
+// homeSlug is Home's OIDC client in the provider.
+const homeSlug = "homerslab-home"
 
 // adminSlug is Admin's OIDC client in the provider.
 const adminSlug = "homerslab-admin"
@@ -244,17 +252,34 @@ func (m *Manager) ensureSignIn(ctx context.Context) (idp.Provider, error) {
 			return nil, err
 		}
 	}
-	if err := m.db.SaveAnswers(ctx, map[string]string{ansAdminUser: user, ansClientID: creds.ID, ansIssuer: creds.Issuer}); err != nil {
-		return nil, err
+	// Home's own client (#21): everyone in the household signs in to Home, with the sign-in's usual flow.
+	home, err := p.EnsureClient(ctx, idp.Client{Slug: homeSlug, Name: "Home", RedirectURIs: []string{HomeURL(ans) + "/auth/callback"},
+		Roles: idp.Roles()})
+	if err != nil {
+		return nil, fmt.Errorf("%w: Home's client: %v", errSignIn, err)
 	}
-	if ans[ansServed] == "" {
-		if err := m.agent.edgeSites(ctx, agent.EdgeSites{Port: householdPort(ans), Admin: AdminName(ans[ansDomain]), SignIn: h.SignIn()}); err != nil {
-			return nil, fmt.Errorf("%w: %v", errEdge, err)
-		}
-		if err := m.db.SaveAnswers(ctx, map[string]string{ansServed: m.cfg.Now().UTC().Format(time.RFC3339)}); err != nil {
+	if have, err := m.agent.unseal(ctx, credHomeClient); err != nil || have != home.Secret {
+		if err := m.agent.seal(ctx, credHomeClient, home.Secret); err != nil {
 			return nil, err
 		}
-		m.log.Info("the edge serves the sign-in", "name", h.SignIn())
+	}
+	if err := m.db.SaveAnswers(ctx, map[string]string{ansAdminUser: user, ansClientID: creds.ID, ansIssuer: creds.Issuer,
+		ansHomeClientID: home.ID, ansHomeIssuer: home.Issuer}); err != nil {
+		return nil, err
+	}
+	if ans[ansServed] == "" || ans[ansHomeServed] == "" {
+		if err := m.agent.edgeSites(ctx, agent.EdgeSites{Port: householdPort(ans), Admin: AdminName(ans[ansDomain]), SignIn: h.SignIn(),
+			Home: HomeName(ans[ansDomain])}); err != nil {
+			return nil, fmt.Errorf("%w: %v", errEdge, err)
+		}
+		now := m.cfg.Now().UTC().Format(time.RFC3339)
+		if err := m.db.SaveAnswers(ctx, map[string]string{ansServed: now, ansHomeServed: now}); err != nil {
+			return nil, err
+		}
+		m.log.Info("the edge serves the sign-in and Home", "names", []string{h.SignIn(), HomeName(ans[ansDomain])})
+	}
+	if err := m.RefreshHome(ctx); err != nil {
+		m.log.Warn("Home's projection", "err", err)
 	}
 	return p, nil
 }

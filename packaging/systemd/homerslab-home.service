@@ -1,0 +1,57 @@
+# Home: where the household opens its apps (ADR 0013). Its own process, as its own unprivileged user, in no group but
+# its own: it reads only the projection the manager writes for it, and its network reaches only the sign-in's server,
+# for its OIDC client. The manager's sockets and database, the agent's, the edge's admin API and every sealed
+# credential are gone from its view.
+[Unit]
+Description=HomersLab Home
+Documentation=https://github.com/ArjunRachithcf/homerslab
+Requires=homerslab-home.socket
+After=homerslab-home.socket
+
+[Service]
+Type=exec
+User=homerslab-home
+Group=homerslab-home
+ExecStart=/usr/bin/homerslab home
+# Home's socket, for the edge's group only.
+Sockets=homerslab-home.socket
+# Its OIDC client's secret, which the manager had the agent seal (ADR 0011): decrypted by systemd into Home's own
+# credentials directory as Home starts. Home is socket-activated, and the edge first connects once the manager has
+# sealed it.
+LoadCredentialEncrypted=manager-home-client-secret:/var/lib/homerslab-agent/credentials/manager-home-client-secret.cred
+UMask=0077
+Restart=on-failure
+RestartSec=2s
+
+# What Home must never reach (story 69): the manager's control socket and database, Admin's socket, the agent's socket
+# and state, the edge's admin API and storage.
+InaccessiblePaths=-/run/homerslab -/var/lib/homerslab -/run/homerslab-admin.sock -/run/homerslab-agent
+InaccessiblePaths=-/var/lib/homerslab-agent -/run/homerslab-edge -/var/lib/homerslab-edge -/etc/homerslab
+# The sign-in's server, on the sign-in's network (agent.SignInUpstream), and nothing else over IP.
+IPAddressDeny=any
+IPAddressAllow=172.31.250.10
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+PrivateIPC=yes
+ProtectProc=invisible
+ProcSubset=pid
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM

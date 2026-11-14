@@ -173,6 +173,16 @@ func TestTheManagerRefusesToRunAsRoot(t *testing.T) {
 	}
 }
 
+// Home runs unprivileged too, as its own user (#21): never as root.
+func TestHomeRefusesToRunAsRoot(t *testing.T) {
+	testenv.Isolate(t)
+	var out, errOut bytes.Buffer
+	code := cli.Main(context.Background(), []string{"home", "--socket", filepath.Join(t.TempDir(), "home.sock")}, cli.Env{Stdout: &out, Stderr: &errOut, Euid: func() int { return 0 }})
+	if code == 0 || !strings.Contains(errOut.String(), "unprivileged") {
+		t.Errorf("home as root: %d %q, want a refusal saying it runs unprivileged", code, errOut.String())
+	}
+}
+
 func TestUnknownCommandsShowTheUsage(t *testing.T) {
 	testenv.Isolate(t)
 	for _, args := range [][]string{{}, {"frobnicate"}, {"setup"}, {"setup", "nope"}} {

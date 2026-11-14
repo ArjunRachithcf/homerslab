@@ -267,7 +267,7 @@ func TestThePackagesUsersHaveFixedIDsOutsideAppImages(t *testing.T) {
 		}
 	}
 	seen := map[string]string{}
-	for _, name := range []string{"homerslab", "homerslab-edge", "homerslab-read"} {
+	for _, name := range []string{"homerslab", "homerslab-edge", "homerslab-read", "homerslab-home"} {
 		gid, id := groups[name], users[name]
 		// A user's own group, made first with the same fixed ID: "uid:group", so sysusers never picks another gid.
 		if id != gid+":"+name {

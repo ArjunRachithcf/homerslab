@@ -43,6 +43,7 @@ func TestTheEdgesConfigurationIsItsGoldenRender(t *testing.T) {
 		"with-sign-in":     withSignIn(),
 		"guarded-app":      withAGuardedApp(),
 		"sign-in-listener": withTheSignInListener(),
+		"with-home":        withHome(),
 		"cloud-port-two":   twoAddresses,
 		"before-the-cert": {AdminSocket: "/run/homerslab-edge/admin.sock", Storage: "/var/lib/homerslab-edge",
 			Listen: []netip.Addr{netip.MustParseAddr("100.88.7.186")}, Port: 443},
@@ -260,6 +261,14 @@ func TestTheSignInIsServedWithTheFirstAdminFlowCutOff(t *testing.T) {
 func withSignIn() edge.Config {
 	c := thePrimary()
 	c.SignIn = &edge.Site{Name: "auth.example.test", Dial: "172.31.250.10:9000"}
+	return c
+}
+
+// withHome is the primary once Home can sign people in (#21): Home's site beside Admin and the sign-in, to Home's own
+// socket, which only the edge may open.
+func withHome() edge.Config {
+	c := withSignIn()
+	c.Home = &edge.Site{Name: "home.example.test", Upstream: "/run/homerslab-home.sock"}
 	return c
 }
 
