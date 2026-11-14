@@ -5,28 +5,51 @@ import { type ChildProcess, execFile, spawn } from 'node:child_process';
 import { createHash, randomBytes } from 'node:crypto';
 import { mkdtemp, rm } from 'node:fs/promises';
 import http from 'node:http';
+import https from 'node:https';
 import net from 'node:net';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { promisify } from 'node:util';
+import { edgeArgs, edgeCertificate, type EdgeTLS } from './edge';
 import { bin, sysroot } from './paths';
 
 const run = promisify(execFile);
 
 export type Link = { url: string; localUrl: string; expiresAt: string };
+/** A request the edge's stand-in passed on or answered: whether it carried Admin's session cookie, and its answer. */
+export type Seen = { host: string; method: string; path: string; session: boolean; status: number };
+
+// Admin's cookies, as Admin sets them (internal/manager/adminaccount.go): __Host- prefixed, so Chromium takes them
+// only over HTTPS, Secure, at Path=/ and with no Domain.
+const sessionCookie = '__Host-homerslab-session';
+const signInCookie = '__Host-homerslab-sign-in';
+const sessionLife = 12 * 3600;
+
+function hostCookie(name: string, value: string, maxAge: number): string {
+  return `${name}=${value}; Path=/; Max-Age=${maxAge}; HttpOnly; Secure; SameSite=Lax`;
+}
+
+function cookiesOf(req: http.IncomingMessage): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const part of (req.headers.cookie ?? '').split(';')) {
+    const i = part.indexOf('=');
+    if (i > 0) out[part.slice(0, i).trim()] = part.slice(i + 1).trim();
+  }
+  return out;
+}
 
 export class Primary {
   private agent?: ChildProcess;
   private manager?: ChildProcess;
   private edge?: http.Server;
   private readonly logs: string[] = [];
-  private constructor(readonly dir: string, private readonly env: NodeJS.ProcessEnv) {}
+  private constructor(readonly dir: string, private readonly env: NodeJS.ProcessEnv, private readonly tls: EdgeTLS) {}
 
-  static async start(): Promise<Primary> {
+  static async start(tls: EdgeTLS): Promise<Primary> {
     const dir = await mkdtemp(path.join(tmpdir(), 'homerslab-flow-'));
     const env = { PATH: process.env.PATH, HOME: dir, DOCKER_HOST: 'unix:///nonexistent', CONTAINER_HOST: 'unix:///nonexistent' };
-    const p = new Primary(dir, env);
+    const p = new Primary(dir, env, tls);
     p.agent = p.spawn('agent', '--socket', p.at('agent.sock'), '--socket-group', String(process.getgid?.() ?? 0), '--sysroot', sysroot,
       '--state-dir', p.at('agent-state'));
     await waitForSocket(p.at('agent.sock'));
@@ -97,47 +120,107 @@ export class Primary {
   }
 
   // Admin's name: the household's domain, as the domain step leaves it (withDomain stands in for that step).
-  static readonly adminName = 'admin.ferreira.family';
+  static readonly domain = 'ferreira.family';
+  static readonly adminName = `admin.${Primary.domain}`;
+
+  /** What reached the edge's stand-in, and how it was answered: for the tests that look at what the browser sent. */
+  readonly seen: Seen[] = [];
+  private readonly attempts = new Set<string>();
+  private readonly codes = new Map<string, string>();
+
+  /** An address at one of the household's names, through the edge's stand-in. */
+  url(host: string, p = '/'): string {
+    if (!this.edge) throw new Error('the edge’s stand-in starts with adminURL()');
+    const { port } = this.edge.address() as net.AddressInfo;
+    return `https://${host}.${Primary.domain}:${port}${p}`;
+  }
 
   /**
-   * Where the browser opens Admin, signed in as Inês. The edge isn't part of these tests, so a small server stands in
-   * for it: it passes the browser's requests on to Admin's socket as the edge does, at Admin's name over HTTPS (Host,
-   * and the page's own Origin), and Admin's answers back. The household account isn't either (passkey.idp.spec.ts
-   * signs in through Authentik), so the stand-in carries an Admin session, as Admin opens one after a sign-in.
+   * Where the browser opens Admin. The edge isn't part of these tests, so a small server stands in for it: over HTTPS
+   * at the household's names, it passes the browser's requests for Admin's name on to Admin's socket, as they came,
+   * and Admin's answers back. Admin's own sign-in can't run here (its client's secret is sealed by the agent as root,
+   * and the sign-in's server sits at its fixed address), so the stand-in also stands in for the sign-in: Admin's
+   * /auth/sign-in and /auth/callback, and the household account's authorize, which signs Inês in. The session cookie
+   * is the browser's own, from that sign-in, as Admin sets it; the stand-in never adds one.
    */
   async adminURL(): Promise<string> {
     if (!this.edge) {
-      const session = this.adminSession();
-      const edge = http.createServer((req, res) => {
-        const own = `http://${req.headers.host ?? ''}`;
-        const headers = { ...req.headers, host: Primary.adminName, cookie: `__Host-homerslab-session=${session}` };
-        if (headers.origin === own) headers.origin = `https://${Primary.adminName}`;
-        const up = http.request({ socketPath: this.at('admin.sock'), path: req.url, method: req.method, headers }, (r) => {
-          res.writeHead(r.statusCode ?? 502, r.headers);
-          r.pipe(res);
-        });
-        up.on('error', () => res.writeHead(502).end());
-        req.pipe(up);
-      });
+      const edge = https.createServer({ key: this.tls.key, cert: this.tls.cert }, (req, res) => this.serveEdge(req, res));
       await new Promise<void>((resolve) => edge.listen(0, '127.0.0.1', resolve));
       this.edge = edge;
     }
-    const { port } = this.edge.address() as net.AddressInfo;
-    return `http://127.0.0.1:${port}/store`;
+    return this.url('admin', '/store');
   }
 
-  // An Admin session for Inês, as a sign-in with the household account opens it: only its token's hash is kept.
-  private adminSession(): string {
+  private serveEdge(req: http.IncomingMessage, res: http.ServerResponse): void {
+    const host = (req.headers.host ?? '').replace(/:\d+$/, '');
+    const u = new URL(req.url ?? '/', 'https://edge');
+    const cookies = cookiesOf(req);
+    res.on('finish', () => this.seen.push({ host, method: req.method ?? '', path: u.pathname,
+      session: sessionCookie in cookies, status: res.statusCode }));
+    if (host === Primary.adminName && u.pathname === '/auth/sign-in') {
+      const state = randomBytes(16).toString('base64url');
+      this.attempts.add(state);
+      const back = this.url('admin', '/auth/callback');
+      res.writeHead(303, { 'Set-Cookie': hostCookie(signInCookie, state, 600),
+        Location: this.url('auth', `/application/o/authorize/?state=${state}&redirect_uri=${encodeURIComponent(back)}`) }).end();
+    } else if (host === Primary.adminName && u.pathname === '/auth/callback') {
+      const state = u.searchParams.get('state') ?? '';
+      const who = this.codes.get(u.searchParams.get('code') ?? '');
+      this.codes.delete(u.searchParams.get('code') ?? '');
+      if (!this.attempts.delete(state) || cookies[signInCookie] !== state || !who) {
+        res.writeHead(403).end();
+        return;
+      }
+      res.writeHead(303, { 'Set-Cookie': [hostCookie(signInCookie, '', -1), hostCookie(sessionCookie, this.adminSession(who), sessionLife)],
+        Location: '/' }).end(); // Admin's start; Admin's own sends an admin to /account/ until setup's last step is done
+    } else if (host === Primary.adminName) {
+      const up = http.request({ socketPath: this.at('admin.sock'), path: req.url, method: req.method, headers: req.headers }, (r) => {
+        res.writeHead(r.statusCode ?? 502, r.headers);
+        r.pipe(res);
+      });
+      up.on('error', () => (res.headersSent ? res.destroy() : res.writeHead(502).end()));
+      req.pipe(up);
+    } else if (host === `auth.${Primary.domain}` && u.pathname === '/application/o/authorize/') {
+      const back = u.searchParams.get('redirect_uri') ?? '';
+      if (back !== this.url('admin', '/auth/callback')) {
+        res.writeHead(400).end('not Admin’s client');
+        return;
+      }
+      const code = randomBytes(16).toString('base64url');
+      this.codes.set(code, 'ines');
+      res.writeHead(302, { Location: `${back}?code=${code}&state=${encodeURIComponent(u.searchParams.get('state') ?? '')}` }).end();
+    } else if (host === `pdf.${Primary.domain}`) {
+      // One of the household's apps: another origin, on the same site as Admin.
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' }).end('<!doctype html><html lang="en"><title>BentoPDF</title><h1>BentoPDF</h1>');
+    } else {
+      res.writeHead(421).end();
+    }
+  }
+
+  // An Admin session, as Admin opens one after a sign-in with the household account: only its token's hash is kept.
+  private adminSession(username: string): string {
     const token = randomBytes(32).toString('base64url');
     const db = new DatabaseSync(this.at('manager.db'));
     try {
       db.exec('PRAGMA busy_timeout = 5000');
-      db.prepare(`INSERT INTO admin_session (token_hash, username, created_at, expires_at) VALUES (?, 'ines', ?, ?)`)
-        .run(createHash('sha256').update(token).digest(), Date.now() - 60_000, Date.now() + 3_600_000);
+      db.prepare(`INSERT INTO admin_session (token_hash, username, created_at, expires_at) VALUES (?, ?, ?, ?)`)
+        .run(createHash('sha256').update(token).digest(), username, Date.now() - 60_000, Date.now() + sessionLife * 1000);
     } finally {
       db.close();
     }
     return token;
+  }
+
+  // How many install plans the manager has made.
+  plans(): number {
+    const db = new DatabaseSync(this.at('manager.db'));
+    try {
+      db.exec('PRAGMA busy_timeout = 5000');
+      return (db.prepare('SELECT count(*) AS n FROM plan').get() as { n: number }).n;
+    } finally {
+      db.close();
+    }
   }
 
   // Stands in for setup's domain step, which setup reaches only after the sign-in step (#17): its answer, as the
@@ -216,10 +299,13 @@ async function waitForSocket(sock: string): Promise<void> {
   throw new Error(`nothing listens on ${sock}`);
 }
 
-export const test = base.extend<{ primary: Primary }>({
+export const test = base.extend<{ primary: Primary }, { edgeTLS: EdgeTLS }>({
   // eslint-disable-next-line no-empty-pattern -- Playwright reads a fixture's dependencies from this pattern
-  primary: async ({}, use) => {
-    const p = await Primary.start();
+  edgeTLS: [async ({}, use) => use(await edgeCertificate(Primary.domain)), { scope: 'worker' }],
+  // The household's names lead to the edge's stand-in, whose certificate Chromium trusts.
+  launchOptions: [async ({ edgeTLS }, use) => use({ args: edgeArgs(Primary.domain, edgeTLS) }), { scope: 'worker' }],
+  primary: async ({ edgeTLS }, use) => {
+    const p = await Primary.start(edgeTLS);
     await use(p);
     await p.stop();
   },
