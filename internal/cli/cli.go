@@ -23,6 +23,8 @@ const (
 	DefaultSetupPort     = 7020
 	DefaultAgentState    = "/var/lib/homerslab-agent"
 	DefaultGroup         = "homerslab"
+	// DefaultProjection is Home's projection, which the manager writes and Home reads (#21).
+	DefaultProjection = "/run/homerslab-projection/home.json"
 )
 
 // Env is what a command reaches of the world.
@@ -38,6 +40,7 @@ func OS() Env { return Env{Stdin: os.Stdin, Stdout: os.Stdout, Stderr: os.Stderr
 const usage = `Usage:
   homerslab agent      run the agent (as root, from homerslab-agent.service)
   homerslab manager    run the manager (unprivileged, from homerslab-manager.service)
+  homerslab home       run Home, where people open their apps (unprivileged, from homerslab-home.service)
   homerslab setup link make a one-time link to first-time setup, and show it with its QR code
   homerslab setup secret mesh|dns
                        give first-time setup the mesh's or the DNS provider's token, from this machine's terminal
@@ -93,6 +96,8 @@ func Main(ctx context.Context, args []string, env Env) int {
 			err = runAgent(ctx, args[1:], env)
 		case "manager":
 			err = runManager(ctx, args[1:], env)
+		case "home":
+			err = runHome(ctx, args[1:], env)
 		case "node":
 			err = showNode(ctx, args[1:], env)
 		case "catalog":

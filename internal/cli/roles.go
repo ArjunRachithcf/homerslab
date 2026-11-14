@@ -66,6 +66,7 @@ func runManager(ctx context.Context, args []string, env Env) error {
 	ca := fs.String("certificate-authority", "letsencrypt", "the ACME certificate authority: letsencrypt, letsencrypt-staging (rehearsals), or a directory URL")
 	caRoots := fs.String("certificate-authority-roots", "", "a PEM file of roots that a test certificate authority's directory is served with")
 	resolvers := fs.String("dns-resolvers", "", "public DNS resolvers for the certificate's DNS challenge, host:port, comma-separated (Quad9's and Cloudflare's when empty)")
+	projection := fs.String("projection", DefaultProjection, "Home's projection, which the manager keeps for Home's process")
 	if err := parse(fs, args); err != nil {
 		return err
 	}
@@ -97,7 +98,7 @@ func runManager(ctx context.Context, args []string, env Env) error {
 		defer adminLn.Close()
 	}
 	m, err := manager.New(manager.Config{DB: *db, AgentSocket: *agentSocket, SetupPort: int(bound.Port()), Local: loopbackOf(bound.Addr()),
-		LANAddress: lanAddress, Authority: authority, Log: log})
+		LANAddress: lanAddress, Authority: authority, Projection: *projection, Log: log})
 	if err != nil {
 		return err
 	}

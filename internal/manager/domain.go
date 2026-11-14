@@ -310,6 +310,9 @@ func (m *Manager) installCertificate(ctx context.Context, ans map[string]string,
 	if ans[ansServed] != "" {
 		sites.SignIn = household(ans).SignIn() // served since the household account was set up: kept
 	}
+	if ans[ansHomeServed] != "" {
+		sites.Home = HomeName(domain)
+	}
 	if err := m.agent.edgeSites(ctx, sites); err != nil {
 		return fmt.Errorf("%w: %v", errEdge, err)
 	}
@@ -334,6 +337,18 @@ func (m *Manager) ensureNames(ctx context.Context, ans map[string]string) error 
 		return err
 	}
 	return nb.EnsureNames(ctx, ans[ansDomain], ip)
+}
+
+// HomeName is Home's name on a domain.
+func HomeName(domain string) string { return "home." + domain }
+
+// HomeURL is Home's one URL (ADR 0021): its name, at the household's port.
+func HomeURL(ans map[string]string) string {
+	u := "https://" + HomeName(ans[ansDomain])
+	if p := householdPort(ans); p != 443 {
+		u += ":" + strconv.Itoa(p)
+	}
+	return u
 }
 
 // AdminURL is Admin's one URL (ADR 0021): its name, at the household's port.

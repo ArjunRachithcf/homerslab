@@ -52,8 +52,9 @@ type fakeSignIn struct {
 	// beforeKeep and afterKeep run around the manager's keeping of its new token; unkept counts the ones it couldn't.
 	beforeKeep, afterKeep func()
 	unkept                int
-	// guards are the apps' guards the manager made, in order.
-	guards []idp.Guard
+	// guards are the apps' guards the manager made, in order; clients the OIDC clients.
+	guards  []idp.Guard
+	clients []idp.Client
 }
 
 func newFakeSignIn(t *testing.T) *fakeSignIn {
@@ -230,6 +231,12 @@ func (f *fakeSignIn) EnrolmentLink(_ context.Context, u string) (idp.Link, error
 	return idp.Link{URL: idp.Secret(l), ExpiresAt: time.Now().Add(idp.EnrolmentLife)}, nil
 }
 func (f *fakeSignIn) EnsureClient(_ context.Context, c idp.Client) (idp.ClientCredentials, error) {
+	f.mu.Lock()
+	f.clients = append(f.clients, c)
+	f.mu.Unlock()
+	if c.Slug == "homerslab-home" {
+		return idp.ClientCredentials{ID: homeClientID, Secret: homeSecret, Issuer: homeIssuer}, nil
+	}
 	if c.Slug != "homerslab-admin" || !c.PasskeyOnly || len(c.Roles) != 1 || c.Roles[0] != idp.Admin ||
 		len(c.RedirectURIs) != 1 || c.RedirectURIs[0] != adminOrigin+"/auth/callback" {
 		return idp.ClientCredentials{}, fmt.Errorf("Admin's client: %+v", c)

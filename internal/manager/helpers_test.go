@@ -111,6 +111,8 @@ type primary struct {
 	// agentConfig is the agent's, filled in by agenttest.
 	agentConfig agent.Config
 	log         *slog.Logger // the manager's and the agent's, when a test reads them
+	// projection is Home's projection, which the manager keeps.
+	projection string
 }
 
 // withLogs gives the manager and its agent one logger, at debug level, writing to w.
@@ -146,6 +148,7 @@ func newPrimary(t *testing.T, opts ...option) *primary {
 
 		lanAddress: netip.MustParseAddr("192.168.1.20"),
 	}
+	p.projection = filepath.Join(t.TempDir(), "home.json")
 	for _, o := range opts {
 		o(p)
 	}
@@ -186,6 +189,7 @@ func (p *primary) open() {
 		SignInUpstream: p.signInUpstream,
 		SignInWait:     300 * time.Millisecond,
 		SignInPoll:     10 * time.Millisecond,
+		Projection:     p.projection,
 		Log:            p.log,
 	})
 	if err != nil {

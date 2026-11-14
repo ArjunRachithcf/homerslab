@@ -132,11 +132,13 @@ func TestAnAppIsOneUnitRunningTheStandardComposeCommand(t *testing.T) {
 }
 
 // The edge serves the app's name behind its guard, to its one upstream; the firewall table lets only the edge's user and
-// the agent's open that upstream (ADR 0020).
+// the agent's open that upstream (ADR 0020). The sign-in's server is also opened by the manager's user, and by Home's,
+// whose clients of the sign-in exchange their codes there (#21); Home's never reaches an app.
 func TestTheEdgeAloneReachesTheApp(t *testing.T) {
 	testenv.Isolate(t)
 	users := func(name string) (uint32, bool) {
-		return map[string]uint32{"homerslab-edge": 981, "homerslab": 980}[name], name == "homerslab-edge" || name == "homerslab"
+		uid, ok := map[string]uint32{"homerslab-edge": 981, "homerslab": 980, "homerslab-home": 982}[name]
+		return uid, ok
 	}
 	sock, h, _ := signedIn(t, agent.Config{Users: users})
 	install(t, sock, "bentopdf", bentoPDF(t))
@@ -147,7 +149,7 @@ func TestTheEdgeAloneReachesTheApp(t *testing.T) {
 		}
 	}
 	table, _ := h.Table()
-	if !strings.Contains(table, "ip daddr . tcp dport . meta skuid { 172.31.240.2 . 8080 . 0, 172.31.240.2 . 8080 . 981, 172.31.250.10 . 9000 . 0, 172.31.250.10 . 9000 . 980, 172.31.250.10 . 9000 . 981 } accept") {
+	if !strings.Contains(table, "ip daddr . tcp dport . meta skuid { 172.31.240.2 . 8080 . 0, 172.31.240.2 . 8080 . 981, 172.31.250.10 . 9000 . 0, 172.31.250.10 . 9000 . 980, 172.31.250.10 . 9000 . 981, 172.31.250.10 . 9000 . 982 } accept") {
 		t.Errorf("the firewall table:\n%s", table)
 	}
 }

@@ -69,6 +69,8 @@ type Config struct {
 	// household's port: it carries the sign-in's route only, with SNI and Host both the sign-in's name. None: no
 	// listener (no sign-in on this node yet).
 	SignInListen netip.Addr
+	// Home is Home's site, home.<main domain>, on the primary only: Home's own process, on its socket (#21).
+	Home *Site
 	// Apps are this node's apps' sites.
 	Apps []App
 }
@@ -182,6 +184,12 @@ func Render(c Config) ([]byte, error) {
 	var sites []served
 	if c.Admin != nil {
 		sites = append(sites, served{c.Admin.Name, obj{"handler": "reverse_proxy", "upstreams": []obj{{"dial": "unix/" + c.Admin.Upstream}}}})
+	}
+	if c.Home != nil {
+		if c.Home.Name == "" || c.Home.Upstream == "" {
+			return nil, errors.New("Home needs its name and its socket")
+		}
+		sites = append(sites, served{c.Home.Name, obj{"handler": "reverse_proxy", "upstreams": []obj{{"dial": "unix/" + c.Home.Upstream}}}})
 	}
 	if c.SignIn != nil {
 		if _, err := netip.ParseAddrPort(c.SignIn.Dial); err != nil || c.SignIn.Name == "" {

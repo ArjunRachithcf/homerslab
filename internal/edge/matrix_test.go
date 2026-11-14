@@ -22,6 +22,7 @@ import (
 	"crypto/x509/pkix"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -38,10 +39,12 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"testing/fstest"
 	"time"
 
 	"github.com/ArjunRachithcf/homerslab/internal/edge"
 	"github.com/ArjunRachithcf/homerslab/internal/firewall"
+	"github.com/ArjunRachithcf/homerslab/internal/home"
 	"github.com/ArjunRachithcf/homerslab/internal/testenv"
 )
 
@@ -64,6 +67,11 @@ const (
 	edgeApps   = "10.216.4.20"
 	listener   = "10.216.9.1" // the sign-in listener's address, on the edge machine's loopback
 	helperMode = "HLTEST16_HELPER"
+	// Home (#21): its user, its socket, and the manager's control socket and database it must never reach.
+	homeUID     = "4300"
+	homeSock    = "/run/homerslab-home/home.sock"
+	controlSock = "/run/homerslab/manager.sock"
+	managerDB   = "/var/lib/homerslab/manager.db"
 )
 
 func TestMain(m *testing.M) {
@@ -94,6 +102,52 @@ func helper(mode, arg string) int {
 			w.Header().Set("Strict-Transport-Security", "max-age=63072000; includeSubDomains; preload")
 			fmt.Fprintf(w, "Admin, at %s", r.Host)
 		}))
+	case "manager": // the manager's control socket and database, for its own user only, as its unit keeps them
+		_ = os.Remove(controlSock)
+		ln, err := net.Listen("unix", controlSock)
+		if err != nil {
+			fmt.Println(err)
+			return 1
+		}
+		_ = os.Chmod(controlSock, 0o600)
+		if err := os.WriteFile(managerDB, []byte("SQLite format 3\x00"), 0o600); err != nil {
+			fmt.Println(err)
+			return 1
+		}
+		_ = http.Serve(ln, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { fmt.Fprint(w, "the control socket") }))
+	case "home": // Home itself, on its socket for the edge's group, reading its projection
+		dir, _ := os.MkdirTemp("", "home")
+		p := filepath.Join(dir, "home.json")
+		if err := home.Write(p, home.Projection{Household: "The Ferreira household", Home: "https://home.example.test",
+			SignIn: &home.SignIn{Issuer: "https://auth.example.test/application/o/homerslab-home/", ClientID: "home", Upstream: "http://" + signInStub},
+			Apps:   []home.App{{ID: "bentopdf", Name: "BentoPDF", URL: "https://pdf.example.test", Audience: []string{"admin", "adult"}, Health: "healthy"}}}); err != nil {
+			fmt.Println(err)
+			return 1
+		}
+		_ = os.Remove(homeSock)
+		ln, err := net.Listen("unix", homeSock)
+		if err != nil {
+			fmt.Println(err)
+			return 1
+		}
+		_ = os.Chmod(homeSock, 0o660)
+		h := home.New(home.Config{Projection: p, ClientSecret: filepath.Join(dir, "none"), Web: fstest.MapFS{"home.html": {Data: []byte("Home")}}})
+		_ = http.Serve(ln, h.Handler())
+	case "reach": // what this process's user can open of the manager's: Admin's socket, the control socket, the database
+		for _, sock := range []string{adminSock, controlSock} {
+			if c, err := net.Dial("unix", sock); err != nil {
+				fmt.Printf("%s: refused (%v)\n", sock, errors.Unwrap(errors.Unwrap(err)))
+			} else {
+				c.Close()
+				fmt.Printf("%s: opened\n", sock)
+			}
+		}
+		if f, err := os.Open(managerDB); err != nil {
+			fmt.Printf("%s: refused (%v)\n", managerDB, errors.Unwrap(err))
+		} else {
+			f.Close()
+			fmt.Printf("%s: opened\n", managerDB)
+		}
 	case "authentik": // the sign-in's server, on the sign-in network: it says what reached it
 		_ = http.ListenAndServe(signInStub, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if r.URL.Path == "/outpost.goauthentik.io/auth/caddy" { // its embedded outpost, as the guard
@@ -176,6 +230,7 @@ func guard(w http.ResponseWriter, r *http.Request) {
 // request is one request a browser makes: to an address, with a TLS server name and a Host, for a path ("/" when
 // empty).
 type request struct {
+	Method          string // GET when empty; any other sends {} as JSON
 	Addr, SNI, Host string
 	Path            string // as sent, escapes and all; "/" when empty
 	Plain           bool   // plain HTTP, no TLS
@@ -207,7 +262,11 @@ func (q request) do(ctx context.Context) string {
 	if q.Plain {
 		scheme = "http"
 	}
-	req, _ := http.NewRequestWithContext(ctx, "GET", scheme+"://"+q.Host+"/", nil)
+	req, _ := http.NewRequestWithContext(ctx, cmp.Or(q.Method, "GET"), scheme+"://"+q.Host+"/", nil)
+	if q.Method != "" && q.Method != "GET" {
+		req.Body, req.ContentLength = io.NopCloser(strings.NewReader("{}")), 2
+		req.Header.Set("Content-Type", "application/json")
+	}
 	if q.Path != "" {
 		req.URL.Opaque = "//" + q.Host + q.Path // sent exactly as written
 	}
@@ -244,6 +303,7 @@ func TestTheEdgesRequestMatrix(t *testing.T) {
 	cfg := edge.Config{AdminSocket: adminFile, Storage: "/var/lib/homerslab-edge", Listen: []netip.Addr{netip.MustParseAddr(edgeMesh)},
 		Port: 443, Certificates: []edge.Certificate{{Domain: "example.test", CertFile: credDir + "/tls-example.test.crt", KeyFile: credDir + "/tls-example.test.key"}},
 		Admin: &edge.Site{Name: "admin.example.test", Upstream: adminSock}, SignIn: &edge.Site{Name: "auth.example.test", Dial: signInStub},
+		Home:         &edge.Site{Name: "home.example.test", Upstream: homeSock},
 		Apps:         []edge.App{{Name: "pdf.example.test", Dial: appStub, Guard: edge.AuthentikGuard(signInStub)}},
 		SignInListen: netip.MustParseAddr(listener)}
 	want, err := edge.Render(cfg)
@@ -454,6 +514,10 @@ func TestTheEdgesRequestMatrix(t *testing.T) {
 			q: toListener("auth.example.test", "admin.example.test", "/"), want: "421 ", notWants: "Admin"},
 		{name: "SNI the sign-in's, Host another app's: refused", from: "app",
 			q: toListener("auth.example.test", "pdf.example.test", "/"), want: "421 ", notWants: "App,"},
+		{name: "SNI the sign-in's, Host Home's: refused", from: "app",
+			q: toListener("auth.example.test", "home.example.test", "/"), want: "421 ", notWants: "auth/sign-in"},
+		{name: "SNI Home's: no certificate, nothing served", from: "app",
+			q: toListener("home.example.test", "home.example.test", "/"), want: "error: ", notWants: "auth/sign-in"},
 		{name: "SNI Admin's: no certificate, nothing served", from: "app",
 			q: toListener("admin.example.test", "admin.example.test", "/"), want: "error: ", notWants: "Admin"},
 		{name: "SNI another app's: no certificate, nothing served", from: "app",
@@ -470,6 +534,57 @@ func TestTheEdgesRequestMatrix(t *testing.T) {
 			}
 		})
 	}
+
+	// Home (#21): served at its name over the mesh, from its own process. Every app is same-site with it, so a change
+	// from an app's page is refused (#83); Home's own page's isn't. Its user opens nothing of the manager's.
+	toHome := func(method, path string, headers map[string]string) request {
+		return request{Method: method, Addr: edgeMesh + ":443", SNI: "home.example.test", Host: "home.example.test", Path: path, Headers: headers}
+	}
+	for _, row := range []struct {
+		name            string
+		q               request
+		wants, notWants []string
+	}{
+		{name: "Home, from the mesh, signed out: to the sign-in", q: toHome("GET", "/", map[string]string{}),
+			wants: []string{"303 ", "Location: /auth/sign-in"}},
+		{name: "a cross-app POST to Home, from an app's page with Home's session cookie: refused (#83)",
+			q: toHome("POST", "/auth/sign-out", map[string]string{"Origin": "https://pdf.example.test", "Sec-Fetch-Site": "same-site",
+				"Cookie": "__Host-homerslab-home=a-session"}),
+			wants: []string{"403 ", "cross-origin"}, notWants: []string{"Max-Age=0"}},
+		{name: "a cross-app POST to Home that claims to be same-origin, with an app's Origin: refused (#83)",
+			q: toHome("POST", "/auth/sign-out", map[string]string{"Origin": "https://pdf.example.test", "Sec-Fetch-Site": "same-origin",
+				"Cookie": "__Host-homerslab-home=a-session"}),
+			wants: []string{"403 ", "cross-origin"}},
+		{name: "a POST from Home's own page: Home takes it", q: toHome("POST", "/auth/sign-out", map[string]string{"Origin": "https://home.example.test",
+			"Sec-Fetch-Site": "same-origin", "Cookie": "__Host-homerslab-home=a-session"}),
+			wants: []string{"204 ", "__Host-homerslab-home=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax; Secure"}},
+	} {
+		t.Run("Home: "+row.name, func(t *testing.T) {
+			got := ask("phone", row.q)
+			for _, want := range row.wants {
+				if !strings.Contains(got, want) {
+					t.Errorf("%q, want %q", got, want)
+				}
+			}
+			for _, bad := range row.notWants {
+				if strings.Contains(got, bad) {
+					t.Errorf("%q has %q", got, bad)
+				}
+			}
+		})
+	}
+	t.Run("Home's user opens neither Admin's socket nor the control socket, nor reads the database (story 69)", func(t *testing.T) {
+		got := w.helper(t, "home", homeUID+":"+homeUID, "reach", nil, "")
+		for _, p := range []string{adminSock, controlSock, managerDB} {
+			if !strings.Contains(got, p+": refused (permission denied)") {
+				t.Errorf("Home's user, at %s:\n%s", p, got)
+			}
+		}
+		// The control: the manager's own user opens them all.
+		if got := w.helper(t, "admin", "4200:4100", "reach", nil, ""); strings.Count(got, ": opened") != 3 {
+			t.Errorf("the manager's user:\n%s", got)
+		}
+	})
 
 	// Authentik's first-admin flow is refused on every listener before the provider sees it, its page and its executor
 	// API alike, however the path is written (#84). Today the edge has one listener for people, the mesh one, and the
@@ -673,7 +788,7 @@ func up(t *testing.T, engine, chain, key string) *world {
 		{path: strings.TrimPrefix(credDir, "/") + "/tls-example.test.key", body: []byte(key), mode: 0o400, uid: 4100},
 		{path: strings.TrimPrefix(helperBin, "/"), body: bin, mode: 0o755},
 	})
-	for _, m := range []string{"admin", "authentik", "app", "phone", "laptop-on-the-lan"} {
+	for _, m := range []string{"admin", "authentik", "app", "phone", "laptop-on-the-lan", "home"} {
 		w.copy(t, m, []file{{path: strings.TrimPrefix(helperBin, "/"), body: bin, mode: 0o755}})
 	}
 	w.compose(t, "start")
@@ -684,6 +799,13 @@ func up(t *testing.T, engine, chain, key string) *world {
 		"ip link set $dev master br-apps && ip address add "+edgeApps+"/24 dev br-apps && ip link set br-apps up")
 	w.docker(t, nil, "exec", "-u", "0", container("admin"), "sh", "-c", "chown 4200:4100 /run/homerslab-admin && chmod 0750 /run/homerslab-admin")
 	w.docker(t, nil, "exec", "-d", "-u", "4200:4100", "-e", helperMode+"=admin", container("admin"), helperBin, "-")
+	// The manager's folders, as its unit makes them: its own, 0700; Home's socket's folder, for Home and the edge (setgid:
+	// its socket is the edge's group's, as SocketGroup makes it).
+	w.docker(t, nil, "exec", "-u", "0", container("admin"), "sh", "-c",
+		"chown 4200:4200 /run/homerslab /var/lib/homerslab && chmod 0700 /run/homerslab /var/lib/homerslab")
+	w.docker(t, nil, "exec", "-u", "0", container("home"), "sh", "-c", "chown 4300:4100 /run/homerslab-home && chmod 2750 /run/homerslab-home")
+	w.docker(t, nil, "exec", "-d", "-u", "4200:4200", "-e", helperMode+"=manager", container("admin"), helperBin, "-")
+	w.docker(t, nil, "exec", "-d", "-u", homeUID+":"+homeUID, "-e", helperMode+"=home", container("home"), helperBin, "-")
 	w.docker(t, nil, "exec", "-d", "-e", helperMode+"=authentik", container("authentik"), helperBin, "-")
 	w.docker(t, nil, "exec", "-d", "-e", helperMode+"=app", container("app"), helperBin, "-")
 	for range 100 {

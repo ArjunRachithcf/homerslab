@@ -2,7 +2,7 @@
 // state in its database and serves the one API that Admin, the CLI and first-time setup use. It reaches the host only
 // through the agent.
 //
-// It answers on three listeners:
+// It answers on three listeners, and keeps Home's projection, which Home's own process reads (home.go):
 //   - the control socket, a Unix socket only root and the manager's own user can open, for the CLI on this machine;
 //   - the setup listener, on this machine and its LAN, for first-time setup's page, opened by a one-time link;
 //   - Admin's socket, which only the edge opens, for admin.<main domain> over the mesh.
@@ -76,6 +76,10 @@ type Config struct {
 	// ScheduleEvery is how often the scheduler looks for due jobs.
 	ScheduleEvery time.Duration
 	Web           fs.FS // the built pages; surfaces.Dist() when nil
+	// Projection is Home's projection, which the manager keeps for Home's process (#21); none when empty. HomeEvery is
+	// how often the apps' health on it is refreshed (HomeEvery when zero).
+	Projection string
+	HomeEvery  time.Duration
 	// Catalog is the catalog the Store shows; the official one when nil.
 	Catalog fs.FS
 	Log     *slog.Logger
@@ -103,6 +107,9 @@ type Manager struct {
 	givenMu  sync.Mutex
 	checking map[string]int // how many are being checked
 	refusals map[string]string
+
+	homeMu  sync.Mutex // one writing of Home's projection at a time, and the hash of what it last wrote
+	homeSum [32]byte
 }
 
 // New opens the manager's database.
@@ -209,6 +216,7 @@ func (m *Manager) Serve(ctx context.Context, setupLn, controlLn, adminLn net.Lis
 	scheduled, stop := context.WithCancel(ctx)
 	defer stop()
 	go m.schedule(scheduled)
+	go m.refreshHome(scheduled)
 	errc := make(chan error, len(servers))
 	for i, s := range servers {
 		go func() { errc <- s.Serve(listeners[i]) }()

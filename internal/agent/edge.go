@@ -30,8 +30,9 @@ type EdgeConfig struct {
 	Storage string
 	// Credentials is where the edge's unit finds its credentials once systemd has decrypted them.
 	Credentials string
-	// AdminUpstream is the manager's Admin socket, on the primary.
+	// AdminUpstream is the manager's Admin socket, on the primary; HomeUpstream Home's socket (#21).
 	AdminUpstream string
+	HomeUpstream  string
 }
 
 // The packaged edge.
@@ -41,6 +42,7 @@ var DefaultEdge = EdgeConfig{
 	Storage:       "/var/lib/homerslab-edge",
 	Credentials:   "/run/credentials/homerslab-edge.service",
 	AdminUpstream: "/run/homerslab-admin.sock",
+	HomeUpstream:  "/run/homerslab-home.sock",
 }
 
 // EdgeSites are the edge's sites, as the manager wants them. None of it is secret.
@@ -52,6 +54,8 @@ type EdgeSites struct {
 	// SignIn is the sign-in's name, auth.<main domain>, on the primary once the manager has closed the provider's own
 	// first-admin flow; "" until then and elsewhere.
 	SignIn string `json:"signIn,omitempty"`
+	// Home is Home's name, home.<main domain>, on the primary once Home can sign people in; "" until then and elsewhere.
+	Home string `json:"home,omitempty"`
 }
 
 // edgeState is what the agent keeps of its edge, in agent.json.
@@ -101,6 +105,9 @@ func (a *Agent) edgeConfig() (cfg []byte, ok bool, err error) {
 	}
 	if e.Admin != "" {
 		c.Admin = &edge.Site{Name: e.Admin, Upstream: a.cfg.Edge.AdminUpstream}
+	}
+	if e.Home != "" && a.cfg.Edge.HomeUpstream != "" {
+		c.Home = &edge.Site{Name: e.Home, Upstream: a.cfg.Edge.HomeUpstream}
 	}
 	if e.SignIn != "" && a.state.SignIn != nil {
 		c.SignIn = &edge.Site{Name: e.SignIn, Dial: a.upstream()}
@@ -190,7 +197,7 @@ func (a *Agent) putEdge(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if req.Port <= 0 || req.Port > 65535 || req.Port == 80 || (req.Admin != "" && !domainName.MatchString(req.Admin)) ||
-		(req.SignIn != "" && !domainName.MatchString(req.SignIn)) {
+		(req.SignIn != "" && !domainName.MatchString(req.SignIn)) || (req.Home != "" && !domainName.MatchString(req.Home)) {
 		fail(w, http.StatusBadRequest, "bad-sites")
 		return
 	}

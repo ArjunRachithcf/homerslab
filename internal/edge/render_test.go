@@ -43,6 +43,7 @@ func TestTheEdgesConfigurationIsItsGoldenRender(t *testing.T) {
 		"with-sign-in":     withSignIn(),
 		"guarded-app":      withAGuardedApp(),
 		"sign-in-listener": withTheSignInListener(),
+		"with-home":        withHome(),
 		"cloud-port-two":   twoAddresses,
 		"before-the-cert": {AdminSocket: "/run/homerslab-edge/admin.sock", Storage: "/var/lib/homerslab-edge",
 			Listen: []netip.Addr{netip.MustParseAddr("100.88.7.186")}, Port: 443},
@@ -263,6 +264,14 @@ func withSignIn() edge.Config {
 	return c
 }
 
+// withHome is the primary once Home can sign people in (#21): Home's site beside Admin and the sign-in, to Home's own
+// socket, which only the edge may open.
+func withHome() edge.Config {
+	c := withSignIn()
+	c.Home = &edge.Site{Name: "home.example.test", Upstream: "/run/homerslab-home.sock"}
+	return c
+}
+
 // withAGuardedApp is the primary with the sign-in and one guarded app, BentoPDF at pdf.example.test, on its one upstream.
 func withAGuardedApp() edge.Config {
 	c := withSignIn()
@@ -441,7 +450,9 @@ func withTheSignInListener() edge.Config {
 // it carries the sign-in's route only. A handshake for any other name finds no certificate; another Host gets 421.
 func TestTheSignInListenerCarriesTheSignInsRouteOnly(t *testing.T) {
 	testenv.Isolate(t)
-	b, err := edge.Render(withTheSignInListener())
+	withEverySite := withTheSignInListener()
+	withEverySite.Home = withHome().Home // Home is people's, on the mesh; never an app's way in (#21)
+	b, err := edge.Render(withEverySite)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -474,7 +485,7 @@ func TestTheSignInListenerCarriesTheSignInsRouteOnly(t *testing.T) {
 			t.Errorf("the sign-in listener's routes lack %s: %s", want, route)
 		}
 	}
-	for _, bad := range []string{"admin.example.test", "pdf.example.test", "unix/"} {
+	for _, bad := range []string{"admin.example.test", "pdf.example.test", "home.example.test", "unix/"} {
 		if strings.Contains(string(route), bad) {
 			t.Errorf("the sign-in listener carries %s: %s", bad, route)
 		}
