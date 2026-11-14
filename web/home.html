@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="light dark">
+  <meta name="theme-color" content="#f5f5f7" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)">
+  <meta name="apple-mobile-web-app-title" content="Home">
+  <meta name="referrer" content="no-referrer">
+  <title>Home · HomersLab</title>
+  <!-- Home's own files, served by Home's process at these paths (vite.config.ts writes them from design/logo). -->
+  <link rel="manifest" href="/manifest.webmanifest">
+  <link rel="icon" href="/home/favicon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/home/apple-touch-icon.png">
+</head>
+<body class="has-wallpaper">
+  <div class="wallpaper" aria-hidden="true"></div>
+  <div id="root"></div>
+  <script type="module" src="./src/home/main.tsx"></script>
+</body>
+</html>
