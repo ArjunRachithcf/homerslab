@@ -349,7 +349,14 @@ func (h *Home) signInDone(w http.ResponseWriter, r *http.Request) {
 	}
 	now := h.cfg.Now()
 	a, ok := h.openAttempt(ck.Value)
-	if !ok || !now.Before(a.Expires) {
+	if !ok {
+		// Not one Home can open: most likely sealed before Home restarted, with the key that went with it. The sign-in
+		// starts over, and lets the person straight back. (Without the cookie at all, it doesn't: a browser that keeps
+		// none would go round in circles.)
+		http.Redirect(w, r, "/auth/sign-in", http.StatusSeeOther)
+		return
+	}
+	if !now.Before(a.Expires) {
 		fail(w, http.StatusForbidden, "no-sign-in-attempt")
 		return
 	}

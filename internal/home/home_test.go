@@ -25,6 +25,8 @@ type world struct {
 	is         *issuer
 	projection string
 	now        time.Time
+	// restart is Home's process starting again: a new Home, on the same projection and secret.
+	restart func()
 }
 
 var pages = fstest.MapFS{
@@ -61,7 +63,10 @@ func newWorld(t *testing.T) *world {
 	if err := os.WriteFile(secret, []byte(clientSecret), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	w.h = home.New(home.Config{Projection: w.projection, ClientSecret: secret, Web: pages, Now: func() time.Time { return w.now }}).Handler()
+	w.restart = func() {
+		w.h = home.New(home.Config{Projection: w.projection, ClientSecret: secret, Web: pages, Now: func() time.Time { return w.now }}).Handler()
+	}
+	w.restart()
 	return w
 }
 
@@ -431,7 +436,7 @@ func TestStartingSignInsCantStopARealOne(t *testing.T) {
 }
 
 // A sign-in under way lasts ten minutes, from Home to the sign-in and back, whatever the browser keeps; and its cookie
-// is Home's own: one made up, or another of Home's cookies' values, isn't one.
+// is Home's own: one Home can't open (made up, cut short, changed) is no sign-in, and the browser starts one over.
 func TestASignInUnderWayLastsTenMinutes(t *testing.T) {
 	testenv.Isolate(t)
 	w := newWorld(t)
@@ -457,9 +462,33 @@ func TestASignInUnderWayLastsTenMinutes(t *testing.T) {
 	for name, v := range map[string]string{"made up": "made-up", "cut short": real[:len(real)-1],
 		"one byte changed": real[:10] + map[bool]string{true: "B", false: "A"}[real[10] == 'A'] + real[11:]} {
 		b.cookies["__Host-homerslab-home-sign-in"] = &http.Cookie{Name: "__Host-homerslab-home-sign-in", Value: v}
-		if r := b.do("GET", "/auth/callback?state="+url.QueryEscape(state)+"&code="+url.QueryEscape(code)); r.Code != http.StatusForbidden {
-			t.Errorf("a sign-in cookie %s: %d %s", name, r.Code, r.Body)
+		if r := b.do("GET", "/auth/callback?state="+url.QueryEscape(state)+"&code="+url.QueryEscape(code)); r.Code != http.StatusSeeOther ||
+			r.Header().Get("Location") != "/auth/sign-in" {
+			t.Errorf("a sign-in cookie %s: %d %s %s, want it started over", name, r.Code, r.Header().Get("Location"), r.Body)
 		}
+	}
+	// Without a sign-in cookie at all (a browser that keeps none), no sign-in, and no going round in circles.
+	delete(b.cookies, "__Host-homerslab-home-sign-in")
+	if r := b.do("GET", "/auth/callback?state="+url.QueryEscape(state)+"&code="+url.QueryEscape(code)); r.Code != http.StatusForbidden {
+		t.Errorf("no sign-in cookie: %d %s", r.Code, r.Body)
+	}
+}
+
+// A sign-in that Home's restart cut off (its key went with the old process) starts over at the sign-in, which lets the
+// person straight back; then they are in.
+func TestASignInCutOffByARestartStartsOver(t *testing.T) {
+	testenv.Isolate(t)
+	w := newWorld(t)
+	b := w.browser()
+	rec := b.do("GET", "/auth/sign-in")
+	state, code := w.is.code(t, rec.Header().Get("Location"), rui)
+	w.restart()
+	r := b.do("GET", "/auth/callback?state="+url.QueryEscape(state)+"&code="+url.QueryEscape(code))
+	if r.Code != http.StatusSeeOther || r.Header().Get("Location") != "/auth/sign-in" {
+		t.Fatalf("back after a restart: %d %s %s, want it started over", r.Code, r.Header().Get("Location"), r.Body)
+	}
+	if r := b.signIn(rui); r.Code != http.StatusSeeOther || r.Header().Get("Location") != "/" {
+		t.Errorf("signing in again: %d %s", r.Code, r.Body)
 	}
 }
 
