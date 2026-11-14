@@ -358,3 +358,44 @@ func TestEachFamilyLeavesOnlyThroughItsOwnUplinks(t *testing.T) {
 		t.Errorf("with no uplink, want no way out (the LAN is one only as its default routes say):\n%s", got)
 	}
 }
+
+// Only the edge reaches an app (ADR 0020, #82): a process of this machine opens a new connection into an app's
+// network only to an upstream, and only as a user the upstream names (the edge's, the agent's for its probes, the
+// manager's for the sign-in). Everything else into the apps' networks is dropped: another app's port, another of the
+// app's containers, any other user.
+func TestOnlyTheUpstreamsUsersOpenConnectionsIntoAppNetworks(t *testing.T) {
+	testenv.Isolate(t)
+	s := firewall.State{Mesh: []string{"wt0"}, LAN: []string{"enp5s0"}, Bridges: []string{"br-app", "br-signin"},
+		Virtual: []string{"br-app", "br-signin"},
+		Upstreams: []firewall.Upstream{
+			{Addr: netip.MustParseAddrPort("172.31.240.2:8080"), UIDs: []uint32{981, 0}},
+			{Addr: netip.MustParseAddrPort("172.31.250.10:9000"), UIDs: []uint32{981, 980, 0, 980}},
+		}}
+	r := firewall.Render(s)
+	for _, want := range []string{
+		"\tchain output {\n\t\ttype filter hook output priority filter - 5; policy accept;\n",
+		`oifname { "br-app", "br-signin" } jump to_apps`,
+		"ip daddr . meta l4proto . th dport { 172.31.240.2 . tcp . 8080, 172.31.250.10 . tcp . 9000 } jump to_apps",
+		"\tchain to_apps {\n\t\tct state established,related accept\n\t\tmeta l4proto { icmp, ipv6-icmp } accept\n" +
+			"\t\tip daddr . tcp dport . meta skuid { 172.31.240.2 . 8080 . 0, 172.31.240.2 . 8080 . 981, " +
+			"172.31.250.10 . 9000 . 0, 172.31.250.10 . 9000 . 980, 172.31.250.10 . 9000 . 981 } accept\n\t\tdrop\n\t}\n",
+	} {
+		if !strings.Contains(r, want) {
+			t.Errorf("the table lacks %q:\n%s", want, r)
+		}
+	}
+	// No upstream: nothing of this machine opens a connection into an app's network at all.
+	none := firewall.Render(firewall.State{Mesh: []string{"wt0"}, LAN: []string{"enp5s0"}, Bridges: []string{"br-app"}, Virtual: []string{"br-app"}})
+	if !strings.Contains(none, "\tchain to_apps {\n\t\tct state established,related accept\n\t\tmeta l4proto { icmp, ipv6-icmp } accept\n\t\tdrop\n\t}\n") {
+		t.Errorf("without an upstream:\n%s", none)
+	}
+	// An upstream that isn't IPv4 with a port, or no user: never rendered.
+	odd := firewall.Render(firewall.State{Upstreams: []firewall.Upstream{{Addr: netip.MustParseAddrPort("[fd00::2]:80"), UIDs: []uint32{0}},
+		{Addr: netip.MustParseAddrPort("172.31.240.2:0"), UIDs: []uint32{0}}, {Addr: netip.MustParseAddrPort("172.31.240.3:80")}}})
+	if strings.Contains(odd, "fd00::2") || strings.Contains(odd, ". 0 ") || strings.Contains(odd, "172.31.240.3") {
+		t.Errorf("an odd upstream was rendered:\n%s", odd)
+	}
+	if !s.Equal(s) || s.Equal(firewall.State{Mesh: s.Mesh, LAN: s.LAN, Bridges: s.Bridges, Virtual: s.Virtual}) {
+		t.Error("the upstreams don't count in Equal")
+	}
+}

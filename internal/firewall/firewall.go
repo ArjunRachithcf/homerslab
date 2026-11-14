@@ -42,6 +42,7 @@ import (
 	"net/netip"
 	"os"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -89,6 +90,17 @@ type State struct {
 	// Resolvers are the DNS servers this machine uses, which an engine hands its containers (Docker's default bridge
 	// copies them): apps may ask those the LAN leads to, on port 53 only.
 	Resolvers []netip.Addr `json:"resolvers"`
+	// Upstreams are where this machine's own processes may open a connection into an app's network: each app's one
+	// upstream, which the edge proxies to, and the sign-in's server. Only the users each names may (the edge's, the
+	// agent's for its health probes, and the manager's for the sign-in); nothing else of this machine opens a
+	// connection into an app's network (ADR 0020, #82).
+	Upstreams []Upstream `json:"upstreams,omitempty"`
+}
+
+// Upstream is one address and TCP port on an app's network, and the users of this machine that may connect to it.
+type Upstream struct {
+	Addr netip.AddrPort `json:"addr"`
+	UIDs []uint32       `json:"uids"`
 }
 
 // ValidName says whether an interface name is one nft may be given: Linux's limit of 15 characters, and none that
@@ -209,6 +221,16 @@ func Render(s State) string {
 	}
 	w("\t}")
 
+	w("\tchain output {")
+	w("\t\ttype filter hook output priority filter - 5; policy accept;")
+	if len(apps) > 0 {
+		w("\t\toifname %s jump to_apps", set(quoted(apps)))
+	}
+	if addrs := upstreamAddrs(s.Upstreams); len(addrs) > 0 {
+		w("\t\tip daddr . meta l4proto . th dport %s jump to_apps", set(addrs))
+	}
+	w("\t}")
+
 	// Apps to this machine: only the DNS an engine serves on a bridge's gateway (an address of that bridge itself, never
 	// the mesh's, the LAN's or another bridge's), and IPv6's neighbour discovery.
 	w("\tchain apps_in {")
@@ -250,6 +272,17 @@ func Render(s State) string {
 	}
 	w("\t\tjump outbound")
 	w("\t}")
+	// This machine's own processes into the apps' networks (#82): only to an upstream, only as one of its users, so a
+	// local process can't reach an app around the edge and hand it a forged identity header. By the apps' bridges,
+	// and by the upstreams' addresses on whatever interface leads to them. Replies, and ping, pass.
+	w("\tchain to_apps {")
+	w("\t\tct state established,related accept")
+	w("\t\tmeta l4proto { icmp, ipv6-icmp } accept")
+	if allowed := upstreamUsers(s.Upstreams); len(allowed) > 0 {
+		w("\t\tip daddr . tcp dport . meta skuid %s accept", set(allowed))
+	}
+	w("\t\tdrop")
+	w("\t}")
 	// To the internet only: out through an uplink of the packet's family (the LAN's, a VPN's), to an address that is
 	// neither private nor the LAN's. A family with no uplink has no way out.
 	w("\tchain outbound {")
@@ -282,6 +315,57 @@ func Render(s State) string {
 	w("\t}")
 	w("}")
 	return b.String()
+}
+
+// usable are the upstreams that can be rendered: IPv4 with a port, and at least one user.
+func usable(ups []Upstream) []Upstream {
+	return slices.DeleteFunc(slices.Clone(ups), func(u Upstream) bool {
+		return !u.Addr.Addr().Unmap().Is4() || u.Addr.Port() == 0 || len(u.UIDs) == 0
+	})
+}
+
+// upstreamAddrs are the upstreams as nft's address . protocol . port, in order.
+func upstreamAddrs(ups []Upstream) []string {
+	var out []string
+	for _, u := range usable(ups) {
+		out = append(out, fmt.Sprintf("%s . tcp . %d", u.Addr.Addr().Unmap(), u.Addr.Port()))
+	}
+	return uniqSorted(out, upstreamOrder)
+}
+
+// upstreamUsers are the upstreams with each of their users, as nft's address . port . uid, in order.
+func upstreamUsers(ups []Upstream) []string {
+	var out []string
+	for _, u := range usable(ups) {
+		for _, uid := range u.UIDs {
+			out = append(out, fmt.Sprintf("%s . %d . %d", u.Addr.Addr().Unmap(), u.Addr.Port(), uid))
+		}
+	}
+	return uniqSorted(out, upstreamOrder)
+}
+
+// upstreamOrder sorts nft's concatenations by their address, then numerically by each part after it.
+func upstreamOrder(a, b string) int {
+	pa, pb := strings.Split(a, " . "), strings.Split(b, " . ")
+	if c := netip.MustParseAddr(pa[0]).Compare(netip.MustParseAddr(pb[0])); c != 0 {
+		return c
+	}
+	for i := 1; i < len(pa) && i < len(pb); i++ {
+		x, errx := strconv.Atoi(pa[i])
+		y, erry := strconv.Atoi(pb[i])
+		switch {
+		case errx == nil && erry == nil && x != y:
+			return x - y
+		case (errx != nil || erry != nil) && pa[i] != pb[i]:
+			return strings.Compare(pa[i], pb[i])
+		}
+	}
+	return len(pa) - len(pb)
+}
+
+func uniqSorted(s []string, cmp func(a, b string) int) []string {
+	slices.SortFunc(s, cmp)
+	return slices.Compact(s)
 }
 
 // disjoint drops every prefix another one already holds: nft refuses overlapping intervals in one set.

@@ -25,6 +25,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -286,6 +287,92 @@ func TestTheFirewallTableInNetworkNamespaces(t *testing.T) {
 // must reach nothing of the box beyond what every interface gets, no DHCP or DNS, and nothing is forwarded from it,
 // with a default route through the tunnel or without, an engine naming it a bridge or not, and at boot with no
 // default route at all. The table names no tunnel: the kernel's kind of link tells them from bridges.
+// Only the edge reaches an app (ADR 0020, #82): on the box, a process of another user connects to an app's upstream and
+// is refused, before the app sees a byte of what it sends (a forged identity header, say); the edge's user and root
+// (the agent's probes) reach it, and nothing else of the app's network. The users are real ones of the namespace: as
+// root, any; unprivileged, those a subordinate range maps (unshare --map-auto).
+func TestOnlyTheEdgesUserReachesAnAppInNetworkNamespaces(t *testing.T) {
+	testenv.Isolate(t)
+	if os.Getenv(insideNamespaces) != "1" {
+		reexec(t, "^TestOnlyTheEdgesUserReachesAnAppInNetworkNamespaces$")
+		return
+	}
+	if !canSetUID() {
+		t.Skip("this namespace maps one user only: unshare has no --map-auto, or no subordinate range")
+	}
+	n := newNet(t)
+	const edge, other = 4100, 4242
+	shareSelf(t)
+	n.together(func() {
+		n.wantAs(t, "before the table: another user reaches the app's upstream", "172.30.0.2:8444", other, true)
+		n.wantAs(t, "before the table: another user reaches another container of the app's network", "172.30.0.3:8446", other, true)
+	})
+	fw := &firewall.Firewall{Run: host.Exec}
+	s := firewall.State{Mesh: []string{"wt0"}, LAN: []string{"br-iot"},
+		LANPrefixes: []netip.Prefix{netip.MustParsePrefix("192.168.77.0/24")}, Uplinks4: []string{"br-iot"},
+		Bridges: []string{"br-test", "br-other", "docker0"}, Virtual: guests(t),
+		Upstreams: []firewall.Upstream{{Addr: netip.MustParseAddrPort("172.30.0.2:8444"), UIDs: []uint32{edge, 0}}}}
+	if err := fw.Apply(context.Background(), s); err != nil {
+		t.Fatal(err)
+	}
+	n.together(func() {
+		n.wantAs(t, "another user, at the app's upstream (a forged identity header never reaches the app)", "172.30.0.2:8444", other, false)
+		n.wantAs(t, "the edge's user, at the app's upstream", "172.30.0.2:8444", edge, true)
+		n.wantAs(t, "root (the agent's health probes), at the app's upstream", "172.30.0.2:8444", 0, true)
+		n.wantAs(t, "the edge's user, at another container of the app's network", "172.30.0.3:8446", edge, false)
+		n.wantAs(t, "the edge's user, at another app's network", "172.31.0.2:8445", edge, false)
+		n.wantAs(t, "another user, at the box's own listener: untouched", "127.0.0.1:8022", other, true)
+		n.wantAs(t, "another user, at the LAN: untouched", "192.168.77.50:9000", other, true)
+	})
+}
+
+// sharedSelf is a copy of this test's binary that every user may run (shareSelf).
+var sharedSelf string
+
+func shareSelf(t *testing.T) {
+	t.Helper()
+	dir, err := os.MkdirTemp("", "homerslab-fw-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(dir) })
+	self, _ := os.Executable()
+	b, err := os.ReadFile(self)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sharedSelf = dir + "/fw.test"
+	if err := os.WriteFile(sharedSelf, b, 0o755); err != nil || os.Chmod(dir, 0o755) != nil {
+		t.Fatal(err)
+	}
+}
+
+// canSetUID says whether this process may start a child as another user: root in a namespace that maps more than one.
+func canSetUID() bool {
+	b, err := os.ReadFile("/proc/self/uid_map")
+	return err == nil && strings.Count(strings.TrimSpace(string(b)), "\n") > 0 || os.Getenv("HOMERSLAB_REQUIRE_NETNS") == "1"
+}
+
+// helperAs is helper, as uid: this test's binary, from a copy every user may run (the test's own may sit in a home only
+// its owner enters).
+func (n *netns) helperAs(name, mode, addr string, uid uint32) *exec.Cmd {
+	cmd := n.helper(name, mode, addr)
+	cmd.Path, cmd.Args[0] = sharedSelf, sharedSelf
+	cmd.SysProcAttr = &syscall.SysProcAttr{Credential: &syscall.Credential{Uid: uid, Gid: uid, Groups: []uint32{}}}
+	return cmd
+}
+
+// wantAs is want, from the box, as uid.
+func (n *netns) wantAs(t *testing.T, what, addr string, uid uint32, reach bool) {
+	t.Helper()
+	n.probe(func() {
+		got := n.helperAs("", "dial", addr, uid).Run() == nil
+		if got != reach {
+			t.Errorf("%s: uid %d → %s connects %v, want %v", what, uid, addr, got, reach)
+		}
+	})
+}
+
 func TestTunnelsInNetworkNamespaces(t *testing.T) {
 	testenv.Isolate(t)
 	if os.Getenv(insideNamespaces) != "1" {
@@ -651,11 +738,13 @@ func reexec(t *testing.T, run string) {
 			t.Skipf("%s isn't installed: the firewall table isn't tested in namespaces", tool)
 		}
 	}
-	flags := "-rn"
+	flags := []string{"-rn"}
 	if os.Geteuid() == 0 {
-		flags = "-n"
+		flags = []string{"-n"}
+	} else if exec.Command("unshare", "-rn", "--map-auto", "true").Run() == nil {
+		flags = append(flags, "--map-auto") // other users too, from a subordinate range, where there is one
 	}
-	cmd := exec.Command("unshare", flags, os.Args[0], "-test.run="+run, "-test.v", "-test.count=1")
+	cmd := exec.Command("unshare", append(flags, os.Args[0], "-test.run="+run, "-test.v", "-test.count=1")...)
 	cmd.Env = append(os.Environ(), insideNamespaces+"=1")
 	out, err := cmd.CombinedOutput()
 	if err != nil {
