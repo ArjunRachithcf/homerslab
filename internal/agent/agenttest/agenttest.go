@@ -4,6 +4,7 @@ package agenttest
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -24,6 +25,8 @@ import (
 	"time"
 
 	"github.com/ArjunRachithcf/homerslab/internal/agent"
+	"github.com/ArjunRachithcf/homerslab/internal/engine"
+	"github.com/ArjunRachithcf/homerslab/internal/engine/compose"
 	"github.com/ArjunRachithcf/homerslab/internal/host"
 	"github.com/ArjunRachithcf/homerslab/internal/lan"
 	"github.com/ArjunRachithcf/homerslab/internal/node"
@@ -70,11 +73,18 @@ func StartWith(t testing.TB, c agent.Config) (string, *Host) {
 	if c.StateDir == "" {
 		c.StateDir = filepath.Join(dir, "state")
 	}
+	h.stateDir = c.StateDir
 	if c.Root == "" {
 		c.Root = h.Root
 	}
 	if c.Run == nil {
 		c.Run = h.Run
+	}
+	if c.Engine == nil {
+		c.Engine = h
+	}
+	if c.Probe == nil {
+		c.Probe = h.Probe
 	}
 	if c.IsBridge == nil {
 		c.IsBridge = h.IsBridge
@@ -129,7 +139,8 @@ func StartWith(t testing.TB, c agent.Config) (string, *Host) {
 // Host stands in for the machine's tools, as a test needs them: nft keeps one table in memory, systemd-creds seals
 // with base64 (a marker, not a secret store), systemctl does nothing, netbird joins at once.
 type Host struct {
-	Root string // the machine's root directory, where the agent writes
+	Root     string // the machine's root directory, where the agent writes
+	stateDir string // the agent's state directory, where it keeps apps' compose files
 
 	mu        sync.Mutex
 	cmds      []host.Cmd
@@ -160,6 +171,138 @@ type Host struct {
 	dockerLoad    string
 	// Journal, when set, is what journalctl prints instead of the stub's few lines.
 	Journal []byte
+	// The container engine's apps (AppEngine): its projects, and the units systemd doesn't run; an app's unit, once
+	// restarted, runs its project's services, healthy, unless the test says otherwise.
+	projects   map[string]engine.State
+	stopped    map[string]bool
+	engineDown bool
+	sick       map[string]string // a project's health, when not healthy
+	answers    map[string]string // a health probe's answers, by upstream; healthy when not set
+	logs       map[string][]compose.LogLine
+}
+
+// Project makes the engine run a project, as given.
+func (h *Host) Project(st engine.State) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.projects == nil {
+		h.projects = map[string]engine.State{}
+	}
+	h.projects[st.Name] = st
+}
+
+// StopUnit makes systemd find a unit inactive, as `systemctl stop` would, without the engine's containers changing.
+func (h *Host) StopUnit(unit string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.stopped == nil {
+		h.stopped = map[string]bool{}
+	}
+	h.stopped[unit] = true
+}
+
+// EngineDown makes the engine not answer, or answer again.
+func (h *Host) EngineDown(down bool) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.engineDown = down
+}
+
+// Sick makes a project's containers report health (unhealthy, starting).
+func (h *Host) Sick(project, health string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.sick == nil {
+		h.sick = map[string]string{}
+	}
+	h.sick[project] = health
+	if st, ok := h.projects[project]; ok {
+		for i := range st.Containers {
+			st.Containers[i].Health = health
+		}
+	}
+}
+
+// Answer makes a health probe of an upstream answer so ("" for healthy, "unreachable" for no answer).
+func (h *Host) Answer(upstream, detail string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.answers == nil {
+		h.answers = map[string]string{}
+	}
+	h.answers[upstream] = detail
+}
+
+// Logs makes a project's logs these lines.
+func (h *Host) SetLogs(project string, lines []compose.LogLine) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.logs == nil {
+		h.logs = map[string][]compose.LogLine{}
+	}
+	h.logs[project] = lines
+}
+
+// States is the engine's projects (agent.AppEngine).
+func (h *Host) States(ctx context.Context) (map[string]engine.State, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.engineDown {
+		return nil, errors.New("the engine doesn't answer, as the test asked")
+	}
+	out := map[string]engine.State{}
+	for n, st := range h.projects {
+		st.Containers = slices.Clone(st.Containers)
+		out[n] = st
+	}
+	return out, nil
+}
+
+// Logs is a project's lines (agent.AppEngine).
+func (h *Host) Logs(_ context.Context, project string, _ int) ([]compose.LogLine, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.engineDown {
+		return nil, errors.New("the engine doesn't answer, as the test asked")
+	}
+	return slices.Clone(h.logs[project]), nil
+}
+
+// Probe is a health probe of an app's upstream.
+func (h *Host) Probe(_ context.Context, upstream netip.AddrPort, _, _ string) (bool, string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if d := h.answers[upstream.String()]; d != "" {
+		return false, d
+	}
+	return true, "OK"
+}
+
+// startApp is systemd starting an app's unit: the engine runs every service of its project, as the agent wrote it.
+func (h *Host) startApp(unit string) {
+	id := strings.TrimSuffix(strings.TrimPrefix(unit, "homerslab-app-"), ".service")
+	delete(h.stopped, unit)
+	b, err := os.ReadFile(filepath.Join(h.stateDir, "apps", id, "homerslab.yaml"))
+	if err != nil {
+		return
+	}
+	project := "homerslab-" + id
+	st := engine.State{Name: project}
+	health := cmp.Or(h.sick[project], "healthy")
+	section := ""
+	for _, line := range strings.Split(string(b), "\n") {
+		if line != "" && line[0] != ' ' && line[0] != '#' {
+			section = line
+		}
+		if section == "services:" && strings.HasPrefix(line, "  \"") && strings.HasSuffix(line, "\":") {
+			svc := strings.Trim(strings.TrimSuffix(strings.TrimSpace(line), ":"), "\"")
+			st.Containers = append(st.Containers, engine.Container{Service: svc, Name: project + "-" + svc + "-1", State: "running", Health: health})
+		}
+	}
+	if h.projects == nil {
+		h.projects = map[string]engine.State{}
+	}
+	h.projects[project] = st
 }
 
 // IsBridge says whether the kernel would show a name as a bridge: every name an engine gives, but those NotABridge
@@ -308,6 +451,14 @@ func (h *Host) Run(ctx context.Context, c host.Cmd) ([]byte, error) {
 	case line == "systemctl restart homerslab-edge.service" && h.Edge != nil:
 		h.Edge.Restart()
 		return nil, nil
+	case strings.HasPrefix(line, "systemctl --no-block restart homerslab-app-"):
+		h.startApp(c.Args[2])
+		return nil, nil
+	case len(c.Args) == 3 && line == "systemctl is-active --quiet "+c.Args[2] && h.stopped[c.Args[2]]:
+		return nil, &host.Error{Cmd: line, Err: errors.New("exit status 3")}
+	case len(c.Args) == 3 && line == "systemctl is-active --quiet "+c.Args[2] && strings.HasPrefix(c.Args[2], "homerslab-app-") &&
+		h.projects["homerslab-"+strings.TrimSuffix(strings.TrimPrefix(c.Args[2], "homerslab-app-"), ".service")].Name == "":
+		return nil, &host.Error{Cmd: line, Err: errors.New("exit status 3")} // never started
 	case line == "systemctl daemon-reload":
 		h.loaded, h.listed = h.dropInAt[line], h.dropInAt[line] != nil && !h.ignored
 		return nil, nil

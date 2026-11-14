@@ -17,6 +17,8 @@ TimeoutStartSec=30s
 # systemd-creds' host key, made once, outside the sandbox (which keeps /var/lib/systemd read-only).
 ExecStartPre=+/usr/bin/systemd-creds setup
 ExecStart=/usr/bin/homerslab agent
+# The Compose SDK's client configuration: a folder of the agent's own, never root's home (Compose SDK spike).
+Environment=DOCKER_CONFIG=/run/homerslab-agent/docker
 # The edge's group: the agent alone opens the edge's admin socket.
 SupplementaryGroups=homerslab-edge
 RuntimeDirectory=homerslab-agent
@@ -49,13 +51,18 @@ RestartSec=2s
 # when its control pipe closes, as it does when the agent dies; a child that is stopped holds the read slot no longer
 # than the deadline and a second. CI runs those tests as root with exactly this unit's CapabilityBoundingSet
 # (as-unit.sh).
-# Later tickets loosen this as its contract grows: the engine, app units, disks. To check as root at the first package
-# install (#48).
+# Since #19 it installs apps: it reads their compose files (as above), seals their secrets in its state directory,
+# writes each app's unit in /etc/homerslab/units (a folder outside systemd's search path: systemd links the unit from
+# there, `systemctl enable <path>`, so the agent writes nothing else under /etc/systemd), restarts it, asks the engine
+# (Docker's socket, as root) for the apps' containers, health and logs through the Compose SDK, and probes each app's
+# upstream on its network, which its table lets the agent and the edge open, and nobody else.
+# Later tickets loosen this as its contract grows: disks. To check as root at the first package install (#48).
 NoNewPrivileges=yes
 CapabilityBoundingSet=CAP_CHOWN CAP_NET_ADMIN CAP_SETUID CAP_SETGID
 ProtectSystem=strict
-# NetBird's, the edge's and the sign-in's drop-ins only (agent.RootWrites; the folders come from tmpfiles.d/homerslab.conf).
-ReadWritePaths=/etc/systemd/system/netbird.service.d /etc/systemd/system/homerslab-edge.service.d /etc/systemd/system/homerslab-authentik.service.d
+# NetBird's, the edge's and the sign-in's drop-ins, and apps' units (agent.RootWrites; the folders come from
+# tmpfiles.d/homerslab.conf).
+ReadWritePaths=/etc/systemd/system/netbird.service.d /etc/systemd/system/homerslab-edge.service.d /etc/systemd/system/homerslab-authentik.service.d /etc/homerslab/units
 ProtectHome=yes
 PrivateTmp=yes
 DevicePolicy=closed
