@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -8,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"path"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -295,7 +297,7 @@ func (a *Agent) postBackups(w http.ResponseWriter, r *http.Request) {
 					mounts, mountsErr = a.cfg.Engine.Mounts(asked, appunit.Project(id))
 					cancel()
 				}
-				src, why := a.onMachine(mounts, mountsErr, d)
+				src, why := a.onMachine(id, mounts, mountsErr, d)
 				if why != "" {
 					res.Error = why
 					a.log.Error("backing up an app's folder", "app", id, "data", res.Data, "why", why, "err", mountsErr)
@@ -318,12 +320,19 @@ func (a *Agent) postBackups(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, out)
 }
 
-// onMachine is where a declared folder is on the machine: exactly the root of one of its service's volumes, whose path
-// the engine made, under folders no container can reach (it sees only what is inside), and in which no component is a
-// link (openat2 with RESOLVE_NO_SYMLINKS, from the machine's root). A folder inside a volume is never taken: the app
-// could make one of its components a link, which restic, as root, would follow out of the volume (#205's review). What
-// is inside the volume, links included, restic stores as it is and never follows.
-func (a *Agent) onMachine(mounts map[string][]engine.Mount, err error, d AppData) (string, string) {
+// DockerVolumes is where Docker keeps its local volumes.
+const DockerVolumes = "/var/lib/docker/volumes"
+
+// onMachine is where a declared folder is on the machine: exactly the root of one of the app's own volumes, as the
+// engine has it now (#205's reviews):
+//   - mounted at the declared path itself, never a folder inside one, whose components the app could make links that
+//     restic, as root, would follow out of the volume;
+//   - the app's own (named homerslab-<app>_…), with the local driver, at the engine's own <volumes>/<name>/_data: never
+//     another app's or the sign-in's, never a volume whose options bind a folder of the machine;
+//   - reached from the volumes folder through no link and across no mount (openat2: RESOLVE_NO_SYMLINKS, NO_XDEV).
+//
+// What is inside the volume, links included, restic stores as it is and never follows.
+func (a *Agent) onMachine(id string, mounts map[string][]engine.Mount, err error, d AppData) (string, string) {
 	if err != nil {
 		return "", "engine-unreachable"
 	}
@@ -331,15 +340,20 @@ func (a *Agent) onMachine(mounts map[string][]engine.Mount, err error, d AppData
 	if !ok {
 		return "", "no-container"
 	}
+	volumes := a.cfg.VolumesDir
+	if volumes == "" {
+		volumes = DockerVolumes
+	}
 	for _, m := range ms {
 		if m.Destination != d.Path {
 			continue
 		}
-		if !m.Volume || !backup.ValidPath(m.Source) {
-			return "", "not-a-volume"
+		name, ok := strings.CutPrefix(m.Name, appunit.Project(id)+"_")
+		if !m.Volume || !ok || !volumeName.MatchString(name) || m.Driver != "local" || m.Source != path.Join(volumes, m.Name, "_data") {
+			return "", "not-its-own-volume"
 		}
-		if err := noLinks(a.cfg.Root, m.Source); err != nil {
-			a.log.Error("a volume's path on the machine", "path", m.Source, "err", err)
+		if err := noLinks(a.cfg.Root, volumes, path.Join(m.Name, "_data")); err != nil {
+			a.log.Error("a volume's folder on the machine", "path", m.Source, "err", err)
 			return "", "a-link-in-its-path"
 		}
 		return m.Source, ""
@@ -347,15 +361,25 @@ func (a *Agent) onMachine(mounts map[string][]engine.Mount, err error, d AppData
 	return "", "not-a-volume"
 }
 
-// noLinks says whether dir, under root, is a folder reached through no link.
-func noLinks(root, dir string) error {
+var volumeName = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,62}$`)
+
+// noLinks says whether volumes/rel, under root, is a folder reached through no link, and rel across no mount.
+func noLinks(root, volumes, rel string) error {
 	r, err := unix.Open(root, unix.O_PATH|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
 	if err != nil {
 		return err
 	}
 	defer unix.Close(r)
-	fd, err := unix.Openat2(r, strings.TrimPrefix(dir, "/"), &unix.OpenHow{Flags: unix.O_PATH | unix.O_DIRECTORY | unix.O_CLOEXEC,
-		Resolve: unix.RESOLVE_NO_SYMLINKS | unix.RESOLVE_NO_MAGICLINKS | unix.RESOLVE_BENEATH})
+	how := func(xdev uint64) *unix.OpenHow {
+		return &unix.OpenHow{Flags: unix.O_PATH | unix.O_DIRECTORY | unix.O_CLOEXEC,
+			Resolve: unix.RESOLVE_NO_SYMLINKS | unix.RESOLVE_NO_MAGICLINKS | unix.RESOLVE_BENEATH | xdev}
+	}
+	v, err := unix.Openat2(r, cmp.Or(strings.TrimPrefix(volumes, "/"), "."), how(0))
+	if err != nil {
+		return err
+	}
+	defer unix.Close(v)
+	fd, err := unix.Openat2(v, rel, how(unix.RESOLVE_NO_XDEV))
 	if err != nil {
 		return err
 	}

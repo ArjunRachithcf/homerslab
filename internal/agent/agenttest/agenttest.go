@@ -205,7 +205,21 @@ func (h *Host) Mount(project, service, dest, source string) {
 	if h.mounts[project] == nil {
 		h.mounts[project] = map[string][]engine.Mount{}
 	}
-	h.mounts[project][service] = append(h.mounts[project][service], engine.Mount{Destination: dest, Source: source, Volume: true})
+	name := strings.TrimSuffix(strings.TrimPrefix(source, "/var/lib/docker/volumes/"), "/_data")
+	h.mounts[project][service] = append(h.mounts[project][service], engine.Mount{Destination: dest, Source: source, Volume: true, Name: name, Driver: "local"})
+}
+
+// MountAs gives a project's service the mount m, as given: the engine's word for another app's volume, another driver.
+func (h *Host) MountAs(project, service string, m engine.Mount) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.mounts == nil {
+		h.mounts = map[string]map[string][]engine.Mount{}
+	}
+	if h.mounts[project] == nil {
+		h.mounts[project] = map[string][]engine.Mount{}
+	}
+	h.mounts[project][service] = append(h.mounts[project][service], m)
 }
 
 // Mounts is AppEngine's: the volumes Mount gave each running service.

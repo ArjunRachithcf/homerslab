@@ -295,6 +295,13 @@ func checkProject(p engine.Project, r AppRequest, signIn string) (code, detail s
 			return "network-configured", n.Name
 		}
 	}
+	// A volume is the project's own, as the engine makes it: never another's (external, or named after another app's
+	// or the sign-in's), never another driver, never options (a local volume's can bind any folder of the machine).
+	for _, v := range p.Volumes {
+		if v.Joined != "" || (v.Driver != "" && v.Driver != "local") || v.Configured {
+			return "volume-not-its-own", v.Name
+		}
+	}
 	if !upstream {
 		return "no-such-service", r.Service
 	}

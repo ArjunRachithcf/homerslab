@@ -15,6 +15,7 @@ import (
 	"github.com/ArjunRachithcf/homerslab/internal/agent"
 	"github.com/ArjunRachithcf/homerslab/internal/agent/agenttest"
 	"github.com/ArjunRachithcf/homerslab/internal/backup"
+	"github.com/ArjunRachithcf/homerslab/internal/engine"
 	"github.com/ArjunRachithcf/homerslab/internal/testenv"
 )
 
@@ -218,7 +219,7 @@ func TestAFolderReachedThroughALinkIsNeverBackedUp(t *testing.T) {
 		t.Fatalf("the target: %d %s", code, body)
 	}
 	volumes := filepath.Join(h.Root, "var/lib/docker/volumes")
-	if err := os.MkdirAll(filepath.Join(h.Root, "etc/secret"), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(h.Root, "etc/_data"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.MkdirAll(volumes, 0o755); err != nil {
@@ -227,20 +228,66 @@ func TestAFolderReachedThroughALinkIsNeverBackedUp(t *testing.T) {
 	if err := os.Symlink("../../../../etc", filepath.Join(volumes, "homerslab-ledger_library")); err != nil {
 		t.Fatal(err)
 	}
-	h.Mount("homerslab-ledger", "web", "/data/library", "/var/lib/docker/volumes/homerslab-ledger_library/secret")
+	h.Mount("homerslab-ledger", "web", "/data/library", "/var/lib/docker/volumes/homerslab-ledger_library/_data")
+	if r := runOnce(t, sock, h); r.Error != "a-link-in-its-path" {
+		t.Errorf("a volume reached through a link: %+v", r)
+	}
+}
+
+// runOnce is a run's first item, and that restic was never handed the app's volume.
+func runOnce(t *testing.T, sock string, h *agenttest.Host) agent.BackupResult {
+	t.Helper()
 	before := len(h.Restic())
 	_, body := call(t, sock, "POST", "/v1/backups", nil)
 	var got agent.Backups
-	if err := json.Unmarshal(body, &got); err != nil {
-		t.Fatal(err)
-	}
-	if got.Results[0].Error != "a-link-in-its-path" {
-		t.Errorf("a volume reached through a link: %+v", got.Results[0])
+	if err := json.Unmarshal(body, &got); err != nil || len(got.Results) == 0 {
+		t.Fatalf("the run: %s %v", body, err)
 	}
 	for _, r := range h.Restic()[before:] {
-		if strings.Contains(strings.Join(r.Argv, " "), "homerslab-ledger_library") {
-			t.Errorf("restic was handed the linked folder: %q", r.Argv)
+		if strings.Contains(strings.Join(r.Argv, " "), "data=web:/data/library") {
+			t.Errorf("restic was handed the volume: %q", r.Argv)
 		}
+	}
+	return got.Results[0]
+}
+
+// At every run, the volume mounted at the declared folder must be the app's own as the engine has it now, whatever the
+// project said at install: never another app's, never the sign-in's, never another driver's, and at the engine's own
+// folder for it, never elsewhere (a local volume's options can bind any folder of the machine).
+func TestOnlyTheAppsOwnVolumeIsBackedUp(t *testing.T) {
+	testenv.Isolate(t)
+	for name, m := range map[string]engine.Mount{
+		"another app's":   {Name: "homerslab-immich_library", Driver: "local", Source: "/var/lib/docker/volumes/homerslab-immich_library/_data"},
+		"the sign-in's":   {Name: "homerslab-authentik_database", Driver: "local", Source: "/var/lib/docker/volumes/homerslab-authentik_database/_data"},
+		"another driver":  {Name: "homerslab-ledger_library", Driver: "rclone", Source: "/var/lib/docker/volumes/homerslab-ledger_library/_data"},
+		"bound elsewhere": {Name: "homerslab-ledger_library", Driver: "local", Source: "/etc"},
+		"a folder":        {Driver: "local", Source: "/var/lib/docker/volumes/homerslab-ledger_library/_data"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			sock, h, _ := signedIn(t, agent.Config{})
+			install(t, sock, "ledger", withBackups())
+			if code, body := call(t, sock, "PUT", "/v1/backups", s3Target()); code != http.StatusOK {
+				t.Fatalf("the target: %d %s", code, body)
+			}
+			m.Destination, m.Volume = "/data/library", m.Name != ""
+			_ = os.MkdirAll(filepath.Join(h.Root, m.Source), 0o755)
+			h.MountAs("homerslab-ledger", "web", m)
+			if r := runOnce(t, sock, h); r.Error != "not-its-own-volume" {
+				t.Errorf("%+v", r)
+			}
+		})
+	}
+}
+
+// The walk to a volume's folder crosses no mount: a local volume whose options bind a folder of the machine is a mount
+// on its _data, and is refused (here, /proc, a mount on this machine's root, stands for it).
+func TestAVolumeWithAMountOnItIsRefused(t *testing.T) {
+	testenv.Isolate(t)
+	if err := agent.NoLinks("/", "/", "proc/1"); err == nil {
+		t.Error("the walk crossed a mount")
+	}
+	if err := agent.NoLinks("/", "/", "usr"); err != nil {
+		t.Errorf("a folder on the same filesystem: %v", err)
 	}
 }
 
@@ -263,6 +310,19 @@ func TestAnAppsBackupsAreCheckedBeforeItIsInstalled(t *testing.T) {
 		r.Backups = []agent.AppData{d}
 		if code, body := call(t, sock, "PUT", "/v1/apps/ledger", r); !strings.Contains(string(body), strings.TrimSpace(want)) {
 			t.Errorf("%+v: %d %s", d, code, body)
+		}
+	}
+	// A volume that isn't the app's own is refused at install, backed up or not (#205's review).
+	for name, vol := range map[string]string{
+		"a bind of /etc":         "library: {driver_opts: {type: none, o: bind, device: /etc}}",
+		"another app's":          "library: {external: true, name: homerslab-immich_library}",
+		"the sign-in's database": "library: {name: homerslab-authentik_database}",
+		"a driver of its own":    "library: {driver: rclone}",
+	} {
+		r := withBackups()
+		r.Compose = strings.Replace(r.Compose, "volumes: {library: {}, cache: {}}", "volumes: {"+vol+", cache: {}}", 1)
+		if code, body := call(t, sock, "PUT", "/v1/apps/ledger", r); code != http.StatusUnprocessableEntity || !strings.Contains(string(body), "volume-not-its-own") {
+			t.Errorf("%s: %d %s", name, code, body)
 		}
 	}
 	if code, body := call(t, sock, "POST", "/v1/backups", nil); code != http.StatusConflict || !strings.Contains(string(body), "no-target") {

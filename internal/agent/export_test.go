@@ -130,3 +130,6 @@ func NoReadCommand(t *testing.T) (real func()) {
 
 // ExecOnly is the exec-only copy of src that a root agent's reads run.
 func ExecOnly(src string) (string, error) { return execOnly(src) }
+
+// NoLinks is the agent's check of a volume's folder on the machine.
+var NoLinks = noLinks

@@ -18,6 +18,19 @@ type Project struct {
 	Services []Service `json:"services"`
 	Secrets  []string  `json:"secrets,omitempty"`
 	Networks []Network `json:"networks,omitempty"`
+	// Volumes are the project's named volumes, in name order.
+	Volumes []Volume `json:"volumes,omitempty"`
+}
+
+// Volume is one of a project's named volumes, with what installing checks (#205's review): it must be the project's
+// own, as the engine makes it by default. Joined is another volume it names instead (external, or named after one
+// that isn't the project's own, another app's or the sign-in's); Driver and Configured are what it sets of its own (a
+// driver, or its options: a local volume with options can be a bind of any folder of the machine).
+type Volume struct {
+	Name       string `json:"name"`
+	Joined     string `json:"joined,omitempty"`
+	Driver     string `json:"driver,omitempty"`
+	Configured bool   `json:"configured,omitempty"`
 }
 
 // Network is one of a project's networks, with what installing checks before it wires it (#19): the agent names its
@@ -75,4 +88,7 @@ type Mount struct {
 	Destination string `json:"destination"`
 	Source      string `json:"source"`
 	Volume      bool   `json:"volume,omitempty"`
+	// Name and Driver are the volume's, as the engine has it.
+	Name   string `json:"name,omitempty"`
+	Driver string `json:"driver,omitempty"`
 }

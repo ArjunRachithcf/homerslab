@@ -153,7 +153,8 @@ func TestTheContainerEngineContractOnDocker(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if len(ms["web"]) != 1 || ms["web"][0].Destination != "/data" || !ms["web"][0].Volume || !strings.HasSuffix(ms["web"][0].Source, "/homerslab-contract-a_data/_data") {
+		if len(ms["web"]) != 1 || ms["web"][0].Destination != "/data" || !ms["web"][0].Volume || ms["web"][0].Name != "homerslab-contract-a_data" ||
+			ms["web"][0].Driver != "local" || !strings.HasSuffix(ms["web"][0].Source, "/homerslab-contract-a_data/_data") {
 			t.Errorf("contract-a's mounts: %+v", ms)
 		}
 		if _, err := e.Mounts(ctx, "hltest-other"); err == nil {

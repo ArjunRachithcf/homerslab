@@ -299,10 +299,24 @@ func checkVolumes(p *problems, data []Data, compose []byte) {
 		Services map[string]struct {
 			Volumes []yaml.Node `yaml:"volumes"`
 		} `yaml:"services"`
+		Volumes map[string]*struct {
+			Name       string    `yaml:"name"`
+			Driver     string    `yaml:"driver"`
+			DriverOpts yaml.Node `yaml:"driver_opts"`
+			External   yaml.Node `yaml:"external"`
+		} `yaml:"volumes"`
 	}
 	if err := yaml.Unmarshal(compose, &f); err != nil {
 		p.add("compose.yaml: %v", err)
 		return
+	}
+	// Every volume is the app's own, as the engine makes it: not another's (external, or a name of its own, which
+	// could be another app's or the sign-in's), no other driver, no options, which can bind any folder of the machine
+	// (#205's review). The agent checks it again in the project it reads, and the engine's volume at every run.
+	for key, v := range f.Volumes {
+		if v != nil && (v.Name != "" || (v.Driver != "" && v.Driver != "local") || !v.DriverOpts.IsZero() || !v.External.IsZero()) {
+			p.add("compose.yaml: volume %q is the app's own: no name, external, driver or driver_opts", key)
+		}
 	}
 	for _, d := range data {
 		if d.Path == "" || !d.BackedUp() {

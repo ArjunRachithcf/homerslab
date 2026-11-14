@@ -89,6 +89,8 @@ type Config struct {
 	Users func(name string) (uint32, bool)
 	// Restic is the pinned restic the node's backups run (backup.Restic when "").
 	Restic string
+	// VolumesDir is where the engine keeps its local volumes, each <name>/_data (DockerVolumes when "").
+	VolumesDir string
 	// Probe asks an app's upstream for a health check's path, as the edge would for the app's name: an HTTP request
 	// when nil.
 	Probe func(ctx context.Context, upstream netip.AddrPort, name, path string) (ok bool, detail string)
