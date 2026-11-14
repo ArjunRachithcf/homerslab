@@ -40,10 +40,13 @@ RestartSec=2s
 # CAP_DAC_READ_SEARCH, ProtectHome=yes. Its devices are closed but for the TPM's resource manager, which sealing uses
 # (ADR 0011), so not PrivateDevices, which would hide it.
 # Since #18 it reads apps' compose files for planning, each in a child of its own (homerslab agent read-project), in
-# an empty folder of its private /tmp that the agent gives to nobody (CAP_CHOWN); the child starts as nobody, its IDs
-# set in the fork (CAP_SETUID, CAP_SETGID). Without CAP_KILL the agent can't signal it, nor send it the parent-death
-# signal, so the child ends itself (#138): at the deadline it was handed, and when its control pipe closes, as it does
-# when the agent dies. CI runs those tests as root with exactly this unit's CapabilityBoundingSet (as-unit.sh).
+# an empty folder of its private /tmp that the agent gives to homerslab-read (CAP_CHOWN), the reads' own user
+# (sysusers.d; without it the agent refuses to read); the child starts as that user, its IDs set in the fork
+# (CAP_SETUID, CAP_SETGID), and makes itself not dumpable before it reads (#183). Without CAP_KILL the agent can't
+# signal it, nor send it the parent-death signal, so the child ends itself (#138): at the deadline it was handed, and
+# when its control pipe closes, as it does when the agent dies; a child that is stopped holds the read slot no longer
+# than the deadline and a second. CI runs those tests as root with exactly this unit's CapabilityBoundingSet
+# (as-unit.sh).
 # Later tickets loosen this as its contract grows: the engine, app units, disks. To check as root at the first package
 # install (#48).
 NoNewPrivileges=yes
@@ -72,7 +75,7 @@ MemoryDenyWriteExecute=yes
 SystemCallArchitectures=native
 SystemCallFilter=@system-service
 SystemCallErrorNumber=EPERM
-# Its compose reads run as nobody, one at a time, each ended at its deadline and limited on its own; the unit, with
+# Its compose reads run as homerslab-read, one at a time, each ended at its deadline and limited on its own; the unit, with
 # those children, gets at most one core and 512 MB, far above what it uses (tens of MB).
 MemoryMax=512M
 CPUQuota=100%

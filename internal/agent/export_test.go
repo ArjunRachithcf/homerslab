@@ -30,11 +30,21 @@ func HostileReads(t *testing.T, exe string, d time.Duration) (real func()) {
 // its control pipe: the child ends when they close.
 func ChildCommand(ctx context.Context, exe, dir, name string, cpuSeconds int) (*exec.Cmd, io.Closer, error) {
 	argv, _ := readCommand(exe)
-	return childCommand(ctx, argv, dir, name, cpuSeconds)
+	cred, err := readCredential()
+	if err != nil {
+		return nil, nil, err
+	}
+	return childCommand(ctx, argv, dir, name, cpuSeconds, cred)
 }
 
 // ChildDir is a read's own folder, as the agent makes it.
-func ChildDir() (string, error) { return childDir() }
+func ChildDir() (string, error) {
+	cred, err := readCredential()
+	if err != nil {
+		return "", err
+	}
+	return childDir(cred)
+}
 
 // RaceDetector says whether the tests run under the race detector, which the child's memory limit leaves alone.
 const RaceDetector = raceDetector
@@ -61,4 +71,17 @@ func childReads(t *testing.T, exe, mode string, d time.Duration, cpu int) (real 
 // ReadProjectWith is the read child's main with read in place of the compose reader.
 func ReadProjectWith(args []string, stdin io.Reader, stdout io.Writer, read func(ctx context.Context, name string, file []byte) (engine.Project, error)) int {
 	return readProjectMain(args, stdin, stdout, read)
+}
+
+// ReadIDs is the uid and gid of the user the agent's reads run as when it is root (homerslab-read).
+func ReadIDs() (uid, gid uint32, err error) { return readIDs() }
+
+// ReadIDsFrom is ReadIDs, with file in place of /etc/passwd.
+func ReadIDsFrom(file string) (uid, gid uint32, err error) { return readIDsFrom(file) }
+
+// ReadUsersFrom makes the agent find its read user in file in place of /etc/passwd.
+func ReadUsersFrom(t *testing.T, file string) {
+	old := passwdFile
+	passwdFile = file
+	t.Cleanup(func() { passwdFile = old })
 }

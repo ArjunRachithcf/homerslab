@@ -9,17 +9,69 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
 	"time"
 
+	"golang.org/x/sys/unix"
+
 	"github.com/ArjunRachithcf/homerslab/internal/engine"
 	"github.com/ArjunRachithcf/homerslab/internal/engine/compose"
 )
 
-// nobody is the user a compose read runs as when the agent is root.
-const nobody = 65534
+// readUser is the user a compose read runs as when the agent is root: one that only the agent's reads use, which the
+// packages make (packaging/sysusers.d), so no other process shares its uid to signal or trace a read's child. Never
+// nobody, whom many share (#183).
+const readUser = "homerslab-read"
+
+// passwdFile is where the agent finds readUser. Tests replace it.
+var passwdFile = "/etc/passwd"
+
+// errNoReadUser says readUser is missing or unfit: a root agent then refuses to read, and never falls back to another
+// user.
+var errNoReadUser = errors.New("no user of the agent's reads (" + readUser + ")")
+
+// readIDs is readUser's uid and gid.
+func readIDs() (uid, gid uint32, err error) { return readIDsFrom(passwdFile) }
+
+// readIDsFrom is readUser's uid and gid from file, a passwd file, read directly rather than through NSS, where the
+// packages' sysusers.d writes it. It refuses a missing or broken entry, root's uid or group, and a uid that another
+// entry shares (nobody's, say): the user must be the reads' own.
+func readIDsFrom(file string) (uid, gid uint32, err error) {
+	b, err := os.ReadFile(file)
+	if err != nil {
+		return 0, 0, fmt.Errorf("%w: %w", errNoReadUser, err)
+	}
+	type entry struct{ uid, gid string }
+	var ours []entry
+	uids := map[string]int{}
+	for line := range strings.Lines(string(b)) {
+		f := strings.Split(strings.TrimRight(line, "\n"), ":")
+		if len(f) < 4 {
+			continue
+		}
+		uids[f[2]]++
+		if f[0] == readUser {
+			ours = append(ours, entry{f[2], f[3]})
+		}
+	}
+	if len(ours) != 1 {
+		return 0, 0, fmt.Errorf("%w: %d entries in %s", errNoReadUser, len(ours), file)
+	}
+	u, errU := strconv.ParseUint(ours[0].uid, 10, 32)
+	g, errG := strconv.ParseUint(ours[0].gid, 10, 32)
+	switch {
+	case errU != nil || errG != nil:
+		return 0, 0, fmt.Errorf("%w: a broken entry in %s", errNoReadUser, file)
+	case u == 0 || g == 0:
+		return 0, 0, fmt.Errorf("%w: it is root's uid or group", errNoReadUser)
+	case uids[ours[0].uid] != 1:
+		return 0, 0, fmt.Errorf("%w: its uid %d is shared", errNoReadUser, u)
+	}
+	return uint32(u), uint32(g), nil
+}
 
 // The child's limits: 384 MiB of data (RLIMIT_DATA, which counts the memory written to, not the address space Go
 // reserves at rest, so it holds for builds with and without cgo; a read of the official catalog's largest file needs
@@ -49,6 +101,7 @@ type Confined struct {
 	OOMScoreAdj string
 	DeadlineMs  int64 // the deadline it ends itself at, from its start
 	Controlled  bool  // it watches a control pipe, and ends when the pipe's write end closes
+	Dumpable    int   // PR_GET_DUMPABLE: 0, so no process of its user may trace it or read its memory
 }
 
 // ReadProjectMain is the agent's read-project mode (homerslab agent read-project [--cpu-seconds N] [--deadline D]
@@ -57,9 +110,12 @@ type Confined struct {
 //
 // What the child can do: read its standard input, and write in its own empty folder (its working directory, HOME
 // and TMPDIR), where the reader puts the compose file it loads. What it can't:
-//   - act as root: when the agent is root, the child starts as nobody (65534) with no supplementary groups, set in
-//     the fork before it runs any of its own code, so it holds no capability and reads only what everyone may read;
-//     it never starts another program;
+//   - act as root: when the agent is root, the child starts as homerslab-read (readUser), a user only the agent's
+//     reads use, with no supplementary groups, set in the fork before it runs any of its own code, so it holds no
+//     capability and reads only what everyone may read; it never starts another program;
+//   - be traced: its first act, before it reads anything, is to make itself not dumpable, so no other process of its
+//     user, its parent even, may trace it or read its memory to read its file or fake its answer, whatever Yama's
+//     ptrace_scope (#183);
 //   - use more than its limits: 384 MiB of data (not under the race detector, whose shadow memory and thread stacks
 //     need more), --cpu-seconds of CPU (soft; hard a second later), 32 open files, files of at most 1 MiB, no core
 //     dump; and it is the first process
@@ -67,8 +123,10 @@ type Confined struct {
 //   - outlive the agent's deadline, or the agent: it ends itself at the deadline it was handed (--deadline, on its
 //     own clock, ReadDeadline if none), and when its control pipe's write end closes (--control-fd), which the agent
 //     does at its deadline and the kernel does when the agent dies, however it dies. The agent, root with its unit's
-//     capabilities, has no CAP_KILL, so it can't signal a child that runs as nobody, nor send it the parent-death
-//     signal (#138): its kill and Pdeathsig hold only where it may; --cpu-seconds is the backstop the kernel enforces;
+//     capabilities, has no CAP_KILL, so it can't signal a child that runs as another user, nor send it the
+//     parent-death signal (#138): its kill and Pdeathsig hold only where it may; --cpu-seconds is the backstop the
+//     kernel enforces; and a child that is stopped holds the agent's read slot no longer than the deadline and its
+//     WaitDelay (reads.read);
 //   - reach a container engine: the reader points at none.
 //
 // It doesn't apply Landlock or seccomp: in Go both bind only the thread that asks, not the process.
@@ -83,6 +141,11 @@ func ReadProjectMain(args []string, stdin io.Reader, stdout io.Writer) int {
 }
 
 func readProjectMain(args []string, stdin io.Reader, stdout io.Writer, read func(ctx context.Context, name string, file []byte) (engine.Project, error)) int {
+	// First of all, before it reads anything, its flags included: not dumpable, and first in line for the OOM killer.
+	if err := undumpable(); err != nil {
+		fmt.Fprintln(os.Stderr, "confining the read:", err)
+		return 1
+	}
 	fs := flag.NewFlagSet("homerslab agent read-project", flag.ContinueOnError)
 	cpu := fs.Int("cpu-seconds", 10, "the CPU time the read may use")
 	deadline := fs.Duration("deadline", ReadDeadline, "how long the read may take, from the child's start")
@@ -99,7 +162,7 @@ func readProjectMain(args []string, stdin io.Reader, stdout io.Writer, read func
 		once.Do(func() { err = json.NewEncoder(stdout).Encode(r) })
 		return err
 	}
-	// First of all, before the read can start: the deadline, on the child's own clock. The timer runs while the read
+	// Next, before the read can start: the deadline, on the child's own clock. The timer runs while the read
 	// burns CPU, also on one core: Go preempts the read for it.
 	time.AfterFunc(*deadline, func() {
 		_ = answer(readResult{Error: "deadline"})
@@ -169,14 +232,37 @@ func controlPipe(f *os.File) error {
 	if fi.Mode()&os.ModeNamedPipe == 0 {
 		return fmt.Errorf("%s is not a pipe", fi.Mode())
 	}
+	// Its write end would be one the child holds itself, so it would never close.
+	flags, err := unix.FcntlInt(f.Fd(), unix.F_GETFL, 0)
+	if err != nil {
+		return err
+	}
+	if flags&unix.O_ACCMODE != unix.O_RDONLY {
+		return errors.New("the control pipe is not the read end")
+	}
 	return nil
 }
 
-// confine sets the child's limits and OOM score, and reads back how it runs, into c.
-func confine(cpuSeconds int, c Confined) (Confined, error) {
-	if err := os.WriteFile("/proc/self/oom_score_adj", []byte("1000"), 0); err != nil {
-		return c, fmt.Errorf("oom_score_adj: %w", err)
+// undumpable makes the child not dumpable, so that only a process with CAP_SYS_PTRACE may trace it or read its
+// memory, and sets its OOM score to 1000. The score's file is opened first: once the child isn't dumpable its /proc
+// files are root's, and it may no longer open the file to write.
+func undumpable() error {
+	oom, err := os.OpenFile("/proc/self/oom_score_adj", os.O_WRONLY, 0)
+	if err != nil {
+		return fmt.Errorf("oom_score_adj: %w", err)
 	}
+	defer oom.Close()
+	if err := unix.Prctl(unix.PR_SET_DUMPABLE, 0, 0, 0, 0); err != nil {
+		return fmt.Errorf("PR_SET_DUMPABLE: %w", err)
+	}
+	if _, err := oom.WriteString("1000"); err != nil {
+		return fmt.Errorf("oom_score_adj: %w", err)
+	}
+	return nil
+}
+
+// confine sets the child's limits, and reads back how it runs, into c.
+func confine(cpuSeconds int, c Confined) (Confined, error) {
 	set := map[string]struct {
 		resource int
 		value    uint64
@@ -223,5 +309,10 @@ func confine(cpuSeconds int, c Confined) (Confined, error) {
 	if b, err := os.ReadFile("/proc/self/oom_score_adj"); err == nil {
 		c.OOMScoreAdj = strings.TrimSpace(string(b))
 	}
+	d, err := unix.PrctlRetInt(unix.PR_GET_DUMPABLE, 0, 0, 0, 0)
+	if err != nil {
+		return c, err
+	}
+	c.Dumpable = d
 	return c, nil
 }

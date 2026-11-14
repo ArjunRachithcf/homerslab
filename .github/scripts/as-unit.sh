@@ -1,7 +1,9 @@
 #!/bin/sh
 # Runs a command as root with exactly the capabilities a systemd unit gives its service, read from the unit file
 # itself (its one CapabilityBoundingSet= line, and NoNewPrivileges=), so a test and the unit's capabilities can't drift
-# (#138). The unit's other sandboxing (system calls, namespaces, paths) isn't modelled.
+# (#138). The unit's other sandboxing (system calls, namespaces, paths) isn't modelled. A unit it would misread, so
+# drift from, it refuses before it asks for root (#183): a drop-in beside it, an indented or continued line (systemd
+# reads both), User=, Group= or DynamicUser= (not a root service), or AmbientCapabilities=.
 # systemd starts a root service with nothing inheritable, so on exec its permitted and effective sets are the bounding
 # set; setpriv does the same, and this checks that it did before it runs the command.
 #
@@ -14,6 +16,31 @@ die() {
 [ $# -ge 2 ] || die "usage: as-unit.sh UNIT COMMAND [ARG...]"
 unit=$1
 shift
+[ -f "$unit" ] || die "no unit file $unit"
+dir=$(dirname "$unit")
+base=$(basename "$unit")
+type=${base##*.}
+name=${base%.*}
+# Its own drop-ins, each dash-prefix's (homerslab-.service.d) and every unit's of its type (service.d).
+[ ! -e "$unit.d" ] || die "a drop-in folder $unit.d isn't handled"
+[ ! -e "$dir/$type.d" ] || die "a drop-in folder $dir/$type.d isn't handled"
+prefix=$name
+while :; do
+	case $prefix in
+	*-*) prefix=${prefix%-*} ;;
+	*) break ;;
+	esac
+	[ ! -e "$dir/$prefix-.$type.d" ] || die "a drop-in folder $dir/$prefix-.$type.d isn't handled"
+done
+if grep -n '^[[:space:]][[:space:]]*[^[:space:]]' "$unit" >&2; then
+	die "indented lines in $unit aren't handled"
+fi
+if grep -n '\\$' "$unit" >&2; then
+	die "continued lines in $unit aren't handled"
+fi
+if grep -En '^(User|Group|DynamicUser|AmbientCapabilities)=' "$unit" >&2; then
+	die "User=, Group=, DynamicUser= or AmbientCapabilities= in $unit isn't handled"
+fi
 [ "$(id -u)" = 0 ] || die "run as root"
 lines=$(grep -c '^CapabilityBoundingSet=' "$unit" || true)
 [ "$lines" = 1 ] || die "want one CapabilityBoundingSet= line in $unit, found $lines"
