@@ -3,10 +3,15 @@ package manager_test
 import (
 	"bytes"
 	"database/sql"
+	"encoding/base64"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"io/fs"
 	"net/http"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -21,9 +26,9 @@ import (
 
 // installable is a primary whose household account is set up (setup's second half has begun: `setup join`), where an
 // admin can apply an install plan; cat is its catalog, the official one when nil.
-func installable(t *testing.T, cat fs.FS) (*primary, *fakeSignIn) {
+func installable(t *testing.T, cat fs.FS, opts ...option) (*primary, *fakeSignIn) {
 	t.Helper()
-	p, _, fs := atJoin(t)
+	p, _, fs := atJoin(t, opts...)
 	if cat != nil {
 		p.catalog = cat
 		p.open()
@@ -155,9 +160,98 @@ func TestAStalePlanIsRefused(t *testing.T) {
 	}
 }
 
+// An app that signs people in itself (#20): applying its plan makes its OIDC client in the household account, for the
+// plan's audience and exactly the redirect addresses the plan names (the app's callbacks on its one URL, the household's
+// port included), and hands the agent the client's settings and secret. The secret reaches the agent inward only: the
+// manager's database and logs never hold it, and the agent keeps it only sealed. No guard is made for it.
+func TestApplyingANativePlanMakesItsClientAndHandsTheAppItsSecret(t *testing.T) {
+	testenv.Isolate(t)
+	var logs lockedBuffer
+	p, fs := installable(t, nil, withLogs(&logs))
+	made := planFor(t, p, "mealie")
+	var shown struct {
+		SignIn struct {
+			Method, Creates string
+			RedirectURIs    []string
+		}
+	}
+	p.control("GET", "/api/v1/plans/"+made.ID, nil).json(t, &shown)
+	if shown.SignIn.Method != "oidc" || shown.SignIn.Creates != "oidc-client" ||
+		!reflect.DeepEqual(shown.SignIn.RedirectURIs, []string{"https://recipes.example.test:9443/login"}) {
+		t.Errorf("the plan's sign-in: %+v", shown.SignIn)
+	}
+	if len(appClients(fs)) != 0 {
+		t.Fatal("a plan made a client before it was applied")
+	}
+	if r := p.control("POST", "/api/v1/plans/"+made.ID+"/apply", nil); r.Code != http.StatusAccepted {
+		t.Fatalf("applying: %d %s", r.Code, r.Body)
+	}
+	want := []idp.Client{{Slug: "homerslab-mealie", Name: "Mealie", RedirectURIs: []string{"https://recipes.example.test:9443/login"}, Roles: []idp.Role{idp.Admin, idp.Adult}}}
+	if !reflect.DeepEqual(appClients(fs), want) || len(fs.guards) != 0 {
+		t.Errorf("the clients: %+v, want %+v; guards %+v, want none", appClients(fs), want, fs.guards)
+	}
+	s := agentApps(t, p)
+	if len(s.Apps) != 1 || s.Apps[0].ID != "mealie" || s.Apps[0].Name != "recipes.example.test" {
+		t.Fatalf("the agent runs %+v", s.Apps)
+	}
+	agentDir := filepath.Dir(p.host.Root)
+	override, err := os.ReadFile(filepath.Join(agentDir, "state", "apps", "mealie", "homerslab.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg := strings.Join(strings.Fields(string(p.host.Edge.Config())), ""); !strings.Contains(cfg, `"path":["/api/auth/token","/api/auth/token/*"]`) {
+		t.Errorf("the edge doesn't refuse Mealie's own password sign-in:\n%s", cfg)
+	}
+	for _, want := range []string{
+		`"OIDC_CONFIGURATION_URL": "https://auth.example.test:9443/application/o/homerslab-mealie/.well-known/openid-configuration"`,
+		`"OIDC_CLIENT_ID": "homerslab-mealie"`, `"OIDC_CLIENT_SECRET_FILE": "/run/secrets/oidc-client-secret"`,
+		`"BASE_URL": "https://recipes.example.test:9443"`, `"OIDC_ADMIN_GROUP": "homerslab-admins"`,
+	} {
+		if !strings.Contains(string(override), want) {
+			t.Errorf("the app's settings lack %s:\n%s", want, override)
+		}
+	}
+	secret := "CLIENT-SECRET-PLACEHOLDER-homerslab-mealie"
+	cred, err := os.ReadFile(filepath.Join(agentDir, "state", "apps", "mealie", "credentials", "oidc-client-secret.cred"))
+	if err != nil || string(cred) != "sealed:"+base64.StdEncoding.EncodeToString([]byte(secret)) {
+		t.Errorf("the client's secret, sealed by the agent: %q %v", cred, err)
+	}
+	db, _ := os.ReadFile(p.db)
+	wal, _ := os.ReadFile(p.db + "-wal")
+	for where, b := range map[string]string{"the database": string(db) + string(wal), "the logs": logs.String(), "the answers": fmt.Sprint(s)} {
+		if strings.Contains(b, secret) {
+			t.Errorf("%s hold the client's secret", where)
+		}
+	}
+}
+
+// A native app whose install fails after its client was made leaves no client behind (#20): the household account
+// holds no client for an app that isn't there.
+func TestANativeInstallThatFailsDeletesItsNewClient(t *testing.T) {
+	testenv.Isolate(t)
+	p, fs := installable(t, nil)
+	made := planFor(t, p, "mealie")
+	p.host.Fail("systemctl enable")
+	if r := p.control("POST", "/api/v1/plans/"+made.ID+"/apply", nil); r.Code/100 == 2 {
+		t.Fatalf("applying with systemd failing: %d %s", r.Code, r.Body)
+	}
+	if len(appClients(fs)) != 1 || !reflect.DeepEqual(fs.deleted, []string{"homerslab-mealie"}) {
+		t.Errorf("clients made %+v, deleted %v: want the one made, deleted", appClients(fs), fs.deleted)
+	}
+	p.host.Mend()
+	fs.clientFails = errors.New("the household account is down")
+	if r := p.control("POST", "/api/v1/plans/"+made.ID+"/apply", nil); r.Code != http.StatusBadGateway || !strings.Contains(string(r.Body), "client-failed") {
+		t.Errorf("with the household account failing: %d %s", r.Code, r.Body)
+	}
+	if len(agentApps(t, p).Apps) != 0 {
+		t.Error("an app was installed without its client")
+	}
+}
+
 // A plan with an extra is a risky change, which needs the admin's passkey (#25): it is refused until step-up is built.
-// Apps that sign people in themselves come with #20.
-func TestOnlyGuardedPlansWithoutExtrasApplySoFar(t *testing.T) {
+// An app with native sign-in that can't take its client from HomersLab yet (Immich: no settings in its manifest), and
+// LDAP apps (#49), aren't applied either.
+func TestOnlyPlansThatCanBeWiredWithoutExtrasApplySoFar(t *testing.T) {
 	testenv.Isolate(t)
 	cat := withCatalog(t, map[string]func([]byte) []byte{"apps/bentopdf/app.yaml": func(b []byte) []byte {
 		return bytes.Replace(b, []byte("extras: []"), []byte("extras:\n  - {id: printer, kind: device, service: web, device: /dev/usb/lp0, why: To print}"), 1)
@@ -169,9 +263,9 @@ func TestOnlyGuardedPlansWithoutExtrasApplySoFar(t *testing.T) {
 	}
 	oidc := planFor(t, p, "immich")
 	if r := p.control("POST", "/api/v1/plans/"+oidc.ID+"/apply", nil); r.Code != http.StatusUnprocessableEntity || !strings.Contains(string(r.Body), "sign-in-not-built") {
-		t.Errorf("an OIDC app: %d %s", r.Code, r.Body)
+		t.Errorf("an OIDC app that can't take its client yet: %d %s", r.Code, r.Body)
 	}
-	if len(fs.guards) != 0 || len(agentApps(t, p).Apps) != 0 {
+	if len(fs.guards) != 0 || len(appClients(fs)) != 0 || len(agentApps(t, p).Apps) != 0 {
 		t.Error("a refused plan changed something")
 	}
 }
@@ -234,4 +328,17 @@ func TestAdminAppliesAPlanFromItsOwnPage(t *testing.T) {
 	if rec := a.do("GET", "/api/v1/apps"); rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"health":"healthy"`) {
 		t.Errorf("the apps in Admin: %d %s", rec.Code, rec.Body)
 	}
+}
+
+// appClients are the apps' OIDC clients the manager made, without Admin's and Home's own.
+func appClients(fs *fakeSignIn) []idp.Client {
+	fs.mu.Lock()
+	defer fs.mu.Unlock()
+	var out []idp.Client
+	for _, c := range fs.clients {
+		if c.Slug != "homerslab-admin" && c.Slug != "homerslab-home" {
+			out = append(out, c)
+		}
+	}
+	return out
 }

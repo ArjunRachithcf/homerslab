@@ -106,7 +106,7 @@ func TestAPlanSaysWhatInstallingDoes(t *testing.T) {
 	check("app", p.App, plan.App{ID: "pictures", Name: "Pictures", Purpose: "Photos", Version: "v2.0.1", Tier: catalog.Verified, Catalog: "official", Publisher: "HomersLab", Definition: "sha256:" + strings.Repeat("d", 64)})
 	check("name", p.Name, plan.Name{Host: "pictures.ferreira.family", Meshes: []string{"NetBird"}, Exposure: "mesh", PublicAllowed: true})
 	check("audience", p.Audience, plan.Audience{Default: "adults", People: []plan.Person{{Name: "Inês Ferreira", Role: "admin"}, {Name: "Rui Ferreira", Role: "adult"}}})
-	check("sign-in", p.SignIn, plan.SignIn{Method: catalog.OIDC, Provider: authentik(), Creates: "oidc-client"})
+	check("sign-in", p.SignIn, plan.SignIn{Method: catalog.OIDC, Provider: authentik(), Creates: "oidc-client"}) // no env: not wired
 	check("backups", p.Backups, plan.Backups{Every: "hour", RestoreTest: "week",
 		Data: []plan.BackedUp{{What: "The library", Kind: "folder"}, {What: "Its database", Kind: "dump"}},
 		Left: []plan.NotBackedUp{{What: "Thumbnails", Why: "Made again from the library"}}})
@@ -164,6 +164,45 @@ func TestThePlanUsesTheFirstSignInMethodTheProviderProvides(t *testing.T) {
 	h.Provider.Provides = []catalog.SignInMethod{catalog.Guard}
 	if _, err := plan.Make(d, official, project(), h, made); !errors.Is(err, plan.ErrNoSignInMethod) {
 		t.Errorf("no method in common: %v, want ErrNoSignInMethod", err)
+	}
+}
+
+// The plan names the OIDC client installing creates: its redirect addresses are exactly the app's callbacks on its one
+// canonical URL, the household's port included (ADR 0021, #92), or its own apps' addresses, and follow the name the
+// app actually gets (#20, adversarial review round 2). It says whether HomersLab can set the method up today (wired).
+func TestAnOIDCPlanNamesItsClientsRedirectAddressesOnTheAppsOwnURLAndWhetherItIsWired(t *testing.T) {
+	testenv.Isolate(t)
+	d, h := definition(), household()
+	uid := 911
+	takes := &catalog.OIDCEnv{ClientID: "ID", ClientSecretFile: "SECRET_FILE", Issuer: "ISSUER"}
+	d.SignIn = []catalog.SignIn{{Method: catalog.OIDC, RedirectURIs: []string{"/auth/callback", "/settings", "app.pictures:///callback"}, Env: takes, SecretUID: &uid},
+		{Method: catalog.Guard}}
+	h.Port = 9443
+	got := make_(t, d, h)
+	want := []string{"https://pictures.ferreira.family:9443/auth/callback", "https://pictures.ferreira.family:9443/settings", "app.pictures:///callback"}
+	if got.SignIn.Method != catalog.OIDC || !got.SignIn.Wired || !reflect.DeepEqual(got.SignIn.RedirectURIs, want) {
+		t.Errorf("on port 9443: %+v, want OIDC, wired, redirect addresses %v", got.SignIn, want)
+	}
+	h.Port = 443
+	if p := make_(t, d, h); p.SignIn.RedirectURIs[0] != "https://pictures.ferreira.family/auth/callback" || p.ID == got.ID {
+		t.Errorf("on 443: %v (plan %s, on 9443 %s): the port is part of the URL, and of the plan", p.SignIn.RedirectURIs, p.ID, got.ID)
+	}
+	h.Installed = []plan.Installed{{App: "other", Name: "pictures"}}
+	if p := make_(t, d, h); p.SignIn.RedirectURIs[0] != "https://pictures-2.ferreira.family/auth/callback" {
+		t.Errorf("when the name is taken: %v", p.SignIn.RedirectURIs)
+	}
+
+	d.SignIn[0].Env = nil // the manifest doesn't say how the app takes its client: still the app's first choice
+	if p := make_(t, d, h); p.SignIn.Method != catalog.OIDC || p.SignIn.Wired {
+		t.Errorf("OIDC that HomersLab can't set up yet: %+v, want it shown, not wired", p.SignIn)
+	}
+	d.SignIn = []catalog.SignIn{{Method: catalog.LDAP}}
+	if p := make_(t, d, h); p.SignIn.Method != catalog.LDAP || p.SignIn.Wired {
+		t.Errorf("an LDAP plan: %+v, want not wired (#49)", p.SignIn)
+	}
+	d.SignIn = []catalog.SignIn{{Method: catalog.Guard}}
+	if p := make_(t, d, h); p.SignIn.RedirectURIs != nil || !p.SignIn.Wired {
+		t.Errorf("a guarded plan: %+v, want no redirect addresses, wired", p.SignIn)
 	}
 }
 

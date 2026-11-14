@@ -77,12 +77,16 @@ type Config struct {
 
 // App is an app's site: its name, proxied to the app's one upstream (Dial: an address on its bridge, which only the
 // edge's user and the agent's may open, ADR 0020). Guard is the forward-auth the edge asks before any request reaches
-// the app: every app so far is guarded (its sign-in method is the guard); apps that sign people in themselves come with
-// their own ticket (#20).
+// a guarded app; SignsIn says the app signs people in itself, with its own OIDC client (#20), and has none. An app is
+// one or the other, never neither: a guarded app whose guard is missing is never served unguarded.
 type App struct {
-	Name  string
-	Dial  string
-	Guard *Guard
+	Name    string
+	Dial    string
+	Guard   *Guard
+	SignsIn bool
+	// Refused are paths of an app that signs people in itself which sign them in some other way (its own password, a
+	// default admin's): the edge answers them 403, and the app never sees them.
+	Refused []string
 }
 
 // Guard is an identity provider's forward-auth, as the edge asks it (spec: Modules → Edge).
@@ -328,8 +332,11 @@ func Render(c Config) ([]byte, error) {
 // ADR 0006); then the app, without the provider's cookie, and without any cookie it sets for a whole household domain
 // (#83). It is the site's handler, which Render serves at the app's name with HSTS and Secure cookies, as every name.
 func appRoute(a App, domains []string) (obj, error) {
+	if a.SignsIn {
+		return nativeRoute(a, domains)
+	}
 	g := a.Guard
-	if a.Name == "" || !validDial(a.Dial) || g == nil || !validDial(g.Dial) || g.AuthURI == "" || g.Cookie == "" {
+	if a.Name == "" || !validDial(a.Dial) || g == nil || !validDial(g.Dial) || g.AuthURI == "" || g.Cookie == "" || len(a.Refused) > 0 {
 		return nil, fmt.Errorf("an app's site needs its name, its upstream and its guard: %+v", a)
 	}
 	notEmpty := func(v string) []obj { return []obj{{"not": []obj{{"vars": obj{v: []string{""}}}}}} }
@@ -347,15 +354,9 @@ func appRoute(a App, domains []string) (obj, error) {
 	// The provider's cookies, out of the Cookie header the app gets; a Set-Cookie of the app's for a household domain,
 	// emptied (a browser ignores an empty one).
 	cookie := regexp.QuoteMeta(g.Cookie) + `[^=;]*=[^;]*(;\s*|$)`
-	// A household domain, or any domain above it (a browser takes a cookie for example.com on home.example.com's names),
-	// with or without its dots at either end.
-	var ownDomain []obj
-	if wide := parents(domains); len(wide) > 0 {
-		ownDomain = []obj{{"search_regexp": `(?i)^.*;\s*domain\s*=\s*\.?(` + strings.Join(wide, "|") + `)\.?\s*(;.*)?$`, "replace": ""}}
-	}
 	app := obj{"handler": "headers", "request": obj{"replace": obj{"Cookie": []obj{{"search_regexp": cookie, "replace": ""}}}}}
-	if ownDomain != nil {
-		app["response"] = obj{"replace": obj{"Set-Cookie": ownDomain}, "deferred": true}
+	if ownDomain := ownDomainCookies(domains); ownDomain != nil {
+		app["response"] = ownDomain
 	}
 	var own []obj
 	if len(g.Paths) > 0 {
@@ -365,6 +366,47 @@ func appRoute(a App, domains []string) (obj, error) {
 		[]obj{{"handle": []obj{{"handler": "headers", "request": obj{"delete": IdentityHeaders}}}}},
 		own,
 		[]obj{{"handle": []obj{guard}}, {"handle": []obj{app, {"handler": "reverse_proxy", "upstreams": []obj{{"dial": a.Dial}}}}}},
+	)
+	return obj{"handler": "subroute", "routes": sub}, nil
+}
+
+// ownDomainCookies is the response rule that empties an app's Set-Cookie for a household domain, or any domain above it
+// (a browser takes a cookie for example.com on home.example.com's names), with or without its dots at either end (#83).
+func ownDomainCookies(domains []string) obj {
+	wide := parents(domains)
+	if len(wide) == 0 {
+		return nil
+	}
+	return obj{"replace": obj{"Set-Cookie": []obj{{"search_regexp": `(?i)^.*;\s*domain\s*=\s*\.?(` + strings.Join(wide, "|") + `)\.?\s*(;.*)?$`, "replace": ""}}},
+		"deferred": true}
+}
+
+// nativeRoute is the site of an app that signs people in itself (#20): no guard, but the client's identity headers
+// deleted first all the same (an app may read one), and no cookie of the app's for a whole household domain (#83). Like
+// appRoute's, it is the site's handler, which Render serves with HSTS and Secure cookies.
+func nativeRoute(a App, domains []string) (obj, error) {
+	if a.Name == "" || !validDial(a.Dial) || a.Guard != nil {
+		return nil, fmt.Errorf("an app's site needs its name and its upstream, and a guard or its own sign-in, not both: %+v", a)
+	}
+	app := obj{"handler": "headers"}
+	if ownDomain := ownDomainCookies(domains); ownDomain != nil {
+		app["response"] = ownDomain
+	}
+	var sub []obj
+	if len(a.Refused) > 0 {
+		// Caddy matches paths case-insensitively and after unescaping; each path, and anything below it.
+		var paths []string
+		for _, p := range a.Refused {
+			if !strings.HasPrefix(p, "/") || p == "/" || strings.ContainsAny(p, "*?#") {
+				return nil, fmt.Errorf("a refused path is one of the app's own: %q", p)
+			}
+			paths = append(paths, p, strings.TrimSuffix(p, "/")+"/*")
+		}
+		sub = append(sub, obj{"match": []obj{{"path": paths}}, "handle": []obj{{"handler": "static_response", "status_code": 403}}, "terminal": true})
+	}
+	sub = append(sub,
+		obj{"handle": []obj{{"handler": "headers", "request": obj{"delete": IdentityHeaders}}}},
+		obj{"handle": []obj{app, {"handler": "reverse_proxy", "upstreams": []obj{{"dial": a.Dial}}}}},
 	)
 	return obj{"handler": "subroute", "routes": sub}, nil
 }

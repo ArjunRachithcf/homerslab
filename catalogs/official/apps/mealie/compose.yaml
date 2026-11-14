@@ -1,0 +1,29 @@
+# Mealie v3.30.0, from its own compose file (docs: installation, SQLite), for HomersLab: no published ports (the edge
+# reaches it on the app's own network), no restart policy (the app's unit restarts it), a named volume. Sign-in is the
+# household account's alone: no password sign-in, no sign-up of its own, straight to the household account. The
+# client's settings and its secret's file come from HomersLab's agent (the manifest's signIn env).
+#
+# Who someone is: their username (preferred_username), not their mail address. Mealie matches an account by the claim
+# it is told, and by mail only when the provider says the address is verified; the household account's addresses are
+# typed by the admin, never verified by a mail, so it says they aren't. A username is the admin's alone to set (people
+# can't change their own), and the seeded admin's, "admin", is one HomersLab never gives anyone.
+services:
+  web:
+    image: ghcr.io/mealie-recipes/mealie:v3.30.0@sha256:90f83da6f3ab0a421efc827118a556168573930105f13fa3321768f42163d784
+    environment:
+      ALLOW_SIGNUP: "false"
+      ALLOW_PASSWORD_LOGIN: "false"
+      OIDC_AUTH_ENABLED: "true"
+      OIDC_SIGNUP_ENABLED: "true"
+      OIDC_AUTO_REDIRECT: "true"
+      OIDC_PROVIDER_NAME: Household account
+      OIDC_USER_CLAIM: preferred_username
+      OIDC_REQUIRES_EMAIL_VERIFICATION: "false"
+    volumes:
+      - data:/app/data
+    security_opt: [no-new-privileges:true]
+    healthcheck:
+      disable: false
+
+volumes:
+  data:

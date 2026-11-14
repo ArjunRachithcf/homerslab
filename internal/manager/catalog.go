@@ -142,6 +142,7 @@ func (m *Manager) household(ctx context.Context) (plan.Household, error) {
 	return plan.Household{
 		Name:     a["household"],
 		Domain:   strings.ToLower(domain),
+		Port:     householdPort(a),
 		Meshes:   []string{"NetBird"},
 		Provider: providers["authentik"],
 		People:   []plan.Person{{Name: a["name"], Role: "admin"}},

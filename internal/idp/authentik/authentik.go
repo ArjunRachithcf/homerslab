@@ -25,6 +25,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"net/http"
 	"net/url"
 	"slices"
@@ -950,10 +951,45 @@ type redirectURI struct {
 	URL  string `json:"url"`
 }
 
-// EnsureClient makes an app's confidential OIDC client and its application, which only the client's roles may open.
+// clientProviderModel is an OIDC client's provider, as Authentik's transactional API names its model.
+const clientProviderModel = "authentik_providers_oauth2.oauth2provider"
+
+// validRedirect says whether a client may send a person's code to u: an https address with nothing but a host, a port
+// and a path (no person, no query, no fragment, no wildcard or pattern), or one of the app's own apps' addresses, whose
+// private-use scheme holds a dot (RFC 8252, 7.1) and no host. Authentik matches it exactly (strict). The catalog's
+// loader takes only what this takes.
+func validRedirect(u string) bool {
+	if u == "" || strings.ContainsAny(u, "*\\ ") || strings.ContainsFunc(u, func(r rune) bool { return r < 0x21 || r > 0x7e }) {
+		return false
+	}
+	p, err := url.Parse(u)
+	if err != nil || p.User != nil || p.RawQuery != "" || p.ForceQuery || p.Fragment != "" || p.Opaque != "" || strings.Contains(p.Path, "..") {
+		return false
+	}
+	switch {
+	case p.Scheme == "https":
+		return p.Hostname() != "" && !strings.ContainsAny(p.Path, "()[]{}|^$+?")
+	case p.Scheme == "http" || p.Scheme == "":
+		return false
+	default:
+		return strings.Contains(p.Scheme, ".") && p.Host == ""
+	}
+}
+
+// newClientSecret is a client's secret: 64 characters, which HomersLab makes and Authentik keeps.
+func newClientSecret() string {
+	b := make([]byte, 48)
+	_, _ = rand.Read(b)
+	return base64.RawURLEncoding.EncodeToString(b)
+}
+
+// EnsureClient makes an app's confidential OIDC client and its application, which only the client's roles may open
+// (#20). A new client is made in one call, Authentik's transactional application API: the provider, the application
+// and the policy bindings that limit it to its audience, all or nothing. Its id is its slug, and its secret one
+// HomersLab makes. An existing one is brought in line in place, its id and secret kept.
 func (a *Authentik) EnsureClient(ctx context.Context, c idp.Client) (idp.ClientCredentials, error) {
-	if !strings.HasPrefix(c.Slug, "homerslab-") || len(c.RedirectURIs) == 0 {
-		return idp.ClientCredentials{}, errors.New("authentik: a client needs a homerslab- slug and a redirect address")
+	if !strings.HasPrefix(c.Slug, "homerslab-") || len(c.RedirectURIs) == 0 || slices.ContainsFunc(c.RedirectURIs, func(u string) bool { return !validRedirect(u) }) {
+		return idp.ClientCredentials{}, errors.New("authentik: a client needs a homerslab- slug and exact https redirect addresses")
 	}
 	consent, err := a.flow(ctx, consentFlow)
 	if err != nil {
@@ -970,12 +1006,12 @@ func (a *Authentik) EnsureClient(ctx context.Context, c idp.Client) (idp.ClientC
 		PK      string `json:"pk"`
 		Managed string `json:"managed"`
 	}
-	maps, err := list[mapping](ctx, a.api, "/propertymappings/provider/scope/")
+	mappings, err := list[mapping](ctx, a.api, "/propertymappings/provider/scope/")
 	if err != nil {
 		return idp.ClientCredentials{}, err
 	}
 	var scopes []string
-	for _, m := range maps {
+	for _, m := range mappings {
 		switch m.Managed {
 		case "goauthentik.io/providers/oauth2/scope-openid", "goauthentik.io/providers/oauth2/scope-email", "goauthentik.io/providers/oauth2/scope-profile":
 			scopes = append(scopes, m.PK)
@@ -984,6 +1020,7 @@ func (a *Authentik) EnsureClient(ctx context.Context, c idp.Client) (idp.ClientC
 	if len(scopes) != 3 {
 		return idp.ClientCredentials{}, errors.New("authentik: its OpenID scope mappings are missing")
 	}
+	slices.Sort(scopes)
 	cert, err := one[struct {
 		PK string `json:"pk"`
 	}](ctx, a.api, "/crypto/certificatekeypairs/?has_key=true&name="+q(selfSignedCert))
@@ -1015,20 +1052,128 @@ func (a *Authentik) EnsureClient(ctx context.Context, c idp.Client) (idp.ClientC
 	if err != nil {
 		return idp.ClientCredentials{}, err
 	}
+	issuer := a.h.URL("/application/o/" + c.Slug + "/")
 	if p == nil {
+		var app struct {
+			Slug string `json:"slug"`
+		}
+		switch err := a.api.call(ctx, http.MethodGet, "/core/applications/"+c.Slug+"/", nil, &app); {
+		case notFound(err):
+			return a.createClient(ctx, c, body, issuer)
+		case err != nil:
+			return idp.ClientCredentials{}, err
+		}
+		// An application without its provider, from an older HomersLab: its provider is made, and the two put in line.
 		p = &provider{}
-		err = a.api.call(ctx, http.MethodPost, "/providers/oauth2/", body, p)
-	} else {
-		err = a.api.call(ctx, http.MethodPatch, fmt.Sprintf("/providers/oauth2/%d/", p.PK), body, p)
-	}
-	if err != nil {
+		if err := a.api.call(ctx, http.MethodPost, "/providers/oauth2/", body, p); err != nil {
+			return idp.ClientCredentials{}, err
+		}
+	} else if err := a.api.call(ctx, http.MethodPatch, fmt.Sprintf("/providers/oauth2/%d/", p.PK), body, p); err != nil {
 		return idp.ClientCredentials{}, err
 	}
 	if err := a.ensureApp(ctx, c.Slug, c.Name, p.PK, c.Roles); err != nil {
 		return idp.ClientCredentials{}, err
 	}
-	return idp.ClientCredentials{ID: p.ID, Secret: idp.Secret(p.Secret), Issuer: a.h.URL("/application/o/" + c.Slug + "/")}, nil
+	return idp.ClientCredentials{ID: p.ID, Secret: idp.Secret(p.Secret), Issuer: issuer}, nil
 }
+
+// createClient makes a new client in one call: the provider, its application, and the bindings that open it to its
+// roles only. Authentik applies the three as one blueprint, in one transaction.
+func (a *Authentik) createClient(ctx context.Context, c idp.Client, provider map[string]any, issuer string) (idp.ClientCredentials, error) {
+	audience, err := a.audience(ctx, c.Roles)
+	if err != nil {
+		return idp.ClientCredentials{}, err
+	}
+	secret := newClientSecret()
+	provider = maps.Clone(provider)
+	provider["client_id"], provider["client_secret"] = c.Slug, secret
+	bindings := make([]map[string]any, len(audience))
+	for i, b := range audience {
+		bindings[i] = map[string]any{"order": i * 10, "enabled": true, "negate": b.Negate, "timeout": 30}
+		if b.Group != "" {
+			bindings[i]["group"] = b.Group
+		} else {
+			bindings[i]["policy"] = b.Policy
+		}
+	}
+	var out struct {
+		Applied bool `json:"applied"`
+	}
+	// The answer's logs are Authentik's blueprint importer's, which may quote what it was sent: never read or kept.
+	if err := a.api.call(ctx, http.MethodPut, "/core/transactional/applications/", map[string]any{
+		"app":             map[string]any{"name": c.Name, "slug": c.Slug, "policy_engine_mode": "any", "meta_hide": false},
+		"provider_model":  clientProviderModel,
+		"provider":        provider,
+		"policy_bindings": bindings,
+	}, &out); err != nil {
+		var ae *APIError
+		if errors.As(err, &ae) {
+			ae.Detail = "" // a validation error may quote the provider's fields, its secret among them
+		}
+		return idp.ClientCredentials{}, err
+	}
+	if !out.Applied {
+		return idp.ClientCredentials{}, errors.New("authentik: it didn't make the client")
+	}
+	return idp.ClientCredentials{ID: c.Slug, Secret: idp.Secret(secret), Issuer: issuer}, nil
+}
+
+// audience are the bindings that open an application to roles: each role's group, or, for none, the policy that
+// refuses everyone (an application with no binding is open to everyone). It only reads, but for that policy where the
+// sign-in's preparing didn't make it.
+func (a *Authentik) audience(ctx context.Context, roles []idp.Role) ([]binding, error) {
+	var bs []binding
+	for _, r := range roles {
+		g, err := one[group](ctx, a.api, "/core/groups/?name="+q(idp.RoleGroup(r)))
+		if err != nil || g == nil {
+			return nil, fmt.Errorf("authentik: the group of %s is missing: %v", r, err)
+		}
+		bs = append(bs, binding{Group: g.PK})
+	}
+	if len(bs) == 0 {
+		type policy struct {
+			PK string `json:"pk"`
+		}
+		never, err := one[policy](ctx, a.api, "/policies/expression/?name="+q(policyNever))
+		if err != nil {
+			return nil, err
+		}
+		if never == nil { // the sign-in's preparing makes it; only a sign-in without a first-admin flow lacks it
+			pk, err := a.neverPK(ctx)
+			if err != nil || pk == "" {
+				return nil, fmt.Errorf("authentik: the policy that refuses everyone: %v", err)
+			}
+			never = &policy{PK: pk}
+		}
+		bs = []binding{{Policy: never.PK}}
+	}
+	return bs, nil
+}
+
+// DeleteClient deletes an app's OIDC client: its application (and with it the bindings that open it), then its
+// provider. One that isn't there is gone already.
+func (a *Authentik) DeleteClient(ctx context.Context, slug string) error {
+	if !strings.HasPrefix(slug, "homerslab-") || slug == adminClient {
+		return errors.New("authentik: only an app's own client, homerslab-<app>, is deleted")
+	}
+	if err := a.api.call(ctx, http.MethodDelete, "/core/applications/"+slug+"/", nil, nil); err != nil && !notFound(err) {
+		return err
+	}
+	type provider struct {
+		PK int `json:"pk"`
+	}
+	p, err := one[provider](ctx, a.api, "/providers/oauth2/?name="+q(slug))
+	if err != nil || p == nil {
+		return err
+	}
+	if err := a.api.call(ctx, http.MethodDelete, fmt.Sprintf("/providers/oauth2/%d/", p.PK), nil, nil); err != nil && !notFound(err) {
+		return err
+	}
+	return nil
+}
+
+// adminClient is Admin's own client, which no app's removal deletes.
+const adminClient = "homerslab-admin"
 
 // embeddedOutpost is Authentik's own outpost, which its server runs: the guards' forward-auth endpoint.
 const embeddedOutpost = "goauthentik.io/outposts/embedded"
@@ -1111,24 +1256,16 @@ func (a *Authentik) ensureApp(ctx context.Context, slug, name string, provider i
 	if err := a.api.call(ctx, http.MethodGet, "/core/applications/"+slug+"/", nil, &full); err != nil {
 		return err
 	}
-	var bs []binding
-	for _, r := range roles {
-		g, err := one[group](ctx, a.api, "/core/groups/?name="+q(idp.RoleGroup(r)))
-		if err != nil || g == nil {
-			return fmt.Errorf("authentik: the group of %s is missing: %v", r, err)
-		}
-		bs = append(bs, binding{Group: g.PK})
-	}
-	if len(bs) == 0 {
-		bs = []binding{{Policy: a.neverPK(ctx)}} // nobody: an application with no binding is open to everyone
+	bs, err := a.audience(ctx, roles)
+	if err != nil {
+		return err
 	}
 	return a.bindPolicies(ctx, full.PK, bs)
 }
 
-func (a *Authentik) neverPK(ctx context.Context) string {
-	id, _ := a.ensure(ctx, "/policies/expression/", policyNever, map[string]any{"name": policyNever,
+func (a *Authentik) neverPK(ctx context.Context) (string, error) {
+	return a.ensure(ctx, "/policies/expression/", policyNever, map[string]any{"name": policyNever,
 		"expression": "# HomersLab: this flow applies to nobody.\nreturn False\n"})
-	return id
 }
 
 // Report says what Authentik can do, as HomersLab finds it now.

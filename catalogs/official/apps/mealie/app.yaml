@@ -1,0 +1,74 @@
+id: mealie
+name: Mealie
+purpose: Recipes
+description: >-
+  The household's recipes, meal plans and shopping lists. Mealie imports a recipe from a link and plans the week's
+  meals. People open it with their household account and land straight in it: Mealie has no password of its own, and
+  the household's admins are its admins.
+category: home
+tier: verified
+icon: icon.svg
+screenshots:
+  - {file: screenshots/recipes.jpg, caption: The household's recipes}
+  - {file: screenshots/meal-plan.jpg, caption: The week's meal plan}
+
+versions:
+  app: v3.30.0
+  images:
+    - service: web
+      digests:
+        docker: &web
+          x86_64: sha256:d552b662eb93f4dafa127fccfd8db9139e24c249753c72c17c9248edbc21e0c8
+          arm64: sha256:8dbe3fd73896e77c797f7029201823fa8b1ddbc725059f496cf884f06c9916da
+        podman: *web
+
+# Mealie's OIDC (https://mealie.io/documentation/getting-started/authentication/oidc-v2/): its server reads the
+# discovery document and exchanges the code, its client's secret from a file (run.sh's _FILE variables), and its
+# callback is /login on BASE_URL. Admins become Mealie's admins through their group's name.
+signIn:
+  - method: oidc
+    redirectUris: [/login]
+    scopes: [openid, email, profile]
+    env:
+      discovery: OIDC_CONFIGURATION_URL
+      clientId: OIDC_CLIENT_ID
+      clientSecretFile: OIDC_CLIENT_SECRET_FILE
+      url: BASE_URL
+      adminGroup: OIDC_ADMIN_GROUP
+    # run.sh reads the _FILE variables after it has switched to Mealie's own user, PUID's default.
+    secretUid: 911
+    # Mealie makes a default admin with a published password at its first start, and ALLOW_PASSWORD_LOGIN=false only
+    # hides the form: its server still takes a password at /api/auth/token (checked on v3.30.0). The edge refuses it.
+    refusePaths: [/api/auth/token]
+
+names:
+  name: recipes
+  service: web
+  port: 9000
+  exposure: mesh
+  public: true
+
+audience:
+  default: adults
+
+data:
+  - {what: "Recipes, photos and meal plans, and Mealie's database", service: web, path: /app/data}
+
+secrets: []
+
+health:
+  - service: web
+    http: {port: 9000, path: /api/app/about}
+  - {service: web, compose: true}
+
+resources:
+  memoryMiB: 1024
+  diskGiB: 2
+  grows: the recipes' photos
+  gpu: {need: none}
+  canPause: true
+
+extras: []
+
+updateNotes:
+  - {version: v3.30.0, notes: The version the catalog starts with.}

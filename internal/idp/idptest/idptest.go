@@ -10,6 +10,7 @@ import (
 	"context"
 	"errors"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -309,6 +310,132 @@ func Run(t *testing.T, w World, version string) {
 		}
 		if _, err := signIn(t, laptop, "rui"); err == nil {
 			t.Error("an adult signed in to Admin's client")
+		}
+	})
+
+	// An app that signs people in itself gets an OIDC client of its own (#20): its id is its slug, it opens only to its
+	// audience, and only back to its own redirect addresses, exactly; it changes in place, keeping its credentials, and
+	// is deleted with the app.
+	t.Run("an app's OIDC client: created for its audience, changed, deleted (#20)", func(t *testing.T) {
+		if err := p.EnsurePerson(ctx, idp.Person{Username: "tomas", Name: "Tomás", Mail: "tomas@ferreira.family", Role: idp.Kid}); err != nil {
+			t.Fatal(err)
+		}
+		link, err := p.EnrolmentLink(ctx, "tomas")
+		if err != nil {
+			t.Fatal(err)
+		}
+		tablet := webauthntest.New(h.Origin())
+		if _, err := w.Browser(t, tablet).Enrol(t, link); err != nil {
+			t.Fatal(err)
+		}
+		link, err = p.EnrolmentLink(ctx, "rui")
+		if err != nil {
+			t.Fatal(err)
+		}
+		laptop := webauthntest.New(h.Origin())
+		if _, err := w.Browser(t, laptop).Enrol(t, link); err != nil {
+			t.Fatal(err)
+		}
+		app := "https://recipes." + h.Domain
+		mealie := idp.Client{Slug: "homerslab-mealie", Name: "Mealie", RedirectURIs: []string{app + "/login"}, Roles: []idp.Role{idp.Admin, idp.Adult}}
+		made, err := p.EnsureClient(ctx, mealie)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if made.ID != mealie.Slug || made.Secret == "" || made.Issuer == creds.Issuer || !strings.HasPrefix(made.Issuer, h.Origin()+"/") {
+			t.Errorf("the app's client: id %q, a secret %v, issuer %q (Admin's %q)", made.ID, made.Secret != "", made.Issuer, creds.Issuer)
+		}
+		rp := w.OIDC()
+		rp.Issuer, rp.ID, rp.Secret, rp.Redirect = made.Issuer, made.ID, made.Secret, app+"/login"
+		appSignIn := func(t *testing.T, rp oidc.Client, a *webauthntest.Authenticator, username string) (oidc.Claims, error) {
+			t.Helper()
+			e, err := rp.Discover(ctx)
+			if err != nil {
+				return oidc.Claims{}, err
+			}
+			at := oidc.NewAttempt()
+			state, code, err := w.Browser(t, a).SignIn(t, rp.AuthorizeURL(e, at), username, Factors{})
+			if err != nil {
+				return oidc.Claims{}, err
+			}
+			return rp.Finish(ctx, e, at, state, code, time.Now())
+		}
+		for _, who := range []struct {
+			a        *webauthntest.Authenticator
+			username string
+			in       bool
+		}{{phone, "ines", true}, {laptop, "rui", true}, {tablet, "tomas", false}} {
+			cl, err := appSignIn(t, rp, who.a, who.username)
+			switch {
+			case who.in && (err != nil || cl.Username != who.username):
+				t.Errorf("%s, in the app's audience: %+v %v", who.username, cl, err)
+			case !who.in && err == nil:
+				t.Errorf("%s, outside the app's audience, signed in to it", who.username)
+			}
+		}
+		for _, elsewhere := range []string{"https://evil.example/login", app + "/login/more", app + ".evil.example/login", "https://recipes." + h.Domain + ":8443/login"} {
+			other := rp
+			other.Redirect = elsewhere
+			if _, err := appSignIn(t, other, phone, "ines"); err == nil {
+				t.Errorf("the client sent a code to %s", elsewhere)
+			}
+		}
+
+		changed := mealie
+		changed.RedirectURIs, changed.Roles = []string{app + ":9443/login"}, []idp.Role{idp.Admin}
+		again, err := p.EnsureClient(ctx, changed)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if again.ID != made.ID || again.Secret != made.Secret || again.Issuer != made.Issuer {
+			t.Error("changing the client changed its credentials: the app would lose its sign-in")
+		}
+		if _, err := appSignIn(t, rp, phone, "ines"); err == nil {
+			t.Error("the client still sends a code to its old redirect address")
+		}
+		rp.Redirect = app + ":9443/login"
+		if _, err := appSignIn(t, rp, phone, "ines"); err != nil {
+			t.Errorf("the changed client, to its new redirect address: %v", err)
+		}
+		if _, err := appSignIn(t, rp, laptop, "rui"); err == nil {
+			t.Error("an adult signed in after the client's audience narrowed to admins")
+		}
+
+		for _, bad := range []idp.Client{
+			{Slug: "mealie", Name: "Mealie", RedirectURIs: []string{app + "/login"}},
+			{Slug: mealie.Slug, Name: "Mealie", RedirectURIs: []string{"https://*." + h.Domain + "/login"}},
+			{Slug: mealie.Slug, Name: "Mealie", RedirectURIs: []string{"http://recipes." + h.Domain + "/login"}},
+			{Slug: mealie.Slug, Name: "Mealie", RedirectURIs: []string{"https://recipes." + h.Domain + "/.*"}},
+			{Slug: mealie.Slug, Name: "Mealie", RedirectURIs: []string{"https://user@recipes." + h.Domain + "/login"}},
+			{Slug: mealie.Slug, Name: "Mealie", RedirectURIs: []string{"/login"}},
+		} {
+			if _, err := p.EnsureClient(ctx, bad); err == nil {
+				t.Errorf("made the client %+v", bad)
+			}
+		}
+		if _, err := appSignIn(t, rp, phone, "ines"); err != nil {
+			t.Errorf("a refused change touched the client: %v", err)
+		}
+
+		if err := p.DeleteClient(ctx, mealie.Slug); err != nil {
+			t.Fatal(err)
+		}
+		if err := p.DeleteClient(ctx, mealie.Slug); err != nil {
+			t.Errorf("deleting it again: %v", err)
+		}
+		if _, err := rp.Discover(ctx); err == nil {
+			t.Error("the deleted client's issuer still answers")
+		}
+		e := oidc.Endpoints{Issuer: made.Issuer, Authorize: h.URL("/application/o/authorize/"), Token: h.URL("/application/o/token/")}
+		at := oidc.NewAttempt()
+		if _, _, err := w.Browser(t, phone).SignIn(t, rp.AuthorizeURL(e, at), "ines", Factors{}); err == nil {
+			t.Error("a sign-in to the deleted client sent a code")
+		}
+		if err := p.DeleteClient(ctx, "authentik"); err == nil {
+			t.Error("deleted a client that isn't HomersLab's")
+		}
+		if _, err := signIn(t, phone, "ines"); err != nil {
+			t.Errorf("Admin's client, after an app's was deleted: %v", err)
 		}
 	})
 

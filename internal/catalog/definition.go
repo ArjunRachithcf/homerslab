@@ -99,9 +99,40 @@ type SignIn struct {
 	// apps (app.immich:///oauth-callback), and the scopes it asks for.
 	RedirectURIs []string `yaml:"redirectUris" json:"redirectUris,omitempty"`
 	Scopes       []string `yaml:"scopes" json:"scopes,omitempty"`
+	// OIDC: how the app takes its client, as environment variables of its upstream's service (Names.Service), which the
+	// agent sets; and the container user that reads the client's secret, a file HomersLab hands it (ClientSecretFile:
+	// never the secret itself in the environment). Without Env, HomersLab can't hand the app its client yet.
+	Env       *OIDCEnv `yaml:"env" json:"env,omitempty"`
+	SecretUID *int     `yaml:"secretUid" json:"secretUid,omitempty"`
+	// RefusePaths are paths of the app's own that sign people in some other way (a password the app made itself, a
+	// default admin's), which the edge refuses before the app sees them: the household account is the only way in.
+	RefusePaths []string `yaml:"refusePaths" json:"refusePaths,omitempty"`
 	// LDAP: the attributes it reads.
 	Attributes []string `yaml:"attributes" json:"attributes,omitempty"`
 }
+
+// OIDCEnv names the environment variables an app takes its OIDC client from; each is optional but the client's id,
+// its secret's file, and its issuer or discovery document. None of them carries a secret.
+type OIDCEnv struct {
+	Issuer    string `yaml:"issuer" json:"issuer,omitempty"`       // the issuer's URL
+	Discovery string `yaml:"discovery" json:"discovery,omitempty"` // the issuer's discovery document's URL
+	ClientID  string `yaml:"clientId" json:"clientId"`
+	// ClientSecretFile takes the path of the file that holds the client's secret.
+	ClientSecretFile string `yaml:"clientSecretFile" json:"clientSecretFile"`
+	// RedirectURI takes the client's first redirect address, on the app's URL; URL the app's URL.
+	RedirectURI string `yaml:"redirectUri" json:"redirectUri,omitempty"`
+	URL         string `yaml:"url" json:"url,omitempty"`
+	// AdminGroup takes the name of the admins' group, for an app that makes them its own admins.
+	AdminGroup string `yaml:"adminGroup" json:"adminGroup,omitempty"`
+}
+
+// Names are the variables' names, in a fixed order, those the manifest leaves out empty.
+func (e OIDCEnv) Names() []string {
+	return []string{e.Issuer, e.Discovery, e.ClientID, e.ClientSecretFile, e.RedirectURI, e.URL, e.AdminGroup}
+}
+
+// ClientSecret is the secret HomersLab hands an OIDC app, its client's: no secret of the manifest's may take its name.
+const ClientSecret = "oidc-client-secret"
 
 // SignInMethod is one of the three every identity provider provides (spec: Adapter contracts).
 type SignInMethod string

@@ -102,7 +102,7 @@ func TestAdminBrowsesTheOfficialCatalog(t *testing.T) {
 	}
 	var c catalogList
 	r.json(t, &c)
-	if c.Catalog.ID != "official" || len(c.Apps) != 2 || len(c.Categories) == 0 {
+	if c.Catalog.ID != "official" || len(c.Apps) != 3 || len(c.Categories) == 0 {
 		t.Fatalf("catalog %+v", c)
 	}
 	signIn := map[string]string{}
@@ -130,8 +130,8 @@ func TestAdminBrowsesTheOfficialCatalog(t *testing.T) {
 			}
 		}
 	}
-	if signIn["immich"] != "oidc" || signIn["bentopdf"] != "guard" {
-		t.Errorf("sign-in: %v, want Immich native (oidc) and BentoPDF guarded", signIn)
+	if signIn["immich"] != "oidc" || signIn["mealie"] != "oidc" || signIn["bentopdf"] != "guard" {
+		t.Errorf("sign-in: %v, want Immich and Mealie native (oidc) and BentoPDF guarded", signIn)
 	}
 	for _, path := range []string{"/api/v1/catalog/apps/nope", "/api/v1/catalog/apps/immich/icons", "/api/v1/catalog/apps/immich/screenshots/01", "/api/v1/catalog/apps/immich/screenshots/9", "/api/v1/catalog/apps/immich/screenshots/x"} {
 		if r := p.admin("GET", path, nil); r.Code != http.StatusNotFound {
@@ -141,12 +141,12 @@ func TestAdminBrowsesTheOfficialCatalog(t *testing.T) {
 }
 
 // The install planner turns a definition and the household's state into one plan, compared with a golden copy for
-// both apps. Update them with go test ./internal/manager -run Golden -rewrite-golden.
+// each app: guarded (BentoPDF) and native (Immich, Mealie, whose plans name their clients' redirect addresses). Update them with go test ./internal/manager -run Golden -rewrite-golden.
 func TestGoldenPlans(t *testing.T) {
 	testenv.Isolate(t)
 	p := newPrimary(t)
 	p.setUp()
-	for _, app := range []string{"immich", "bentopdf"} {
+	for _, app := range []string{"immich", "bentopdf", "mealie"} {
 		r := p.admin("POST", "/api/v1/plans", map[string]string{"app": app})
 		if r.Code != http.StatusCreated {
 			t.Fatalf("planning %s: %d %s", app, r.Code, r.Body)

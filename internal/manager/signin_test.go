@@ -52,9 +52,12 @@ type fakeSignIn struct {
 	// beforeKeep and afterKeep run around the manager's keeping of its new token; unkept counts the ones it couldn't.
 	beforeKeep, afterKeep func()
 	unkept                int
-	// guards are the apps' guards the manager made, in order; clients the OIDC clients.
-	guards  []idp.Guard
-	clients []idp.Client
+	// guards are the apps' guards the manager made, in order; clients every OIDC client made (Admin's, Home's, the
+	// apps', #20), deleted those deleted; clientFails, when set, is EnsureClient's error for an app's.
+	guards      []idp.Guard
+	clients     []idp.Client
+	deleted     []string
+	clientFails error
 }
 
 func newFakeSignIn(t *testing.T) *fakeSignIn {
@@ -232,16 +235,32 @@ func (f *fakeSignIn) EnrolmentLink(_ context.Context, u string) (idp.Link, error
 }
 func (f *fakeSignIn) EnsureClient(_ context.Context, c idp.Client) (idp.ClientCredentials, error) {
 	f.mu.Lock()
-	f.clients = append(f.clients, c)
-	f.mu.Unlock()
-	if c.Slug == "homerslab-home" {
-		return idp.ClientCredentials{ID: homeClientID, Secret: homeSecret, Issuer: homeIssuer}, nil
+	defer f.mu.Unlock()
+	if c.Slug != "homerslab-admin" && c.Slug != "homerslab-home" && f.clientFails != nil {
+		return idp.ClientCredentials{}, f.clientFails
 	}
-	if c.Slug != "homerslab-admin" || !c.PasskeyOnly || len(c.Roles) != 1 || c.Roles[0] != idp.Admin ||
+	f.clients = append(f.clients, c)
+	switch c.Slug {
+	case "homerslab-home":
+		return idp.ClientCredentials{ID: homeClientID, Secret: homeSecret, Issuer: homeIssuer}, nil
+	case "homerslab-admin":
+	default:
+		// An app's client (#20): kept as asked, its secret a placeholder of its own.
+		return idp.ClientCredentials{ID: c.Slug, Secret: idp.Secret("CLIENT-SECRET-PLACEHOLDER-" + c.Slug),
+			Issuer: signInOrigin + "/application/o/" + c.Slug + "/"}, nil
+	}
+	if !c.PasskeyOnly || len(c.Roles) != 1 || c.Roles[0] != idp.Admin ||
 		len(c.RedirectURIs) != 1 || c.RedirectURIs[0] != adminOrigin+"/auth/callback" {
 		return idp.ClientCredentials{}, fmt.Errorf("Admin's client: %+v", c)
 	}
 	return idp.ClientCredentials{ID: "admin-client", Secret: clientSecret, Issuer: issuer}, nil
+}
+
+func (f *fakeSignIn) DeleteClient(_ context.Context, slug string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.deleted = append(f.deleted, slug)
+	return nil
 }
 
 func (f *fakeSignIn) EnsureGuard(_ context.Context, g idp.Guard) error {
@@ -253,13 +272,13 @@ func (f *fakeSignIn) EnsureGuard(_ context.Context, g idp.Guard) error {
 
 // atJoin is a primary whose first half is done: Authentik chosen, NetBird's cloud joined (household port 9443), the
 // certificate issued, mail and the kit stood in.
-func atJoin(t *testing.T) (*primary, *browser, *fakeSignIn) {
+func atJoin(t *testing.T, opts ...option) (*primary, *browser, *fakeSignIn) {
 	t.Helper()
 	fs := newFakeSignIn(t)
 	nb, fd := &fakeNetBird{cloudPort: 9443}, newFakeDomains()
-	p := newPrimary(t, withBuiltSteps("mail", "kit"), withNetBird(nb), withDomains(fd), func(p *primary) {
+	p := newPrimary(t, append([]option{withBuiltSteps("mail", "kit"), withNetBird(nb), withDomains(fd), func(p *primary) {
 		p.signIn, p.signInUpstream = fs, fs.issuer.URL
-	})
+	}}, opts...)...)
 	fs.agentSock, fs.now = p.agent, p.clock.Now
 	nb.now = p.clock.Now
 	b := p.claimed()

@@ -55,7 +55,7 @@ func Make(d catalog.App, from From, p engine.Project, h Household, made time.Tim
 		App:      App{ID: d.ID, Name: d.Name, Purpose: d.Purpose, Version: d.Versions.App, Tier: d.Tier, Catalog: from.ID, Publisher: from.Publisher, Definition: d.Digest},
 		Name:     Name{Host: host + "." + h.Domain, Meshes: orEmpty(h.Meshes), Exposure: d.Names.Exposure, PublicAllowed: d.Names.Public},
 		Audience: Audience{Default: d.Audience.Default, People: audience(d.Audience.Default, h.People), KidView: d.Audience.KidView},
-		SignIn:   SignIn{Method: method, Provider: h.Provider, Creates: creates[method]},
+		SignIn:   SignIn{Method: method.Method, Provider: h.Provider, Creates: creates[method.Method]},
 		Backups:  backups(d.Data),
 		Placement: Placement{Node: h.Primary.Facts.Hostname, Architecture: h.Primary.Facts.Architecture, Engine: h.Primary.Engine,
 			Project: p.Name, Services: services},
@@ -64,6 +64,10 @@ func Make(d catalog.App, from From, p engine.Project, h Household, made time.Tim
 	}
 	if why != "" {
 		pl.Name.Asked, pl.Name.Why = d.Names.Name, why
+	}
+	pl.SignIn.Wired = wired(method)
+	if method.Method == catalog.OIDC {
+		pl.SignIn.RedirectURIs = redirects(d.SignIn, URL(pl.Name.Host, h.Port))
 	}
 	for _, x := range d.Extras {
 		pl.Extras = append(pl.Extras, Extra{ID: x.ID, Kind: x.Kind, Service: x.Service, Device: x.Device, Capability: x.Capability, Why: x.Why, Optional: x.Optional})
@@ -80,6 +84,32 @@ func Make(d catalog.App, from From, p engine.Project, h Household, made time.Tim
 	pl.MadeAt = made.UTC()
 	pl.ID = id(pl)
 	return pl, nil
+}
+
+// URL is an app's one URL, https://<host>[:port] (ADR 0021): the port only when it isn't 443.
+func URL(host string, port int) string {
+	if port == 0 || port == 443 {
+		return "https://" + host
+	}
+	return fmt.Sprintf("https://%s:%d", host, port)
+}
+
+// redirects are the OIDC method's redirect addresses: a callback path on the app's URL, or one of its own apps'
+// addresses as it is (the catalog's loader allows nothing else).
+func redirects(methods []catalog.SignIn, url string) []string {
+	var out []string
+	for _, m := range methods {
+		if m.Method != catalog.OIDC {
+			continue
+		}
+		for _, u := range m.RedirectURIs {
+			if strings.HasPrefix(u, "/") {
+				u = url + u
+			}
+			out = append(out, u)
+		}
+	}
+	return out
 }
 
 // name is the app's name: the one it asks for, or, when that is reserved or taken, the next free one (photos-2), and
@@ -120,14 +150,27 @@ func taken(name string, h Household) string {
 	return ""
 }
 
-// signIn is the first of the app's methods, in its order, that the provider provides.
-func signIn(methods []catalog.SignIn, provides []catalog.SignInMethod) (catalog.SignInMethod, bool) {
+// signIn is the first of the app's methods, in its order, that the provider provides (spec: Adapter contracts, the
+// sign-in method), whether or not HomersLab can set it up today: the plan says which (wired).
+func signIn(methods []catalog.SignIn, provides []catalog.SignInMethod) (catalog.SignIn, bool) {
 	for _, m := range methods {
 		if slices.Contains(provides, m.Method) {
-			return m.Method, true
+			return m, true
 		}
 	}
-	return "", false
+	return catalog.SignIn{}, false
+}
+
+// wired says whether HomersLab can set an app up with a sign-in method today: a guard always; an OIDC client when the
+// manifest says how the app takes it (#20); LDAP not yet (#49).
+func wired(m catalog.SignIn) bool {
+	switch m.Method {
+	case catalog.Guard:
+		return true
+	case catalog.OIDC:
+		return m.Env != nil && m.SecretUID != nil
+	}
+	return false
 }
 
 // placement pairs every service the compose project runs with its pin in the manifest, and the digest this node's

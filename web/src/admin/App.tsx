@@ -354,7 +354,8 @@ function PlanSections({ p }: { p: Plan }) {
         <Q id="pq-signin" title={t('plan.signIn')} />
         <div className="group">
           <Row lead={p.signIn.method === 'guard' ? 'shield' : 'user'} title={t(`plan.signIn.${p.signIn.method}` as Key, signInVars)}
-            sub={t(`plan.signIn.${p.signIn.method}.sub` as Key, signInVars)} />
+            sub={<>{t(`plan.signIn.${p.signIn.method}.sub` as Key, signInVars)}
+              {p.signIn.redirectUris?.length ? <><br />{t('plan.signIn.oidc.redirects', { app: p.app.name, addresses: and(p.signIn.redirectUris) })}</> : null}</>} />
         </div>
       </section>
       <section aria-labelledby="pq-name">
@@ -450,7 +451,7 @@ function PlanCard({ p }: { p: Plan }) {
   const people = p.audience.people.map((x) => x.name);
   const [app, setApp] = useInstalled(p);
   const [state, setState] = useState<{ busy?: boolean; why?: string }>({});
-  const can = !p.risky && p.signIn.method === 'guard';
+  const can = !p.risky && p.signIn.wired;
   const install = async () => {
     setState({ busy: true });
     try {
@@ -459,11 +460,11 @@ function PlanCard({ p }: { p: Plan }) {
     } catch (e) {
       const code = e instanceof Refused ? e.code : 'unknown';
       const key = `plan.install.refused.${code}` as Key;
-      const known = ['sign-in-not-ready', 'stale-plan', 'not-ours', 'agent-unreachable'].includes(code);
-      setState({ why: known ? t(key, { node: p.placement.node }) : t('plan.install.refused', { why: code }) });
+      const known = ['sign-in-not-ready', 'stale-plan', 'not-ours', 'agent-unreachable', 'client-failed'].includes(code);
+      setState({ why: known ? t(key, { node: p.placement.node, app: p.app.name }) : t('plan.install.refused', { why: code }) });
     }
   };
-  const why = p.risky ? 'plan.install.risky' : p.signIn.method !== 'guard' ? 'plan.install.native' : undefined;
+  const why = p.risky ? 'plan.install.risky' : !p.signIn.wired ? 'plan.install.native' : undefined;
   return (
     <div className="card plan-card">
       <h2 className="card-title">{t('plan.creates')}</h2>
@@ -480,7 +481,7 @@ function PlanCard({ p }: { p: Plan }) {
             onClick={() => void install()}>
             {p.risky && <Icon name="key" />}{state.busy ? t('plan.install.working') : t(p.risky ? 'plan.installKey' : 'plan.install')}
           </button>
-          {why && <p className="btn-why" id="install-why">{t(why as Key)}</p>}
+          {why && <p className="btn-why" id="install-why">{t(why as Key, vars)}</p>}
           {state.why && <p className="notice notice-warn a-get-why" role="alert">{state.why}</p>}
         </>
       )}

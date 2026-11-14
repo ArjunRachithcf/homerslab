@@ -69,6 +69,12 @@ type SignIn struct {
 	Provider Provider             `json:"provider"`
 	// Creates is what the identity provider gets: an OIDC client, LDAP access, or a guard at the edge.
 	Creates string `json:"creates"`
+	// RedirectURIs are an OIDC client's redirect addresses, exactly: the app's callbacks on its one URL (ADR 0021), and
+	// its own apps' addresses. Never a wildcard, never another site (#20).
+	RedirectURIs []string `json:"redirectUris,omitempty"`
+	// Wired says HomersLab can set the app up with this method today: a guard always; an OIDC client when the app's
+	// manifest says how it takes one (#20); LDAP not yet (#49). A plan that isn't wired is shown, and not applied.
+	Wired bool `json:"wired"`
 }
 
 // Backups is what is backed up, and when.
@@ -160,8 +166,10 @@ type Warning struct {
 
 // Household is the household's state, as the planner needs it.
 type Household struct {
-	Name     string
-	Domain   string   // the main domain
+	Name   string
+	Domain string // the main domain
+	// Port is the household's port, which every app's one URL carries unless it is 443 (ADR 0021).
+	Port     int
 	Meshes   []string // NetBird, Tailscale, Headscale
 	Provider Provider
 	People   []Person
