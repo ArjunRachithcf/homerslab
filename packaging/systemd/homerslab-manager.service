@@ -18,8 +18,8 @@ StateDirectoryMode=0700
 RuntimeDirectory=homerslab
 RuntimeDirectoryMode=0700
 UMask=0077
-# Home's projection, which Home's process reads (#21).
-ReadWritePaths=/run/homerslab-projection
+# Home's projection, which Home's process reads (#21); optional, so the manager starts before tmpfiles has made it.
+ReadWritePaths=-/run/homerslab-projection
 Restart=on-failure
 RestartSec=2s
 

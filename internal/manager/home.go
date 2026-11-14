@@ -2,7 +2,9 @@ package manager
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
+	"os"
 	"io/fs"
 	"net/http"
 	"path"
@@ -53,13 +55,15 @@ func (m *Manager) RefreshHome(ctx context.Context) error {
 		out.SignIn = &home.SignIn{Issuer: ans[ansHomeIssuer], ClientID: ans[ansHomeClientID], Upstream: m.upstream()}
 	}
 	for _, a := range apps {
-		b, err := m.db.Plan(ctx, a.Plan)
-		if err != nil {
-			return err
-		}
+		// One app whose plan can't be read is left off Home; the others' health still reaches it.
 		var p plan.Plan
-		if err := json.Unmarshal(b, &p); err != nil {
-			return err
+		b, err := m.db.Plan(ctx, a.Plan)
+		if err == nil {
+			err = json.Unmarshal(b, &p)
+		}
+		if err != nil {
+			m.log.Error("an app's plan, for Home", "app", a.ID, "plan", a.Plan, "err", err)
+			continue
 		}
 		v := m.view(a, p, ans, byID[a.ID])
 		h := home.App{ID: a.ID, Name: v.Name, Purpose: v.Purpose, URL: v.URL, Health: v.Health, Audience: []string{}}
@@ -76,7 +80,24 @@ func (m *Manager) RefreshHome(ctx context.Context) error {
 		}
 		out.Apps = append(out.Apps, h)
 	}
-	return home.Write(m.cfg.Projection, out)
+	// Written only when something changed, so Home reads it again only then.
+	cmp := out
+	cmp.MadeAt = time.Time{}
+	sum, err := json.Marshal(cmp)
+	if err != nil {
+		return err
+	}
+	h := sha256.Sum256(sum)
+	if h == m.homeSum {
+		if _, err := os.Stat(m.cfg.Projection); err == nil {
+			return nil
+		}
+	}
+	if err := home.Write(m.cfg.Projection, out); err != nil {
+		return err
+	}
+	m.homeSum = h
+	return nil
 }
 
 // refreshHome keeps Home's projection current until ctx ends.

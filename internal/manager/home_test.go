@@ -2,6 +2,7 @@ package manager_test
 
 import (
 	"context"
+	"database/sql"
 	"net/http"
 	"os"
 	"reflect"
@@ -101,5 +102,34 @@ func TestTheManagerKeepsHomesProjection(t *testing.T) {
 	}
 	if fi, err := os.Stat(p.projection); err != nil || fi.Mode().Perm() != 0o640 {
 		t.Errorf("the projection's mode: %v %v", fi.Mode(), err)
+	}
+}
+
+// One app whose plan can't be read doesn't freeze Home: the others' health still reaches it.
+func TestOneUnreadablePlanLeavesTheRestOfHome(t *testing.T) {
+	testenv.Isolate(t)
+	p, _ := installable(t, nil)
+	made := planFor(t, p, "bentopdf")
+	if r := p.control("POST", "/api/v1/plans/"+made.ID+"/apply", nil); r.Code != http.StatusAccepted {
+		t.Fatalf("applying: %d %s", r.Code, r.Body)
+	}
+	db, err := sql.Open("sqlite", p.db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if _, err := db.Exec(`INSERT INTO plan (id, app, body, made_at) SELECT 'p-broken', 'aardvark', '{not json', made_at FROM plan LIMIT 1`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO app (id, plan_id, applied_at) VALUES ('aardvark', 'p-broken', 0)`); err != nil {
+		t.Fatal(err)
+	}
+	p.host.Sick("homerslab-bentopdf", "unhealthy")
+	p.host.Answer("172.31.240.2:8080", "Internal Server Error")
+	if err := p.m.RefreshHome(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if pr := readProjection(t, p); len(pr.Apps) != 1 || pr.Apps[0].ID != "bentopdf" || pr.Apps[0].Health != "unhealthy" {
+		t.Errorf("Home's apps: %+v", pr.Apps)
 	}
 }

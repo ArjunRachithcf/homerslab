@@ -278,3 +278,15 @@ func TestTheEdgeServesHomeWhenTheManagerSaysSo(t *testing.T) {
 		t.Errorf("the edge runs:\n%s\nwant:\n%s", got, want)
 	}
 }
+
+// No app takes the id of one of HomersLab's own: Home's (#21) among them, whose OIDC client is homerslab-home, the slug an
+// app's guard would take.
+func TestAnAppCantTakeHomersLabsOwnIDs(t *testing.T) {
+	testenv.Isolate(t)
+	sock, _, _ := signedIn(t, agent.Config{})
+	for _, id := range []string{"home", "admin", "manager", "authentik"} {
+		if code, body := call(t, sock, "PUT", "/v1/apps/"+id+"?check=true", bentoPDF(t)); code != http.StatusBadRequest || !strings.Contains(string(body), "bad-app") {
+			t.Errorf("an app with the id %s: %d %s", id, code, body)
+		}
+	}
+}

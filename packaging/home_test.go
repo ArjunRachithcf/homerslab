@@ -61,7 +61,7 @@ func TestHomeRunsUnprivilegedAndReachesNothingPrivileged(t *testing.T) {
 	if err != nil || !strings.Contains(string(tmpfiles), "\nd /run/homerslab-projection 2750 homerslab homerslab-home -\n") {
 		t.Errorf("tmpfiles.d doesn't make the projection's folder: %v", err)
 	}
-	if rw := unit(t, "homerslab-manager.service")["ReadWritePaths"]; !slices.Contains(rw, "/run/homerslab-projection") {
+	if rw := unit(t, "homerslab-manager.service")["ReadWritePaths"]; !slices.Contains(rw, "-/run/homerslab-projection") {
 		t.Errorf("the manager's ReadWritePaths = %v, want the projection's folder", rw)
 	}
 

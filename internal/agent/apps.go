@@ -84,8 +84,9 @@ const (
 	homeUser    = "homerslab-home"
 )
 
-// reservedApps are ids an app can't have: their units and projects are HomersLab's own.
-var reservedApps = map[string]bool{"authentik": true, "edge": true, "agent": true, "manager": true, "admin": true, "read": true, "firewall": true}
+// reservedApps are ids an app can't have: their units, projects and sign-in clients (homerslab-<id>) are HomersLab's own.
+var reservedApps = map[string]bool{"authentik": true, "edge": true, "agent": true, "manager": true, "admin": true, "read": true, "firewall": true,
+	"home": true, "projection": true}
 
 // AppRequest is an app as the manager wants it: what its install plan says, and the catalog's compose file, whose digest
 // the plan carries. None of it is secret.

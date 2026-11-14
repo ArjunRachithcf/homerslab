@@ -29,6 +29,10 @@ import (
 const (
 	sessionCookie = "__Host-homerslab-home"
 	signInCookie  = "__Host-homerslab-home-sign-in"
+	// signedOutCookie marks a browser that signed out of Home: its next sign-in is a fresh one, so the household
+	// account's session there never opens the last person's Home for whoever holds the device next.
+	signedOutCookie = "__Host-homerslab-home-signed-out"
+	signedOutLife   = 400 * 24 * time.Hour
 	// SessionLife is how long a session on Home lasts. After it, Home sends the person to the sign-in again, which
 	// lets them straight back while their session there lasts.
 	SessionLife = 12 * time.Hour
@@ -40,8 +44,12 @@ const (
 	maxSessions = 4096
 )
 
-// Roles, as the household account's groups name them, from the most to the least a person may do.
-var roles = []struct{ role, group string }{{"admin", "homerslab-admins"}, {"adult", "homerslab-adults"}, {"kid", "homerslab-kids"}}
+// Groups are the household account's groups of Home's roles (idp.RoleGroup; a test holds them equal, as Home is built
+// from nothing of idp's).
+var Groups = map[string]string{"admin": "homerslab-admins", "adult": "homerslab-adults", "kid": "homerslab-kids"}
+
+// roles are Home's roles, from the most to the least a person may do.
+var roles = []string{"admin", "adult", "kid"}
 
 // Config is how Home is wired.
 type Config struct {
@@ -62,6 +70,10 @@ type Home struct {
 	mu       sync.Mutex
 	attempts map[string]attempt
 	sessions map[string]session
+	read     struct {
+		p  *Projection
+		fi os.FileInfo
+	}
 }
 
 type attempt struct {
@@ -132,7 +144,7 @@ func securityHeaders(next http.Handler) http.Handler {
 // written the projection, Home answers nothing but that it isn't ready.
 func (h *Home) ownName(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		p, err := Read(h.cfg.Projection)
+		p, err := h.projection()
 		if err != nil {
 			if !errors.Is(err, os.ErrNotExist) {
 				h.cfg.Log.Error("reading the projection", "err", err)
@@ -151,6 +163,30 @@ func (h *Home) ownName(next http.Handler) http.Handler {
 		}
 		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), ctxProjection, p)))
 	})
+}
+
+// projection is the projection as the manager last wrote it: read again only when its file changed (the manager
+// replaces it whole, by a rename, so a new file is a new inode).
+func (h *Home) projection() (Projection, error) {
+	fi, err := os.Stat(h.cfg.Projection)
+	if err != nil {
+		return Projection{}, err
+	}
+	h.mu.Lock()
+	if h.read.p != nil && os.SameFile(fi, h.read.fi) && fi.ModTime().Equal(h.read.fi.ModTime()) && fi.Size() == h.read.fi.Size() {
+		p := *h.read.p
+		h.mu.Unlock()
+		return p, nil
+	}
+	h.mu.Unlock()
+	p, err := Read(h.cfg.Projection)
+	if err != nil {
+		return Projection{}, err
+	}
+	h.mu.Lock()
+	h.read.p, h.read.fi = &p, fi
+	h.mu.Unlock()
+	return p, nil
 }
 
 func projection(r *http.Request) Projection { return r.Context().Value(ctxProjection).(Projection) }
@@ -231,6 +267,9 @@ func (h *Home) signInStart(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a, id, now := oidc.NewAttempt(), random(), h.cfg.Now()
+	if ck, err := r.Cookie(signedOutCookie); err == nil && ck.Value != "" {
+		a = oidc.FreshAttempt(now)
+	}
 	h.mu.Lock()
 	for k, v := range h.attempts {
 		if now.After(v.expires) {
@@ -287,8 +326,8 @@ func (h *Home) signInDone(w http.ResponseWriter, r *http.Request) {
 	}
 	s := session{Username: cl.Username, Name: cl.Name, expires: now.Add(SessionLife)}
 	for _, ro := range roles {
-		if slices.Contains(cl.Groups, ro.group) {
-			s.Role = ro.role
+		if slices.Contains(cl.Groups, Groups[ro]) {
+			s.Role = ro
 			break
 		}
 	}
@@ -317,6 +356,7 @@ func (h *Home) signInDone(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	setCookie(w, sessionCookie, tok, SessionLife)
+	setCookie(w, signedOutCookie, "", 0)
 	h.cfg.Log.Info("signed in to Home", "username", s.Username, "role", s.Role)
 	http.Redirect(w, r, "/", http.StatusSeeOther)
 }
@@ -329,6 +369,7 @@ func (h *Home) signOut(w http.ResponseWriter, r *http.Request) {
 		h.mu.Unlock()
 	}
 	setCookie(w, sessionCookie, "", 0)
+	setCookie(w, signedOutCookie, "1", signedOutLife)
 	w.WriteHeader(http.StatusNoContent)
 }
 

@@ -34,12 +34,14 @@ type issuer struct {
 	key   *rsa.PrivateKey
 	codes map[string]map[string]any
 	now   func() time.Time
+	// reauth: the person signs in again when an authorize URL asks for a recent sign-in.
+	reauth bool
 }
 
 func newIssuer(t *testing.T, now func() time.Time) *issuer {
 	t.Helper()
 	k, _ := rsa.GenerateKey(rand.Reader, 2048)
-	is := &issuer{key: k, codes: map[string]map[string]any{}, now: now}
+	is := &issuer{key: k, codes: map[string]map[string]any{}, now: now, reauth: true}
 	is.srv = httptest.NewServer(http.HandlerFunc(is.serve))
 	t.Cleanup(is.srv.Close)
 	return is
@@ -99,11 +101,17 @@ func (is *issuer) code(t *testing.T, authorize string, p person) (state, code st
 	if q.Get("code_challenge_method") != "S256" || q.Get("client_id") != clientID || q.Get("redirect_uri") != homeOrigin+"/auth/callback" {
 		t.Fatalf("authorize URL %s", authorize)
 	}
+	// On the session they signed in to an hour before, unless the URL asks for a recent sign-in (max_age), as Authentik
+	// does: then just now.
+	at := is.now().Add(-time.Hour)
+	if q.Get("max_age") != "" && is.reauth {
+		at = is.now()
+	}
 	code = fmt.Sprintf("code-%d", time.Now().UnixNano())
 	is.mu.Lock()
 	is.codes[code] = map[string]any{"iss": issuerURL, "aud": clientID, "sub": "hashed-" + p.username, "preferred_username": p.username,
 		"name": p.name, "groups": p.groups, "nonce": q.Get("nonce"), "exp": is.now().Add(5 * time.Minute).Unix(), "iat": is.now().Unix(),
-		"auth_time": is.now().Add(-time.Hour).Unix(), "_challenge": q.Get("code_challenge")}
+		"auth_time": at.Unix(), "_challenge": q.Get("code_challenge")}
 	is.mu.Unlock()
 	return q.Get("state"), code
 }

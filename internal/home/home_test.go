@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/ArjunRachithcf/homerslab/internal/home"
+	"github.com/ArjunRachithcf/homerslab/internal/idp"
 	"github.com/ArjunRachithcf/homerslab/internal/testenv"
 )
 
@@ -368,5 +369,44 @@ func TestHomesManifestAndIconsNeedNoSession(t *testing.T) {
 	}
 	if csp := r.Header().Get("Content-Security-Policy"); !strings.Contains(csp, "default-src 'self'") || !strings.Contains(csp, "frame-ancestors 'none'") {
 		t.Errorf("Content-Security-Policy = %q", csp)
+	}
+}
+
+// Signing out of Home ends the household account's say on that browser too: the next sign-in there is a fresh one (a
+// shared tablet handed to someone else never opens on the last person's Home), until it succeeds.
+func TestAfterSigningOutTheNextSignInIsAFreshOne(t *testing.T) {
+	testenv.Isolate(t)
+	w := newWorld(t)
+	b := w.browser()
+	if loc := b.do("GET", "/auth/sign-in").Header().Get("Location"); strings.Contains(loc, "max_age=") {
+		t.Errorf("a first sign-in asks for a fresh one: %s", loc)
+	}
+	b = w.browser()
+	b.signIn(rui)
+	b.do("POST", "/auth/sign-out", sameOrigin)
+	if loc := b.do("GET", "/auth/sign-in").Header().Get("Location"); !strings.Contains(loc, "max_age=") {
+		t.Errorf("after signing out, the sign-in isn't a fresh one: %s", loc)
+	}
+	// The sign-in's session from before doesn't stand in for it.
+	w.is.reauth = false
+	if r := b.signIn(rui); r.Code != http.StatusForbidden {
+		t.Errorf("an old session after signing out: %d", r.Code)
+	}
+	w.is.reauth = true
+	if r := b.signIn(tomas); r.Code != http.StatusSeeOther {
+		t.Fatalf("signing in again: %d %s", r.Code, r.Body)
+	}
+	if loc := b.do("GET", "/auth/sign-in").Header().Get("Location"); strings.Contains(loc, "max_age=") {
+		t.Errorf("once signed in again, still a fresh one: %s", loc)
+	}
+}
+
+// Home's roles are the household account's groups, as idp names them.
+func TestHomesRolesAreTheHouseholdAccountsGroups(t *testing.T) {
+	testenv.Isolate(t)
+	for _, r := range idp.Roles() {
+		if got := home.Groups[string(r)]; got != idp.RoleGroup(r) {
+			t.Errorf("%s: Home reads the group %q, the household account names it %q", r, got, idp.RoleGroup(r))
+		}
 	}
 }
