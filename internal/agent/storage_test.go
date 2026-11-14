@@ -1,17 +1,30 @@
 package agent_test
 
 import (
+	"bytes"
+	"encoding/base64"
 	"encoding/json"
+	"log/slog"
 	"net/http"
+	"net/netip"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
 	"github.com/ArjunRachithcf/homerslab/internal/agent"
 	"github.com/ArjunRachithcf/homerslab/internal/agent/agenttest"
+	"github.com/ArjunRachithcf/homerslab/internal/storage"
 	"github.com/ArjunRachithcf/homerslab/internal/testenv"
 )
+
+// sharePassword is a share's password in the tests: it must reach the sealed credential, and nothing else.
+const sharePassword = "share-password-7a1f93c2d4"
+
+func smbShare() agent.StorageRequest {
+	return agent.StorageRequest{Kind: "share", Protocol: storage.SMB, Server: "100.64.1.2", Share: "media", Username: "homerslab", Password: sharePassword}
+}
 
 // A local folder is a storage location where the agent's checks pass (#28): a folder of its own, reached without a
 // symlink, holding nothing of the machine's or HomersLab's.
@@ -34,8 +47,8 @@ func TestAFolderIsAStorageLocationWhereItsChecksPass(t *testing.T) {
 		}
 	}
 	for name, r := range map[string]agent.StorageRequest{
-		"no kind": {Path: "/srv/media"},
-		"a share": {Kind: "share", Path: "/srv/media"}, // #28's second part
+		"no kind":                  {Path: "/srv/media"},
+		"a folder with a password": {Kind: "folder", Path: "/srv/media", Password: "x"},
 	} {
 		if code, _ := call(t, sock, "PUT", "/v1/storage/other", r); code != http.StatusBadRequest {
 			t.Errorf("%s: %d", name, code)
@@ -67,6 +80,122 @@ func TestAFolderIsAStorageLocationWhereItsChecksPass(t *testing.T) {
 	if code != http.StatusOK || json.Unmarshal(body, &list) != nil || len(list.Locations) != 1 ||
 		list.Locations[0] != (agent.StorageStatus{ID: "films", Kind: "folder", Path: "/srv/media", Source: "/srv/media"}) {
 		t.Errorf("the locations: %d %s", code, body)
+	}
+}
+
+// A share is mounted only over the mesh, never over the LAN (#28): its server must be a mesh peer that the kernel routes
+// through the mesh's interface, and the firewall table keeps this machine's packets to it on the mesh whatever the route
+// says later. Its credentials are a sealed credential, and nowhere else: not in the agent's state, its unit, its logs,
+// its answers or any command's arguments.
+func TestAShareIsMountedOverTheMeshOnly(t *testing.T) {
+	testenv.Isolate(t)
+	var logs bytes.Buffer
+	sock, h, state := joined(t, agent.Config{Sysroot: withSELinux{agenttest.Primary()}, Log: slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug}))})
+
+	for name, c := range map[string]struct {
+		server, route, want string
+	}{
+		"a LAN address":                        {"192.168.1.20", "", "not-on-the-mesh"},
+		"a mesh-looking address on the LAN":    {"100.64.9.9", "enp5s0", "not-on-the-mesh"},
+		"an address routed through a VPN":      {"100.64.9.10", "tun0", "not-on-the-mesh"},
+		"another private range off the mesh":   {"10.0.0.5", "", "not-on-the-mesh"},
+		"a name, which could resolve anywhere": {"nas.local", "", "bad-server"},
+	} {
+		if c.route != "" {
+			h.Route(c.server, c.route)
+		}
+		r := smbShare()
+		r.Server = c.server
+		code, body := call(t, sock, "PUT", "/v1/storage/films", r)
+		if code/100 != 4 || !strings.Contains(string(body), c.want) {
+			t.Errorf("%s: %d %s, want %s", name, code, body, c.want)
+		}
+	}
+	if h.Ran("systemctl enable /"+agent.UnitsDir+"/homerslab-storage-films.service") >= 0 {
+		t.Fatal("a refused share was mounted")
+	}
+
+	code, body := call(t, sock, "PUT", "/v1/storage/films", smbShare())
+	if code != http.StatusOK {
+		t.Fatalf("a share on the mesh: %d %s", code, body)
+	}
+	unit, err := os.ReadFile(filepath.Join(h.Root, agent.UnitsDir, "homerslab-storage-films.service"))
+	want := storage.ShareUnit(storage.Share{ID: "films", Protocol: storage.SMB, Server: netip.MustParseAddr("100.64.1.2"), Share: "media",
+		Credential: filepath.Join(state, "storage", "films.cred"), SELinux: true})
+	if err != nil || !bytes.Equal(unit, want) {
+		t.Errorf("the share's unit: %v\n%s\nwant\n%s", err, unit, want)
+	}
+	enable, restart := h.Ran("systemctl enable /"+agent.UnitsDir+"/homerslab-storage-films.service"), h.Ran("systemctl restart homerslab-storage-films.service")
+	if enable < 0 || restart < enable {
+		t.Errorf("systemd: enabled at %d, mounted at %d", enable, restart)
+	}
+	sealed, err := os.ReadFile(filepath.Join(state, "storage", "films.cred"))
+	if got, _ := base64.StdEncoding.DecodeString(strings.TrimPrefix(string(sealed), "sealed:")); err != nil || string(got) != "username=homerslab\npassword="+sharePassword+"\n" {
+		t.Errorf("the sealed credential: %q %v", got, err)
+	}
+	enc := -1
+	for i, c := range h.Cmds() {
+		if c.Name == "systemd-creds" && slices.Contains(c.Args, "--name=storage-films") && enc < 0 {
+			enc = i
+		}
+	}
+	if enc < 0 || enc > restart {
+		t.Errorf("sealed at %d, mounted at %d", enc, restart)
+	}
+	// The table keeps the share's server on the mesh, from before the mount on.
+	if table, _ := h.Table(); !strings.Contains(table, `ip daddr { 100.64.1.2 } oifname != { "wt0" } drop`) {
+		t.Errorf("the table doesn't keep the share on the mesh:\n%s", table)
+	}
+
+	// The password is nowhere but in the sealed credential.
+	files := map[string][]byte{"the answer": body, "the logs": logs.Bytes(), "the unit": unit}
+	files["the agent's state"], _ = os.ReadFile(filepath.Join(state, agent.StateFile))
+	_, files["the list"] = call(t, sock, "GET", "/v1/storage", nil)
+	for _, c := range h.Cmds() {
+		files["the arguments of "+c.Name] = append(files["the arguments of "+c.Name], strings.Join(c.Args, " ")...)
+	}
+	for what, b := range files {
+		if bytes.Contains(b, []byte(sharePassword)) {
+			t.Errorf("%s carries the share's password", what)
+		}
+	}
+
+	// An NFS export takes no credentials; a share that doesn't mount leaves nothing behind.
+	nfs := agent.StorageRequest{Kind: "share", Protocol: storage.NFS, Server: "100.64.1.3", Share: "/volume1/Music"}
+	if code, body := call(t, sock, "PUT", "/v1/storage/music", nfs); code != http.StatusOK {
+		t.Errorf("an NFS export: %d %s", code, body)
+	}
+	nfs.Password = "x"
+	if code, _ := call(t, sock, "PUT", "/v1/storage/music2", nfs); code != http.StatusBadRequest {
+		t.Errorf("an NFS export with a password: %d", code)
+	}
+	h.Fail("systemctl restart homerslab-storage-photos.service")
+	r := smbShare()
+	r.Server = "100.64.1.4"
+	if code, body := call(t, sock, "PUT", "/v1/storage/photos", r); code != http.StatusBadGateway || !strings.Contains(string(body), "mount-failed") {
+		t.Errorf("a share that doesn't mount: %d %s", code, body)
+	}
+	for _, f := range []string{filepath.Join(h.Root, agent.UnitsDir, "homerslab-storage-photos.service"), filepath.Join(state, "storage", "photos.cred")} {
+		if _, err := os.Stat(f); err == nil {
+			t.Errorf("%s left behind", f)
+		}
+	}
+	if table, _ := h.Table(); strings.Contains(table, "100.64.1.4") {
+		t.Errorf("the table keeps a share that never mounted:\n%s", table)
+	}
+	var list agent.StorageList
+	_, b := call(t, sock, "GET", "/v1/storage", nil)
+	if json.Unmarshal(b, &list) != nil || len(list.Locations) != 2 {
+		t.Errorf("the locations: %s", b)
+	}
+}
+
+// Before the node is on a mesh, no share is mounted at all.
+func TestNoShareIsMountedBeforeTheMesh(t *testing.T) {
+	testenv.Isolate(t)
+	sock, _ := agenttest.StartWith(t, agent.Config{})
+	if code, body := call(t, sock, "PUT", "/v1/storage/films", smbShare()); code != http.StatusConflict || !strings.Contains(string(body), "no-mesh") {
+		t.Errorf("before the mesh: %d %s", code, body)
 	}
 }
 
@@ -148,5 +277,28 @@ func TestAFolderIsCheckedAgainWhenAnAppIsGivenIt(t *testing.T) {
 	r.Storage = []agent.AppStorage{{Location: "films", Service: "web", Path: "/media", ReadOnly: true}}
 	if code, body := call(t, sock, "PUT", "/v1/apps/ledger", r); code != http.StatusUnprocessableEntity || !strings.Contains(string(body), "symlink-in-path") {
 		t.Errorf("a folder swapped for a symlink: %d %s", code, body)
+	}
+}
+
+// An app given a share sees its mount, and its unit waits for the share's own unit and starts the app only once the
+// share is mounted: an app never writes into the empty folder under a share (#28).
+func TestAnAppGivenAShareStartsOnlyOnceItIsMounted(t *testing.T) {
+	testenv.Isolate(t)
+	sock, h, state := signedIn(t, agent.Config{})
+	if code, body := call(t, sock, "PUT", "/v1/storage/uploads", smbShare()); code != http.StatusOK {
+		t.Fatalf("the share: %d %s", code, body)
+	}
+	r := withSecrets()
+	r.Storage = []agent.AppStorage{{Location: "uploads", Service: "web", Path: "/uploads"}}
+	install(t, sock, "ledger", r)
+	o, _ := os.ReadFile(filepath.Join(state, "apps", "ledger", "homerslab.yaml"))
+	if !strings.Contains(string(o), "        source: \"/var/lib/homerslab-storage/uploads\"\n        target: \"/uploads\"\n        read_only: false\n") {
+		t.Errorf("the app's compose file:\n%s", o)
+	}
+	u, _ := os.ReadFile(filepath.Join(h.Root, agent.UnitsDir, "homerslab-app-ledger.service"))
+	for _, want := range []string{"\nWants=network-online.target homerslab-storage-uploads.service\n", "\nExecStartPre=/usr/bin/mountpoint -q /var/lib/homerslab-storage/uploads\n"} {
+		if !strings.Contains(string(u), want) {
+			t.Errorf("the app's unit lacks %q:\n%s", want, u)
+		}
 	}
 }

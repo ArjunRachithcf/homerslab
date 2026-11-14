@@ -101,6 +101,9 @@ type State struct {
 	// the household's port (and LDAPS's 636 once an LDAP app is installed, #20). The one thing of this machine's an app
 	// may open besides its engine's DNS.
 	SignInListener []netip.AddrPort `json:"signInListener,omitempty"`
+	// Shares are the servers of the storage locations' network shares (#28), IPv4 only: this machine reaches them
+	// through the mesh only, never the LAN, whatever the route to them says.
+	Shares []netip.Addr `json:"shares,omitempty"`
 }
 
 // Upstream is one address and TCP port on an app's network, and the users of this machine that may connect to it.
@@ -237,6 +240,21 @@ func Render(s State) string {
 	}
 	if addrs := upstreamAddrs(s.Upstreams); len(addrs) > 0 {
 		w("\t\tip daddr . meta l4proto . th dport %s jump to_apps", set(addrs))
+	}
+	var shares []string
+	for _, a := range s.Shares {
+		if a.Is4() {
+			shares = append(shares, a.String())
+		}
+	}
+	if shares = uniqSorted(shares, func(x, y string) int { return netip.MustParseAddr(x).Compare(netip.MustParseAddr(y)) }); len(shares) > 0 {
+		// A share is reached through the mesh only (#28): at boot, before the mesh is up, the route to its server may be
+		// the LAN's default one. Without a mesh, not at all.
+		if len(mesh) > 0 {
+			w("\t\tip daddr %s oifname != %s drop", set(shares), set(quoted(mesh)))
+		} else {
+			w("\t\tip daddr %s drop", set(shares))
+		}
 	}
 	w("\t}")
 

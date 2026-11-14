@@ -60,21 +60,41 @@ type Secret struct {
 	UID  int    `json:"uid"`
 }
 
-// Mount is a storage location one of the app's services sees (#28): its source on this machine (the location's
-// folder), the path in the container, and whether the service only reads it.
+// Mount is a storage location one of the app's services sees (#28): its source on this machine (the location's folder,
+// or where its share is mounted), the path in the container, and whether the service only reads it. Unit is the share's
+// unit, which mounts it; "" for a folder.
 type Mount struct {
 	Location string `json:"location"`
 	Service  string `json:"service"`
 	Source   string `json:"source"`
 	Target   string `json:"target"`
 	ReadOnly bool   `json:"readOnly"`
+	Unit     string `json:"unit,omitempty"`
 }
 
-// Checked says whether the mount is one the agent's files may name: a folder its checks allow, at a plain path in the
-// container. Anything else is written as a bind of a folder that is never there, so the app doesn't start without its
-// storage, and nothing of it reaches the file: compose would interpolate a ${...}.
+// Checked says whether the mount is one the agent's files may name: a folder its checks allow, or exactly its share's
+// mount and unit, at a plain path in the container. Anything else is written as a bind of a folder that is never there,
+// so the app doesn't start without its storage, and nothing of it reaches the file: compose would interpolate a ${...}.
 func (m Mount) Checked() bool {
-	return storage.ID.MatchString(m.Location) && storage.ValidTarget(m.Target) && storage.Allowed(m.Source) == nil
+	if !storage.ID.MatchString(m.Location) || !storage.ValidTarget(m.Target) {
+		return false
+	}
+	if m.Unit != "" {
+		return m.Source == storage.MountPoint(m.Location) && m.Unit == storage.Unit(m.Location)
+	}
+	return storage.Allowed(m.Source) == nil
+}
+
+// shares are the units of the shares the app's services see, in name order, once each.
+func (a App) shares() []Mount {
+	var out []Mount
+	for _, m := range a.Mounts {
+		if m.Unit != "" && m.Checked() && !slices.ContainsFunc(out, func(o Mount) bool { return o.Unit == m.Unit }) {
+			out = append(out, m)
+		}
+	}
+	slices.SortFunc(out, func(x, y Mount) int { return strings.Compare(x.Unit, y.Unit) })
+	return out
 }
 
 // RefusedMount is the bind a mount no check passed is written as: a folder that is never there, so the engine refuses
@@ -239,15 +259,25 @@ func UnitFile(a App) []byte {
 	w("[Unit]")
 	w("Description=HomersLab app %s", id(a))
 	w("Documentation=https://github.com/ArjunRachithcf/homerslab")
+	shares := a.shares()
+	var units string
+	for _, m := range shares {
+		units += " " + m.Unit
+	}
 	w("Requires=docker.service")
-	w("After=docker.service network-online.target homerslab-agent.service")
-	w("Wants=network-online.target")
+	w("After=docker.service network-online.target homerslab-agent.service%s", units)
+	w("Wants=network-online.target%s", units)
 	w("")
 	w("[Service]")
 	w("Type=exec")
 	w("RuntimeDirectory=%s", path.Base(run))
 	w("RuntimeDirectoryMode=0700")
 	w("UMask=0077")
+	// A share's unit retries until the mesh reaches it; the app starts only once it is mounted, never on the empty folder
+	// under it.
+	for _, m := range shares {
+		w("ExecStartPre=/usr/bin/mountpoint -q %s", m.Source)
+	}
 	secrets := sortedSecrets(a.Secrets)
 	for _, s := range secrets {
 		w("LoadCredentialEncrypted=%s:%s", Credential(a.ID, s.Name), a.CredentialFile(s.Name))

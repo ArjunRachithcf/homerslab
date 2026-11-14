@@ -361,7 +361,7 @@ func (a *Agent) firewallState(context.Context) firewall.State {
 	n := a.network
 	s := firewall.State{Mesh: a.state.Mesh, WireGuard: a.state.WireGuard, LAN: n.LAN, LANPrefixes: n.Prefixes,
 		Uplinks4: n.Uplinks4, Uplinks6: n.Uplinks6, Virtual: n.Virtual, Bridges: a.bridges(), Resolvers: resolvers(a.cfg.Sysroot),
-		Upstreams: a.appsFirewall()}
+		Upstreams: a.appsFirewall(), Shares: a.shareServers()}
 	if a.listening() && a.listenerUp {
 		s.SignInListener = []netip.AddrPort{netip.AddrPortFrom(SignInListen, uint16(a.state.Edge.Port))}
 	}

@@ -1,6 +1,7 @@
 package manager_test
 
 import (
+	"bytes"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -9,6 +10,9 @@ import (
 
 	"github.com/ArjunRachithcf/homerslab/internal/testenv"
 )
+
+// managerSharePassword is a share's password, as the admin types it: it reaches the agent's sealed credential only.
+const managerSharePassword = "nas-password-PLACEHOLDER-3b9e"
 
 type location struct {
 	ID, Name, Kind, Node, Path, Protocol, Server, Share string
@@ -39,8 +43,9 @@ func withStorageAsk(t *testing.T) *primary {
 	return p
 }
 
-// The admin adds a storage location once, in Admin (#28): a local folder on the primary. An id is added once; the
-// agent's refusals come back as they are.
+// The admin adds a storage location once, in Admin (#28): a local folder on the primary, or a network share on the
+// mesh, whose credentials reach the agent's sealed credential and nothing of the household's: not its database, its
+// logs, or any answer. An id is added once; the agent's refusals come back as they are.
 func TestAnAdminAddsAStorageLocationOnce(t *testing.T) {
 	testenv.Isolate(t)
 	p := withStorageAsk(t)
@@ -52,20 +57,37 @@ func TestAnAdminAddsAStorageLocationOnce(t *testing.T) {
 	if r := p.admin("POST", "/api/v1/storage", map[string]any{"id": "documents", "name": "Again", "kind": "folder", "path": "/srv/documents"}); r.Code != http.StatusConflict {
 		t.Errorf("the same id again: %d %s", r.Code, r.Body)
 	}
+	share := map[string]any{"id": "nas", "name": "The NAS's films", "kind": "share", "protocol": "smb", "server": "100.64.1.2", "share": "films",
+		"username": "family", "password": managerSharePassword}
+	r = p.control("POST", "/api/v1/storage", share)
+	if r.Code != http.StatusCreated {
+		t.Fatalf("a share: %d %s", r.Code, r.Body)
+	}
+	answers := [][]byte{r.Body, p.control("GET", "/api/v1/storage", nil).Body}
+	share["id"], share["server"] = "lan", "192.168.1.20"
+	if r := p.control("POST", "/api/v1/storage", share); r.Code != http.StatusUnprocessableEntity || !strings.Contains(string(r.Body), "not-on-the-mesh") {
+		t.Errorf("a share on the LAN: %d %s", r.Code, r.Body)
+	}
 	for name, body := range map[string]map[string]any{
 		"an id that isn't one":   {"id": "../etc", "name": "X", "kind": "folder", "path": "/srv/documents"},
 		"a name in lines":        {"id": "x", "name": "X services:", "kind": "folder", "path": "/srv/documents"},
 		"a folder of the system": {"id": "x", "name": "X", "kind": "folder", "path": "/etc"},
-		"a kind not built yet":   {"id": "x", "name": "X", "kind": "share", "server": "100.64.1.2"},
 	} {
 		if r := p.control("POST", "/api/v1/storage", body); r.Code/100 != 4 {
 			t.Errorf("%s: %d %s", name, r.Code, r.Body)
 		}
 	}
-	want := location{ID: "documents", Name: "Documents", Kind: "folder", Node: "study-pc", Path: "/srv/documents"}
-	if got := locations(t, p); len(got) != 1 || got[0] != want {
+	want := []location{{ID: "documents", Name: "Documents", Kind: "folder", Node: "study-pc", Path: "/srv/documents"},
+		{ID: "nas", Name: "The NAS's films", Kind: "share", Protocol: "smb", Server: "100.64.1.2", Share: "films"}}
+	if got := locations(t, p); len(got) != 2 || got[0] != want[0] || got[1] != want[1] {
 		t.Errorf("the locations: %+v", got)
 	}
+	for _, b := range answers {
+		if bytes.Contains(b, []byte(managerSharePassword)) {
+			t.Errorf("an answer carries the share's password: %s", b)
+		}
+	}
+	assertNoSecretAt(t, p, managerSharePassword)
 	// Signed out of Admin, nothing.
 	if r := p.admin("GET", "/api/v1/storage", nil, func(r *http.Request) { r.Header.Del("Cookie") }); r.Code == http.StatusOK {
 		t.Errorf("signed out: %d %s", r.Code, r.Body)
