@@ -82,7 +82,7 @@ var (
 	file     = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,62}$`)
 	arg      = regexp.MustCompile(`^[A-Za-z0-9._,=:/@+%-]{1,200}$`)
 	program  = regexp.MustCompile(`^[A-Za-z0-9._/][A-Za-z0-9._/-]{0,199}$`)
-	tag      = regexp.MustCompile(`^[a-z][a-z-]*=[A-Za-z0-9._:/@-]{1,200}$`)
+	tag      = regexp.MustCompile(`^[a-z][a-z-]*=[A-Za-z0-9._:/@-]+$`) // at most a service's name and a ValidPath (validTag)
 )
 
 // ValidPath says whether p is a path backups may name: absolute, clean, not the root, of plain characters (no comma:
@@ -112,6 +112,8 @@ func ValidCommand(c []string) bool {
 	}
 	return true
 }
+
+func validTag(t string) bool { return len(t) <= 1100 && tag.MatchString(t) }
 
 // ValidFile says whether f is a name a dump's file may have.
 func ValidFile(f string) bool { return file.MatchString(f) }
@@ -329,7 +331,7 @@ type Item struct {
 func (r Repo) Backup(ctx context.Context, it Item) (string, error) {
 	args := []string{"backup", "--host", r.Node}
 	for _, t := range it.Tags {
-		if !tag.MatchString(t) {
+		if !validTag(t) {
 			return "", fmt.Errorf("backup: tag %q", t)
 		}
 		args = append(args, "--tag", t)
@@ -388,7 +390,7 @@ type Snapshot struct {
 func (r Repo) Snapshots(ctx context.Context, tags ...string) ([]Snapshot, error) {
 	args := []string{"snapshots", "--no-lock"}
 	for _, t := range tags {
-		if !tag.MatchString(t) {
+		if !validTag(t) {
 			return nil, fmt.Errorf("backup: tag %q", t)
 		}
 	}

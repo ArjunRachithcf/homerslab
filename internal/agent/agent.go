@@ -23,6 +23,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -112,6 +113,7 @@ type Agent struct {
 	reads                      *reads           // compose reads, one at a time
 	installs                   sync.Mutex       // apps' installs, one at a time, outside mu
 	backingUp                  sync.Mutex       // the node's backup runs, one at a time, outside mu
+	backupRuns                 atomic.Int64     // restic's runs so far, for their units' names
 	edgeDown                   string           // the edge's last check's error, so a down edge is logged once
 	network                    lan.Network      // the network's last reading, which the table keeps while the kernel can't be asked
 	networkErr                 bool             // the network can't be read, which is logged once

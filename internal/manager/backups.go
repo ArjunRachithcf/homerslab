@@ -44,6 +44,7 @@ const (
 	backupEvery = time.Hour
 	pruneEvery  = 24 * time.Hour
 	early       = 5 * time.Minute
+	targetWait  = 3 * time.Minute
 )
 
 // targetRequest is the target the admin chose, and its credentials.
@@ -65,7 +66,9 @@ func (m *Manager) putBackupTarget(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusBadRequest, "bad-target")
 		return
 	}
-	ctx := r.Context()
+	// Making the repository is one short restic run at the target; one that hangs is a failure, not a wait.
+	ctx, cancel := context.WithTimeout(r.Context(), targetWait)
+	defer cancel()
 	key, err := m.agent.unseal(ctx, credKey(primaryNode))
 	if errors.Is(err, errNotSealed) {
 		b := make([]byte, 32)
@@ -136,6 +139,8 @@ func (m *Manager) BackUpDue(ctx context.Context) {
 	if err := m.agent.with(m.agent.backups).call(ctx, http.MethodPost, "/v1/backups", nil, &run); err != nil {
 		m.log.Error("the node's backups", "err", err)
 		results = append(results, agent.BackupResult{Platform: "node", Data: primaryNode, Error: "agent-unreachable"})
+	} else {
+		_ = m.db.ResolveWarnings(ctx, warnBackup+"node", now)
 	}
 	results = append(results, run.Results...)
 	failed := 0

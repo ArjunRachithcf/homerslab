@@ -133,7 +133,14 @@ func TestARunBacksUpExactlyWhatThePlanSaid(t *testing.T) {
 		t.Errorf("the run's items: %q", said)
 	}
 	var backups [][]string
+	units := map[string]bool{}
 	for _, r := range h.Restic()[before:] {
+		// Each run of restic is a unit of its own, whose credentials folder is the one restic reads.
+		unit := strings.TrimPrefix(r.Unit[0], "--unit=")
+		if units[unit] || !slices.Contains(r.Argv, "/run/credentials/"+unit+".service/backup-key") {
+			t.Errorf("a run's unit %s, and its key %q", unit, r.Argv)
+		}
+		units[unit] = true
 		if slices.Contains(r.Argv, "backup") {
 			backups = append(backups, r.Argv[slices.Index(r.Argv, "backup"):])
 		}

@@ -99,13 +99,17 @@ const backupWait = 12 * time.Hour
 
 // repo is the node's repository as one run of restic in a unit of its own sees it, with the credentials sealed in dir.
 func (a *Agent) repo(st backupState, dir string) backup.Repo {
-	unit := fmt.Sprintf("homerslab-backup-%d", a.cfg.Now().UnixNano())
 	restic := a.cfg.Restic
 	if restic == "" {
 		restic = backup.Restic
 	}
-	r := backup.Repo{Restic: restic, Target: st.Target, Node: st.Node, Dir: "/run/credentials/" + unit + ".service", Cache: backupCache}
+	// The credentials folder restic is told of is the one systemd makes for the unit: each run gets a unit of its own,
+	// named as it starts, and its own folder's name in place of this placeholder.
+	const dirOf = "/run/credentials/homerslab-backup.service"
+	r := backup.Repo{Restic: restic, Target: st.Target, Node: st.Node, Dir: dirOf, Cache: backupCache}
 	r.Run = func(ctx context.Context, argv, env []string, stdin []byte) ([]byte, error) {
+		unit := fmt.Sprintf("homerslab-backup-%d-%d", a.cfg.Now().UnixNano(), a.backupRuns.Add(1))
+		here := func(s string) string { return strings.ReplaceAll(s, dirOf, "/run/credentials/"+unit+".service") }
 		args := []string{"--unit=" + unit, "--quiet", "--wait", "--pipe", "--collect", "--service-type=exec",
 			"-p", "StateDirectory=" + strings.TrimPrefix(backupCache, "/var/lib/"), "-p", "ProtectSystem=strict", "-p", "PrivateTmp=yes",
 			"-p", "NoNewPrivileges=yes", "-p", "CapabilityBoundingSet=CAP_DAC_READ_SEARCH"}
@@ -116,11 +120,24 @@ func (a *Agent) repo(st backupState, dir string) backup.Repo {
 			args = append(args, "-p", "LoadCredentialEncrypted="+f+":"+filepath.Join(dir, f+".cred"))
 		}
 		for _, e := range env {
-			args = append(args, "-E", e)
+			args = append(args, "-E", here(e))
+		}
+		args = append(args, "--")
+		for _, v := range argv {
+			args = append(args, here(v))
 		}
 		ctx, cancel := context.WithTimeout(ctx, backupWait)
 		defer cancel()
-		return a.cfg.Run(ctx, host.Cmd{Name: "systemd-run", Args: append(append(args, "--"), argv...), Stdin: stdin})
+		out, err := a.cfg.Run(ctx, host.Cmd{Name: "systemd-run", Args: args, Stdin: stdin})
+		if ctx.Err() != nil {
+			// Only systemd-run was ended: its unit, and restic in it, are stopped too, so no run outlives its turn.
+			stop, cancel := context.WithTimeout(context.WithoutCancel(ctx), time.Minute)
+			defer cancel()
+			if serr := a.run(stop, "systemctl", "stop", unit+".service"); serr != nil {
+				a.log.Error("stopping a backup's unit", "unit", unit, "err", serr)
+			}
+		}
+		return out, err
 	}
 	return r
 }
@@ -176,22 +193,33 @@ func (a *Agent) putBackups(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusBadGateway, "target-failed")
 		return
 	}
-	if err := os.RemoveAll(a.backupDir()); err != nil {
+	// The old folder is put aside, not removed, until the state names the new one: a failure puts it back.
+	old := a.backupDir() + ".old"
+	_ = os.RemoveAll(old)
+	if err := os.Rename(a.backupDir(), old); err != nil && !errors.Is(err, os.ErrNotExist) {
 		a.internal(w, "the backup credentials", err)
 		return
 	}
 	if err := os.Rename(next, a.backupDir()); err != nil {
+		_ = os.Rename(old, a.backupDir())
 		a.internal(w, "the backup credentials", err)
 		return
 	}
 	a.mu.Lock()
+	prev := a.state.Backup
 	a.state.Backup = &st
 	err = a.save()
+	if err != nil {
+		a.state.Backup = prev
+	}
 	a.mu.Unlock()
 	if err != nil {
+		_ = os.RemoveAll(a.backupDir())
+		_ = os.Rename(old, a.backupDir())
 		a.internal(w, "saving the agent's state", err)
 		return
 	}
+	_ = os.RemoveAll(old)
 	loc, _ := st.Target.Location(st.Node)
 	a.log.Info("the node's backups go to the household's target", "repository", loc)
 	writeJSON(w, http.StatusOK, map[string]string{"repository": loc})
@@ -297,7 +325,7 @@ func onMachine(mounts map[string][]engine.Mount, err error, d AppData) (string, 
 	if best < 0 {
 		return "", "not-in-a-volume"
 	}
-	src := ms[best].Source + strings.TrimPrefix(d.Path, ms[best].Destination)
+	src := strings.TrimSuffix(ms[best].Source, "/") + strings.TrimPrefix(d.Path, strings.TrimSuffix(ms[best].Destination, "/"))
 	if !backup.ValidPath(src) {
 		return "", "not-in-a-volume"
 	}
