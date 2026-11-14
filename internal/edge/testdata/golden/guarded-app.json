@@ -296,26 +296,9 @@
                                 {
                                   "handle": [
                                     {
-                                      "handler": "headers",
-                                      "response": {
-                                        "add": {
-                                          "Set-Cookie": [
-                                            "{http.reverse_proxy.header.Set-Cookie}"
-                                          ]
-                                        }
-                                      }
-                                    }
-                                  ],
-                                  "match": [
-                                    {
-                                      "not": [
-                                        {
-                                          "vars": {
-                                            "{http.reverse_proxy.header.Set-Cookie}": [
-                                              ""
-                                            ]
-                                          }
-                                        }
+                                      "handler": "copy_response_headers",
+                                      "include": [
+                                        "Set-Cookie"
                                       ]
                                     }
                                   ]
@@ -368,7 +351,7 @@
                               "Set-Cookie": [
                                 {
                                   "replace": "",
-                                  "search_regexp": "(?i)^.*;\\s*domain\\s*=\\s*\\.?example\\.test\\s*(;.*)?$"
+                                  "search_regexp": "(?i)^.*;\\s*domain\\s*=\\s*\\.?(example\\.test|test)\\.?\\s*(;.*)?$"
                                 }
                               ]
                             }

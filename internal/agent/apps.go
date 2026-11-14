@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"net/http"
 	"net/netip"
 	"net/url"
@@ -15,6 +16,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/ArjunRachithcf/homerslab/internal/appunit"
@@ -158,7 +160,16 @@ func (a *Agent) appDir(id string) string { return filepath.Join(a.cfg.StateDir, 
 
 func (a *Agent) appUnit(id string, s *appState) appunit.App {
 	return appunit.App{ID: id, Product: s.Product, Plan: s.Plan, Project: s.Project, Service: s.Service, Upstream: s.Upstream,
-		Subnet: s.Subnet, Level: s.Level, SELinux: a.selinux(), Secrets: s.Secrets, Dir: a.appDir(id)}
+		Subnet: s.Subnet, Level: s.Level, Slot: slot(s.Level), SELinux: a.selinux(), Secrets: s.Secrets, Dir: a.appDir(id)}
+}
+
+// slot is an app's number on this node, from its level (s0:c600,c601 is 0): unique as the level is.
+func slot(level string) int {
+	var c, d int
+	if _, err := fmt.Sscanf(level, "s0:c%d,c%d", &c, &d); err != nil || c < firstCategory {
+		return -1 // never placed: a bridge named hla-1… still begins with the prefix
+	}
+	return (c - firstCategory) / 2
 }
 
 var (
@@ -195,8 +206,11 @@ func validApp(id string, r AppRequest) string {
 
 // checkProject says what in an app's compose project installing refuses, or "": a port published on the host (the
 // floor), a bind it asks the engine to relabel (a relabelled folder is shared by every container that mounts it), a
-// network mode (the machine's network is an extra), an upstream the project doesn't run, or other secrets than the
-// plan makes.
+// network mode (the machine's network is an extra), what loosens a container's confinement (privileged never; a
+// capability, a device, its own security options, which would undo the app's level, or the machine's namespaces:
+// extras, approved with the passkey, #25), a network that isn't the project's own bridge as the agent makes it (another
+// project's, an external one, another driver, its own options or addresses), an upstream the project doesn't run, or
+// other secrets than the plan makes.
 func checkProject(p engine.Project, r AppRequest) (code, detail string) {
 	upstream := false
 	for _, s := range p.Services {
@@ -207,8 +221,20 @@ func checkProject(p engine.Project, r AppRequest) (code, detail string) {
 			return "relabels-a-folder", s.Name
 		case s.NetworkMode != "":
 			return "network-mode", s.Name
+		case len(s.Loosened) > 0:
+			return "loosens-confinement", s.Name + ": " + strings.Join(s.Loosened, ", ")
 		}
 		upstream = upstream || s.Name == r.Service
+	}
+	for _, n := range p.Networks {
+		switch {
+		case n.Name == appunit.UpstreamNetwork:
+			return "network-not-its-own", n.Name
+		case n.Joined != "":
+			return "network-not-its-own", n.Name
+		case n.Driver != "" && n.Driver != "bridge", n.Configured:
+			return "network-configured", n.Name
+		}
 	}
 	if !upstream {
 		return "no-such-service", r.Service
@@ -276,8 +302,19 @@ func (a *Agent) putApp(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusUnprocessableEntity, map[string]string{"error": code, "detail": detail})
 		return
 	}
+	// Only checking (?check=true): the app would install. The manager asks this before it makes the app's guard.
+	if r.URL.Query().Get("check") == "true" {
+		writeJSON(w, http.StatusOK, map[string]bool{"installable": true})
+		return
+	}
 
 	a.mu.Lock()
+	if other := a.nameTaken(id, req.Name); other != "" {
+		a.mu.Unlock()
+		a.log.Warn("refused an app's name: another site has it", "app", id, "name", req.Name, "site", other)
+		fail(w, http.StatusConflict, "name-taken")
+		return
+	}
 	next, err := a.placeApp(id, prev)
 	if err != nil {
 		a.mu.Unlock()
@@ -306,8 +343,26 @@ func (a *Agent) putApp(w http.ResponseWriter, r *http.Request) {
 	u := a.appUnit(id, next)
 	a.mu.Unlock()
 
+	// From here the install runs to its end whatever the manager does: a request given up on never leaves it halfway.
+	ctx, cancel = context.WithTimeout(context.WithoutCancel(ctx), installWait)
+	defer cancel()
 	if err := a.writeApp(ctx, u, []byte(req.Compose)); err != nil {
 		a.log.Error("writing an app's unit", "app", id, "err", err)
+		// The app as it was: an app the agent keeps is one whose unit it wrote, and the firewall table and the edge open
+		// only to those. A new one's unit, if it got that far, is stopped.
+		a.mu.Lock()
+		if prev == nil {
+			delete(a.state.Apps, id)
+		} else {
+			a.state.Apps[id] = prev
+		}
+		if err := a.save(); err != nil {
+			a.log.Error("saving the agent's state", "err", err)
+		}
+		a.mu.Unlock()
+		if prev == nil {
+			_ = a.run(ctx, "systemctl", "disable", "--now", appunit.Unit(id))
+		}
 		fail(w, http.StatusInternalServerError, "unit-failed")
 		return
 	}
@@ -326,6 +381,26 @@ func (a *Agent) putApp(w http.ResponseWriter, r *http.Request) {
 	}
 	a.log.Info("an app is installed: its unit runs it", "app", id, "plan", req.Plan, "unit", appunit.Unit(id), "upstream", next.Upstream)
 	writeJSON(w, http.StatusAccepted, a.appStatusLocked(id, next))
+}
+
+// nameTaken is the site that already serves name, if another does: Admin, the sign-in, or another app. The caller
+// holds a.mu.
+func (a *Agent) nameTaken(id, name string) string {
+	name = strings.ToLower(name)
+	if e := a.state.Edge; e != nil {
+		switch name {
+		case strings.ToLower(e.Admin):
+			return "admin"
+		case strings.ToLower(e.SignIn):
+			return "sign-in"
+		}
+	}
+	for other, s := range a.state.Apps {
+		if other != id && strings.ToLower(s.Name) == name {
+			return other
+		}
+	}
+	return ""
 }
 
 // placeApp is the app's level and upstream network: the ones it has, or the first free ones. The caller holds a.mu.
@@ -399,8 +474,17 @@ func (a *Agent) writeApp(ctx context.Context, u appunit.App, file []byte) error 
 	return nil
 }
 
-// engineWait is how long the agent waits for the engine's answer.
-const engineWait = 10 * time.Second
+// engineWait is how long the agent waits for the engine's answer; statusWait how long one app's checks take at most,
+// all apps' checked a few at once; AppsDeadline how long the apps' status takes at most.
+const (
+	engineWait   = 10 * time.Second
+	statusWait   = hostWait + time.Second
+	AppsDeadline = engineWait + 2*statusWait
+	// installWait bounds an install once its checks passed: sealing, the unit, the firewall table and the edge.
+	installWait = 2 * time.Minute
+	// InstallDeadline is how long an install takes at most: the engine's answer, the compose read, then the rest.
+	InstallDeadline = engineWait + ReadDeadline + installWait
+)
 
 // getApps is every app on this node, as systemd and the engine find it, and the containers that run without their
 // unit.
@@ -416,38 +500,44 @@ func (a *Agent) appsStatus(ctx context.Context) AppsStatus {
 	}
 	a.mu.Unlock()
 	asked, cancel := context.WithTimeout(ctx, engineWait)
-	defer cancel()
 	states, engineErr := a.cfg.Engine.States(asked)
+	cancel()
 	if engineErr != nil {
 		a.log.Warn("asking the engine for its projects", "err", engineErr)
 	}
-	out := AppsStatus{Apps: []AppStatus{}, Drift: []AppDrift{}}
-	active := map[string]bool{}
-	ids := slices.Sorted(func(yield func(string) bool) {
-		for id := range apps {
-			if !yield(id) {
-				return
+	out := AppsStatus{Apps: make([]AppStatus, len(apps)), Drift: []AppDrift{}}
+	ids := slices.Sorted(maps.Keys(apps))
+	// Each app's unit and checks, a few apps at once, each in its own time: a slow one doesn't hold up the others.
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, maxStatusAsks)
+	for i, id := range ids {
+		wg.Go(func() {
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			ctx, cancel := context.WithTimeout(ctx, statusWait)
+			defer cancel()
+			s := apps[id]
+			st := a.appStatusLocked(id, &s)
+			st.Active = a.unitActive(ctx, appunit.Unit(id))
+			if engineErr == nil {
+				st.Containers = orNone(states[st.Project].Containers)
 			}
-		}
-	})
-	for _, id := range ids {
-		s := apps[id]
-		st := a.appStatusLocked(id, &s)
-		st.Active = a.unitActive(asked, appunit.Unit(id))
-		active[st.Project] = st.Active
-		if engineErr == nil {
-			st.Containers = orNone(states[st.Project].Containers)
-		}
-		st.Health, st.Checks = a.health(asked, &s, st, engineErr == nil)
-		out.Apps = append(out.Apps, st)
+			st.Health, st.Checks = a.health(ctx, &s, st, engineErr == nil)
+			out.Apps[i] = st
+		})
 	}
-	for _, name := range slices.Sorted(func(yield func(string) bool) {
-		for n := range states {
-			if !yield(n) {
-				return
-			}
-		}
-	}) {
+	wg.Wait()
+	// A project whose unit doesn't run it: an app's, or the sign-in's own (the unit the package ships).
+	active := map[string]bool{}
+	for _, st := range out.Apps {
+		active[st.Project] = st.Active
+	}
+	if _, there := states[signInProject]; there {
+		ctx, cancel := context.WithTimeout(ctx, statusWait)
+		active[signInProject] = a.unitActive(ctx, SignInUnit)
+		cancel()
+	}
+	for _, name := range slices.Sorted(maps.Keys(states)) {
 		if active[name] {
 			continue
 		}
@@ -463,6 +553,12 @@ func (a *Agent) appsStatus(ctx context.Context) AppsStatus {
 	}
 	return out
 }
+
+// maxStatusAsks is how many apps' status is asked at once.
+const maxStatusAsks = 4
+
+// signInProject is the compose project of the sign-in's unit.
+var signInProject = appunit.Project("authentik")
 
 func orNone(c []engine.Container) []engine.Container {
 	if c == nil {
@@ -505,21 +601,25 @@ func (a *Agent) health(ctx context.Context, s *appState, st AppStatus, engineAns
 	for _, h := range s.Health {
 		switch {
 		case h.Compose:
-			c := CheckResult{Service: h.Service, Kind: "compose"}
+			// Every container of the service counts: the check is as good as its worst one.
+			c := CheckResult{Service: h.Service, Kind: "compose", OK: true}
 			found := false
 			for _, ct := range st.Containers {
 				if ct.Service != h.Service {
 					continue
 				}
+				if !found || rank(ct.Health) > rank(c.Detail) {
+					c.Detail = ct.Health
+				}
 				found = true
-				c.Detail = ct.Health
-				c.OK = ct.State == "running" && ct.Health == "healthy"
+				c.OK = c.OK && ct.State == "running" && ct.Health == "healthy"
 			}
+			c.OK = c.OK && found
 			switch {
-			case !found || c.Detail == "starting" || c.Detail == "" && found:
-				worse("starting")
-			case !c.OK:
+			case c.Detail == "unhealthy":
 				worse("unhealthy")
+			case !c.OK:
+				worse("starting")
 			}
 			checks = append(checks, c)
 		case h.Service == s.Service && h.Port == int(s.Upstream.Port()):
@@ -540,6 +640,17 @@ func (a *Agent) health(ctx context.Context, s *appState, st AppStatus, engineAns
 		worse("starting")
 	}
 	return verdict, checks
+}
+
+// rank orders a container's health from best to worst: healthy, none yet or starting, unhealthy.
+func rank(h string) int {
+	switch h {
+	case "healthy":
+		return 0
+	case "unhealthy":
+		return 2
+	}
+	return 1
 }
 
 // probe asks an app's upstream for path, as the edge would for its name: a 2xx or 3xx answer is healthy.

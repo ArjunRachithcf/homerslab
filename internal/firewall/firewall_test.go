@@ -137,6 +137,8 @@ func TestNoNameNftWouldMisreadIsRendered(t *testing.T) {
 	testenv.Isolate(t)
 	r := firewall.Render(firewall.State{Mesh: []string{"wt0", "w*"}, LAN: []string{"enp5s0", `e"`},
 		Bridges: []string{"br-ok", "br-*", "l*", "*", `x"y`, "a b", "sixteen-chars-xx", "docker0"}})
+	// The table's own wildcard, for the bridges the agent names, is the one there is.
+	r = strings.Replace(r, "\t\toifname \"hla*\" jump to_apps\n", "", 1)
 	for _, bad := range []string{"*", `x\"y`, `e\"`, "a b", "sixteen-chars-xx"} {
 		if strings.Contains(r, bad) {
 			t.Errorf("rendered %q:\n%s", bad, r)
@@ -373,7 +375,7 @@ func TestOnlyTheUpstreamsUsersOpenConnectionsIntoAppNetworks(t *testing.T) {
 		}}
 	r := firewall.Render(s)
 	for _, want := range []string{
-		"\tchain output {\n\t\ttype filter hook output priority filter - 5; policy accept;\n",
+		"\tchain output {\n\t\ttype filter hook output priority filter - 5; policy accept;\n\t\toifname \"hla*\" jump to_apps\n",
 		`oifname { "br-app", "br-signin" } jump to_apps`,
 		"ip daddr . meta l4proto . th dport { 172.31.240.2 . tcp . 8080, 172.31.250.10 . tcp . 9000 } jump to_apps",
 		"\tchain to_apps {\n\t\tct state established,related accept\n\t\tmeta l4proto { icmp, ipv6-icmp } accept\n" +
@@ -384,9 +386,10 @@ func TestOnlyTheUpstreamsUsersOpenConnectionsIntoAppNetworks(t *testing.T) {
 			t.Errorf("the table lacks %q:\n%s", want, r)
 		}
 	}
-	// No upstream: nothing of this machine opens a connection into an app's network at all.
+	// No upstream: nothing of this machine opens a connection into an app's network at all; and an app's bridge the
+	// engines haven't listed yet is kept to the edge by its name.
 	none := firewall.Render(firewall.State{Mesh: []string{"wt0"}, LAN: []string{"enp5s0"}, Bridges: []string{"br-app"}, Virtual: []string{"br-app"}})
-	if !strings.Contains(none, "\tchain to_apps {\n\t\tct state established,related accept\n\t\tmeta l4proto { icmp, ipv6-icmp } accept\n\t\tdrop\n\t}\n") {
+	if !strings.Contains(none, "\t\toifname \"hla*\" jump to_apps\n") || !strings.Contains(none, "\tchain to_apps {\n\t\tct state established,related accept\n\t\tmeta l4proto { icmp, ipv6-icmp } accept\n\t\tdrop\n\t}\n") {
 		t.Errorf("without an upstream:\n%s", none)
 	}
 	// An upstream that isn't IPv4 with a port, or no user: never rendered.

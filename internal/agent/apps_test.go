@@ -105,8 +105,9 @@ func TestAnAppIsOneUnitRunningTheStandardComposeCommand(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := appunit.App{ID: "bentopdf", Product: "BentoPDF", Plan: r.Plan,
-		Project: engine.Project{Name: "homerslab-bentopdf", Services: []engine.Service{{Name: "web", Image: "ghcr.io/alam00000/bentopdf-simple:2.8.10@sha256:b5227a308e796d2bd00d2eb6da9d7296093107a8be7efef38a006d06506dc3c0"}}},
-		Service: "web", Upstream: mustAddrPort("172.31.240.2:8080"), Subnet: mustPrefix("172.31.240.0/28"), Level: "s0:c600,c601", SELinux: true, Dir: dir}
+		Project: engine.Project{Name: "homerslab-bentopdf", Services: []engine.Service{{Name: "web", Image: "ghcr.io/alam00000/bentopdf-simple:2.8.10@sha256:b5227a308e796d2bd00d2eb6da9d7296093107a8be7efef38a006d06506dc3c0"}},
+			Networks: []engine.Network{{Name: "default"}}},
+		Service: "web", Upstream: mustAddrPort("172.31.240.2:8080"), Subnet: mustPrefix("172.31.240.0/28"), Level: "s0:c600,c601", Slot: 0, SELinux: true, Dir: dir}
 	if !bytes.Equal(unit, appunit.UnitFile(want)) {
 		t.Errorf("the unit:\n%s\nwant\n%s", unit, appunit.UnitFile(want))
 	}
@@ -174,10 +175,57 @@ func TestAnInstallIsRefusedOverAProjectHomersLabDidntCreate(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(state, "apps", "bentopdf")); err == nil || h.Ran("systemctl enable /"+agent.UnitsDir) >= 0 {
 		t.Error("something was written for it")
 	}
+	// Only checking: refused the same, and an app that would install is only said to.
+	if code, body := call(t, sock, "PUT", "/v1/apps/bentopdf?check=true", bentoPDF(t)); code != http.StatusConflict || !strings.Contains(string(body), "not-ours") {
+		t.Errorf("checking over someone else's project: %d %s", code, body)
+	}
+	if code, body := call(t, sock, "PUT", "/v1/apps/ledger?check=true", withSecrets()); code != http.StatusOK || !strings.Contains(string(body), `"installable":true`) {
+		t.Errorf("checking an app that would install: %d %s", code, body)
+	}
+	if _, err := os.Stat(filepath.Join(state, "apps", "ledger")); err == nil || h.Ran("systemctl enable /"+agent.UnitsDir) >= 0 || len(apps(t, sock).Apps) != 0 {
+		t.Error("checking installed something")
+	}
 	h.EngineDown(true)
 	if code, body := call(t, sock, "PUT", "/v1/apps/other", bentoPDF(t)); code != http.StatusServiceUnavailable {
 		t.Errorf("with the engine down: %d %s", code, body)
 	}
+}
+
+// An install that fails halfway (here, systemd won't start the unit) leaves the agent as it was: no app kept, so the
+// firewall table and the edge never open to it, and its unit stopped.
+func TestAnInstallThatFailsHalfwayLeavesNothingServed(t *testing.T) {
+	testenv.Isolate(t)
+	sock, h, _ := signedIn(t, agent.Config{})
+	h.Fail("systemctl --no-block restart homerslab-app-ledger.service")
+	if code, body := call(t, sock, "PUT", "/v1/apps/ledger", withSecrets()); code != http.StatusInternalServerError || !strings.Contains(string(body), "unit-failed") {
+		t.Fatalf("a unit systemd won't start: %d %s", code, body)
+	}
+	if s := apps(t, sock); len(s.Apps) != 0 {
+		t.Errorf("the agent keeps it: %+v", s.Apps)
+	}
+	if h.Ran("systemctl disable --now homerslab-app-ledger.service") < 0 {
+		t.Error("its unit wasn't stopped")
+	}
+	if table, _ := h.Table(); strings.Contains(table, "172.31.240.2 . tcp . 3000") {
+		t.Errorf("the firewall table opens to it:\n%s", table)
+	}
+	h.Mend()
+	install(t, sock, "ledger", withSecrets())
+}
+
+// An app's name is its own: never Admin's, the sign-in's or another app's, which the edge would serve first.
+func TestAnAppsNameIsItsOwn(t *testing.T) {
+	testenv.Isolate(t)
+	sock, _, _ := signedIn(t, agent.Config{})
+	install(t, sock, "ledger", withSecrets())
+	for _, name := range []string{"ledger.example.test", "admin.example.test", "auth.example.test"} {
+		r := bentoPDF(t)
+		r.Name = name
+		if code, body := call(t, sock, "PUT", "/v1/apps/bentopdf", r); code != http.StatusConflict || !strings.Contains(string(body), "name-taken") {
+			t.Errorf("%s: %d %s", name, code, body)
+		}
+	}
+	install(t, sock, "ledger", withSecrets()) // its own name, applied again
 }
 
 // The agent refuses what the floor and the wiring can't take, whatever the manager asks: a published port, a folder
@@ -206,6 +254,33 @@ func TestAnAppsProjectIsRefusedWhenItCantBeWired(t *testing.T) {
 		"a network mode": {"ledger", edit(func(r *agent.AppRequest) {
 			r.Compose = strings.Replace(r.Compose, "  db:\n", "  db:\n    network_mode: host\n", 1)
 		}), 422, "network-mode"},
+		"its own security options, which would undo its level": {"ledger", edit(func(r *agent.AppRequest) {
+			r.Compose = strings.Replace(r.Compose, "  db:\n", "  db:\n    security_opt: [\"label=disable\"]\n", 1)
+		}), 422, "loosens-confinement"},
+		"privileged": {"ledger", edit(func(r *agent.AppRequest) {
+			r.Compose = strings.Replace(r.Compose, "  db:\n", "  db:\n    privileged: true\n", 1)
+		}), 422, "loosens-confinement"},
+		"the machine's process namespace": {"ledger", edit(func(r *agent.AppRequest) {
+			r.Compose = strings.Replace(r.Compose, "  db:\n", "  db:\n    pid: host\n", 1)
+		}), 422, "loosens-confinement"},
+		"the sign-in's network, as external": {"ledger", edit(func(r *agent.AppRequest) {
+			r.Compose = strings.Replace(r.Compose, "  db:\n", "  db:\n    networks: [ak]\n", 1) +
+				"networks:\n  ak: {external: true, name: homerslab-authentik_default}\n"
+		}), 422, "network-not-its-own"},
+		"the sign-in's network, by its name": {"ledger", edit(func(r *agent.AppRequest) {
+			r.Compose = strings.Replace(r.Compose, "  db:\n", "  db:\n    networks: [ak]\n", 1) + "networks:\n  ak: {name: homerslab-authentik_default}\n"
+		}), 422, "network-not-its-own"},
+		"a network called as the upstream's": {"ledger", edit(func(r *agent.AppRequest) {
+			r.Compose = strings.Replace(r.Compose, "  db:\n", "  db:\n    networks: [homerslab-upstream]\n", 1) + "networks:\n  homerslab-upstream: {}\n"
+		}), 422, "network-not-its-own"},
+		"a network on the LAN": {"ledger", edit(func(r *agent.AppRequest) {
+			r.Compose = strings.Replace(r.Compose, "  db:\n", "  db:\n    networks: [lan]\n", 1) +
+				"networks:\n  lan: {driver: macvlan, driver_opts: {parent: eth0}}\n"
+		}), 422, "network-configured"},
+		"a network's own addresses": {"ledger", edit(func(r *agent.AppRequest) {
+			r.Compose = strings.Replace(r.Compose, "  db:\n", "  db:\n    networks: [back]\n", 1) +
+				"networks:\n  back: {ipam: {config: [{subnet: 172.31.250.0/28}]}}\n"
+		}), 422, "network-configured"},
 		"an upstream it doesn't run":     {"ledger", edit(func(r *agent.AppRequest) { r.Service = "api" }), 422, "no-such-service"},
 		"a secret the plan doesn't make": {"ledger", edit(func(r *agent.AppRequest) { r.Secrets = nil }), 422, "secrets-mismatch"},
 		"a secret the file doesn't take": {"ledger", edit(func(r *agent.AppRequest) {
@@ -316,12 +391,23 @@ func TestAppsReportTheirHealthAndContainersRunningWithoutTheirUnitAreDrift(t *te
 	sock, h, _ := signedIn(t, agent.Config{})
 	install(t, sock, "bentopdf", bentoPDF(t))
 	install(t, sock, "ledger", withSecrets())
+	// The sign-in's own project runs under its unit: never drift.
+	h.Project(engine.State{Name: "homerslab-authentik", Containers: []engine.Container{{Service: "server", Name: "homerslab-authentik-server-1", State: "running"}}})
 	s := apps(t, sock)
 	if len(s.Apps) != 2 || s.Apps[0].ID != "bentopdf" || s.Apps[0].Health != "healthy" || !s.Apps[0].Active || s.Apps[1].Health != "healthy" || len(s.Drift) != 0 {
 		t.Fatalf("installed: %+v", s)
 	}
 	if c := s.Apps[1].Checks; len(c) != 2 || c[0].Kind != "http" || !c[0].OK || c[1].Kind != "compose" || !c[1].OK {
 		t.Errorf("ledger's checks: %+v", c)
+	}
+
+	// A service's check is as good as its worst container.
+	h.Project(engine.State{Name: "homerslab-ledger", Containers: []engine.Container{
+		{Service: "db", Name: "homerslab-ledger-db-1", State: "running", Health: "unhealthy"},
+		{Service: "db", Name: "homerslab-ledger-db-2", State: "running", Health: "healthy"},
+		{Service: "web", Name: "homerslab-ledger-web-1", State: "running"}}})
+	if s = apps(t, sock); s.Apps[1].Health != "unhealthy" || s.Apps[1].Checks[1].OK || s.Apps[1].Checks[1].Detail != "unhealthy" || s.Apps[0].Health != "healthy" {
+		t.Errorf("one replica sick: %+v", s.Apps)
 	}
 
 	h.Sick("homerslab-ledger", "unhealthy")

@@ -29,7 +29,7 @@
 //     ports): the machine's basics, as from the LAN, but never the setup listener, and nothing routed (#148, #169).
 //
 // An interface name is rendered only when it is a plain name an interface can have: a wildcard or a quote from an
-// engine never reaches nft.
+// engine never reaches nft. The one wildcard is the table's own: the bridges the agent names for apps (hla*).
 //
 // A drop in any base chain is final in nftables, whatever other tables (firewalld, Docker's) accept, so this table
 // holds whatever else the machine runs. It changes no other table.
@@ -48,6 +48,7 @@ import (
 	"time"
 
 	"github.com/ArjunRachithcf/homerslab/internal/atomicfile"
+	"github.com/ArjunRachithcf/homerslab/internal/engine"
 	"github.com/ArjunRachithcf/homerslab/internal/host"
 )
 
@@ -223,6 +224,9 @@ func Render(s State) string {
 
 	w("\tchain output {")
 	w("\t\ttype filter hook output priority filter - 5; policy accept;")
+	// The agent names every bridge of an app's (engine.BridgePrefix), so a new app's networks are kept to the edge from
+	// the moment the engine makes them, before the engines list them (#19's review). Ours, never an engine's: a wildcard.
+	w("\t\toifname \"%s*\" jump to_apps", engine.BridgePrefix)
 	if len(apps) > 0 {
 		w("\t\toifname %s jump to_apps", set(quoted(apps)))
 	}

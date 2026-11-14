@@ -38,8 +38,9 @@ type App struct {
 	Upstream netip.AddrPort
 	Subnet   netip.Prefix
 	// Level is the app's own SELinux MCS level (s0:c600,c601); SELinux says whether the machine has SELinux, so the
-	// unit labels the app's secrets.
+	// unit labels the app's secrets. Slot is the app's number on this node, which its bridges are named after.
 	Level   string
+	Slot    int
 	SELinux bool
 	Secrets []Secret
 	// Dir is where the agent keeps the app's compose files and sealed credentials.
@@ -78,6 +79,14 @@ func (a App) CredentialFile(name string) string { return path.Join(a.Dir, "crede
 func (a App) ComposeFile() string  { return path.Join(a.Dir, "compose.yaml") }
 func (a App) OverrideFile() string { return path.Join(a.Dir, "homerslab.yaml") }
 
+// Bridge is the name of an app's bridge: the upstream's (network -1), or the project's i-th network's, in name order.
+func Bridge(slot, network int) string {
+	if network < 0 {
+		return fmt.Sprintf("%s%du", engine.BridgePrefix, slot)
+	}
+	return fmt.Sprintf("%s%dn%d", engine.BridgePrefix, slot, network)
+}
+
 // q is a string as YAML takes it, quoted: JSON's quoting is YAML's.
 func q(s string) string {
 	b, _ := json.Marshal(s)
@@ -92,6 +101,7 @@ func Override(a App) []byte {
 	w("# What HomersLab adds to %s's own compose file, as the second file of the standard compose command (ADR 0014):", a.Product)
 	w("#   - every service: no restart policy (the app's unit restarts the app), at the app's own SELinux level;")
 	w("#   - the app's one upstream, a fixed address on a network of its own, which only the edge and the agent may open;")
+	w("#   - every network's bridge named by the agent, so the firewall table knows it before it is made;")
 	w("#   - its secrets, as files its unit copies from the credentials the agent sealed.")
 	w("name: %s", q(Project(a.ID)))
 	w("services:")
@@ -113,8 +123,15 @@ func Override(a App) []byte {
 		w("        ipv4_address: %s", q(a.Upstream.Addr().String()))
 	}
 	w("networks:")
+	for i, n := range a.Project.Networks {
+		w("  %s:", q(n.Name))
+		w("    driver_opts:")
+		w("      com.docker.network.bridge.name: %s", q(Bridge(a.Slot, i)))
+	}
 	w("  %s:", q(UpstreamNetwork))
 	w("    driver: bridge")
+	w("    driver_opts:")
+	w("      com.docker.network.bridge.name: %s", q(Bridge(a.Slot, -1)))
 	w("    ipam:")
 	w("      config:")
 	w("        - subnet: %s", q(a.Subnet.String()))

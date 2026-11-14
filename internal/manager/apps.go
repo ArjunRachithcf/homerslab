@@ -152,12 +152,6 @@ func (m *Manager) applyPlan(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusConflict, errNoSignInYet.Error())
 		return
 	}
-	guard := idp.Guard{Slug: "homerslab-" + a.ID, Name: p.App.Name, URL: siteURL(ans, p.Name.Host), Roles: roles(p.Audience.Default)}
-	if err := provider.EnsureGuard(ctx, guard); err != nil {
-		m.log.Error("making an app's guard", "app", a.ID, "err", err)
-		fail(w, http.StatusBadGateway, "guard-failed")
-		return
-	}
 	req := agent.AppRequest{Plan: p.ID, Product: p.App.Name, Compose: string(a.Compose), Name: p.Name.Host, Service: a.Names.Service,
 		Port: a.Names.Port, Guard: true, Secrets: []appunit.Secret{}, Health: []agent.AppHealth{}}
 	for _, s := range a.Secrets {
@@ -170,8 +164,9 @@ func (m *Manager) applyPlan(w http.ResponseWriter, r *http.Request) {
 		}
 		req.Health = append(req.Health, ah)
 	}
-	var st agent.AppStatus
-	if err := m.agent.install(ctx, a.ID, req, &st); err != nil {
+	// The agent checks the app first, so a refused plan changes nothing anywhere; then the guard, before the edge
+	// serves the app's name; then the app.
+	agentFailed := func(err error) {
 		var e *agentError
 		if errors.As(err, &e) && e.Status/100 == 4 {
 			m.log.Error("the agent refused an app", "app", a.ID, "plan", p.ID, "code", e.Code)
@@ -180,6 +175,20 @@ func (m *Manager) applyPlan(w http.ResponseWriter, r *http.Request) {
 		}
 		m.log.Error("installing an app", "app", a.ID, "err", err)
 		fail(w, http.StatusServiceUnavailable, errAgent.Error())
+	}
+	if err := m.agent.install(ctx, a.ID, req, true, nil); err != nil {
+		agentFailed(err)
+		return
+	}
+	guard := idp.Guard{Slug: "homerslab-" + a.ID, Name: p.App.Name, URL: siteURL(ans, p.Name.Host), Roles: roles(p.Audience.Default)}
+	if err := provider.EnsureGuard(ctx, guard); err != nil {
+		m.log.Error("making an app's guard", "app", a.ID, "err", err)
+		fail(w, http.StatusBadGateway, "guard-failed")
+		return
+	}
+	var st agent.AppStatus
+	if err := m.agent.install(ctx, a.ID, req, false, &st); err != nil {
+		agentFailed(err)
 		return
 	}
 	if err := m.db.SaveApp(ctx, a.ID, p.ID, m.cfg.Now()); err != nil {
@@ -217,7 +226,7 @@ func (m *Manager) getApps(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var st agent.AppsStatus
-	if err := m.agent.call(ctx, http.MethodGet, "/v1/apps", nil, &st); err != nil {
+	if err := m.agent.with(m.agent.status).call(ctx, http.MethodGet, "/v1/apps", nil, &st); err != nil {
 		m.log.Warn("asking the agent for the apps", "err", err)
 	}
 	byID := map[string]*agent.AppStatus{}
@@ -245,11 +254,22 @@ func (m *Manager) getApps(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"apps": out, "drift": drift})
 }
 
-// install hands the agent an app, waiting for its compose read and the engine's answer.
-func (a *agentClient) install(ctx context.Context, id string, req agent.AppRequest, out *agent.AppStatus) error {
-	ctx, cancel := context.WithTimeout(ctx, agent.ReadDeadline+30*time.Second)
+// install hands the agent an app, or only asks whether it would install it (check), waiting for the engine's answer,
+// the compose read and the rest of the install.
+func (a *agentClient) install(ctx context.Context, id string, req agent.AppRequest, check bool, out *agent.AppStatus) error {
+	ctx, cancel := context.WithTimeout(ctx, agent.InstallDeadline+5*time.Second)
 	defer cancel()
-	c := *a
-	c.http = a.installs
-	return c.call(ctx, http.MethodPut, "/v1/apps/"+id, req, out)
+	p := "/v1/apps/" + id
+	if check {
+		p += "?check=true"
+		return a.with(a.installs).call(ctx, http.MethodPut, p, req, nil)
+	}
+	return a.with(a.installs).call(ctx, http.MethodPut, p, req, out)
+}
+
+// with is the client, asking through c.
+func (a *agentClient) with(c *http.Client) *agentClient {
+	b := *a
+	b.http = c
+	return &b
 }

@@ -100,6 +100,9 @@ func helper(mode, arg string) int {
 				http.SetCookie(w, &http.Cookie{Name: "wide", Value: "1", Domain: "example.test", Path: "/"})
 				http.SetCookie(w, &http.Cookie{Name: "WIDE2", Value: "1", Domain: ".EXAMPLE.test", Path: "/"})
 				http.SetCookie(w, &http.Cookie{Name: "narrow", Value: "1", Path: "/"})
+				w.Header().Add("Set-Cookie", "top=1; Path=/; Domain=test")             // above the household's domain
+				w.Header().Add("Set-Cookie", "dotted=1; Path=/; Domain=example.test.") // with a dot at its end
+				w.Header().Add("Set-Cookie", "own=1; Path=/; Domain=pdf.example.test") // the app's own name
 			}
 			var named []string
 			for k, v := range r.Header {
@@ -153,6 +156,9 @@ func guard(w http.ResponseWriter, r *http.Request) {
 	if c, err := r.Cookie("authentik_proxy_7f3a"); err == nil && c.Value == "ines-session" && r.Header.Get("X-Forwarded-Host") == "pdf.example.test" {
 		w.Header().Set("X-Authentik-Username", "ines")
 		w.Header().Set("X-Authentik-Groups", "homerslab-adults")
+		// The session, refreshed (an expiry has a comma in it), and a second cookie: each reaches the browser whole.
+		w.Header().Add("Set-Cookie", "authentik_proxy_7f3a=ines-session; Path=/; Expires=Wed, 21 Oct 2026 07:28:00 GMT; HttpOnly; Secure")
+		w.Header().Add("Set-Cookie", "authentik_proxy_7f3a_csrf=c; Path=/; HttpOnly; Secure")
 		w.WriteHeader(http.StatusOK)
 		return
 	}
@@ -332,9 +338,11 @@ func TestTheEdgesRequestMatrix(t *testing.T) {
 		{name: "signed in, with a forged identity: the app sees only the guard's person", q: app("/", signedIn),
 			wants: []string{"200 App, at pdf.example.test, as [X-Authentik-Groups=homerslab-adults X-Authentik-Username=ines]"}, notWants: []string{"ines-the-admin", "Remote-User"}},
 		{name: "signed in: the app gets the household's cookies but never the guard's", q: app("/", signedIn),
-			wants: []string{"cookies [theme=dark]"}, notWants: []string{"authentik_proxy", "ines-session"}},
+			wants: []string{"cookies [theme=dark]\n"}, notWants: []string{"cookies [authentik_proxy", "dark; authentik_proxy"}},
 		{name: "a cookie the app sets for the household's domain never reaches the browser; its own name's does", q: app("/cookies", signedIn),
-			wants: []string{"narrow=1"}, notWants: []string{"wide=1", "WIDE2=1"}},
+			wants: []string{"narrow=1", "own=1"}, notWants: []string{"wide=1", "WIDE2=1", "top=1", "dotted=1"}},
+		{name: "the guard's refreshed cookies reach the browser, each whole", q: app("/", signedIn),
+			wants: []string{`"authentik_proxy_7f3a=ines-session; Path=/; Expires=Wed, 21 Oct 2026 07:28:00 GMT; HttpOnly; Secure" "authentik_proxy_7f3a_csrf=c; Path=/; HttpOnly; Secure"`}},
 		{name: "the provider's own paths go to the provider, never the app", q: app("/outpost.goauthentik.io/callback?X-authentik-auth-callback=true", signedIn),
 			wants: []string{"200 Authentik, at pdf.example.test /outpost.goauthentik.io/callback"}, notWants: []string{"App,"}},
 	} {

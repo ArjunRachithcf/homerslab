@@ -17,6 +17,7 @@ import (
 	"net/netip"
 	"regexp"
 	"slices"
+	"strings"
 )
 
 // Config is what the edge serves on one node.
@@ -209,8 +210,8 @@ func appRoute(a App, domains []string) (obj, error) {
 		v := "{http.reverse_proxy.header." + h + "}"
 		copied = append(copied, obj{"match": notEmpty(v), "handle": []obj{{"handler": "headers", "request": obj{"set": obj{h: []string{v}}}}}})
 	}
-	const refreshed = "{http.reverse_proxy.header.Set-Cookie}"
-	copied = append(copied, obj{"match": notEmpty(refreshed), "handle": []obj{{"handler": "headers", "response": obj{"add": obj{"Set-Cookie": []string{refreshed}}}}}})
+	// The provider's refreshed cookies, each its own header: a placeholder would join them into one with commas.
+	copied = append(copied, obj{"handle": []obj{{"handler": "copy_response_headers", "include": []string{"Set-Cookie"}}}})
 	guard := obj{"handler": "reverse_proxy", "upstreams": []obj{{"dial": g.Dial}},
 		"rewrite":         obj{"method": "GET", "uri": g.AuthURI},
 		"headers":         obj{"request": obj{"set": obj{"X-Forwarded-Method": []string{"{http.request.method}"}, "X-Forwarded-Uri": []string{"{http.request.uri}"}}}},
@@ -218,9 +219,11 @@ func appRoute(a App, domains []string) (obj, error) {
 	// The provider's cookies, out of the Cookie header the app gets; a Set-Cookie of the app's for a household domain,
 	// emptied (a browser ignores an empty one).
 	cookie := regexp.QuoteMeta(g.Cookie) + `[^=;]*=[^;]*(;\s*|$)`
+	// A household domain, or any domain above it (a browser takes a cookie for example.com on home.example.com's names),
+	// with or without its dots at either end.
 	var ownDomain []obj
-	for _, d := range domains {
-		ownDomain = append(ownDomain, obj{"search_regexp": `(?i)^.*;\s*domain\s*=\s*\.?` + regexp.QuoteMeta(d) + `\s*(;.*)?$`, "replace": ""})
+	if wide := parents(domains); len(wide) > 0 {
+		ownDomain = []obj{{"search_regexp": `(?i)^.*;\s*domain\s*=\s*\.?(` + strings.Join(wide, "|") + `)\.?\s*(;.*)?$`, "replace": ""}}
 	}
 	app := obj{"handler": "headers", "request": obj{"replace": obj{"Cookie": []obj{{"search_regexp": cookie, "replace": ""}}}}}
 	if ownDomain != nil {
@@ -236,6 +239,21 @@ func appRoute(a App, domains []string) (obj, error) {
 		[]obj{{"handle": []obj{guard}}, {"handle": []obj{app, {"handler": "reverse_proxy", "upstreams": []obj{{"dial": a.Dial}}}}}},
 	)
 	return obj{"match": []obj{{"host": []string{a.Name}}}, "handle": []obj{{"handler": "subroute", "routes": sub}}, "terminal": true}, nil
+}
+
+// parents are the household's domains and every domain above them, quoted for a regular expression, in order.
+func parents(domains []string) []string {
+	var out []string
+	for _, d := range domains {
+		labels := strings.Split(strings.Trim(strings.ToLower(d), "."), ".")
+		for i := range labels {
+			if p := strings.Join(labels[i:], "."); p != "" {
+				out = append(out, regexp.QuoteMeta(p))
+			}
+		}
+	}
+	slices.Sort(out)
+	return slices.Compact(out)
 }
 
 func validDial(d string) bool {

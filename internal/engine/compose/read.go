@@ -16,6 +16,7 @@ import (
 
 	"github.com/compose-spec/compose-go/v2/cli"
 	"github.com/compose-spec/compose-go/v2/loader"
+	"github.com/compose-spec/compose-go/v2/types"
 	"github.com/docker/compose/v5/pkg/api"
 	"go.yaml.in/yaml/v4" // the parser Compose itself uses, so that both read merge keys and tags alike
 
@@ -130,10 +131,59 @@ func (r *Reader) load(ctx context.Context, name string, file []byte) (engine.Pro
 				svc.Relabelled = append(svc.Relabelled, v.Source)
 			}
 		}
+		svc.Loosened = loosened(s)
 		out.Services = append(out.Services, svc)
 	}
 	slices.SortFunc(out.Services, func(a, b engine.Service) int { return strings.Compare(a.Name, b.Name) })
+	for key, n := range p.Networks {
+		nw := engine.Network{Name: key, Driver: n.Driver}
+		switch {
+		case bool(n.External):
+			nw.Joined = cmp.Or(n.Name, key)
+		case n.Name != "" && n.Name != p.Name+"_"+key:
+			nw.Joined = n.Name
+		}
+		nw.Configured = len(n.DriverOpts) > 0 || n.Ipam.Driver != "" || len(n.Ipam.Config) > 0 || len(n.Ipam.Options) > 0
+		out.Networks = append(out.Networks, nw)
+	}
+	slices.SortFunc(out.Networks, func(a, b engine.Network) int { return strings.Compare(a.Name, b.Name) })
 	return out, nil
+}
+
+// tightens says whether a security option only takes from a container: no-new-privileges, the one the floor's
+// hardening uses. Any other (a label, seccomp or AppArmor profile, unconfined system paths) is the engine's to set.
+func tightens(o string) bool {
+	switch strings.ReplaceAll(o, "=", ":") {
+	case "no-new-privileges", "no-new-privileges:true":
+		return true
+	}
+	return false
+}
+
+// loosened is what a service asks for that loosens its container's confinement, each as its compose key says it.
+func loosened(s types.ServiceConfig) []string {
+	var out []string
+	add := func(on bool, what string) {
+		if on {
+			out = append(out, what)
+		}
+	}
+	add(s.Privileged, "privileged")
+	add(len(s.CapAdd) > 0, "cap_add")
+	add(len(s.Devices) > 0, "devices")
+	add(s.Deploy != nil && s.Deploy.Resources.Reservations != nil && len(s.Deploy.Resources.Reservations.Devices) > 0, "deploy.resources.reservations.devices")
+	add(len(s.Gpus) > 0, "gpus")
+	add(slices.ContainsFunc(s.SecurityOpt, func(o string) bool { return !tightens(o) }), "security_opt")
+	add(s.Pid != "", "pid")
+	add(s.Ipc != "" && s.Ipc != "private" && s.Ipc != "shareable", "ipc")
+	add(s.Uts != "", "uts")
+	add(s.UserNSMode != "", "userns_mode")
+	add(s.Cgroup == "host", "cgroup")
+	add(s.CgroupParent != "", "cgroup_parent")
+	add(s.Runtime != "", "runtime")
+	add(len(s.Sysctls) > 0, "sysctls")
+	add(slices.ContainsFunc(s.VolumesFrom, func(v string) bool { return strings.HasPrefix(v, "container:") }), "volumes_from")
+	return out
 }
 
 // The bounds of a plain compose file: the agent parses it as root, so a small file must not make it work hard. Size,

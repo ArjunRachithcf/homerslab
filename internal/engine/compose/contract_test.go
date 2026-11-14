@@ -9,6 +9,7 @@ package compose_test
 
 import (
 	"context"
+	"fmt"
 	"net/netip"
 	"os"
 	"os/exec"
@@ -60,7 +61,7 @@ func TestTheContainerEngineContractOnDocker(t *testing.T) {
 		}
 		sub := netip.PrefixFrom(netip.AddrFrom4([4]byte{172, 31, 241, byte(16 * i)}), 28)
 		a := appunit.App{ID: id, Product: id, Plan: "p-contract", Project: p, Service: "web",
-			Upstream: netip.AddrPortFrom(sub.Addr().Next().Next(), 8080), Subnet: sub, Level: "s0:c600,c601", Dir: filepath.Join(dir, id)}
+			Upstream: netip.AddrPortFrom(sub.Addr().Next().Next(), 8080), Subnet: sub, Level: fmt.Sprintf("s0:c%d,c%d", 600+2*i, 601+2*i), Slot: i, Dir: filepath.Join(dir, id)}
 		if err := os.MkdirAll(a.Dir, 0o700); err != nil {
 			t.Fatal(err)
 		}
@@ -112,6 +113,14 @@ func TestTheContainerEngineContractOnDocker(t *testing.T) {
 		if err != nil || !strings.HasPrefix(got, "no 0 ") || !strings.Contains(got, "homerslab-contract-a_homerslab-upstream=172.31.241.2") ||
 			!strings.Contains(got, "homerslab-contract-a_default=") {
 			t.Errorf("inspect: %q %v", got, err)
+		}
+		// Every network's bridge has the name the agent gave it, which the firewall table knows it by (#82).
+		for network, bridge := range map[string]string{"homerslab-contract-a_homerslab-upstream": "hla0u", "homerslab-contract-a_default": "hla0n0",
+			"homerslab-contract-b_homerslab-upstream": "hla1u", "homerslab-contract-b_default": "hla1n0"} {
+			out, err := exec.Command("docker", "-H", host, "network", "inspect", "--format", `{{index .Options "com.docker.network.bridge.name"}}`, network).CombinedOutput()
+			if got := strings.TrimSpace(string(out)); err != nil || got != bridge {
+				t.Errorf("%s's bridge: %q %v, want %s", network, got, err, bridge)
+			}
 		}
 	})
 

@@ -2,6 +2,7 @@
 # What HomersLab adds to BentoPDF's own compose file, as the second file of the standard compose command (ADR 0014):
 #   - every service: no restart policy (the app's unit restarts the app), at the app's own SELinux level;
 #   - the app's one upstream, a fixed address on a network of its own, which only the edge and the agent may open;
+#   - every network's bridge named by the agent, so the firewall table knows it before it is made;
 #   - its secrets, as files its unit copies from the credentials the agent sealed.
 name: "homerslab-bentopdf"
 services:
@@ -14,8 +15,13 @@ services:
       "homerslab-upstream":
         ipv4_address: "172.31.240.2"
 networks:
+  "default":
+    driver_opts:
+      com.docker.network.bridge.name: "hla0n0"
   "homerslab-upstream":
     driver: bridge
+    driver_opts:
+      com.docker.network.bridge.name: "hla0u"
     ipam:
       config:
         - subnet: "172.31.240.0/28"

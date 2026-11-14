@@ -180,11 +180,15 @@ func TestOnlyGuardedPlansWithoutExtrasApplySoFar(t *testing.T) {
 // didn't create, refuses the install.
 func TestAPlanIsNotAppliedOverAProjectHomersLabDidntCreate(t *testing.T) {
 	testenv.Isolate(t)
-	p, _ := installable(t, nil)
+	p, fs := installable(t, nil)
 	p.host.Project(engine.State{Name: "homerslab-bentopdf", Containers: []engine.Container{{Service: "web", Name: "homerslab-bentopdf-web-1", State: "running"}}})
 	made := planFor(t, p, "bentopdf")
 	if r := p.control("POST", "/api/v1/plans/"+made.ID+"/apply", nil); r.Code != http.StatusUnprocessableEntity || !strings.Contains(string(r.Body), "not-ours") {
 		t.Errorf("over someone else's project: %d %s", r.Code, r.Body)
+	}
+	// Refused before anything is made: no guard in the identity provider either.
+	if len(fs.guards) != 0 {
+		t.Errorf("a refused plan made a guard: %+v", fs.guards)
 	}
 	var got struct{ Apps []any }
 	p.control("GET", "/api/v1/apps", nil).json(t, &got)

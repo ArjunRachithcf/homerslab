@@ -19,7 +19,8 @@ var update = flag.Bool("update", false, "write the golden renders anew")
 // bentoPDF is BentoPDF as the agent installs it on a machine with SELinux: one service, no secret.
 func bentoPDF() appunit.App {
 	return appunit.App{ID: "bentopdf", Product: "BentoPDF", Plan: "p-8c125cd2f9f38dfdd95c9c0ba3cd2663",
-		Project: engine.Project{Name: "homerslab-bentopdf", Services: []engine.Service{{Name: "web", Image: "ghcr.io/alam00000/bentopdf-simple:2.8.10@sha256:b5227a308e796d2bd00d2eb6da9d7296093107a8be7efef38a006d06506dc3c0"}}},
+		Project: engine.Project{Name: "homerslab-bentopdf", Services: []engine.Service{{Name: "web", Image: "ghcr.io/alam00000/bentopdf-simple:2.8.10@sha256:b5227a308e796d2bd00d2eb6da9d7296093107a8be7efef38a006d06506dc3c0"}},
+			Networks: []engine.Network{{Name: "default"}}},
 		Service: "web", Upstream: netip.MustParseAddrPort("172.31.240.2:8080"), Subnet: netip.MustParsePrefix("172.31.240.0/28"),
 		Level: "s0:c600,c601", SELinux: true, Dir: "/var/lib/homerslab-agent/apps/bentopdf"}
 }
@@ -28,9 +29,10 @@ func bentoPDF() appunit.App {
 func withSecrets() appunit.App {
 	return appunit.App{ID: "everything", Product: "Everything", Plan: "p-0123456789abcdef0123456789abcdef",
 		Project: engine.Project{Name: "homerslab-everything", Secrets: []string{"db-password", "secret-key"}, Services: []engine.Service{
-			{Name: "web", Networks: []string{"back", "front"}}, {Name: "db", Networks: []string{"back"}}, {Name: "worker"}}},
+			{Name: "web", Networks: []string{"back", "front"}}, {Name: "db", Networks: []string{"back"}}, {Name: "worker"}},
+			Networks: []engine.Network{{Name: "back"}, {Name: "default"}, {Name: "front"}}},
 		Service: "web", Upstream: netip.MustParseAddrPort("172.31.240.18:8080"), Subnet: netip.MustParsePrefix("172.31.240.16/28"),
-		Level: "s0:c602,c603", SELinux: true, Dir: "/var/lib/homerslab-agent/apps/everything",
+		Level: "s0:c602,c603", Slot: 1, SELinux: true, Dir: "/var/lib/homerslab-agent/apps/everything",
 		Secrets: []appunit.Secret{{Name: "secret-key", UID: 1000}, {Name: "db-password", UID: 999}}}
 }
 
@@ -132,5 +134,20 @@ func TestTheUpstreamIsAFixedAddressOnANetworkOfItsOwn(t *testing.T) {
 		if strings.Contains(b, bad) {
 			t.Errorf("the agent's compose file has %q", bad)
 		}
+	}
+}
+
+// Every bridge of an app's is named by the agent, after the app's slot (#82): the firewall table keeps this machine's
+// processes out of an app's networks by those names, before the engine has made them.
+func TestEveryNetworkOfAnAppsHasABridgeTheAgentNamed(t *testing.T) {
+	testenv.Isolate(t)
+	o := string(appunit.Override(withSecrets()))
+	for net, br := range map[string]string{"back": "hla1n0", "default": "hla1n1", "front": "hla1n2", "homerslab-upstream": "hla1u"} {
+		if !strings.Contains(o, "\n  \""+net+"\":\n") || !strings.Contains(o, "      com.docker.network.bridge.name: \""+br+"\"\n") {
+			t.Errorf("%s isn't on bridge %s:\n%s", net, br, o)
+		}
+	}
+	if got := appunit.Bridge(199, 63); len(got) > 15 {
+		t.Errorf("a bridge name over Linux's 15 characters: %s", got)
 	}
 }
