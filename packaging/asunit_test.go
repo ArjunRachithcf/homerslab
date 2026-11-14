@@ -12,8 +12,8 @@ import (
 
 // CI runs the agent's tests with the agent unit's capabilities, which .github/scripts/as-unit.sh reads from the unit
 // file. It models only CapabilityBoundingSet= and NoNewPrivileges= of a root service, so it refuses a unit it would
-// misread rather than drift from it: a drop-in beside it, an indented or continued line, a User=, Group= or
-// DynamicUser=, or AmbientCapabilities= (#183). It checks the unit before it asks for root.
+// misread rather than drift from it: a drop-in beside it, an indented or continued line, a key spaced from its "=",
+// a User=, Group= or DynamicUser=, or AmbientCapabilities= (#183). It checks the unit before it asks for root.
 func TestAsUnitRefusesAUnitItWouldMisread(t *testing.T) {
 	testenv.Isolate(t)
 	real, err := os.ReadFile("systemd/homerslab-agent.service")
@@ -56,6 +56,8 @@ func TestAsUnitRefusesAUnitItWouldMisread(t *testing.T) {
 		"Group=":              {strings.Replace(string(real), "\n[Service]\n", "\n[Service]\nGroup=homerslab\n", 1), "", ":Group=homerslab\n"},
 		"DynamicUser=":        {strings.Replace(string(real), "\n[Service]\n", "\n[Service]\nDynamicUser=yes\n", 1), "", ":DynamicUser=yes\n"},
 		"AmbientCapabilities": {strings.Replace(string(real), "\n[Service]\n", "\n[Service]\nAmbientCapabilities=CAP_KILL\n", 1), "", ":AmbientCapabilities=CAP_KILL\n"},
+		"User = x":            {strings.Replace(string(real), "\n[Service]\n", "\n[Service]\nUser = homerslab\n", 1), "", "spaced"},
+		"a spaced set":        {strings.Replace(string(real), "\nCapabilityBoundingSet=", "\nCapabilityBoundingSet =CAP_KILL\nCapabilityBoundingSet=", 1), "", "spaced"},
 		"its drop-in":         {string(real), "homerslab-agent.service.d", "drop-in folder"},
 		"a prefix's drop-in":  {string(real), "homerslab-.service.d", "drop-in folder"},
 		"every service's":     {string(real), "service.d", "drop-in folder"},

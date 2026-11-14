@@ -26,51 +26,94 @@ import (
 // nobody, whom many share (#183).
 const readUser = "homerslab-read"
 
-// passwdFile is where the agent finds readUser. Tests replace it.
-var passwdFile = "/etc/passwd"
+// passwdFile and groupFile are where the agent finds readUser and its group. Tests replace them.
+var passwdFile, groupFile = "/etc/passwd", "/etc/group"
 
 // errNoReadUser says readUser is missing or unfit: a root agent then refuses to read, and never falls back to another
 // user.
 var errNoReadUser = errors.New("no user of the agent's reads (" + readUser + ")")
 
 // readIDs is readUser's uid and gid.
-func readIDs() (uid, gid uint32, err error) { return readIDsFrom(passwdFile) }
+func readIDs() (uid, gid uint32, err error) { return readIDsFrom(passwdFile, groupFile) }
 
-// readIDsFrom is readUser's uid and gid from file, a passwd file, read directly rather than through NSS, where the
-// packages' sysusers.d writes it. It refuses a missing or broken entry, root's uid or group, and a uid that another
-// entry shares (nobody's, say): the user must be the reads' own.
-func readIDsFrom(file string) (uid, gid uint32, err error) {
+// readIDsFrom is readUser's uid and gid from passwd and group files, read directly rather than through NSS, where the
+// packages' sysusers.d writes them. The user must be the reads' own: it refuses a missing or broken entry, root's uid
+// or group, a uid another entry shares (nobody's, say), and a group that isn't readUser's own, with its gid and no
+// members (nogroup, or docker's, which would open the engine).
+func readIDsFrom(passwd, group string) (uid, gid uint32, err error) {
+	users, err := idEntries(passwd)
+	if err != nil {
+		return 0, 0, err
+	}
+	groups, err := idEntries(group)
+	if err != nil {
+		return 0, 0, err
+	}
+	u, err := onlyOwn(users, readUser, 4)
+	if err != nil {
+		return 0, 0, fmt.Errorf("%w: in %s, %w", errNoReadUser, passwd, err)
+	}
+	g, err := onlyOwn(groups, readUser, 4)
+	if err != nil {
+		return 0, 0, fmt.Errorf("%w: its group in %s, %w", errNoReadUser, group, err)
+	}
+	switch {
+	case u.id == 0 || g.id == 0:
+		return 0, 0, fmt.Errorf("%w: it is root's uid or group", errNoReadUser)
+	case u.fields[3] != g.fields[2]:
+		return 0, 0, fmt.Errorf("%w: its group isn't %s", errNoReadUser, readUser)
+	case g.fields[3] != "":
+		return 0, 0, fmt.Errorf("%w: its group has members", errNoReadUser)
+	}
+	return u.id, g.id, nil
+}
+
+// idEntry is a passwd or group entry: its fields, and its id (the third).
+type idEntry struct {
+	fields []string
+	id     uint32
+	broken bool
+}
+
+// idEntries is file's passwd or group entries.
+func idEntries(file string) ([]idEntry, error) {
 	b, err := os.ReadFile(file)
 	if err != nil {
-		return 0, 0, fmt.Errorf("%w: %w", errNoReadUser, err)
+		return nil, fmt.Errorf("%w: %w", errNoReadUser, err)
 	}
-	type entry struct{ uid, gid string }
-	var ours []entry
-	uids := map[string]int{}
+	var out []idEntry
 	for line := range strings.Lines(string(b)) {
 		f := strings.Split(strings.TrimRight(line, "\n"), ":")
 		if len(f) < 4 {
 			continue
 		}
-		uids[f[2]]++
-		if f[0] == readUser {
-			ours = append(ours, entry{f[2], f[3]})
+		id, err := strconv.ParseUint(f[2], 10, 32)
+		out = append(out, idEntry{fields: f, id: uint32(id), broken: err != nil})
+	}
+	return out, nil
+}
+
+// onlyOwn is name's one entry, with at least n fields, whose id no other entry has.
+func onlyOwn(entries []idEntry, name string, n int) (idEntry, error) {
+	var own []idEntry
+	for _, e := range entries {
+		if e.fields[0] == name {
+			own = append(own, e)
 		}
 	}
-	if len(ours) != 1 {
-		return 0, 0, fmt.Errorf("%w: %d entries in %s", errNoReadUser, len(ours), file)
+	if len(own) != 1 {
+		return idEntry{}, fmt.Errorf("%d entries for %s", len(own), name)
 	}
-	u, errU := strconv.ParseUint(ours[0].uid, 10, 32)
-	g, errG := strconv.ParseUint(ours[0].gid, 10, 32)
-	switch {
-	case errU != nil || errG != nil:
-		return 0, 0, fmt.Errorf("%w: a broken entry in %s", errNoReadUser, file)
-	case u == 0 || g == 0:
-		return 0, 0, fmt.Errorf("%w: it is root's uid or group", errNoReadUser)
-	case uids[ours[0].uid] != 1:
-		return 0, 0, fmt.Errorf("%w: its uid %d is shared", errNoReadUser, u)
+	e := own[0]
+	if e.broken || len(e.fields) < n {
+		return idEntry{}, errors.New("a broken entry")
 	}
-	return uint32(u), uint32(g), nil
+	for _, o := range entries {
+		if o.fields[0] != name && !o.broken && o.id == e.id {
+			return idEntry{}, fmt.Errorf("its id %d is %s's too", e.id, o.fields[0])
+		}
+	}
+	return e, nil
 }
 
 // The child's limits: 384 MiB of data (RLIMIT_DATA, which counts the memory written to, not the address space Go

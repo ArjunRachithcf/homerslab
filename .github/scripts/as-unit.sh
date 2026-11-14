@@ -3,7 +3,8 @@
 # itself (its one CapabilityBoundingSet= line, and NoNewPrivileges=), so a test and the unit's capabilities can't drift
 # (#138). The unit's other sandboxing (system calls, namespaces, paths) isn't modelled. A unit it would misread, so
 # drift from, it refuses before it asks for root (#183): a drop-in beside it, an indented or continued line (systemd
-# reads both), User=, Group= or DynamicUser= (not a root service), or AmbientCapabilities=.
+# reads both), a key spaced from its "=", User=, Group= or DynamicUser= (not a root service), or AmbientCapabilities=.
+# SupplementaryGroups= isn't modelled either: it only adds to what the service may reach, so the tests run with less.
 # systemd starts a root service with nothing inheritable, so on exec its permitted and effective sets are the bounding
 # set; setpriv does the same, and this checks that it did before it runs the command.
 #
@@ -37,6 +38,10 @@ if grep -n '^[[:space:]][[:space:]]*[^[:space:]]' "$unit" >&2; then
 fi
 if grep -n '\\$' "$unit" >&2; then
 	die "continued lines in $unit aren't handled"
+fi
+# systemd also reads "Key = value": a key spaced from its "=" would slip past the checks here and below.
+if grep -En '^[[:alnum:]]+[[:space:]]+=' "$unit" >&2; then
+	die "keys spaced from their = in $unit aren't handled"
 fi
 if grep -En '^(User|Group|DynamicUser|AmbientCapabilities)=' "$unit" >&2; then
 	die "User=, Group=, DynamicUser= or AmbientCapabilities= in $unit isn't handled"

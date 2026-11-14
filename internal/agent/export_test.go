@@ -76,8 +76,10 @@ func ReadProjectWith(args []string, stdin io.Reader, stdout io.Writer, read func
 // ReadIDs is the uid and gid of the user the agent's reads run as when it is root (homerslab-read).
 func ReadIDs() (uid, gid uint32, err error) { return readIDs() }
 
-// ReadIDsFrom is ReadIDs, with file in place of /etc/passwd.
-func ReadIDsFrom(file string) (uid, gid uint32, err error) { return readIDsFrom(file) }
+// ReadIDsFrom is ReadIDs, with passwd and group in place of /etc/passwd and /etc/group.
+func ReadIDsFrom(passwd, group string) (uid, gid uint32, err error) {
+	return readIDsFrom(passwd, group)
+}
 
 // ReadUsersFrom makes the agent find its read user in file in place of /etc/passwd.
 func ReadUsersFrom(t *testing.T, file string) {
@@ -85,3 +87,6 @@ func ReadUsersFrom(t *testing.T, file string) {
 	passwdFile = file
 	t.Cleanup(func() { passwdFile = old })
 }
+
+// MaxLiveReads is how many read children may be alive at once, those left behind stopped among them.
+const MaxLiveReads = maxLiveReads

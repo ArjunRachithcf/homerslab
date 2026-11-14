@@ -511,7 +511,15 @@ func TestReadsRunAsAUserOnlyTheyUse(t *testing.T) {
 		}
 		return p
 	}
-	uid, gid, err := agent.ReadIDsFrom(passwd("good", "homerslab:x:981:981::/var/lib/homerslab:/usr/sbin/nologin\nhomerslab-read:x:980:979:HomersLab compose reads:/:/usr/sbin/nologin\n"))
+	group := func(name, lines string) string {
+		p := filepath.Join(dir, name+".group")
+		if err := os.WriteFile(p, []byte("root:x:0:\nnogroup:x:65534:\nhomerslab:x:981:\n"+lines), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	goodGroup := group("good", "homerslab-read:x:979:\n")
+	uid, gid, err := agent.ReadIDsFrom(passwd("good", "homerslab:x:981:981::/var/lib/homerslab:/usr/sbin/nologin\nhomerslab-read:x:980:979:HomersLab compose reads:/:/usr/sbin/nologin\n"), goodGroup)
 	if err != nil || uid != 980 || gid != 979 {
 		t.Errorf("homerslab-read = %d:%d %v, want 980:979", uid, gid, err)
 	}
@@ -519,17 +527,35 @@ func TestReadsRunAsAUserOnlyTheyUse(t *testing.T) {
 		"missing":          "homerslab:x:981:981::/var/lib/homerslab:/usr/sbin/nologin\n",
 		"root's uid":       "homerslab-read:x:0:979::/:/usr/sbin/nologin\n",
 		"root's group":     "homerslab-read:x:980:0::/:/usr/sbin/nologin\n",
-		"nobody's uid":     "homerslab-read:x:65534:65534::/:/usr/sbin/nologin\n",
+		"nobody's uid":     "homerslab-read:x:65534:979::/:/usr/sbin/nologin\n",
 		"a shared uid":     "homerslab-read:x:980:979::/:/usr/sbin/nologin\nother:x:980:980::/:/bin/sh\n",
 		"a broken entry":   "homerslab-read:x:nine:979::/:/usr/sbin/nologin\n",
 		"a prefix of ours": "homerslab-reader:x:980:979::/:/usr/sbin/nologin\n",
+		"another's group":  "homerslab-read:x:980:981::/:/usr/sbin/nologin\n",
+		"nogroup":          "homerslab-read:x:980:65534::/:/usr/sbin/nologin\n",
 	} {
-		if uid, gid, err := agent.ReadIDsFrom(passwd(name, lines)); err == nil {
+		if uid, gid, err := agent.ReadIDsFrom(passwd(name, lines), goodGroup); err == nil {
 			t.Errorf("%s: homerslab-read = %d:%d, want it refused", name, uid, gid)
 		}
 	}
-	if _, _, err := agent.ReadIDsFrom(filepath.Join(dir, "none")); err == nil {
+	// Its group is its own too: named for it, and no other group has its gid (docker's, say, would open the engine).
+	good := passwd("good", "homerslab-read:x:980:979::/:/usr/sbin/nologin\n")
+	for name, lines := range map[string]string{
+		"no group":       "",
+		"another name":   "docker:x:979:\n",
+		"a shared gid":   "homerslab-read:x:979:\ndocker:x:979:\n",
+		"members":        "homerslab-read:x:979:arjun\n",
+		"a broken group": "homerslab-read:x:nine:\n",
+	} {
+		if uid, gid, err := agent.ReadIDsFrom(good, group(name, lines)); err == nil {
+			t.Errorf("%s: homerslab-read = %d:%d, want it refused", name, uid, gid)
+		}
+	}
+	if _, _, err := agent.ReadIDsFrom(filepath.Join(dir, "none"), goodGroup); err == nil {
 		t.Error("no passwd file: want the read user refused")
+	}
+	if _, _, err := agent.ReadIDsFrom(good, filepath.Join(dir, "none")); err == nil {
+		t.Error("no group file: want the read user refused")
 	}
 
 	// A root agent without its read user starts no child, and says the reader didn't start.
@@ -557,8 +583,9 @@ func TestReadsRunAsAUserOnlyTheyUse(t *testing.T) {
 
 // A read's child that is stopped (SIGSTOP, by itself or another process of its user) ignores its deadline and its
 // control pipe, its CPU limit doesn't count, and a root agent without CAP_KILL can't end it: it still holds the read
-// slot no longer than the deadline and the child's WaitDelay. The agent reaps it whenever it ends (#183). The agent can
-// kill a child of its own user, so this means most under the unit's capabilities, as CI runs it.
+// slot no longer than the deadline and the child's WaitDelay. The agent reaps it whenever it ends, and refuses new
+// reads while MaxLiveReads children are alive, so left children can't pile up (#183). An agent that may kill the child
+// ends it at once, so this means most under the unit's capabilities, as CI runs it.
 func TestAStoppedReadDoesntHoldTheSlot(t *testing.T) {
 	testenv.Isolate(t)
 	real := agent.ShellReads(t, 300*time.Millisecond, "cat >/dev/null; kill -STOP $$")
@@ -582,21 +609,30 @@ func TestAStoppedReadDoesntHoldTheSlot(t *testing.T) {
 			return answer{}, time.Since(start)
 		}
 	}
+	canKill := agentCanKill(t)
 	stopped := stoppedChildren(t)
-	if a, took := read(); a.status != http.StatusGatewayTimeout || !strings.Contains(a.out, "read-timeout") || took > 2*time.Second {
-		t.Errorf("a stopped read: %d %s after %s, want 504 read-timeout by its deadline and WaitDelay", a.status, a.out, took)
+	for range agent.MaxLiveReads { // each needs the slot the one before it left
+		if a, took := read(); a.status != http.StatusGatewayTimeout || !strings.Contains(a.out, "read-timeout") || took > 2*time.Second {
+			t.Fatalf("a stopped read: %d %s after %s, want 504 read-timeout by its deadline and WaitDelay", a.status, a.out, took)
+		}
+		if canKill {
+			break // the agent ended it: none is left behind
+		}
 	}
 	left := stoppedChildren(t)
 	for pid := range stopped {
 		delete(left, pid)
 	}
-
-	real()
-	if a, took := read(); a.status != http.StatusOK {
-		t.Errorf("after a stopped read: %d %s after %s, want the slot free and the read done", a.status, a.out, took)
+	if !canKill {
+		if len(left) != agent.MaxLiveReads {
+			t.Fatalf("%d stopped children left behind, want %d", len(left), agent.MaxLiveReads)
+		}
+		if a, took := read(); a.status != http.StatusServiceUnavailable || !strings.Contains(a.out, "busy") || took > time.Second {
+			t.Errorf("with %d children left: %d %s after %s, want 503 busy at once", len(left), a.status, a.out, took)
+		}
 	}
 
-	// Once it goes on, it ends (its deadline is long past), and the agent reaps it: no zombie is left.
+	// Once one goes on, it ends (its deadline is long past), and the agent reaps it: no zombie is left.
 	for pid := range left {
 		cont := exec.Command("/bin/sh", "-c", "kill -CONT "+strconv.Itoa(pid))
 		if os.Geteuid() == 0 { // the agent may not signal it; its own user may
@@ -622,6 +658,34 @@ func TestAStoppedReadDoesntHoldTheSlot(t *testing.T) {
 			t.Errorf("the stopped read's child %d wasn't reaped once it ended: %s", pid, stat)
 		}
 	}
+
+	real()
+	if a, took := read(); a.status != http.StatusOK {
+		t.Errorf("after the stopped reads: %d %s after %s, want the slot free and the read done", a.status, a.out, took)
+	}
+}
+
+// agentCanKill says whether this process may signal a read's child: as its own user, or with CAP_KILL.
+func agentCanKill(t *testing.T) bool {
+	t.Helper()
+	if os.Geteuid() != 0 {
+		return true
+	}
+	b, err := os.ReadFile("/proc/self/status")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for line := range strings.Lines(string(b)) {
+		if v, ok := strings.CutPrefix(line, "CapEff:"); ok {
+			eff, err := strconv.ParseUint(strings.TrimSpace(v), 16, 64)
+			if err != nil {
+				t.Fatal(err)
+			}
+			return eff&(1<<5) != 0 // CAP_KILL
+		}
+	}
+	t.Fatal("no CapEff in /proc/self/status")
+	return false
 }
 
 // stoppedChildren is this process's stopped children.

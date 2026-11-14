@@ -720,12 +720,22 @@ var (
 // (childCommand): the deadline really stops the work, and the slot is free again at once, or, for a child that is
 // stopped, a WaitDelay later. The plain-file rules
 // (engine/compose) bound how long a read can take; the child's own limits and the agent's unit bound the rest.
+//
+// A child that is stopped frees the slot past its deadline and WaitDelay, and is left to end and be reaped on its own
+// (#183); live counts the children not yet reaped, the one reading among them, so that left children can't pile up:
+// with maxLiveReads of them, a read is refused as busy until one ends.
 type reads struct {
 	slot chan struct{}
+	live chan struct{}
 	exe  string
 }
 
-func newReads(exe string) *reads { return &reads{slot: make(chan struct{}, 1), exe: exe} }
+// maxLiveReads is how many read children may be alive at once: the one reading, and those left behind stopped.
+const maxLiveReads = 4
+
+func newReads(exe string) *reads {
+	return &reads{slot: make(chan struct{}, 1), live: make(chan struct{}, maxLiveReads), exe: exe}
+}
 
 // readCredential is who a read's child runs as: when the agent is root, homerslab-read (readUser) with no groups, or
 // errNoReadUser, so that the agent refuses to read rather than run the child as anyone else; otherwise nil, the
@@ -831,7 +841,13 @@ func (rs *reads) read(ctx context.Context, name string, file []byte) (engine.Pro
 	cmd.Stdin = bytes.NewReader(file)
 	var out, errOut capped
 	cmd.Stdout, cmd.Stderr = &out, &errOut
+	select {
+	case rs.live <- struct{}{}:
+	default:
+		return engine.Project{}, errBusy // as many children left behind, stopped, as reads may have
+	}
 	if err := cmd.Start(); err != nil {
+		<-rs.live
 		if ctx.Err() != nil {
 			return engine.Project{}, errReadTimeout
 		}
@@ -841,7 +857,11 @@ func (rs *reads) read(ctx context.Context, name string, file []byte) (engine.Pro
 	// and a root agent without CAP_KILL can't end it, so Wait could block for good (#183). Past the deadline and the
 	// child's WaitDelay, the slot is free again; Wait goes on in its goroutine and reaps the child whenever it ends.
 	waited := make(chan error, 1)
-	go func() { waited <- cmd.Wait() }()
+	go func() {
+		err := cmd.Wait()
+		<-rs.live
+		waited <- err
+	}()
 	var runErr error
 	select {
 	case runErr = <-waited:

@@ -43,9 +43,12 @@ jobs:
           GOPROXY: https://proxy.golang.org,direct
         run: sh .github/scripts/stop-commands.sh go mod tidy -diff
       # A root agent's compose reads run as homerslab-read, which the packages make (packaging/sysusers.d), and it
-      # refuses to read without it (#183). The container has no systemd-sysusers; this is that file's line for it.
+      # refuses to read without it (#183). The container has no systemd-sysusers: this is that file's line, which the
+      # step checks is still the file's, so the two can't drift.
       - name: The reads' own user, as the packages make it
-        run: useradd --system --user-group --no-create-home --home-dir / --shell /usr/sbin/nologin --comment "HomersLab compose reads" homerslab-read
+        run: |
+          grep -qxF 'u homerslab-read - "HomersLab compose reads" / /usr/sbin/nologin' packaging/sysusers.d/homerslab.conf
+          useradd --system --user-group --no-create-home --home-dir / --shell /usr/sbin/nologin --comment "HomersLab compose reads" homerslab-read
       - name: gofmt
         run: test -z "$(gofmt -l . | tee /dev/stderr)"
       - name: go vet
