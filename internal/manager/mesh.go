@@ -571,12 +571,14 @@ func (m *Manager) schedule(ctx context.Context) {
 	t := time.NewTicker(m.cfg.ScheduleEvery)
 	defer t.Stop()
 	m.RunDue(ctx)
+	go m.BackUpDue(ctx)
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-t.C:
 			m.RunDue(ctx)
+			go m.BackUpDue(ctx) // beside the others: a first backup takes hours
 		}
 	}
 }

@@ -51,6 +51,8 @@ type AppEngine interface {
 	States(ctx context.Context) (map[string]engine.State, error)
 	// Logs are a project's last lines.
 	Logs(ctx context.Context, project string, tail int) ([]compose.LogLine, error)
+	// Mounts are each of a project's services' volumes, inside its first container and on the machine.
+	Mounts(ctx context.Context, project string) (map[string][]engine.Mount, error)
 }
 
 // UnitsDir is where the agent writes apps' units, under the machine's root: a folder of its own outside systemd's
@@ -102,6 +104,8 @@ type AppRequest struct {
 	Guard   bool             `json:"guard"`
 	Secrets []appunit.Secret `json:"secrets"`
 	Health  []AppHealth      `json:"health"`
+	// Backups are the app's data its plan backs up, and nothing else (#22).
+	Backups []AppData `json:"backups"`
 }
 
 // AppHealth is one of an app's health checks: an HTTP request to a service's port, or the compose file's own check.
@@ -124,6 +128,7 @@ type appState struct {
 	Guard    bool             `json:"guard"`
 	Secrets  []appunit.Secret `json:"secrets"`
 	Health   []AppHealth      `json:"health"`
+	Backups  []AppData        `json:"backups,omitempty"`
 	Project  engine.Project   `json:"project"`
 }
 
@@ -250,6 +255,9 @@ func validApp(id string, r AppRequest) string {
 			return "bad-health"
 		}
 	}
+	if !validData(r.Backups) {
+		return "bad-backups"
+	}
 	return ""
 }
 
@@ -301,6 +309,11 @@ func checkProject(p engine.Project, r AppRequest, signIn string) (code, detail s
 	for _, h := range r.Health {
 		if !slices.ContainsFunc(p.Services, func(s engine.Service) bool { return s.Name == h.Service }) {
 			return "no-such-service", h.Service
+		}
+	}
+	for _, d := range r.Backups {
+		if !slices.ContainsFunc(p.Services, func(s engine.Service) bool { return s.Name == d.Service }) {
+			return "no-such-service", d.Service
 		}
 	}
 	return "", ""
@@ -385,7 +398,7 @@ func (a *Agent) putApp(w http.ResponseWriter, r *http.Request) {
 	}
 	next.Product, next.Plan, next.Name, next.Service, next.Guard = req.Product, req.Plan, req.Name, req.Service, req.Guard
 	next.Upstream = netip.AddrPortFrom(next.Subnet.Addr().Next().Next(), uint16(req.Port))
-	next.Secrets, next.Health, next.Project = slices.Clone(req.Secrets), slices.Clone(req.Health), p
+	next.Secrets, next.Health, next.Backups, next.Project = slices.Clone(req.Secrets), slices.Clone(req.Health), slices.Clone(req.Backups), p
 	if a.state.Apps == nil {
 		a.state.Apps = map[string]*appState{}
 	}

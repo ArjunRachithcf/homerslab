@@ -16,6 +16,7 @@ import (
 
 	"go.yaml.in/yaml/v3"
 
+	"github.com/ArjunRachithcf/homerslab/internal/backup"
 	"github.com/ArjunRachithcf/homerslab/internal/text"
 )
 
@@ -271,6 +272,16 @@ func checkData(p *problems, data []Data) {
 		}
 		if d.Dump != nil && (len(d.Dump.Command) == 0 || d.Dump.File == "") {
 			p.add("data %q: a dump's command and the file it makes", d.What)
+		}
+		// They reach restic's command line (#22): plain values only.
+		if d.Path != "" && !backup.ValidPath(d.Path) {
+			p.add("data %q: a plain absolute path", d.What)
+		}
+		if d.Dump != nil && len(d.Dump.Command) > 0 && !backup.ValidCommand(d.Dump.Command) {
+			p.add("data %q: a dump's command of plain arguments, no shell", d.What)
+		}
+		if d.Dump != nil && d.Dump.File != "" && !backup.ValidFile(d.Dump.File) {
+			p.add("data %q: a dump's file, a plain name", d.What)
 		}
 		if !d.BackedUp() && d.Why == "" {
 			p.add("data %q: why it isn't backed up", d.What)

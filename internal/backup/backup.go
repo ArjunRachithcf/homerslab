@@ -226,9 +226,9 @@ func Files(t Target, key []byte, c Credentials) (map[string][]byte, error) {
 	return out, nil
 }
 
-// Runner runs restic's argv with env (and nothing else of the caller's environment), and returns what it wrote on
-// stdout. A failure's error wraps the *exec.ExitError, whose code says why.
-type Runner func(ctx context.Context, argv, env []string) ([]byte, error)
+// Runner runs restic's argv with env (and nothing else of the caller's environment), stdin on its standard input when
+// not nil, and returns what it wrote on stdout. A failure's error wraps the *exec.ExitError, whose code says why.
+type Runner func(ctx context.Context, argv, env []string, stdin []byte) ([]byte, error)
 
 // Repo is a node's repository at the household's target.
 type Repo struct {
@@ -251,6 +251,10 @@ var (
 )
 
 func (r Repo) run(ctx context.Context, args ...string) ([]byte, error) {
+	return r.runWith(ctx, nil, args...)
+}
+
+func (r Repo) runWith(ctx context.Context, stdin []byte, args ...string) ([]byte, error) {
 	loc, err := r.Target.Location(r.Node)
 	if err != nil {
 		return nil, err
@@ -278,7 +282,7 @@ func (r Repo) run(ctx context.Context, args ...string) ([]byte, error) {
 			argv = append(argv, "--cacert", path.Join(r.Dir, CAFile))
 		}
 	}
-	out, err := r.Run(ctx, append(argv, args...), env)
+	out, err := r.Run(ctx, append(argv, args...), env, stdin)
 	var exit *exec.ExitError
 	if errors.As(err, &exit) {
 		switch exit.ExitCode() {
@@ -311,12 +315,13 @@ func (r Repo) Unlock(ctx context.Context) error {
 	return err
 }
 
-// Item is one thing to back up: folders, or a command's output as a file (a database dump), with the tags that say
-// whose it is.
+// Item is one thing to back up: folders, or as a file, a command's output (a database dump) or what the caller hands
+// over (Stdin), with the tags that say whose it is.
 type Item struct {
 	Tags    []string
 	Paths   []string
 	Command []string
+	Stdin   []byte
 	File    string
 }
 
@@ -330,9 +335,11 @@ func (r Repo) Backup(ctx context.Context, it Item) (string, error) {
 		args = append(args, "--tag", t)
 	}
 	switch {
-	case len(it.Command) > 0 && len(it.Paths) == 0 && ValidCommand(it.Command) && ValidFile(it.File):
+	case len(it.Command) > 0 && len(it.Paths) == 0 && it.Stdin == nil && ValidCommand(it.Command) && ValidFile(it.File):
 		args = append(append(args, "--stdin-from-command", "--stdin-filename", it.File, "--"), it.Command...)
-	case len(it.Command) == 0 && len(it.Paths) > 0:
+	case it.Stdin != nil && len(it.Command) == 0 && len(it.Paths) == 0 && ValidFile(it.File):
+		args = append(args, "--stdin", "--stdin-filename", it.File)
+	case len(it.Command) == 0 && it.Stdin == nil && len(it.Paths) > 0:
 		args = append(args, "--")
 		for _, p := range it.Paths {
 			if !ValidPath(p) {
@@ -346,7 +353,7 @@ func (r Repo) Backup(ctx context.Context, it Item) (string, error) {
 	if err := r.Unlock(ctx); err != nil {
 		return "", err
 	}
-	out, err := r.run(ctx, args...)
+	out, err := r.runWith(ctx, it.Stdin, args...)
 	id := summary(out)
 	if err == nil && id == "" {
 		err = errors.New("backup: restic named no snapshot")

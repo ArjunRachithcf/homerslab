@@ -125,8 +125,11 @@ type seen struct {
 }
 
 // runner runs restic as the agent's unit would: argv and env alone, nothing else of this process's environment.
-func (s *seen) runner(ctx context.Context, argv, env []string) ([]byte, error) {
+func (s *seen) runner(ctx context.Context, argv, env []string, stdin []byte) ([]byte, error) {
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
+	if stdin != nil {
+		cmd.Stdin = bytes.NewReader(stdin)
+	}
 	cmd.Env = append([]string{"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"}, env...)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
@@ -239,6 +242,15 @@ func contract(t *testing.T, target backup.Target, creds backup.Credentials, secr
 		}
 		if b, err := backup.Raw(ctx, primary, "dump", db, "/immich.sql"); err != nil || string(b) != "the-dump" {
 			t.Errorf("the dump restored: %q %v", b, err)
+		}
+		// The manager's database, as the manager hands it over.
+		state := backup.Item{Tags: []string{"platform=manager", "data=manager:manager.db"}, Stdin: []byte("the manager's state"), File: "manager.db"}
+		mid, err := primary.Backup(ctx, state)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if b, err := backup.Raw(ctx, primary, "dump", mid, "/manager.db"); err != nil || string(b) != "the manager's state" {
+			t.Errorf("the manager's database restored: %q %v", b, err)
 		}
 		pi := repo(t, s, target, creds, "pi", piKey)
 		if theirs, err := pi.Snapshots(ctx); err != nil || len(theirs) != 0 {

@@ -178,14 +178,20 @@ func Override(a App) []byte {
 	return []byte(b.String())
 }
 
+// Compose is the standard compose command on the catalog's file and the agent's, as the app's unit runs it, and the
+// agent too (a dump's command runs in the app's service through it).
+func (a App) Compose() []string {
+	return []string{"/usr/bin/docker", "compose", "--project-name", Project(a.ID), "--project-directory", a.Dir,
+		"--file", a.ComposeFile(), "--file", a.OverrideFile()}
+}
+
 // UnitFile is the app's systemd unit: the standard compose command on the catalog's file and the agent's, with the app's
 // credentials.
 func UnitFile(a App) []byte {
 	var b strings.Builder
 	w := func(f string, args ...any) { fmt.Fprintf(&b, f+"\n", args...) }
 	run := RunDir(a.ID)
-	compose := fmt.Sprintf("/usr/bin/docker compose --project-name %s --project-directory %s --file %s --file %s",
-		Project(a.ID), a.Dir, a.ComposeFile(), a.OverrideFile())
+	compose := strings.Join(a.Compose(), " ")
 	// No free text: the app's id and the plan's only, which no line of a unit can be ended or continued by.
 	w("# Written by HomersLab's agent, from install plan %s. Never edit by hand.", plan(a.Plan))
 	w("# App %s, run by the standard compose command on its catalog's compose file and the agent's (ADR 0014).", id(a))

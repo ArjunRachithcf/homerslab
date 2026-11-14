@@ -65,3 +65,10 @@ type Container struct {
 	State   string `json:"state"`
 	Health  string `json:"health,omitempty"`
 }
+
+// Mount is a volume, or a folder of the machine, that one of a service's containers has: Destination inside it, Source
+// on the machine.
+type Mount struct {
+	Destination string `json:"destination"`
+	Source      string `json:"source"`
+}

@@ -10,6 +10,8 @@ import (
 	"sync"
 
 	"github.com/docker/compose/v5/pkg/api"
+	"github.com/moby/moby/api/types/mount"
+	"github.com/moby/moby/client"
 
 	"github.com/ArjunRachithcf/homerslab/internal/engine"
 )
@@ -21,7 +23,10 @@ var runtimeOptions = options{}
 // Engine reads HomersLab's running compose projects through the SDK, on one engine endpoint: their containers' state and
 // health, many projects at once, and their logs. It changes nothing: the app's unit runs and stops the project with the
 // standard compose command (ADR 0014).
-type Engine struct{ svc api.Compose }
+type Engine struct {
+	svc api.Compose
+	api client.APIClient
+}
 
 // NewEngine is the engine at host (the environment's when ""). Making it reaches no engine.
 func NewEngine(host string) (*Engine, error) {
@@ -33,7 +38,7 @@ func NewEngine(host string) (*Engine, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Engine{svc: svc}, nil
+	return &Engine{svc: svc, api: c.Client()}, nil
 }
 
 // ErrEngine is an engine that didn't answer.
@@ -84,6 +89,37 @@ func (e *Engine) States(ctx context.Context) (map[string]engine.State, error) {
 	wg.Wait()
 	if len(errs) > 0 {
 		return nil, fmt.Errorf("%w: %w", ErrEngine, errors.Join(errs...))
+	}
+	return out, nil
+}
+
+// Mounts are each service's volumes and folders of the machine, from its first container by name, as the engine inspects
+// it: where they are inside the container, and on the machine. A tmpfs has no place on the machine, so it isn't one.
+func (e *Engine) Mounts(ctx context.Context, name string) (map[string][]engine.Mount, error) {
+	if !OurName(name) {
+		return nil, ErrNotOurs
+	}
+	cs, err := e.svc.Ps(ctx, name, api.PsOptions{All: true})
+	if err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrEngine, err)
+	}
+	slices.SortFunc(cs, func(a, b api.ContainerSummary) int { return strings.Compare(a.Name, b.Name) })
+	out := map[string][]engine.Mount{}
+	for _, c := range cs {
+		if _, done := out[c.Service]; done {
+			continue
+		}
+		r, err := e.api.ContainerInspect(ctx, c.ID, client.ContainerInspectOptions{})
+		if err != nil {
+			return nil, fmt.Errorf("%w: %w", ErrEngine, err)
+		}
+		ms := []engine.Mount{}
+		for _, m := range r.Container.Mounts {
+			if m.Source != "" && (m.Type == mount.TypeVolume || m.Type == mount.TypeBind) {
+				ms = append(ms, engine.Mount{Destination: m.Destination, Source: m.Source})
+			}
+		}
+		out[c.Service] = ms
 	}
 	return out, nil
 }

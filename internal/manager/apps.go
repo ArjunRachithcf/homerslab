@@ -155,9 +155,20 @@ func (m *Manager) applyPlan(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	req := agent.AppRequest{Plan: p.ID, Product: p.App.Name, Compose: string(a.Compose), Name: p.Name.Host, Service: a.Names.Service,
-		Port: a.Names.Port, Guard: true, Secrets: []appunit.Secret{}, Health: []agent.AppHealth{}}
+		Port: a.Names.Port, Guard: true, Secrets: []appunit.Secret{}, Health: []agent.AppHealth{}, Backups: []agent.AppData{}}
 	for _, s := range a.Secrets {
 		req.Secrets = append(req.Secrets, appunit.Secret{Name: s.Name, UID: s.UID})
+	}
+	// What the plan backs up, and nothing else: its data, but what it says isn't backed up (#22). Never its words of
+	// what each is: the agent gets services, paths, commands and file names, which it checks again.
+	for _, d := range a.Data {
+		switch {
+		case !d.BackedUp():
+		case d.Dump != nil:
+			req.Backups = append(req.Backups, agent.AppData{Service: d.Service, Dump: d.Dump.Command, File: d.Dump.File})
+		default:
+			req.Backups = append(req.Backups, agent.AppData{Service: d.Service, Path: d.Path})
+		}
 	}
 	for _, h := range a.Health {
 		ah := agent.AppHealth{Service: h.Service, Compose: h.Compose}

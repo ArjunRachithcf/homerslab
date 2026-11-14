@@ -35,6 +35,8 @@ func contractApp(word string) string {
   web:
     image: ` + contractImage + `
     command: ["sh", "-c", "echo hello from ` + word + `; echo trouble in ` + word + ` >&2; exec sleep infinity"]
+    volumes:
+      - data:/data
     stop_grace_period: 1s
     # Restart policies of its own, the engine's and swarm's: the agent's file turns both off (#195's review).
     restart: always
@@ -45,6 +47,8 @@ func contractApp(word string) string {
       test: ["CMD", "true"]
       interval: 1s
       start_period: 1s
+volumes:
+  data:
 `
 }
 
@@ -78,8 +82,7 @@ func TestTheContainerEngineContractOnDocker(t *testing.T) {
 	}
 	composeCmd := func(a appunit.App, args ...string) {
 		t.Helper()
-		cmd := exec.Command("docker", append([]string{"compose", "--project-name", appunit.Project(a.ID), "--project-directory", a.Dir,
-			"--file", a.ComposeFile(), "--file", a.OverrideFile()}, args...)...)
+		cmd := exec.Command("docker", append(a.Compose()[1:], args...)...)
 		cmd.Env = append(os.Environ(), "DOCKER_HOST="+host)
 		if out, err := cmd.CombinedOutput(); err != nil {
 			t.Fatalf("docker compose %s: %v\n%s", strings.Join(args, " "), err, out)
@@ -140,6 +143,27 @@ func TestTheContainerEngineContractOnDocker(t *testing.T) {
 		out, err := exec.Command("docker", "-H", host, "exec", appunit.Project("contract-a")+"-web-1", "getent", "hosts", "auth.example.test").CombinedOutput()
 		if f := strings.Fields(string(out)); err != nil || len(f) < 2 || f[0] != "172.31.255.241" || f[1] != "auth.example.test" {
 			t.Errorf("getent hosts auth.example.test: %q %v", out, err)
+		}
+	})
+
+	// What backups read (#22): a service's volumes, where they are on the machine, and a dump's command, which runs in
+	// the service through the app's own compose command.
+	t.Run("a service's volumes, inside and on the machine, and a command in it through the app's compose command", func(t *testing.T) {
+		ms, err := e.Mounts(ctx, appunit.Project("contract-a"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(ms["web"]) != 1 || ms["web"][0].Destination != "/data" || !strings.HasSuffix(ms["web"][0].Source, "/homerslab-contract-a_data/_data") {
+			t.Errorf("contract-a's mounts: %+v", ms)
+		}
+		if _, err := e.Mounts(ctx, "hltest-other"); err == nil {
+			t.Error("the mounts of a project that isn't HomersLab's")
+		}
+		a := apps["contract-a"]
+		cmd := exec.Command("docker", append(a.Compose()[1:], "exec", "-T", "web", "printf", "the-dump")...)
+		cmd.Env = append(os.Environ(), "DOCKER_HOST="+host)
+		if out, err := cmd.Output(); err != nil || string(out) != "the-dump" {
+			t.Errorf("a dump through the app's compose command: %q %v", out, err)
 		}
 	})
 

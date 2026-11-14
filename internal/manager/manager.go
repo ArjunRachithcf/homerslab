@@ -98,9 +98,10 @@ type Manager struct {
 	catalogFS fs.FS
 	log       *slog.Logger
 	lanClosed atomic.Bool
-	certMu    sync.Mutex // one issuance or renewal at a time
-	signInMu  sync.Mutex // one setting-up of the household account at a time
-	attempts  attempts   // sign-ins to Admin under way
+	certMu    sync.Mutex  // one issuance or renewal at a time
+	signInMu  sync.Mutex  // one setting-up of the household account at a time
+	attempts  attempts    // sign-ins to Admin under way
+	backingUp atomic.Bool // a backup run is under way
 
 	// given is what the page sees of the secrets the terminal gives (#64): those being checked, and why the last one
 	// given for each was refused. By the secret's name; never the secret.
@@ -251,6 +252,7 @@ func (m *Manager) Control() http.Handler {
 	mux.HandleFunc("GET /api/v1/nodes/primary", m.getPrimary)
 	mux.HandleFunc("GET /api/v1/dns", m.getDNS)
 	mux.HandleFunc("PUT /api/v1/dns/token", m.putDNSToken)
+	mux.HandleFunc("PUT /api/v1/backups/target", m.putBackupTarget)
 	mux.HandleFunc("GET /api/v1/warnings", m.getWarnings)
 	m.catalogRoutes(mux)
 	mux.HandleFunc("/", notFound)

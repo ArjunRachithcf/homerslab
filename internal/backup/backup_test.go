@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"os"
 	"os/exec"
 	"slices"
 	"strings"
@@ -88,7 +89,7 @@ type recorder struct {
 	answer    func(argv []string) ([]byte, error)
 }
 
-func (r *recorder) run(_ context.Context, argv, env []string) ([]byte, error) {
+func (r *recorder) run(_ context.Context, argv, env []string, _ []byte) ([]byte, error) {
 	r.argv, r.env = append(r.argv, argv), append(r.env, env)
 	if r.answer != nil {
 		return r.answer(argv)
@@ -222,6 +223,20 @@ func TestDataFromTheCatalogIsChecked(t *testing.T) {
 	for f, ok := range map[string]bool{"immich.sql": true, "db-1.dump": true, "": false, ".sql": false, "a/b.sql": false, "A b": false} {
 		if backup.ValidFile(f) != ok {
 			t.Errorf("file %q: %v", f, !ok)
+		}
+	}
+}
+
+// The contract suite runs restic's own image of the version the agent's restic is pinned to.
+func TestTheContractSuitesResticIsThePinnedOne(t *testing.T) {
+	testenv.Isolate(t)
+	b, err := os.ReadFile("testdata/compose.yaml")
+	if err != nil || !strings.Contains(string(b), "image: docker.io/restic/restic:"+backup.ResticVersion+"@sha256:") {
+		t.Errorf("the contract suite's restic isn't %s: %v", backup.ResticVersion, err)
+	}
+	for _, arch := range []string{"x86_64", "arm64"} {
+		if len(backup.ResticSHA256[arch]) != 64 {
+			t.Errorf("no digest for %s", arch)
 		}
 	}
 }

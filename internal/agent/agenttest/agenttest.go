@@ -16,6 +16,7 @@ import (
 	"net/http"
 	"net/netip"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"slices"
@@ -180,6 +181,100 @@ type Host struct {
 	sick       map[string]string // a project's health, when not healthy
 	answers    map[string]string // a health probe's answers, by upstream; healthy when not set
 	logs       map[string][]compose.LogLine
+	mounts     map[string]map[string][]engine.Mount // a project's services' volumes
+	restic     []ResticRun
+	resticFail map[string]int  // restic's exit codes, for runs whose command line has the key
+	repos      map[string]bool // the repositories restic made
+}
+
+// ResticRun is one run of restic, in a unit of its own: systemd-run's arguments (the unit's properties), restic's own
+// and what it read on stdin.
+type ResticRun struct {
+	Unit, Argv []string
+	Stdin      []byte
+}
+
+// Mount gives a project's service a volume at dest, which is source on the machine.
+func (h *Host) Mount(project, service, dest, source string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.mounts == nil {
+		h.mounts = map[string]map[string][]engine.Mount{}
+	}
+	if h.mounts[project] == nil {
+		h.mounts[project] = map[string][]engine.Mount{}
+	}
+	h.mounts[project][service] = append(h.mounts[project][service], engine.Mount{Destination: dest, Source: source})
+}
+
+// Mounts is AppEngine's: the volumes Mount gave each running service.
+func (h *Host) Mounts(_ context.Context, project string) (map[string][]engine.Mount, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.engineDown {
+		return nil, errors.New("the engine doesn't answer")
+	}
+	out := map[string][]engine.Mount{}
+	for _, c := range h.projects[project].Containers {
+		out[c.Service] = append([]engine.Mount{}, h.mounts[project][c.Service]...)
+	}
+	return out, nil
+}
+
+// Restic is every run of restic so far.
+func (h *Host) Restic() []ResticRun {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return slices.Clone(h.restic)
+}
+
+// FailRestic makes every run of restic whose command line has has end with exit status code; 0 mends them.
+func (h *Host) FailRestic(has string, code int) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.resticFail == nil {
+		h.resticFail = map[string]int{}
+	}
+	h.resticFail[has] = code
+	if code == 0 {
+		delete(h.resticFail, has)
+	}
+}
+
+// runRestic answers a run of restic as restic would: a backup's summary names a snapshot, a listing is empty.
+func (h *Host) runRestic(c host.Cmd) ([]byte, error) {
+	at := slices.Index(c.Args, "--")
+	if at < 0 {
+		return nil, &host.Error{Cmd: c.String(), Err: errors.New("exit status 1")}
+	}
+	run := ResticRun{Unit: slices.Clone(c.Args[:at]), Argv: slices.Clone(c.Args[at+1:]), Stdin: c.Stdin}
+	h.restic = append(h.restic, run)
+	line := strings.Join(run.Argv, " ")
+	for has, code := range h.resticFail {
+		if strings.Contains(line, has) {
+			err := exec.Command("sh", "-c", fmt.Sprintf("exit %d", code)).Run()
+			return nil, &host.Error{Cmd: c.String(), Err: err}
+		}
+	}
+	repo := ""
+	if i := slices.Index(run.Argv, "--repo"); i >= 0 && i+1 < len(run.Argv) {
+		repo = run.Argv[i+1]
+	}
+	switch {
+	case slices.Contains(run.Argv, "init"):
+		if h.repos == nil {
+			h.repos = map[string]bool{}
+		}
+		h.repos[repo] = true
+	case !h.repos[repo]: // restic's "no repository there"
+		err := exec.Command("sh", "-c", "exit 10").Run()
+		return nil, &host.Error{Cmd: c.String(), Err: err}
+	case slices.Contains(run.Argv, "backup"):
+		return fmt.Appendf(nil, `{"message_type":"status"}`+"\n"+`{"message_type":"summary","snapshot_id":"snap%d"}`+"\n", len(h.restic)), nil
+	case slices.Contains(run.Argv, "snapshots"):
+		return []byte("[]"), nil
+	}
+	return nil, nil
 }
 
 // Project makes the engine run a project, as given.
@@ -518,6 +613,8 @@ func (h *Host) Run(ctx context.Context, c host.Cmd) ([]byte, error) {
 		return nil, nil
 	case line == "netbird status --json":
 		return fmt.Appendf(nil, `{"management":{"connected":true},"netbirdIp":"%s/16","fqdn":"study-pc.netbird.selfhosted"}`, h.NetbirdIP), nil
+	case c.Name == "systemd-run":
+		return h.runRestic(c)
 	case c.Name == "systemd-creds" && len(c.Args) == 5 && c.Args[0] == "encrypt":
 		return nil, os.WriteFile(c.Args[4], []byte("sealed:"+base64.StdEncoding.EncodeToString(c.Stdin)), 0o600)
 	case c.Name == "systemd-creds" && len(c.Args) == 4 && c.Args[0] == "decrypt":
