@@ -8,21 +8,28 @@ import (
 
 	"github.com/ArjunRachithcf/homerslab/internal/agent"
 	"github.com/ArjunRachithcf/homerslab/internal/manager/store"
+	"github.com/ArjunRachithcf/homerslab/internal/mesh"
 	"github.com/ArjunRachithcf/homerslab/internal/storage"
 	"github.com/ArjunRachithcf/homerslab/internal/text"
 )
 
-// Storage locations (#28; story 48; ADR 0003). The admin adds each once, in Admin: so far a local folder on the
-// primary (network shares over the mesh come with #28's second part). The agent checks it; the household keeps what the
-// location is and whether the admin opted in to backing it up. Install plans name the location each app uses, and
-// whether it only reads it.
+// Storage locations (#28; story 48; ADR 0003). The admin adds each once, in Admin: a local folder on the primary, or a
+// network share reached over the mesh. The agent checks it and, for a share, seals its credentials and mounts it over
+// the mesh only; the household keeps what the location is and whether the admin opted in to backing it up, never its
+// credentials. Install plans name the location each app uses, and whether it only reads it.
 
-// addLocation is a location as the admin adds it.
+// addLocation is a location as the admin adds it. Password is secret: it goes to the agent, sealed there, and is never
+// logged, kept or answered.
 type addLocation struct {
-	ID   string `json:"id"`
-	Name string `json:"name"`
-	Kind string `json:"kind"` // folder
-	Path string `json:"path"`
+	ID       string           `json:"id"`
+	Name     string           `json:"name"`
+	Kind     string           `json:"kind"` // folder or share
+	Path     string           `json:"path"`
+	Protocol storage.Protocol `json:"protocol"`
+	Server   string           `json:"server"`
+	Share    string           `json:"share"`
+	Username string           `json:"username"`
+	Password mesh.Secret      `json:"password"`
 }
 
 func (m *Manager) storageRoutes(mux *http.ServeMux) {
@@ -73,11 +80,12 @@ func (m *Manager) postStorage(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusServiceUnavailable, errAgent.Error())
 		return
 	}
-	req := agent.StorageRequest{Kind: body.Kind, Path: body.Path}
+	req := agent.StorageRequest{Kind: body.Kind, Path: body.Path, Protocol: body.Protocol, Server: body.Server, Share: body.Share,
+		Username: body.Username, Password: body.Password.Reveal()}
 	var st agent.StorageStatus
-	if err := m.agent.call(ctx, http.MethodPut, "/v1/storage/"+body.ID, req, &st); err != nil {
+	if err := m.agent.with(m.agent.installs).call(ctx, http.MethodPut, "/v1/storage/"+body.ID, req, &st); err != nil {
 		var e *agentError
-		if errors.As(err, &e) && e.Status/100 == 4 {
+		if errors.As(err, &e) && (e.Status/100 == 4 || e.Code == "mount-failed") {
 			m.log.Warn("the agent refused a storage location", "location", body.ID, "code", e.Code)
 			fail(w, e.Status, e.Code)
 			return
@@ -86,7 +94,11 @@ func (m *Manager) postStorage(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusServiceUnavailable, errAgent.Error())
 		return
 	}
-	l := store.Location{ID: body.ID, Name: name, Kind: st.Kind, Node: facts.Hostname, Path: st.Path, AddedAt: m.cfg.Now().UTC()}
+	l := store.Location{ID: body.ID, Name: name, Kind: st.Kind, Path: st.Path, Protocol: string(st.Protocol), Server: st.Server, Share: st.Share,
+		AddedAt: m.cfg.Now().UTC()}
+	if l.Kind == "folder" {
+		l.Node = facts.Hostname
+	}
 	if err := m.db.AddLocation(ctx, l); errors.Is(err, store.ErrExists) {
 		fail(w, http.StatusConflict, "storage-exists")
 		return

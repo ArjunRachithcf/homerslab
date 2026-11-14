@@ -59,8 +59,8 @@ type RestoreRequest struct {
 	Items []RestoreItem `json:"items"`
 }
 
-// RestoreResult is how a restore went: restored, rolled-back (the app is as it was, and Error says what failed) or
-// rollback-failed; Before are the snapshots of the app as it was, taken first.
+// RestoreResult is how a restore went: restored, rolled-back (the app is as it was, and Error says what failed),
+// rollback-failed, or unchanged (the app didn't stop, so nothing was written); Before are the snapshots of the app as it was, taken first.
 type RestoreResult struct {
 	State  string        `json:"state"`
 	Error  string        `json:"error,omitempty"`
@@ -181,8 +181,12 @@ func (a *Agent) postRestore(w http.ResponseWriter, r *http.Request) {
 	a.installs.Unlock()
 	defer func() {
 		a.mu.Lock()
+		defer a.mu.Unlock()
 		delete(a.restoringApps, id)
-		a.mu.Unlock()
+		// A sign-in that changed meanwhile: the app follows it now (its compose file, and a restart if it changed).
+		ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), time.Minute)
+		defer cancel()
+		a.appsFollowSignIn(ctx)
 	}()
 	// From here the restore runs to its end whatever the manager does: a request given up on never leaves an app
 	// stopped or half restored.
@@ -253,7 +257,11 @@ func (a *Agent) postRestore(w http.ResponseWriter, r *http.Request) {
 	}
 
 	a.log.Info("restoring an app to an earlier point", "app", id, "items", len(items))
-	if why := a.restoreTo(ctx, *st, id, u, items, m); why != "" {
+	if why := a.restoreTo(ctx, *st, id, u, items, m); why == errNotStopped {
+		out.State, out.Error = "unchanged", why
+		writeJSON(w, http.StatusOK, out)
+		return
+	} else if why != "" {
 		a.log.Error("a restore failed: rolling the app back to the snapshot taken first", "app", id, "why", why)
 		out.State, out.Error = "rolled-back", why
 		// The rollback has a time of its own, whatever the failed try took.
@@ -272,14 +280,21 @@ func (a *Agent) postRestore(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, out)
 }
 
+// errNotStopped is an app that didn't stop for its restore: nothing of it was changed.
+const errNotStopped = "stop-failed"
+
 // restoreTo makes the app what items' snapshots held, and says in a word what failed, or "". The app's own unit is
 // stopped throughout: its folders are put back, then its dumps' services alone run for its restore commands, and only
 // then is the app started, on what was put back.
 func (a *Agent) restoreTo(ctx context.Context, st backupState, id string, u appunit.App, items []restoring, m *appMounts) string {
 	unit := appunit.Unit(id)
 	if err := a.step(ctx, "systemctl", "stop", unit); err != nil {
+		// Nothing was written: the app is started again as it was, and there is nothing to roll back.
 		a.log.Error("stopping an app for its restore", "app", id, "err", err)
-		return "stop-failed"
+		if err := a.step(ctx, "systemctl", "start", unit); err != nil {
+			a.log.Error("starting an app again after it didn't stop", "app", id, "err", err)
+		}
+		return errNotStopped
 	}
 	failed := ""
 	var dumps []restoring

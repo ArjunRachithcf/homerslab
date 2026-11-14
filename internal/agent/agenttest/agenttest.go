@@ -192,8 +192,12 @@ type Host struct {
 	restic     []ResticRun
 	resticFail map[string]int  // restic's exit codes, for runs whose command line has the key
 	repos      map[string]bool // the repositories restic made
+	holds      map[string]gate // runs held until the test lets them go, by what their command line has
 	snaps      []Snapshot      // the snapshots restic made, and the test's
 	restored   []string        // what restic and the apps' restore commands put back, in order
+	// routes are the interfaces the kernel routes addresses through, when a test says (Route); otherwise the mesh's
+	// range is wt0's, and everything else the LAN's.
+	routes map[string]string
 }
 
 // Snapshot is a snapshot in the stub's repository.
@@ -206,6 +210,26 @@ type Snapshot struct {
 	Sum   struct {
 		Bytes uint64 `json:"total_bytes_processed"`
 	} `json:"summary"`
+}
+
+type gate struct{ held, release chan struct{} }
+
+// Hold holds the next run in a unit whose command line has has, until the test lets it go: held is sent on once it is
+// held, and release lets it (and any later one) run.
+func (h *Host) Hold(has string) (held <-chan struct{}, release func()) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.holds == nil {
+		h.holds = map[string]gate{}
+	}
+	g := gate{held: make(chan struct{}, 1), release: make(chan struct{})}
+	h.holds[has] = g
+	return g.held, func() {
+		h.mu.Lock()
+		delete(h.holds, has)
+		h.mu.Unlock()
+		close(g.release)
+	}
 }
 
 // AddSnapshot puts a snapshot of path, made at a time, into the stub's repository, and returns its id.
@@ -401,6 +425,16 @@ func (h *Host) runRestic(c host.Cmd) ([]byte, error) {
 		h.restored = append(h.restored, "dump "+strings.Join(run.Argv[len(run.Argv)-2:], " "))
 	}
 	return nil, nil
+}
+
+// Route makes the kernel route an address through an interface (`ip -j route get`).
+func (h *Host) Route(addr, dev string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.routes == nil {
+		h.routes = map[string]string{}
+	}
+	h.routes[addr] = dev
 }
 
 // Project makes the engine run a project, as given.
@@ -657,6 +691,17 @@ func (h *Host) Run(ctx context.Context, c host.Cmd) ([]byte, error) {
 		<-ctx.Done()
 		return nil, ctx.Err()
 	}
+	if c.Name == "systemd-run" {
+		for has, gate := range h.holds {
+			if strings.Contains(c.String(), has) {
+				h.mu.Unlock()
+				gate.held <- struct{}{}
+				<-gate.release
+				h.mu.Lock()
+				break
+			}
+		}
+	}
 	defer h.mu.Unlock()
 	h.cmds = append(h.cmds, c)
 	line := c.String()
@@ -764,6 +809,15 @@ func (h *Host) Run(ctx context.Context, c host.Cmd) ([]byte, error) {
 		return fmt.Appendf(nil, `{"management":{"connected":true},"netbirdIp":"%s/16","fqdn":"study-pc.netbird.selfhosted"}`, h.NetbirdIP), nil
 	case c.Name == "systemd-run":
 		return h.runRestic(c)
+	case c.Name == "ip" && len(c.Args) == 4 && line == "ip -j route get "+c.Args[3]:
+		dev := h.routes[c.Args[3]]
+		if a, err := netip.ParseAddr(c.Args[3]); dev == "" && err == nil {
+			dev = "enp5s0"
+			if netip.MustParsePrefix("100.64.0.0/10").Contains(a) {
+				dev = "wt0"
+			}
+		}
+		return fmt.Appendf(nil, `[{"dst":%q,"dev":%q,"prefsrc":"192.0.2.10","flags":[],"uid":0,"cache":[]}]`, c.Args[3], dev), nil
 	case c.Name == "systemd-creds" && len(c.Args) == 5 && c.Args[0] == "encrypt":
 		return nil, os.WriteFile(c.Args[4], []byte("sealed:"+base64.StdEncoding.EncodeToString(c.Stdin)), 0o600)
 	case c.Name == "systemd-creds" && len(c.Args) == 4 && c.Args[0] == "decrypt":

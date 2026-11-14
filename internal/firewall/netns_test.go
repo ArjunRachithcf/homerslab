@@ -210,6 +210,18 @@ func TestTheFirewallTableInNetworkNamespaces(t *testing.T) {
 	n.ping(t, "the LAN still reaches the machine itself (ping)", "192.168.77.1", true)
 	n.want(t, "the box reaches the LAN (its own connections)", "", "192.168.77.50:9000", true)
 
+	// A storage location's share is reached through the mesh only (#28): one at a mesh peer answers the box; one whose
+	// server the route takes through the LAN (here, the LAN host itself, as a route at boot might) never does.
+	shares := open
+	shares.Shares = []netip.Addr{netip.MustParseAddr("100.88.1.2"), netip.MustParseAddr("192.168.77.50")}
+	apply(shares)
+	n.together(func() {
+		n.want(t, "the box reaches a share at a mesh peer", "", "100.88.1.2:9002", true)
+		n.want(t, "the box never reaches a share's server through the LAN", "", "192.168.77.50:9000", false)
+	})
+	apply(open)
+	n.want(t, "without the share, the box reaches that LAN host again", "", "192.168.77.50:9000", true)
+
 	confused := open
 	confused.Bridges = []string{"br-test", "br-other", "br-iot"} // an engine naming the LAN as one of its bridges
 	apply(confused)

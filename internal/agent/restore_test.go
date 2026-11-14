@@ -396,3 +396,67 @@ func TestAnIncompleteBackupIsNeverRestored(t *testing.T) {
 		t.Errorf("the refused restore did %q", got)
 	}
 }
+
+// An incomplete snapshot of the app as it is (restic exit 3) is no snapshot to roll back to: nothing is restored and
+// the app is never stopped.
+func TestAnIncompleteSnapshotFirstRestoresNothing(t *testing.T) {
+	testenv.Isolate(t)
+	sock, h, library, _ := restorable(t, agent.Config{})
+	h.FailRestic("--tag app=ledger --tag data=web:/data/library --", 3)
+	from := len(h.Cmds())
+	if code, _, body := restore(t, sock, agent.RestoreItem{Data: "web:/data/library", Snapshot: library}); code != http.StatusBadGateway || !strings.Contains(body, "snapshot-failed") {
+		t.Errorf("the restore: %d %s", code, body)
+	}
+	if got := steps(h, from); !slices.Equal(got, []string{"backup"}) || len(h.Restored()) != 0 {
+		t.Errorf("after an incomplete snapshot first, the restore did %q and put back %q", got, h.Restored())
+	}
+}
+
+// An app that doesn't stop is started again and left as it was: nothing was written, so nothing is rolled back.
+func TestAnAppThatDoesntStopIsLeftAsItWas(t *testing.T) {
+	testenv.Isolate(t)
+	sock, h, library, _ := restorable(t, agent.Config{})
+	h.Fail("systemctl stop " + appUnit)
+	from := len(h.Cmds())
+	code, res, body := restore(t, sock, agent.RestoreItem{Data: "web:/data/library", Snapshot: library})
+	if code != http.StatusOK || res.State != "unchanged" || res.Error != "stop-failed" || len(res.Before) != 1 {
+		t.Errorf("the restore: %d %s", code, body)
+	}
+	if got := steps(h, from); !slices.Equal(got, []string{"backup", "stop", "start"}) || len(h.Restored()) != 0 {
+		t.Errorf("the restore did %q and put back %q", got, h.Restored())
+	}
+}
+
+// While an app is restored, nothing else restarts or reinstalls it: an install is refused, and a sign-in that changes
+// meanwhile reaches the app only once its restore has ended (never mid-`restic restore --delete`).
+func TestNothingRestartsAnAppWhileItIsRestored(t *testing.T) {
+	testenv.Isolate(t)
+	sock, h, library, _ := restorable(t, agent.Config{})
+	held, release := h.Hold("restore --target " + libraryVolume)
+	done := make(chan agent.RestoreResult, 1)
+	go func() {
+		_, res, _ := restore(t, sock, agent.RestoreItem{Data: "web:/data/library", Snapshot: library})
+		done <- res
+	}()
+	<-held
+	restarts := h.Times("systemctl --no-block restart " + appUnit)
+	if code, body := call(t, sock, "PUT", "/v1/apps/ledger", withBackups()); code != http.StatusConflict || !strings.Contains(string(body), "restore-running") {
+		t.Errorf("an install during the restore: %d %s", code, body)
+	}
+	if code, body := call(t, sock, "PUT", "/v1/edge", agent.EdgeSites{Port: 443, Admin: "admin.example.test", SignIn: "login.example.test"}); code != http.StatusOK {
+		t.Fatalf("the edge: %d %s", code, body)
+	}
+	if got := h.Times("systemctl --no-block restart " + appUnit); got != restarts {
+		t.Errorf("the app was restarted mid-restore (%d times)", got-restarts)
+	}
+	release()
+	if res := <-done; res.State != "restored" {
+		t.Fatalf("the restore: %+v", res)
+	}
+	if got := h.Times("systemctl --no-block restart " + appUnit); got != restarts+1 {
+		t.Errorf("after its restore, the app followed the sign-in with %d restarts, want 1", got-restarts)
+	}
+	if code, body := call(t, sock, "PUT", "/v1/apps/ledger", withBackups()); code != http.StatusAccepted {
+		t.Errorf("an install after the restore: %d %s", code, body)
+	}
+}
