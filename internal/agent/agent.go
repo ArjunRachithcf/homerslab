@@ -692,6 +692,8 @@ func (a *Agent) readProject(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusBadRequest, "not-ours")
 	case errors.Is(err, compose.ErrNotPlain):
 		writeJSON(w, http.StatusUnprocessableEntity, map[string]string{"error": "not-plain", "detail": err.Error()})
+	case errors.Is(err, compose.ErrOffFloor):
+		writeJSON(w, http.StatusUnprocessableEntity, map[string]string{"error": "off-floor", "detail": err.Error()})
 	default:
 		writeJSON(w, http.StatusUnprocessableEntity, map[string]string{"error": "invalid-compose", "detail": err.Error()})
 	}
@@ -706,15 +708,180 @@ var readDeadline = ReadDeadline
 // readCPUSeconds is a read child's soft CPU limit: a second past the deadline, as a backstop for it.
 var readCPUSeconds = func() int { return int(readDeadline/time.Second) + 1 }
 
-// readCommand is how the agent starts a compose read: its executable, in its read-project mode. Tests replace it.
+// readCommand is how the agent starts a compose read: its executable (the one it runs, /proc/self/exe, even if a
+// package has replaced the file since), in its read-project mode. Tests replace it.
 var readCommand = func(exe string) ([]string, error) {
 	if exe == "" {
-		var err error
-		if exe, err = os.Executable(); err != nil {
-			return nil, err
-		}
+		exe = "/proc/self/exe"
 	}
 	return []string{exe, "agent", "read-project"}, nil
+}
+
+// readArgv is the command a read's child runs. When it starts as cred (a root agent's read user), its program is an
+// exec-only copy (execOnly), so that the kernel starts it not dumpable.
+func readArgv(exe string, cred *syscall.Credential) ([]string, error) {
+	argv, err := readCommand(exe)
+	if err != nil || cred == nil {
+		return argv, err
+	}
+	if argv[0], err = execOnly(argv[0]); err != nil {
+		return nil, err
+	}
+	return argv, nil
+}
+
+// execOnlies are the exec-only copies the agent has made, by the program they copy.
+var execOnlies = struct {
+	sync.Mutex
+	m map[string]execCopy
+}{m: map[string]execCopy{}}
+
+// execCopy is one exec-only copy: where it is, and its size.
+type execCopy struct {
+	path string
+	size int64
+}
+
+// execOnly is a copy of the program src that a read's child may run but not read: the agent's own (root's), mode 0711,
+// in a folder of its own that no one else may write: the unit's CacheDirectory (on disk, where a copy in /tmp would
+// be held in memory on many distributions), or a temporary folder of mode 0711 where there is none. The kernel makes a
+// process that runs a program it can't read not dumpable from the exec on (as it does for set-uid programs), and the
+// child's IDs are set in the fork, which makes it not dumpable until the exec too. So a read's child is never
+// dumpable, and no process of its user (one an earlier read left behind, stopped, even) can attach to it in the moment
+// before it makes itself so, whatever Yama's ptrace_scope (#190).
+//
+// It is made once per program, and again when it is gone or changed: a cache may be emptied at any time, a temporary
+// folder cleaned.
+func execOnly(src string) (string, error) {
+	execOnlies.Lock()
+	defer execOnlies.Unlock()
+	key := src + "\x00" + os.Getenv("CACHE_DIRECTORY")
+	c, ok := execOnlies.m[key]
+	if ok && stillExecOnly(c) {
+		return c.path, nil
+	}
+	dir, err := execOnlyDir(c.path)
+	if err != nil {
+		return "", err
+	}
+	if c, err = copyProgram(src, dir); err != nil {
+		return "", err
+	}
+	execOnlies.m[key] = c
+	return c.path, nil
+}
+
+// execOnlyDir is the folder for a copy that was at was (if anywhere): the unit's CacheDirectory, if it is the agent's
+// and no one else may write it, or a temporary folder of mode 0711, the one it was in if it is still so.
+func execOnlyDir(was string) (string, error) {
+	if dir := os.Getenv("CACHE_DIRECTORY"); dir != "" {
+		var st syscall.Stat_t
+		if err := syscall.Stat(dir, &st); err != nil {
+			return "", err
+		}
+		if int(st.Uid) != os.Geteuid() || st.Mode&0o022 != 0 || st.Mode&syscall.S_IFMT != syscall.S_IFDIR {
+			return "", fmt.Errorf("%s isn't a folder only the agent may write", dir)
+		}
+		return dir, nil
+	}
+	if was != "" {
+		var st syscall.Stat_t
+		if dir := filepath.Dir(was); syscall.Lstat(dir, &st) == nil && int(st.Uid) == os.Geteuid() && st.Mode&0o7777 == 0o711 && st.Mode&syscall.S_IFMT == syscall.S_IFDIR {
+			return dir, nil
+		}
+	}
+	dir, err := os.MkdirTemp("", "homerslab-reader-")
+	if err != nil {
+		return "", err
+	}
+	if err := os.Chmod(dir, 0o711); err != nil {
+		os.RemoveAll(dir)
+		return "", err
+	}
+	return dir, nil
+}
+
+// stillExecOnly says whether c is as the agent made it: a file of its own, mode 0711, of its size.
+func stillExecOnly(c execCopy) bool {
+	var st syscall.Stat_t
+	if err := syscall.Lstat(c.path, &st); err != nil {
+		return false
+	}
+	return st.Mode&syscall.S_IFMT == syscall.S_IFREG && st.Mode&0o7777 == 0o711 && int(st.Uid) == os.Geteuid() && st.Size == c.size
+}
+
+// copyProgram copies src into dir as read-project, mode 0711: written to a new file, then renamed over the old one, so
+// that a child running the old one keeps it, and no file being written is ever run (which fails while it is open).
+func copyProgram(src, dir string) (execCopy, error) {
+	in, err := os.Open(src)
+	if err != nil {
+		return execCopy{}, err
+	}
+	defer in.Close()
+	// No fork while the copy is open for writing: a child forked meanwhile would hold it until its own exec, and the
+	// copy's exec would fail (ETXTBSY) while it does. Forks wait for the fork lock's readers.
+	syscall.ForkLock.RLock()
+	defer syscall.ForkLock.RUnlock()
+	out, err := os.CreateTemp(dir, ".read-project-")
+	if err != nil {
+		return execCopy{}, err
+	}
+	defer os.Remove(out.Name()) // once renamed, nothing
+	n, err := io.Copy(out, in)
+	if err == nil {
+		err = out.Chmod(0o711)
+	}
+	if cerr := out.Close(); err == nil {
+		err = cerr
+	}
+	p := filepath.Join(dir, "read-project")
+	if err == nil {
+		err = os.Rename(out.Name(), p)
+	}
+	if err != nil {
+		return execCopy{}, err
+	}
+	return execCopy{path: p, size: n}, nil
+}
+
+// suidDumpableFile is fs.suid_dumpable. Tests replace it.
+var suidDumpableFile = "/proc/sys/fs/suid_dumpable"
+
+// execOnlyHolds says whether the kernel starts a program its process can't read not dumpable: with fs.suid_dumpable
+// 0 or 2, not 1 ("debug"), where it leaves it dumpable as any other.
+func execOnlyHolds() error {
+	b, err := os.ReadFile(suidDumpableFile)
+	if err != nil {
+		return err
+	}
+	if v := strings.TrimSpace(string(b)); v != "0" && v != "2" {
+		return fmt.Errorf("fs.suid_dumpable is %q, where a read's child would start dumpable", v)
+	}
+	return nil
+}
+
+// oomMu makes one read's child start at a time first in line for the OOM killer (startChild).
+var oomMu sync.Mutex
+
+// startChild starts a read's child first in line for the OOM killer (oom_score_adj 1000). The child can't set that
+// itself: it starts not dumpable (execOnly), so its /proc files are root's. It inherits the agent's at the fork, so the
+// agent raises its own for as long as the start takes, then puts it back, which needs no capability since it was no
+// lower before. Another child the agent starts in that moment inherits it too, which only makes it the first killed.
+func startChild(cmd *exec.Cmd) error {
+	oomMu.Lock()
+	defer oomMu.Unlock()
+	const file = "/proc/self/oom_score_adj"
+	was, err := os.ReadFile(file)
+	if err != nil {
+		return fmt.Errorf("oom_score_adj: %w", err)
+	}
+	if err := os.WriteFile(file, []byte("1000"), 0); err != nil {
+		return fmt.Errorf("oom_score_adj: %w", err)
+	}
+	// Back to what it was, which can't fail for want of CAP_SYS_RESOURCE: the kernel refuses only a value below the
+	// least one a process with that capability set, and the agent's was never below it.
+	defer os.WriteFile(file, was, 0) //nolint:errcheck
+	return cmd.Start()
 }
 
 var (
@@ -746,14 +913,17 @@ func newReads(exe string) *reads {
 }
 
 // readCredential is who a read's child runs as: when the agent is root, homerslab-read (readUser) with no groups, or
-// errNoReadUser, so that the agent refuses to read rather than run the child as anyone else; otherwise nil, the
-// agent's own user.
+// errNoReadUser, so that the agent refuses to read rather than run the child as anyone else, and an error where the
+// child would start dumpable (execOnlyHolds); otherwise nil, the agent's own user.
 func readCredential() (*syscall.Credential, error) {
 	if os.Geteuid() != 0 {
 		return nil, nil
 	}
 	uid, gid, err := readIDs()
 	if err != nil {
+		return nil, err
+	}
+	if err := execOnlyHolds(); err != nil {
 		return nil, err
 	}
 	return &syscall.Credential{Uid: uid, Gid: gid, Groups: []uint32{}}, nil
@@ -828,11 +998,24 @@ func (rs *reads) read(ctx context.Context, name string, file []byte) (engine.Pro
 		return engine.Project{}, errBusy
 	}
 	defer func() { <-rs.slot }()
-	argv, err := readCommand(rs.exe)
+	// Then a place among the children alive, before anything else: with as many alive as reads may have, those left
+	// behind stopped among them, the read is busy and makes nothing.
+	select {
+	case rs.live <- struct{}{}:
+	default:
+		return engine.Project{}, errBusy
+	}
+	started := false
+	defer func() {
+		if !started {
+			<-rs.live
+		}
+	}()
+	cred, err := readCredential()
 	if err != nil {
 		return engine.Project{}, fmt.Errorf("%w: %w", errNoReader, err)
 	}
-	cred, err := readCredential()
+	argv, err := readArgv(rs.exe, cred)
 	if err != nil {
 		return engine.Project{}, fmt.Errorf("%w: %w", errNoReader, err)
 	}
@@ -849,13 +1032,7 @@ func (rs *reads) read(ctx context.Context, name string, file []byte) (engine.Pro
 	cmd.Stdin = bytes.NewReader(file)
 	var out, errOut capped
 	cmd.Stdout, cmd.Stderr = &out, &errOut
-	select {
-	case rs.live <- struct{}{}:
-	default:
-		return engine.Project{}, errBusy // as many children left behind, stopped, as reads may have
-	}
-	if err := cmd.Start(); err != nil {
-		<-rs.live
+	if err := startChild(cmd); err != nil {
 		if ctx.Err() != nil {
 			return engine.Project{}, errReadTimeout
 		}
@@ -864,6 +1041,7 @@ func (rs *reads) read(ctx context.Context, name string, file []byte) (engine.Pro
 	// A child that is stopped (SIGSTOP) runs neither its deadline nor its control pipe, its CPU limit doesn't count,
 	// and a root agent without CAP_KILL can't end it, so Wait could block for good (#183). Past the deadline and the
 	// child's WaitDelay, the slot is free again; Wait goes on in its goroutine and reaps the child whenever it ends.
+	started = true // its place among the children alive is freed once it is reaped
 	waited := make(chan error, 1)
 	go func() {
 		err := cmd.Wait()
@@ -909,6 +1087,8 @@ func (rs *reads) read(ctx context.Context, name string, file []byte) (engine.Pro
 		return engine.Project{}, compose.ErrNotOurs
 	case "not-plain":
 		return engine.Project{}, fmt.Errorf("%w (%s)", compose.ErrNotPlain, res.Detail)
+	case "off-floor":
+		return engine.Project{}, fmt.Errorf("%w (%s)", compose.ErrOffFloor, res.Detail)
 	default:
 		return engine.Project{}, errors.New(res.Detail)
 	}
