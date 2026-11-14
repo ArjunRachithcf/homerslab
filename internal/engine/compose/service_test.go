@@ -49,6 +49,18 @@ func TestTheReaderIsADryRunWithNoStream(t *testing.T) {
 	}
 }
 
+// The apps' status, health and logs come from a service that is no dry run at all, and has no stream (#19): never the
+// SDK's dry run with streams, which would apply what it previews.
+func TestTheEngineIsNoDryRunAndHasNoStream(t *testing.T) {
+	testenv.Isolate(t)
+	if o := runtimeOptions; o.dryRun || o.out != nil || o.err != nil {
+		t.Errorf("the engine's service is %+v, want no dry run and no stream", o)
+	}
+	if _, err := NewEngine(NoEngine); err != nil {
+		t.Errorf("making the engine: %v", err)
+	}
+}
+
 // Only this adapter imports the Compose SDK, and only service.go sets the SDK's service options, so no other code can
 // pair a dry run with a stream (Compose SDK spike, pinning rule 5).
 func TestOnlyTheAdapterUsesTheSDK(t *testing.T) {

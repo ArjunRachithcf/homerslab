@@ -1,0 +1,22 @@
+# Written by HomersLab's agent, from install plan p-8c125cd2f9f38dfdd95c9c0ba3cd2663. Never edit by hand.
+# What HomersLab adds to BentoPDF's own compose file, as the second file of the standard compose command (ADR 0014):
+#   - every service: no restart policy (the app's unit restarts the app), at the app's own SELinux level;
+#   - the app's one upstream, a fixed address on a network of its own, which only the edge and the agent may open;
+#   - its secrets, as files its unit copies from the credentials the agent sealed.
+name: "homerslab-bentopdf"
+services:
+  "web":
+    restart: "no"
+    security_opt:
+      - "label=level:s0:c600,c601"
+    networks:
+      "default": {}
+      "homerslab-upstream":
+        ipv4_address: "172.31.240.2"
+networks:
+  "homerslab-upstream":
+    driver: bridge
+    ipam:
+      config:
+        - subnet: "172.31.240.0/28"
+          gateway: "172.31.240.1"

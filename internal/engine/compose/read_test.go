@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -48,9 +49,44 @@ func TestAProjectIsReadThroughTheSDKWithoutAnEngine(t *testing.T) {
 	want := engine.Project{Name: "homerslab-example", Services: []engine.Service{
 		{Name: "db", Image: "docker.io/library/postgres:16@sha256:2222222222222222222222222222222222222222222222222222222222222222"},
 		{Name: "web", Image: "ghcr.io/example/web:1.2.3@sha256:1111111111111111111111111111111111111111111111111111111111111111"},
-	}}
-	if len(got.Services) != 2 || got.Name != want.Name || got.Services[0] != want.Services[0] || got.Services[1] != want.Services[1] {
+	}, Secrets: []string{"db-password"}}
+	if !reflect.DeepEqual(got, want) {
 		t.Errorf("read\n %+v\nwant %+v", got, want)
+	}
+}
+
+// What installing must see of a project before it wires it (#19): the networks each service names, its network mode,
+// the ports it would publish on the host, and the bind mounts it asks the engine to relabel for SELinux.
+func TestAProjectSaysWhatInstallingChecks(t *testing.T) {
+	testenv.Isolate(t)
+	file := `
+services:
+  web:
+    image: ghcr.io/example/web:1@sha256:1111111111111111111111111111111111111111111111111111111111111111
+    ports: ["127.0.0.1:8080:80", "9000"]
+    networks: [front, back]
+    volumes:
+      - /srv/a:/a:z
+      - /srv/b:/b:Z
+      - /srv/c:/c:ro
+      - data:/data
+  db:
+    image: docker.io/library/postgres:16@sha256:2222222222222222222222222222222222222222222222222222222222222222
+    network_mode: host
+networks: {front: {}, back: {}}
+volumes: {data: {}}
+`
+	got, err := reader(t).Read(context.Background(), "homerslab-example", []byte(file))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []engine.Service{
+		{Name: "db", Image: "docker.io/library/postgres:16@sha256:2222222222222222222222222222222222222222222222222222222222222222", NetworkMode: "host"},
+		{Name: "web", Image: "ghcr.io/example/web:1@sha256:1111111111111111111111111111111111111111111111111111111111111111",
+			Networks: []string{"back", "front"}, Published: []string{"127.0.0.1:8080:80/tcp", "9000/tcp"}, Relabelled: []string{"/srv/a", "/srv/b"}},
+	}
+	if !reflect.DeepEqual(got.Services, want) {
+		t.Errorf("read\n %+v\nwant %+v", got.Services, want)
 	}
 }
 

@@ -2,6 +2,7 @@ package compose
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -10,6 +11,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/compose-spec/compose-go/v2/cli"
@@ -94,11 +96,41 @@ func (r *Reader) load(ctx context.Context, name string, file []byte) (engine.Pro
 		return engine.Project{}, fmt.Errorf("%w: a service only a profile runs", ErrNotPlain)
 	}
 	out := engine.Project{Name: p.Name, Services: []engine.Service{}}
+	for name := range p.Secrets {
+		out.Secrets = append(out.Secrets, name)
+	}
+	slices.Sort(out.Secrets)
 	for _, s := range p.Services {
 		if s.Extends != nil {
 			return engine.Project{}, fmt.Errorf("%w: %s extends another service", ErrNotPlain, s.Name)
 		}
-		out.Services = append(out.Services, engine.Service{Name: s.Name, Image: s.Image})
+		svc := engine.Service{Name: s.Name, Image: s.Image, NetworkMode: s.NetworkMode}
+		if s.NetworkMode == "" {
+			for n := range s.Networks {
+				if n != "default" || len(s.Networks) > 1 {
+					svc.Networks = append(svc.Networks, n)
+				}
+			}
+			slices.Sort(svc.Networks)
+		}
+		for _, port := range s.Ports {
+			if port.Published == "" {
+				// Compose publishes a port without a host port at one the engine picks.
+				svc.Published = append(svc.Published, fmt.Sprintf("%d/%s", port.Target, cmp.Or(port.Protocol, "tcp")))
+				continue
+			}
+			pub := port.Published + ":" + strconv.Itoa(int(port.Target))
+			if port.HostIP != "" {
+				pub = port.HostIP + ":" + pub
+			}
+			svc.Published = append(svc.Published, pub+"/"+cmp.Or(port.Protocol, "tcp"))
+		}
+		for _, v := range s.Volumes {
+			if v.Type == "bind" && v.Bind != nil && v.Bind.SELinux != "" {
+				svc.Relabelled = append(svc.Relabelled, v.Source)
+			}
+		}
+		out.Services = append(out.Services, svc)
 	}
 	slices.SortFunc(out.Services, func(a, b engine.Service) int { return strings.Compare(a.Name, b.Name) })
 	return out, nil
