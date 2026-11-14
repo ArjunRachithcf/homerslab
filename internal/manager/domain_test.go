@@ -499,8 +499,9 @@ func TestAdminAnswersAtItsNameOnly(t *testing.T) {
 		t.Errorf("before the domain: %d", rec.Code)
 	}
 	throughDomain(t, p, b)
-	if rec := get("admin.example.test:9443"); rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "<title>Admin</title>") {
-		t.Errorf("Admin at its name: %d %s", rec.Code, rec.Body)
+	// Signed out, Admin sends the browser to the household account's sign-in (#17).
+	if rec := get("admin.example.test:9443"); rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != "/auth/sign-in" {
+		t.Errorf("Admin at its name: %d %s", rec.Code, rec.Header())
 	}
 	for _, host := range []string{"photos.example.test", "admin.other.test", "192.168.1.20"} {
 		if rec := get(host); rec.Code != http.StatusMisdirectedRequest {

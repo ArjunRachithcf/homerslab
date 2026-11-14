@@ -116,6 +116,29 @@ func Run(t *testing.T, w World, ms Machines, want mesh.Report) mesh.Mesh {
 		return m
 	}
 
+	t.Run("a one-time key for a person's device puts it in their role's group (#17)", func(t *testing.T) {
+		k, err := m.NewDeviceKey(ctx, mesh.Admin, "first")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if k.Value == "" || k.ExpiresAt.After(time.Now().Add(mesh.JoinKeyLife+time.Minute)) {
+			t.Errorf("the device key: expires %v", k.ExpiresAt)
+		}
+		if _, err := m.NewDeviceKey(ctx, mesh.Role("superuser"), "x"); err == nil {
+			t.Error("a key for a role that isn't one")
+		}
+		// Asked again, setup makes a new key and revokes the older one: it joins nothing any more.
+		if err := m.RevokeKey(ctx, k.ID); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := w.Join(t, ms.Second, k); err == nil {
+			t.Error("a machine joined with a revoked device key")
+		}
+		if err := m.RevokeKey(ctx, k.ID); err != nil {
+			t.Errorf("revoking it again: %v", err)
+		}
+	})
+
 	t.Run("the policies hold between machines", func(t *testing.T) {
 		w.Listen(t, ms.Primary, 443)
 		w.Listen(t, ms.Primary, 22)

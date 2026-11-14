@@ -237,6 +237,14 @@ var migrations = []string{
 	// A step's revision: how many times it changed, so an answer made from a view of the step that is out of date (a
 	// tab opened before another changed it) is refused instead of overwriting the newer one (#110).
 	`ALTER TABLE setup_step ADD COLUMN revision INTEGER NOT NULL DEFAULT 0;`,
+	// Admin's sessions, after a sign-in with the household account (#17): only their tokens' hashes.
+	`CREATE TABLE admin_session (
+		token_hash BLOB PRIMARY KEY,
+		username   TEXT NOT NULL,
+		created_at INTEGER NOT NULL,
+		expires_at INTEGER NOT NULL,
+		revoked_at INTEGER
+	);`,
 }
 
 // Moment is when something happened: by the wall clock, for display and audit, and by the time since the machine
@@ -613,4 +621,28 @@ func (s *Store) Plan(ctx context.Context, id string) ([]byte, error) {
 		return nil, ErrNotFound
 	}
 	return body, err
+}
+
+// NewAdminSession keeps a new Admin session's token hash, for a person, until expires.
+func (s *Store) NewAdminSession(ctx context.Context, tokenHash []byte, username string, created, expires time.Time) error {
+	_, err := s.db.ExecContext(ctx, `INSERT INTO admin_session (token_hash, username, created_at, expires_at) VALUES (?, ?, ?, ?)`,
+		tokenHash, username, created.UnixMilli(), expires.UnixMilli())
+	return err
+}
+
+// AdminSession is the person a live Admin session is for, or ErrNotFound.
+func (s *Store) AdminSession(ctx context.Context, tokenHash []byte, now time.Time) (string, error) {
+	var u string
+	err := s.db.QueryRowContext(ctx, `SELECT username FROM admin_session WHERE token_hash = ? AND revoked_at IS NULL AND expires_at > ? AND created_at <= ?`,
+		tokenHash, now.UnixMilli(), now.UnixMilli()).Scan(&u)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", ErrNotFound
+	}
+	return u, err
+}
+
+// EndAdminSession revokes an Admin session.
+func (s *Store) EndAdminSession(ctx context.Context, tokenHash []byte, now time.Time) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE admin_session SET revoked_at = ? WHERE token_hash = ? AND revoked_at IS NULL`, now.UnixMilli(), tokenHash)
+	return err
 }

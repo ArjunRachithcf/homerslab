@@ -49,6 +49,9 @@ type EdgeSites struct {
 	Port int `json:"port"`
 	// Admin is Admin's name, admin.<main domain>, on the primary; "" elsewhere.
 	Admin string `json:"admin,omitempty"`
+	// SignIn is the sign-in's name, auth.<main domain>, on the primary once the manager has closed the provider's own
+	// first-admin flow; "" until then and elsewhere.
+	SignIn string `json:"signIn,omitempty"`
 }
 
 // edgeState is what the agent keeps of its edge, in agent.json.
@@ -98,6 +101,9 @@ func (a *Agent) edgeConfig() (cfg []byte, ok bool, err error) {
 	}
 	if e.Admin != "" {
 		c.Admin = &edge.Site{Name: e.Admin, Upstream: a.cfg.Edge.AdminUpstream}
+	}
+	if e.SignIn != "" && a.state.SignIn != nil {
+		c.SignIn = &edge.Site{Name: e.SignIn, Dial: a.upstream()}
 	}
 	b, err := edge.Render(c)
 	return b, err == nil, err
@@ -149,7 +155,8 @@ func (a *Agent) putEdge(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusBadRequest, "not-json")
 		return
 	}
-	if req.Port <= 0 || req.Port > 65535 || (req.Admin != "" && !domainName.MatchString(req.Admin)) {
+	if req.Port <= 0 || req.Port > 65535 || (req.Admin != "" && !domainName.MatchString(req.Admin)) ||
+		(req.SignIn != "" && !domainName.MatchString(req.SignIn)) {
 		fail(w, http.StatusBadRequest, "bad-sites")
 		return
 	}

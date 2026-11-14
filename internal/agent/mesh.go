@@ -147,10 +147,10 @@ func (a *Agent) run(ctx context.Context, name string, args ...string) error {
 	return err
 }
 
-// RootWrites are the folders, under the machine's root, where the agent writes: systemd drop-ins for the mesh client
-// and the edge. Its unit makes them writable (ReadWritePaths, under ProtectSystem=strict) and tmpfiles.d makes them;
+// RootWrites are the folders, under the machine's root, where the agent writes: systemd drop-ins for the mesh client,
+// the edge and the sign-in. Its unit makes them writable (ReadWritePaths, under ProtectSystem=strict) and tmpfiles.d makes them;
 // writeAt refuses any other.
-var RootWrites = []string{filepath.Dir(netbird.DropInPath), "etc/systemd/system/" + DefaultEdge.Unit + ".d"}
+var RootWrites = []string{filepath.Dir(netbird.DropInPath), "etc/systemd/system/" + DefaultEdge.Unit + ".d", "etc/systemd/system/" + SignInUnit + ".d"}
 
 // writeAt writes a file under the machine's root, in one of RootWrites.
 func (a *Agent) writeAt(rel string, b []byte) error {

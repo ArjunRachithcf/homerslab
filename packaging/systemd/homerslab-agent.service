@@ -35,7 +35,9 @@ RestartSec=2s
 #     machine's resolver still answers (AF_INET, AF_INET6);
 #   - seals the manager's credentials with systemd-creds, in its state directory, with the TPM where there is one;
 #   - since #16, seals the edge's certificates, writes the edge's drop-in, restarts the edge (systemctl) and configures
-#     it through its admin socket (the edge's group).
+#     it through its admin socket (the edge's group);
+#   - since #17, makes and seals the sign-in's secrets, writes its drop-in and restarts it (systemctl), reads its
+#     journal (its own files: root's), and asks its readiness check on the sign-in network.
 # Every file it reads is world-readable or its own, so it reads no one else's files and no home (#71): no
 # CAP_DAC_READ_SEARCH, ProtectHome=yes. Its devices are closed but for the TPM's resource manager, which sealing uses
 # (ADR 0011), so not PrivateDevices, which would hide it.
@@ -52,8 +54,8 @@ RestartSec=2s
 NoNewPrivileges=yes
 CapabilityBoundingSet=CAP_CHOWN CAP_NET_ADMIN CAP_SETUID CAP_SETGID
 ProtectSystem=strict
-# NetBird's and the edge's drop-ins only (agent.RootWrites; the folders come from tmpfiles.d/homerslab.conf).
-ReadWritePaths=/etc/systemd/system/netbird.service.d /etc/systemd/system/homerslab-edge.service.d
+# NetBird's, the edge's and the sign-in's drop-ins only (agent.RootWrites; the folders come from tmpfiles.d/homerslab.conf).
+ReadWritePaths=/etc/systemd/system/netbird.service.d /etc/systemd/system/homerslab-edge.service.d /etc/systemd/system/homerslab-authentik.service.d
 ProtectHome=yes
 PrivateTmp=yes
 DevicePolicy=closed

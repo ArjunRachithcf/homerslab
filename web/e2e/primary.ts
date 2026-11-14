@@ -2,6 +2,7 @@
 // directory with its own HOME, and no container engine anywhere (DOCKER_HOST points at nowhere).
 import { test as base } from '@playwright/test';
 import { type ChildProcess, execFile, spawn } from 'node:child_process';
+import { createHash, randomBytes } from 'node:crypto';
 import { mkdtemp, rm } from 'node:fs/promises';
 import http from 'node:http';
 import net from 'node:net';
@@ -99,15 +100,17 @@ export class Primary {
   static readonly adminName = 'admin.ferreira.family';
 
   /**
-   * Where the browser opens Admin. The edge isn't part of these tests, so a small server stands in for it: it passes
-   * the browser's requests on to Admin's socket as the edge does, at Admin's name over HTTPS (Host, and the page's
-   * own Origin), and Admin's answers back.
+   * Where the browser opens Admin, signed in as Inês. The edge isn't part of these tests, so a small server stands in
+   * for it: it passes the browser's requests on to Admin's socket as the edge does, at Admin's name over HTTPS (Host,
+   * and the page's own Origin), and Admin's answers back. The household account isn't either (passkey.idp.spec.ts
+   * signs in through Authentik), so the stand-in carries an Admin session, as Admin opens one after a sign-in.
    */
   async adminURL(): Promise<string> {
     if (!this.edge) {
+      const session = this.adminSession();
       const edge = http.createServer((req, res) => {
         const own = `http://${req.headers.host ?? ''}`;
-        const headers = { ...req.headers, host: Primary.adminName };
+        const headers = { ...req.headers, host: Primary.adminName, cookie: `__Host-homerslab-session=${session}` };
         if (headers.origin === own) headers.origin = `https://${Primary.adminName}`;
         const up = http.request({ socketPath: this.at('admin.sock'), path: req.url, method: req.method, headers }, (r) => {
           res.writeHead(r.statusCode ?? 502, r.headers);
@@ -121,6 +124,20 @@ export class Primary {
     }
     const { port } = this.edge.address() as net.AddressInfo;
     return `http://127.0.0.1:${port}/store`;
+  }
+
+  // An Admin session for Inês, as a sign-in with the household account opens it: only its token's hash is kept.
+  private adminSession(): string {
+    const token = randomBytes(32).toString('base64url');
+    const db = new DatabaseSync(this.at('manager.db'));
+    try {
+      db.exec('PRAGMA busy_timeout = 5000');
+      db.prepare(`INSERT INTO admin_session (token_hash, username, created_at, expires_at) VALUES (?, 'ines', ?, ?)`)
+        .run(createHash('sha256').update(token).digest(), Date.now() - 60_000, Date.now() + 3_600_000);
+    } finally {
+      db.close();
+    }
+    return token;
   }
 
   // Stands in for setup's domain step, which setup reaches only after the sign-in step (#17): its answer, as the

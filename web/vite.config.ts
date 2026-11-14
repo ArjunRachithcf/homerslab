@@ -1,8 +1,9 @@
 import react from '@vitejs/plugin-react';
 import { defineConfig } from 'vite';
 
-// The pages build into internal/surfaces/dist, which internal/surfaces/embed.go carries into the binary. design/ (the repository's design system)
-// is imported from outside this folder, as the one source of the look.
+// The pages build into internal/surfaces/dist (Admin's account page, first-time setup's last step, with its own build,
+// vite.account.config.ts), which internal/surfaces/embed.go carries into the binary. design/ (the repository's design
+// system) is imported from outside this folder, as the one source of the look.
 export default defineConfig({
   plugins: [react()],
   build: {
