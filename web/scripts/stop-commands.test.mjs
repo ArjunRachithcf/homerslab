@@ -7,6 +7,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { test } from 'node:test';
+import { parseDocument, visit } from 'yaml';
 
 import { commands } from './runner-commands.mjs';
 
@@ -79,91 +80,139 @@ for (const name of ['vuln.yml', 'ci.yml']) {
   });
 }
 
-// ci.yml's jobs, by id.
-const jobs = () => {
-  const ci = workflow('ci.yml');
-  const at = [...ci.matchAll(/\n {2}([a-z][a-z0-9-]*):\n/g)];
-  return at.map((m, i) => [m[1], ci.slice(m.index, at[i + 1]?.index ?? ci.length)]);
-};
+// A workflow, parsed. An anchor or an alias is refused: it could put a setting where the checks below don't look.
+function parseWorkflow(text) {
+  const doc = parseDocument(text, { merge: false });
+  assert.deepEqual(doc.errors.map(String), []);
+  visit(doc, {
+    Alias() { throw new Error('a workflow with an alias'); },
+    Node(_, node) { if (node.anchor) throw new Error('a workflow with an anchor'); },
+  });
+  return doc.toJS();
+}
+const jobs = () => Object.entries(parseWorkflow(workflow('ci.yml')).jobs);
 
 const GO_CMD = /\bgo (-C \S+ )?(vet|test|build|run|install|generate|list|get|tool|mod)\b/;
 // Settings that let go reach a source without the proxy off (GONOPROXY=* with GOPROXY=off still fetches over git),
-// or skip the checksum database, anywhere in a job: in env:, in a step, or inline in run: text.
-const LEAKS = /\b(GONOPROXY|GOPRIVATE|GONOSUMDB|GONOSUMCHECK|GOINSECURE|GOSUMDB)\b|\bGOFLAGS\b(?!: -buildvcs=false\n)/; // GOFLAGS only as the jobs set it
+// skip the checksum database, or make the shell read a file before every command.
+const BAN = /GONOPROXY|GOPRIVATE|GONOSUMDB|GONOSUMCHECK|GOINSECURE|GOSUMDB|BASH_ENV/;
 const FETCH_RUN = /^sh (\.\.\/)?\.github\/scripts\/stop-commands\.sh go mod (download|tidy -diff)$/;
+const GOPROXY_ADDRESS = 'https://proxy.golang.org,direct';
+const isGoJob = (job) => GO_CMD.test(JSON.stringify(job));
 
-// The fetch step is the one step whose only run: is exactly the wrapper line, nothing else in it.
-const isFetch = (step) => {
-  const runs = [...step.matchAll(/^ *(?:- )?run:[ \t]*(.*)$/gm)];
-  return runs.length === 1 && FETCH_RUN.test(runs[0][1]);
-};
-
-// What is wrong with a Go job's text; [] when nothing. GOPROXY may appear only as the job's `GOPROXY: "off"` and
-// as the fetch step's `GOPROXY: https://proxy.golang.org,direct`: any other occurrence (a later step's env, inline,
-// printf, a heredoc into $GITHUB_ENV) fails.
-function goJobProblems(body) {
+// What is wrong with a parsed Go job; [] when nothing. GOPROXY appears only as the job's "off" and as the fetch
+// step's address; the fetch step has exactly a name, that env and the wrapper line as its run, and comes first.
+function goJobProblems(job) {
   const problems = [];
-  if (!/\n {4}env:\n( {6}.*\n)* {6}GOPROXY: "off"\n/.test(body)) problems.push('GOPROXY not off for the job');
-  if (LEAKS.test(body)) problems.push('a setting that bypasses the proxy or the sums');
-  const [head, ...steps] = body.split('\n      - ');
-  let rest = head.replace('\n      GOPROXY: "off"\n', '\n');
-  for (const step of steps) {
-    rest += '\n' + (isFetch(step) ? step.replace(/^ +GOPROXY: https:\/\/proxy\.golang\.org,direct$/m, '') : step);
-  }
-  if (/GOPROXY/.test(rest)) problems.push('GOPROXY appears where only the job and the fetch step may set it');
+  const steps = Array.isArray(job.steps) ? job.steps : [];
+  const envs = [job.env, job.container?.env, ...steps.map((step) => step.env)].filter((env) => env !== undefined);
+  if (envs.some((env) => typeof env !== 'object' || env === null || Array.isArray(env))) problems.push('an env that is not a map');
+  if (job.env?.GOPROXY !== 'off') problems.push('GOPROXY not off for the job');
+  const text = JSON.stringify(job);
+  if (BAN.test(text)) problems.push('a setting that bypasses the proxy, the sums or the shell');
+  if ((text.match(/GOPROXY/g) ?? []).length !== 2) problems.push('GOPROXY appears where only the job and the fetch step may set it');
+  const flags = envs.filter((env) => env && typeof env === 'object' && env.GOFLAGS === '-buildvcs=false').length;
+  if ((text.match(/GOFLAGS/g) ?? []).length !== flags) problems.push('GOFLAGS other than -buildvcs=false');
+  const fetches = steps.filter((step) => step.env && typeof step.env === 'object' && 'GOPROXY' in step.env);
+  const fetch = fetches[0];
+  if (fetches.length !== 1) problems.push('not exactly one fetch step');
+  else if (Object.keys(fetch).sort().join() !== 'env,name,run' || typeof fetch.name !== 'string'
+    || Object.keys(fetch.env).join() !== 'GOPROXY' || fetch.env.GOPROXY !== GOPROXY_ADDRESS
+    || typeof fetch.run !== 'string' || !FETCH_RUN.test(fetch.run)) problems.push('the fetch step is not exactly the wrapper line');
+  const firstGo = steps.findIndex((step) => step !== fetch && GO_CMD.test(JSON.stringify(step)));
+  if (firstGo >= 0 && steps.indexOf(fetch) > firstGo) problems.push('a Go step before the fetch');
   return problems;
 }
 
+// A job from text, for the cases below.
+const FETCH_STEP = `      - name: fetch
+        env:
+          GOPROXY: https://proxy.golang.org,direct
+        run: sh .github/scripts/stop-commands.sh go mod download
+`;
+const jobOf = ({ env = '      GOPROXY: "off"\n', fetch = FETCH_STEP, steps = '      - run: go test ./...\n' } = {}) =>
+  parseWorkflow(`jobs:\n  j:\n    env:\n${env}    steps:\n${fetch}${steps}`).jobs.j;
+const problemsOf = (parts) => goJobProblems(jobOf(parts));
+
 test('a Go command is found by every verb and form the filter lists, and not by a lookalike', () => {
   for (const verb of ['vet', 'test', 'build', 'run', 'install', 'generate', 'list', 'get', 'tool', 'mod verify'])
-    assert.match(`run: go ${verb} ./...`, GO_CMD);
-  assert.match('run: go -C tools build ./x', GO_CMD);
-  assert.doesNotMatch('run: gopher', GO_CMD);
+    assert.ok(isGoJob({ run: `go ${verb} ./...` }), verb);
+  assert.ok(isGoJob({ run: 'go -C tools build ./x' }));
+  assert.ok(!isGoJob({ run: 'gopher' }));
+});
+
+test('a Go job that is as it should be has no problem', () => {
+  assert.deepEqual(problemsOf(), []);
 });
 
 test('a Go job that leaks the proxy setting is caught, in every form', () => {
-  const ok = '\n  job:\n    env:\n      GOPROXY: "off"\n    steps:\n      - run: go test ./...\n';
-  assert.deepEqual(goJobProblems(ok), []);
-  const bad = (text) => goJobProblems(ok.replace('      - run: go test ./...\n', text));
-  assert.ok(bad('      - run: GOPROXY=off GONOPROXY=* go get x\n').length);
-  assert.ok(bad('      - run: go get x\n        env:\n          GONOPROXY: "*"\n').length);
-  assert.ok(bad('      - run: go test ./...\n        env:\n          GOPRIVATE: x\n').length);
-  assert.ok(bad('      - run: go test ./...\n        env:\n          GOFLAGS: -insecure\n').length);
-  assert.ok(bad('      - run: go test ./...\n        env:\n          GOPROXY: https://x\n').length);
-  assert.ok(bad('      - run: go test ./...\n        env:\n          "GOPROXY": x\n').length);
-  assert.ok(bad('      - run: go test ./...\n        env:\n          GOPROXY : x\n').length);
-  assert.ok(bad('      - run: |\n          GOPROXY<<X >> "$GITHUB_ENV"\n          https://x\n          X\n').length);
-  assert.ok(bad('      - run: printf -v GOPROXY x\n').length);
-  const fetch = '      - env:\n          GOPROXY: https://proxy.golang.org,direct\n        run: sh .github/scripts/stop-commands.sh go mod tidy -diff\n';
-  assert.deepEqual(bad(fetch), []);
-  // the fetch step with more in its run: goes on with the proxy on
-  assert.ok(bad(fetch.replace('run: sh', 'run: |\n          sh').concat('          go test ./...\n')).length);
-  // a lookalike that only mentions the wrapper
-  assert.ok(bad('      - env:\n          GOPROXY: https://proxy.golang.org,direct\n        run: go vet ./... # stop-commands.sh go mod download\n').length);
+  const step = (extra) => `      - run: go test ./...\n${extra}`;
+  const cases = {
+    'GONOPROXY inline': '      - run: GOPROXY=off GONOPROXY=* go get x\n',
+    'GONOPROXY in a step env': step('        env:\n          GONOPROXY: "*"\n'),
+    'GOPRIVATE': step('        env:\n          GOPRIVATE: x\n'),
+    'GONOSUMDB': step('        env:\n          GONOSUMDB: x\n'),
+    'GOINSECURE': step('        env:\n          GOINSECURE: x\n'),
+    'GOSUMDB': step('        env:\n          GOSUMDB: off\n'),
+    'GOFLAGS -insecure': step('        env:\n          GOFLAGS: -insecure\n'),
+    'GOPROXY in a later step': step('        env:\n          GOPROXY: https://x\n'),
+    'GOPROXY as a quoted key': step('        env:\n          "GOPROXY": x\n'),
+    'GOPROXY with a space before the colon': step('        env:\n          GOPROXY : x\n'),
+    'a heredoc into GITHUB_ENV': '      - run: |\n          GOPROXY<<X >> "$GITHUB_ENV"\n          https://x\n          X\n',
+    'printf -v': '      - run: printf -v GOPROXY x\n',
+    'BASH_ENV in a step': step('        env:\n          BASH_ENV: /tmp/x\n'),
+  };
+  for (const [name, steps] of Object.entries(cases)) assert.notDeepEqual(problemsOf({ steps }), [], name);
+  assert.notDeepEqual(problemsOf({ env: '      GOPROXY: "off"\n      BASH_ENV: /tmp/x\n' }), [], 'BASH_ENV for the job');
+  assert.notDeepEqual(problemsOf({ env: '      GOPROXY: "off"\n      GONOPROXY: "*"\n' }), [], 'GONOPROXY for the job');
+  assert.notDeepEqual(problemsOf({ env: '      GOPROXY: https://x\n' }), [], 'the job with the proxy on');
+  assert.deepEqual(problemsOf({ env: '      GOPROXY: "off"\n      GOFLAGS: -buildvcs=false\n' }), []);
+});
+
+test('the fetch step is exactly name, the address and the wrapper line, and comes first', () => {
+  const fetch = (run, extra = '') => `      - name: fetch\n        env:\n          GOPROXY: https://proxy.golang.org,direct\n${extra}        run: ${run}\n`;
+  const wrapper = 'sh .github/scripts/stop-commands.sh go mod download';
+  const cases = {
+    'a run: | block with go test after it': fetch(`|\n          ${wrapper}\n          go test ./...`),
+    'a continued plain scalar': fetch(`${wrapper}\n          go test ./...`),
+    'a lookalike that only mentions the wrapper': fetch('go vet ./... # stop-commands.sh go mod download'),
+    'a shell: on it': fetch(wrapper, '        shell: bash {0}\n'),
+    'an if: on it': fetch(wrapper, '        if: always()\n'),
+    'a working-directory: on it': fetch(wrapper, '        working-directory: x\n'),
+    'a different go mod': fetch('sh .github/scripts/stop-commands.sh go mod download all'),
+    'no wrapper': fetch('go mod download'),
+    'no name': '      - env:\n          GOPROXY: https://proxy.golang.org,direct\n        run: sh .github/scripts/stop-commands.sh go mod download\n',
+    'another address': fetch(wrapper).replace('proxy.golang.org,direct', 'example.com'),
+  };
+  for (const [name, text] of Object.entries(cases)) assert.notDeepEqual(problemsOf({ fetch: text }), [], name);
+  assert.notDeepEqual(problemsOf({ fetch: '' }), [], 'no fetch step');
+  assert.notDeepEqual(problemsOf({ fetch: '', steps: `      - run: go test ./...\n${FETCH_STEP}` }), [], 'the fetch after a Go step');
+  assert.notDeepEqual(problemsOf({ steps: `${FETCH_STEP}` }), [], 'two fetch steps');
+});
+
+test('a workflow with an anchor or an alias is refused', () => {
+  assert.throws(() => parseWorkflow('jobs:\n  j:\n    env: &e\n      GOPROXY: "off"\n    steps: []\n'), /anchor/);
+  assert.throws(() => parseWorkflow('a: &x 1\nb: *x\n'), /a(n)? (anchor|alias)/);
+  assert.throws(() => parseWorkflow('jobs:\n  j:\n    env:\n      <<: *x\n'));
 });
 
 test('every Go job fetches its modules under the wrapper first, then runs with the proxy off', () => {
-  const goJobs = jobs().filter(([, body]) => GO_CMD.test(body));
+  const goJobs = jobs().filter(([, job]) => isGoJob(job));
   assert.ok(goJobs.length >= 5, goJobs.map(([id]) => id).join(' '));
-  for (const [job, body] of goJobs) {
-    assert.deepEqual(goJobProblems(body), [], job);
-    assert.match(body, /stop-commands\.sh go mod (download|tidy -diff)\n/, `${job}: fetches its modules first`);
+  for (const [id, job] of goJobs) {
+    assert.deepEqual(goJobProblems(job), [], id);
     // `go mod download all` writes sums into go.sum that go mod tidy -diff then refuses.
-    assert.doesNotMatch(body, /go mod download all/, `${job}: leaves go.sum as it is`);
-    const steps = body.split('\n      - ').slice(1);
-    const goSteps = steps.filter((step) => GO_CMD.test(step) && !isFetch(step));
-    const fetch = steps.findIndex(isFetch);
-    assert.ok(fetch >= 0 && fetch < steps.indexOf(goSteps[0]), `${job}: fetches before it builds`);
+    assert.doesNotMatch(JSON.stringify(job), /go mod download all/, `${id}: leaves go.sum as it is`);
   }
 });
 
 // A suite that drives containers prints their logs when it fails.
 test('every suite that drives containers runs under the wrapper', () => {
-  const suites = jobs().filter(([, body]) => body.includes('HOMERSLAB_TEST_DOCKER_HOST'));
+  const suites = jobs().filter(([, job]) => JSON.stringify(job).includes('HOMERSLAB_TEST_DOCKER_HOST'));
   assert.ok(suites.length >= 2);
-  for (const [job, body] of suites) {
-    const runs = body.split('\n').map((l) => l.trim()).filter((l) => /^run: .*\bgo test\b/.test(l));
-    assert.ok(runs.length > 0, job);
-    for (const run of runs) assert.match(run, /^run: sh \.github\/scripts\/stop-commands\.sh go test /, `${job}: ${run}`);
+  for (const [id, job] of suites) {
+    const runs = job.steps.map((step) => step.run).filter((run) => typeof run === 'string' && /\bgo test\b/.test(run));
+    assert.ok(runs.length > 0, id);
+    for (const run of runs) assert.match(run, /^sh \.github\/scripts\/stop-commands\.sh go test /, `${id}: ${run}`);
   }
 });
