@@ -69,4 +69,6 @@ export type InstalledApp = {
   health: Health; active: boolean; checks: { service: string; kind: 'http' | 'compose'; ok: boolean; detail?: string }[];
 };
 export const applyPlan = (id: string) => call<InstalledApp>('POST', `/api/v1/plans/${encodeURIComponent(id)}/apply`, {});
+/** Starts a step-up for one risky change (#25): where the browser goes for the passkey, which brings it back here. */
+export const stepUp = (action: string) => call<{ to: string }>('POST', '/api/v1/step-up', { action });
 export const getApps = () => call<{ apps: InstalledApp[] }>('GET', '/api/v1/apps');

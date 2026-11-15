@@ -105,6 +105,7 @@ type Manager struct {
 	applying  sync.Mutex  // one plan applied at a time
 	signInMu  sync.Mutex  // one setting-up of the household account at a time
 	attempts  attempts    // sign-ins to Admin under way
+	stepUps   stepUps     // step-ups under way, and the grants they left (#25)
 	backingUp atomic.Bool // a backup run is under way
 	restoring sync.Map    // the apps being restored, by id
 	restores  sync.WaitGroup

@@ -6,6 +6,7 @@
 // What it checks, as a browser sees it (#83, #84):
 //   - the enrolment link makes a passkey whose RP ID is the sign-in's own name, with user verification;
 //   - Admin's client signs the admin in with that passkey, and nothing else;
+//   - a step-up on the live session asks for the passkey again (max_age), and comes back with a code of its own (#25);
 //   - an authenticator that can't verify the person signs nobody in.
 //
 // The virtual authenticator answers at once, a person never does: passkeys.ts holds its answer until the page's own
@@ -23,6 +24,8 @@ type World = {
   redirect: string;
   landing: string;
   out: string; // where this file writes what the browser came back with
+  stepUp: string; // an authorize URL of Admin's client for a step-up, which this browser opens once signed in
+  outStepUp: string; // where this file writes what the step-up came back with
 };
 
 const file = process.env.HOMERSLAB_TEST_SIGNIN;
@@ -44,8 +47,8 @@ let passkey: Record<string, unknown> | null = null;
 // Where Admin's client was sent back, with its code: handed to the suite once both tests are done (it then ends).
 let callback = '';
 
-async function signIn(page: Page, w: World) {
-  await page.goto(w.authorize);
+async function signIn(page: Page, w: World, authorize = w.authorize) {
+  await page.goto(authorize);
   // Authentik also keeps hidden username and password fields, off the screen, for password managers.
   const user = page.getByRole('textbox', { name: 'Email or Username' });
   await user.waitFor({ timeout: 30_000 });
@@ -80,7 +83,35 @@ test('the enrolment link makes a passkey for the sign-in’s own name, and Admin
   await signIn(again, w);
   await again.waitForURL((u) => u.href.startsWith(w.redirect), { timeout: 60_000 });
   callback = again.url();
+  // As the device keeps it: its signature counter now past this sign-in's, which the sign-in checks next time.
+  const { credentials: kept } = await second.cdp.send('WebAuthn.getCredentials', { authenticatorId: second.id });
+  passkey = (kept[0] ?? null) as unknown as Record<string, unknown> | null;
   await later.close();
+});
+
+// In a browser of its own: a new sign-in replaces the session at the sign-in, and the codes it gave before with it.
+test('a step-up on a live session asks for the passkey again, and comes back with its own code (#25)', async ({ browser }) => {
+  const w = world as World;
+  expect(passkey).not.toBeNull();
+  const context = await browser.newContext();
+  await asAPersonWould(context);
+  const page = await context.newPage();
+  const { cdp, id } = await authenticator(context, page, true);
+  await cdp.send('WebAuthn.addCredential', { authenticatorId: id, credential: passkey as never });
+  await signIn(page, w);
+  await page.waitForURL((u) => u.href.startsWith(w.redirect), { timeout: 60_000 });
+
+  // Once the session is older than the step-up's max_age, the sign-in asks for the passkey again, and the browser
+  // comes back with the step-up's own state.
+  const used = async () => (await cdp.send('WebAuthn.getCredentials', { authenticatorId: id })).credentials[0]?.signCount ?? 0;
+  const before = await used();
+  await page.waitForTimeout(7_000);
+  const state = new URL(w.stepUp).searchParams.get('state');
+  await signIn(page, w, w.stepUp);
+  await page.waitForURL((u) => u.href.startsWith(w.redirect) && u.searchParams.get('state') === state, { timeout: 60_000 });
+  expect(await used()).toBeGreaterThan(before);
+  writeFileSync(w.outStepUp, page.url());
+  await context.close();
 });
 
 test('the same passkey, on an authenticator that doesn’t verify the person (a touch alone), signs nobody in', async ({ browser }) => {

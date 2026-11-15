@@ -59,11 +59,14 @@ type fakeSignIn struct {
 	deleted     []string
 	clientFails error
 	made        map[string]bool // the apps' clients the household account holds
+	// others are what people hold besides passkeys, as Credentials lists it (#25); credentials counts its calls.
+	others      map[string][]string
+	credentials int
 }
 
 func newFakeSignIn(t *testing.T) *fakeSignIn {
 	k, _ := rsa.GenerateKey(rand.Reader, 2048)
-	f := &fakeSignIn{t: t, people: map[string]idp.Person{}, passkeys: map[string]int{}, key: k, codes: map[string]map[string]any{}}
+	f := &fakeSignIn{t: t, people: map[string]idp.Person{}, passkeys: map[string]int{}, key: k, codes: map[string]map[string]any{}, others: map[string][]string{}}
 	f.issuer = httptest.NewServer(http.HandlerFunc(f.serve))
 	t.Cleanup(f.issuer.Close)
 	return f
@@ -113,14 +116,14 @@ func (f *fakeSignIn) sign(claims map[string]any) string {
 	return in + "." + base64.RawURLEncoding.EncodeToString(sig)
 }
 
-// code is what the sign-in hands the browser after a person signed in for an authorize URL: just now when the URL
-// asks for a recent sign-in (max_age), as Authentik does, and otherwise on the session they signed in to an hour
-// before.
+// code is what the sign-in hands the browser after a person signed in for an authorize URL: a second from now when
+// the URL asks for a recent sign-in (max_age), as Authentik does once the person answered the passkey prompt, and
+// otherwise on the session they signed in to an hour before.
 func (f *fakeSignIn) code(t *testing.T, authorize, username string, groups ...string) (state, code string) {
 	t.Helper()
 	at := f.now().Add(-time.Hour)
 	if u, err := url.Parse(authorize); err == nil && u.Query().Get("max_age") != "" {
-		at = f.now()
+		at = f.now().Add(time.Second)
 	}
 	return f.codeAt(t, authorize, at, username, groups...)
 }
@@ -223,6 +226,15 @@ func (f *fakeSignIn) Passkeys(_ context.Context, u string) ([]idp.Passkey, error
 		return nil, idp.ErrNoPerson
 	}
 	return make([]idp.Passkey, f.passkeys[u]), nil
+}
+func (f *fakeSignIn) Credentials(_ context.Context, u string) (idp.Credentials, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.credentials++
+	if _, ok := f.people[u]; !ok {
+		return idp.Credentials{}, idp.ErrNoPerson
+	}
+	return idp.Credentials{Passkeys: f.passkeys[u], Others: append([]string{}, f.others[u]...)}, nil
 }
 func (f *fakeSignIn) EnrolmentLink(_ context.Context, u string) (idp.Link, error) {
 	f.mu.Lock()

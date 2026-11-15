@@ -1,10 +1,10 @@
 // Admin: the Store (the catalog, an app's page) and the install plan, a page of its own whose address carries the
 // plan's id. Scripted from the Admin prototype (prototypes/assets/admin-catalog.js); the data comes from the manager.
-import { useCallback, useEffect, useState, type MouseEvent, type ReactNode } from 'react';
+import { useCallback, useEffect, useRef, useState, type MouseEvent, type ReactNode } from 'react';
 import { flushSync } from 'react-dom';
 import { icon } from '../design';
 import { rich, t, type Key } from '../i18n/t';
-import { applyPlan, getApp, getApps, getCatalog, getPlan, makePlan, Refused, type InstalledApp, type Plan, type StoreApp, type Warning } from './api';
+import { applyPlan, getApp, getApps, getCatalog, getPlan, makePlan, Refused, stepUp, type InstalledApp, type Plan, type StoreApp, type Warning } from './api';
 import { and, disk, lower, memory } from './format';
 
 type Route = { page: 'store' } | { page: 'app'; id: string } | { page: 'plan'; id: string } | { page: 'none' };
@@ -449,25 +449,49 @@ function Installed({ p, app }: { p: Plan; app: InstalledApp }) {
   );
 }
 
+function refusal(p: Plan, e: unknown): string {
+  const code = e instanceof Refused ? e.code : 'unknown';
+  const known = ['sign-in-not-ready', 'stale-plan', 'not-ours', 'agent-unreachable', 'client-failed', 'step-up-required'].includes(code);
+  return known ? t(`plan.install.refused.${code}` as Key, { node: p.placement.node, app: p.app.name }) : t('plan.install.refused', { why: code });
+}
+
+function stepUpWhy(back: string): string {
+  return t(back === 'too-soon' || back === 'passkeys-only' ? `plan.stepUp.${back}` as Key : 'plan.stepUp.refused');
+}
+
 function PlanCard({ p }: { p: Plan }) {
   const vars = { app: p.app.name, provider: p.signIn.provider.name, node: p.placement.node };
   const people = p.audience.people.map((x) => x.name);
   const [app, setApp] = useInstalled(p);
-  const [state, setState] = useState<{ busy?: boolean; why?: string }>({});
-  const can = !p.risky && p.signIn.wired;
+  // Back from the passkey (step-up, #25): read once, and taken off the address, so a reload applies nothing again.
+  const [back] = useState(() => {
+    const b = p.risky ? new URLSearchParams(location.search).get('step-up') : null;
+    if (b) history.replaceState(null, '', location.pathname);
+    return b;
+  });
+  const [state, setState] = useState<{ busy?: boolean; why?: string }>(() =>
+    back === 'done' ? { busy: true } : back ? { why: stepUpWhy(back) } : {});
+  const can = p.extras.length === 0 && p.signIn.wired;
+  const apply = useCallback(() => applyPlan(p.id).then((a) => { setApp(a); setState({}); }, (e: unknown) => setState({ why: refusal(p, e) })),
+    [p, setApp]);
+  // A risky plan asks for the passkey first: the sign-in brings the browser back here, approved for this plan alone,
+  // and the plan is applied then.
   const install = async () => {
     setState({ busy: true });
+    if (!p.risky) return apply();
     try {
-      setApp(await applyPlan(p.id));
-      setState({});
+      location.assign((await stepUp(`plan:${p.id}`)).to);
     } catch (e) {
-      const code = e instanceof Refused ? e.code : 'unknown';
-      const key = `plan.install.refused.${code}` as Key;
-      const known = ['sign-in-not-ready', 'stale-plan', 'not-ours', 'agent-unreachable', 'client-failed'].includes(code);
-      setState({ why: known ? t(key, { node: p.placement.node, app: p.app.name }) : t('plan.install.refused', { why: code }) });
+      setState({ why: refusal(p, e) });
     }
   };
-  const why = p.risky ? 'plan.install.risky' : !p.signIn.wired ? 'plan.install.native' : undefined;
+  const applied = useRef(false);
+  useEffect(() => {
+    if (back !== 'done' || applied.current) return;
+    applied.current = true; // once, StrictMode's second run included: the step-up approves one apply
+    void apply();
+  }, [back, apply]);
+  const why = p.extras.length > 0 ? 'plan.install.risky' : !p.signIn.wired ? 'plan.install.native' : undefined;
   return (
     <div className="card plan-card">
       <h2 className="card-title">{t('plan.creates')}</h2>
