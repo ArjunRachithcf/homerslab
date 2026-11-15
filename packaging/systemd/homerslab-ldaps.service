@@ -1,0 +1,49 @@
+# The sign-in listener's LDAPS port (ADR 0020, #204): `homerslab edge ldaps` ends TLS with the household's certificate
+# for the sign-in's name, as its own unprivileged user, and hands each connection on, unread, to the identity
+# provider's LDAP outpost on the sign-in network (packaging/sign-in, service ldap). The certificate and its key are
+# systemd credentials the agent sealed, the edge's, loaded as files through a drop-in the agent writes with the
+# sign-in's name (HOMERSLAB_SIGN_IN): never in a database, an environment or a log (ADR 0011).
+[Unit]
+Description=HomersLab sign-in listener, LDAPS
+Documentation=https://github.com/ArjunRachithcf/homerslab
+Requires=homerslab-ldaps.socket
+After=homerslab-ldaps.socket homerslab-agent.service
+ConditionPathExists=/etc/systemd/system/homerslab-ldaps.service.d/50-homerslab-certificate.conf
+
+[Service]
+Type=exec
+User=homerslab-ldaps
+Group=homerslab-ldaps
+ExecStart=/usr/bin/homerslab edge ldaps --name ${HOMERSLAB_SIGN_IN} --cert %d/tls.crt --key %d/tls.key --upstream 172.31.250.11:3389
+Restart=on-failure
+RestartSec=2s
+UMask=0077
+LimitNOFILE=4096
+
+CapabilityBoundingSet=
+AmbientCapabilities=
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+PrivateIPC=yes
+ProtectProc=invisible
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RestrictAddressFamilies=AF_UNIX AF_INET
+IPAddressDeny=any
+IPAddressAllow=172.31.240.0/20
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+MemoryMax=128M

@@ -230,7 +230,7 @@ func TestTheSignInIsOneUnitRunningTheStandardComposeCommand(t *testing.T) {
 	if !strings.Contains(compose, "      server:\n        condition: service_started") {
 		t.Error("the worker doesn't wait for the server: the two would race to fill the new data volume")
 	}
-	if strings.Count(compose, `restart: "no"`) != 2 { // the anchor, and PostgreSQL
+	if strings.Count(compose, `restart: "no"`) != 3 { // the anchor, PostgreSQL, and the LDAP outpost
 		t.Errorf("not every service has its engine restart policy off")
 	}
 	tmp, _ := os.ReadFile("tmpfiles.d/homerslab.conf")
@@ -267,7 +267,7 @@ func TestThePackagesUsersHaveFixedIDsOutsideAppImages(t *testing.T) {
 		}
 	}
 	seen := map[string]string{}
-	for _, name := range []string{"homerslab", "homerslab-edge", "homerslab-read", "homerslab-home"} {
+	for _, name := range []string{"homerslab", "homerslab-edge", "homerslab-read", "homerslab-home", "homerslab-ldaps"} {
 		gid, id := groups[name], users[name]
 		// A user's own group, made first with the same fixed ID: "uid:group", so sysusers never picks another gid.
 		if id != gid+":"+name {

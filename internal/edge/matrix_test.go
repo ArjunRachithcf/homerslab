@@ -45,6 +45,8 @@ import (
 	"github.com/ArjunRachithcf/homerslab/internal/edge"
 	"github.com/ArjunRachithcf/homerslab/internal/firewall"
 	"github.com/ArjunRachithcf/homerslab/internal/home"
+	"github.com/ArjunRachithcf/homerslab/internal/ldaps"
+	"github.com/ArjunRachithcf/homerslab/internal/ldaps/ldaptest"
 	"github.com/ArjunRachithcf/homerslab/internal/testenv"
 )
 
@@ -68,7 +70,15 @@ const (
 	listener   = "10.216.9.1" // the sign-in listener's address, on the edge machine's loopback
 	helperMode = "HLTEST16_HELPER"
 	// Home (#21): its user, its socket, and the manager's control socket and database it must never reach.
-	homeUID     = "4300"
+	homeUID = "4300"
+	// The sign-in listener's LDAPS port (#204): its process's user, the stand-in outpost on the sign-in network, an LDAP
+	// app's network, and the app's own account there.
+	ldapsUID    = "4400"
+	ldapsCreds  = "/run/credentials/homerslab-ldaps.service"
+	outpostStub = "10.216.3.10:3389"
+	edgeLDAP    = "10.216.5.20"
+	ldapDN      = "cn=homerslab-jellyfin-ldap,ou=users,dc=jellyfin,dc=homerslab"
+	ldapPW      = "the app's own LDAP password"
 	homeSock    = "/run/homerslab-home/home.sock"
 	controlSock = "/run/homerslab/manager.sock"
 	managerDB   = "/var/lib/homerslab/manager.db"
@@ -175,6 +185,20 @@ func helper(mode, arg string) int {
 			slices.Sort(named)
 			fmt.Fprintf(w, "App, at %s, as [%s], cookies [%s]", r.Host, strings.Join(named, " "), r.Header.Get("Cookie"))
 		}))
+	case "outpost": // the sign-in's LDAP outpost, on the sign-in network: one account binds
+		ln, err := net.Listen("tcp", outpostStub)
+		if err != nil {
+			fmt.Println(err)
+			return 1
+		}
+		ldaptest.Directory(ln, ldapDN, ldapPW)
+	case "ldaps": // the sign-in listener's LDAPS port, as its unit runs it
+		return ldaps.Main(ctx, []string{"--name", "auth.example.test", "--cert", ldapsCreds + "/tls.crt", "--key", ldapsCreds + "/tls.key",
+			"--upstream", outpostStub, "--listen", listener + ":636"}, os.Stdout)
+	case "bind": // an LDAP app's server, binding
+		var q bindRequest
+		_ = json.Unmarshal([]byte(arg), &q)
+		fmt.Print(q.do())
 	case "load", "config": // the agent, on the edge's admin socket
 		c := edge.NewClient(adminFile)
 		if mode == "load" {
@@ -241,6 +265,35 @@ type request struct {
 	// Target is a plain HTTP request's target, written on the wire as it is (an absolute-form one, say): Go's client
 	// never sends some of them.
 	Target string
+}
+
+// bindRequest is one LDAP bind an app's server makes: to an address, over TLS with a server name (checked against the
+// test's CA) or plain, as a DN with a password.
+type bindRequest struct {
+	Addr, SNI, CA string
+	Plain         bool
+	DN, Password  string
+}
+
+func (q bindRequest) do() string {
+	var c net.Conn
+	var err error
+	d := &net.Dialer{Timeout: 3 * time.Second}
+	if q.Plain {
+		c, err = d.Dial("tcp", q.Addr)
+	} else {
+		roots := x509.NewCertPool()
+		roots.AppendCertsFromPEM([]byte(q.CA))
+		c, err = tls.DialWithDialer(d, "tcp", q.Addr, &tls.Config{ServerName: q.SNI, RootCAs: roots})
+	}
+	if err != nil {
+		return "error: " + err.Error()
+	}
+	defer c.Close()
+	if err := ldaptest.Bind(c, q.DN, q.Password); err != nil {
+		return "error: " + err.Error()
+	}
+	return "bound"
 }
 
 // shownHeaders are the answer's headers a row may look at, after its status and body.
@@ -537,6 +590,59 @@ func TestTheEdgesRequestMatrix(t *testing.T) {
 		})
 	}
 
+	// The sign-in listener's LDAPS port (ADR 0020, #204): an LDAP app binds at auth.<main domain>:636 from its own network,
+	// checking the household's certificate; no other app's network reaches the port, and nothing else of the edge's
+	// machine answers on 636.
+	bind := func(from string, q bindRequest) string {
+		t.Helper()
+		q.CA = ca
+		b, _ := json.Marshal(q)
+		return w.helper(t, from, "", "bind", nil, string(b))
+	}
+	ldapsAt := func(addr, sni, password string) bindRequest {
+		return bindRequest{Addr: addr, SNI: sni, DN: ldapDN, Password: password}
+	}
+	for _, row := range []struct {
+		name, from string
+		q          bindRequest
+		want       string
+	}{
+		{name: "an LDAP app binds through it, the sign-in's certificate checked: bound", from: "ldap-app",
+			q: ldapsAt(listener+":636", "auth.example.test", ldapPW), want: "bound"},
+		{name: "a wrong password reaches the outpost, which refuses it", from: "ldap-app",
+			q: ldapsAt(listener+":636", "auth.example.test", "wrong"), want: "error: ldap: bind refused: result 49"},
+		{name: "another app's network: dropped", from: "app",
+			q: ldapsAt(listener+":636", "auth.example.test", ldapPW), want: "error: dial tcp " + listener + ":636: i/o timeout"},
+		{name: "SNI another app's: no certificate", from: "ldap-app",
+			q: ldapsAt(listener+":636", "pdf.example.test", ldapPW), want: "error: "},
+		{name: "plain LDAP: nothing bound", from: "ldap-app",
+			q: bindRequest{Addr: listener + ":636", Plain: true, DN: ldapDN, Password: ldapPW}, want: "error: "},
+		{name: "the edge machine's own address on the LDAP app's network: dropped", from: "ldap-app",
+			q: ldapsAt(edgeLDAP+":636", "auth.example.test", ldapPW), want: "error: dial tcp " + edgeLDAP + ":636: i/o timeout"},
+		{name: "the edge's mesh listener on 636, from the mesh: nothing", from: "phone",
+			q: ldapsAt(edgeMesh+":636", "auth.example.test", ldapPW), want: "error: dial tcp " + edgeMesh + ":636: connect: connection refused"},
+	} {
+		t.Run("the sign-in listener's LDAPS port, "+row.name, func(t *testing.T) {
+			if got := bind(row.from, row.q); !strings.HasPrefix(got, row.want) || (row.want != "bound" && got == "bound") {
+				t.Errorf("%s binds at %s with SNI %q: %q, want %q…", row.from, row.q.Addr, row.q.SNI, got, row.want)
+			}
+		})
+	}
+	t.Run("the sign-in listener, an LDAP app reaches the sign-in on the household's port too: served", func(t *testing.T) {
+		if got := ask("ldap-app", toListener("auth.example.test", "auth.example.test", "/")); !strings.HasPrefix(got, "200 Authentik") {
+			t.Errorf("%q", got)
+		}
+	})
+	t.Run("only the LDAPS port's user opens the outpost: not the edge's (#204)", func(t *testing.T) {
+		got := w.helper(t, "edge", edgeUID+":"+edgeUID, "bind", nil, toJSON(bindRequest{Addr: outpostStub, Plain: true, DN: ldapDN, Password: ldapPW}))
+		if got != "error: dial tcp "+outpostStub+": i/o timeout" {
+			t.Errorf("the edge's user, at the outpost: %q", got)
+		}
+		if got := w.helper(t, "firewall", ldapsUID+":"+ldapsUID, "bind", nil, toJSON(bindRequest{Addr: outpostStub, Plain: true, DN: ldapDN, Password: ldapPW})); got != "bound" {
+			t.Errorf("the LDAPS port's user, at the outpost: %q", got)
+		}
+	})
+
 	// Home (#21): served at its name over the mesh, from its own process. Every app is same-site with it, so a change
 	// from an app's page is refused (#83); Home's own page's isn't. Its user opens nothing of the manager's.
 	toHome := func(method, path string, headers map[string]string) request {
@@ -747,7 +853,7 @@ func (w *world) firewall(t *testing.T) {
 	if err != nil {
 		t.Fatalf("the edge's interfaces: %v %s", err, out)
 	}
-	var meshIf, lanIf, appsIf string
+	var meshIf, lanIf, appsIf, ldapIf string
 	for _, line := range strings.Split(string(out), "\n") {
 		f := strings.Fields(line)
 		if len(f) < 4 {
@@ -761,19 +867,25 @@ func (w *world) firewall(t *testing.T) {
 			lanIf = name
 		case strings.HasPrefix(f[3], edgeApps+"/"):
 			appsIf = name
+		case strings.HasPrefix(f[3], edgeLDAP+"/"):
+			ldapIf = name
 		}
 	}
-	if meshIf == "" || lanIf == "" || appsIf == "" {
+	if meshIf == "" || lanIf == "" || appsIf == "" || ldapIf == "" {
 		t.Fatalf("the edge's mesh, LAN and apps' interfaces aren't there:\n%s", out)
 	}
 	// The apps' network stands in for an engine's bridge; the app's upstream and the sign-in's server are opened only by
 	// the edge's user and root (the agent).
 	edgeID, _ := strconv.Atoi(edgeUID)
 	users := []uint32{uint32(edgeID), 0}
+	// The LDAP app's network is an LDAP app's (#204); the outpost is opened by the LDAPS port's user alone.
+	ldapsID, _ := strconv.Atoi(ldapsUID)
 	table := firewall.Render(firewall.State{Mesh: []string{meshIf}, LAN: []string{lanIf},
-		LANPrefixes: []netip.Prefix{netip.MustParsePrefix("10.216.2.0/24")}, Bridges: []string{appsIf}, Virtual: []string{appsIf},
-		Upstreams:      []firewall.Upstream{{Addr: netip.MustParseAddrPort(appStub), UIDs: users}, {Addr: netip.MustParseAddrPort(signInStub), UIDs: users}},
-		SignInListener: []netip.AddrPort{netip.MustParseAddrPort(listener + ":443")}})
+		LANPrefixes: []netip.Prefix{netip.MustParsePrefix("10.216.2.0/24")}, Bridges: []string{appsIf, ldapIf}, Virtual: []string{appsIf, ldapIf},
+		Upstreams: []firewall.Upstream{{Addr: netip.MustParseAddrPort(appStub), UIDs: users}, {Addr: netip.MustParseAddrPort(signInStub), UIDs: users},
+			{Addr: netip.MustParseAddrPort(outpostStub), UIDs: []uint32{uint32(ldapsID)}}},
+		SignInListener: []netip.AddrPort{netip.MustParseAddrPort(listener + ":443")},
+		LDAP:           []firewall.LDAPApp{{Bridge: ldapIf, Subnet: netip.MustParsePrefix("10.216.5.0/24")}}})
 	if out, err := w.cmd(strings.NewReader(table), "exec", "-i", container("firewall"), "nft", "-f", "-").CombinedOutput(); err != nil {
 		t.Fatalf("applying the firewall table: %v %s\n%s", err, out, table)
 	}
@@ -842,15 +954,22 @@ func up(t *testing.T, engine, chain, key string) *world {
 		{path: strings.TrimPrefix(credDir, "/") + "/tls-example.test.key", body: []byte(key), mode: 0o400, uid: 4100},
 		{path: strings.TrimPrefix(helperBin, "/"), body: bin, mode: 0o755},
 	})
-	for _, m := range []string{"admin", "authentik", "app", "phone", "laptop-on-the-lan", "home"} {
+	for _, m := range []string{"admin", "authentik", "app", "ldap-app", "phone", "laptop-on-the-lan", "home"} {
 		w.copy(t, m, []file{{path: strings.TrimPrefix(helperBin, "/"), body: bin, mode: 0o755}})
 	}
+	// The LDAPS port (#204) runs in the edge's network namespace, from the companion (the edge's own container keeps no
+	// capability to give the files to another user), with its unit's own credentials: the same certificate, its user's.
+	w.copy(t, "firewall", []file{{path: strings.TrimPrefix(helperBin, "/"), body: bin, mode: 0o755},
+		{path: strings.TrimPrefix(ldapsCreds, "/") + "/tls.crt", body: []byte(chain), mode: 0o400},
+		{path: strings.TrimPrefix(ldapsCreds, "/") + "/tls.key", body: []byte(key), mode: 0o400}})
 	w.compose(t, "start")
 	// The agent's part of the sign-in listener: its address on the loopback; and the apps' network as an engine's bridge,
 	// whose veth is its one port, so the table treats it as one.
 	w.docker(t, nil, "exec", container("firewall"), "sh", "-c", "ip address add "+listener+"/32 dev lo && ip link add br-apps type bridge && "+
 		"dev=$(ip -o -4 address show | awk '$4 == \""+edgeApps+"/24\" {print $2}') && ip address del "+edgeApps+"/24 dev $dev && "+
-		"ip link set $dev master br-apps && ip address add "+edgeApps+"/24 dev br-apps && ip link set br-apps up")
+		"ip link set $dev master br-apps && ip address add "+edgeApps+"/24 dev br-apps && ip link set br-apps up && "+
+		"ip link add br-ldap type bridge && dev=$(ip -o -4 address show | awk '$4 == \""+edgeLDAP+"/24\" {print $2}') && "+
+		"ip address del "+edgeLDAP+"/24 dev $dev && ip link set $dev master br-ldap && ip address add "+edgeLDAP+"/24 dev br-ldap && ip link set br-ldap up")
 	w.docker(t, nil, "exec", "-u", "0", container("admin"), "sh", "-c", "chown 4200:4100 /run/homerslab-admin && chmod 0750 /run/homerslab-admin")
 	w.docker(t, nil, "exec", "-d", "-u", "4200:4100", "-e", helperMode+"=admin", container("admin"), helperBin, "-")
 	// The manager's folders, as its unit makes them: its own, 0700; Home's socket's folder, for Home and the edge (setgid:
@@ -862,6 +981,19 @@ func up(t *testing.T, engine, chain, key string) *world {
 	w.docker(t, nil, "exec", "-d", "-u", homeUID+":"+homeUID, "-e", helperMode+"=home", container("home"), helperBin, "-")
 	w.docker(t, nil, "exec", "-d", "-e", helperMode+"=authentik", container("authentik"), helperBin, "-")
 	w.docker(t, nil, "exec", "-d", "-e", helperMode+"=app", container("app"), helperBin, "-")
+	w.docker(t, nil, "exec", "-d", "-e", helperMode+"=outpost", container("authentik"), helperBin, "-")
+	w.docker(t, nil, "exec", container("firewall"), "chown", "-R", ldapsUID+":"+ldapsUID, ldapsCreds)
+	w.docker(t, nil, "exec", "-d", "-u", ldapsUID+":"+ldapsUID, "-e", helperMode+"=ldaps", container("firewall"), "sh", "-c", helperBin+" - >/tmp/ldaps.log 2>&1")
+	for i := 0; ; i++ { // the LDAPS port listens once it has read its certificate
+		out, _ := w.cmd(nil, "exec", container("firewall"), "cat", "/tmp/ldaps.log").CombinedOutput()
+		if strings.Contains(string(out), "carries binds") {
+			break
+		}
+		if i == 50 {
+			t.Fatalf("the LDAPS port never listened:\n%s", out)
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
 	for range 100 {
 		if _, err := w.helperErr("edge", "0:"+edgeUID, "config", nil, ""); err == nil {
 			return w

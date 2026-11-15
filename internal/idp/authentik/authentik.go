@@ -365,12 +365,21 @@ func (a *Authentik) ensure(ctx context.Context, path, name string, body map[stri
 	return pk(out.PK), nil
 }
 
+func ptrOr(p *int) int {
+	if p == nil {
+		return 0
+	}
+	return *p
+}
+
 func pk(raw json.RawMessage) string { return strings.Trim(string(raw), `"`) }
 
 type binding struct {
 	Policy string `json:"policy,omitempty"`
 	Group  string `json:"group,omitempty"`
-	Negate bool   `json:"negate"`
+	// User is a user's pk: an LDAP app's own account (#204).
+	User   int  `json:"user,omitempty"`
+	Negate bool `json:"negate"`
 }
 
 // target is what policies are bound to (a flow, a stage binding, an application): as a policy binding model, which
@@ -384,6 +393,7 @@ func (a *Authentik) bindPolicies(ctx context.Context, t target, want []binding) 
 		Target string `json:"target"`
 		Policy string `json:"policy"`
 		Group  string `json:"group"`
+		User   *int   `json:"user"`
 		Negate bool   `json:"negate"`
 		Order  int    `json:"order"`
 		On     bool   `json:"enabled"`
@@ -397,7 +407,9 @@ func (a *Authentik) bindPolicies(ctx context.Context, t target, want []binding) 
 	// keeps unique) is changed in place instead.
 	kept, gone := make([]bool, len(want)), make([]bool, len(have))
 	for j, h := range have {
-		i := slices.IndexFunc(want, func(w binding) bool { return w.Policy == h.Policy && w.Group == h.Group && w.Negate == h.Negate })
+		i := slices.IndexFunc(want, func(w binding) bool {
+			return w.Policy == h.Policy && w.Group == h.Group && w.User == ptrOr(h.User) && w.Negate == h.Negate
+		})
 		if i >= 0 && !kept[i] && h.On && h.Order == i*10 {
 			kept[i], gone[j] = true, true
 		}
@@ -406,12 +418,15 @@ func (a *Authentik) bindPolicies(ctx context.Context, t target, want []binding) 
 		if kept[i] {
 			continue
 		}
-		body := map[string]any{"target": t.PBM, "order": i * 10, "enabled": true, "negate": w.Negate, "timeout": 30, "policy": nil, "group": nil}
+		body := map[string]any{"target": t.PBM, "order": i * 10, "enabled": true, "negate": w.Negate, "timeout": 30, "policy": nil, "group": nil, "user": nil}
 		if w.Policy != "" {
 			body["policy"] = w.Policy
 		}
 		if w.Group != "" {
 			body["group"] = w.Group
+		}
+		if w.User != 0 {
+			body["user"] = w.User
 		}
 		j := slices.IndexFunc(have, func(h pb) bool { return w.Policy != "" && h.Policy == w.Policy && h.Order == i*10 })
 		var err error
@@ -638,6 +653,14 @@ func (a *Authentik) Prepare(ctx context.Context, h idp.Household) error {
 	if err := a.refuseElsewhere(ctx, signIn, pks[stageNotHere], household); err != nil {
 		return err
 	}
+	// The LDAP bind flow, once an app has made it, back to app passwords only, at an outpost only (#204).
+	if f, err := a.flow(ctx, LDAPBindFlow); err != nil {
+		return err
+	} else if f != nil {
+		if _, err := a.ldapBindFlow(ctx); err != nil {
+			return err
+		}
+	}
 	return a.ensureBrand(ctx, signIn)
 }
 
@@ -669,7 +692,8 @@ func (a *Authentik) loginsElsewhere(ctx context.Context, signIn string) (map[str
 	}
 	bindings, at := map[string][]flowBinding{}, map[string]int{}
 	for _, f := range flows {
-		if f.PK == signIn || f.Slug == SignInFlow || f.Slug == EnrolmentFlow {
+		// The LDAP bind flow takes an app password, for an app's LDAP bind, and runs only at an outpost (#204).
+		if f.PK == signIn || f.Slug == SignInFlow || f.Slug == EnrolmentFlow || f.Slug == LDAPBindFlow {
 			continue
 		}
 		bs, err := where[flowBinding](ctx, a.api, "/flows/bindings/?target="+q(f.PK), "target", f.PK)
@@ -1398,7 +1422,11 @@ func (a *Authentik) Report(ctx context.Context) (idp.Report, error) {
 		if err != nil {
 			return idp.Report{}, err
 		}
-		r.PasskeyOnlySignIn = only
+		ldap, err := a.ldapBindIntact(ctx)
+		if err != nil {
+			return idp.Report{}, err
+		}
+		r.PasskeyOnlySignIn = only && ldap
 	}
 	ak, err := find[user](ctx, a.api, "/core/users/?username="+q(firstAdmin), "username", firstAdmin)
 	if err != nil {
