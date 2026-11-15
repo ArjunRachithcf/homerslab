@@ -67,6 +67,8 @@ func TestATargetIsImmutableOnlyWhereItsCredentialsCantDelete(t *testing.T) {
 		{"governance", strings.Replace(compliance, "COMPLIANCE", "GOVERNANCE", 1), 200, versioned, backup.Immutability{Why: "governance", Days: 30}},
 		{"no default retention", `<ObjectLockConfiguration><ObjectLockEnabled>Enabled</ObjectLockEnabled></ObjectLockConfiguration>`, 200, versioned, backup.Immutability{Why: "no-default-retention"}},
 		{"no lock", `<Error><Code>ObjectLockConfigurationNotFoundError</Code></Error>`, 404, versioned, backup.Immutability{Why: "no-object-lock"}},
+		{"no lock, as another service says it", `<Error><Code>ObjectLockConfigurationNotFoundError</Code></Error>`, 400, versioned, backup.Immutability{Why: "no-object-lock"}},
+		{"no lock, a bare 404", ``, 404, versioned, backup.Immutability{Why: "no-object-lock"}},
 		{"versioning suspended", compliance, 200, `<VersioningConfiguration><Status>Suspended</Status></VersioningConfiguration>`, backup.Immutability{Why: "versioning-off", Days: 30}},
 		{"the service refuses", `<Error><Code>AccessDenied</Code></Error>`, 403, versioned, backup.Immutability{Why: "unknown"}},
 		{"a redirect, never followed", "", 301, versioned, backup.Immutability{Why: "unknown"}},
@@ -92,8 +94,32 @@ func TestATargetIsImmutableOnlyWhereItsCredentialsCantDelete(t *testing.T) {
 			t.Errorf("%s: %+v", tg.Kind, im)
 		}
 	}
-	// A service whose certificate isn't the target's CA's is never asked.
+	// A target that names no region: the bucket's own, as AWS says it, is signed for again.
 	tg, got := bucketAt(t, compliance, 200, versioned)
+	tg.Region = ""
+	inRegion := tg
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.Contains(r.Header.Get("Authorization"), "/eu-central-1/s3/") {
+			w.Header().Set("X-Amz-Bucket-Region", "eu-central-1")
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`<Error><Code>AuthorizationHeaderMalformed</Code></Error>`))
+			return
+		}
+		if r.URL.RawQuery == "object-lock" {
+			_, _ = w.Write([]byte(compliance))
+			return
+		}
+		_, _ = w.Write([]byte(versioned))
+	}))
+	defer srv.Close()
+	u, _ := url.Parse(srv.URL)
+	inRegion.Port, _ = strconv.Atoi(u.Port())
+	inRegion.CA = string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: srv.Certificate().Raw}))
+	if im := backup.ReadImmutability(ctx, inRegion, c); !im.Immutable {
+		t.Errorf("a bucket in another region than the guess: %+v", im)
+	}
+	// A service whose certificate isn't the target's CA's is never asked.
+	tg, got = bucketAt(t, compliance, 200, versioned)
 	tg.CA = ""
 	if im := backup.ReadImmutability(ctx, tg, c); im.Why != "unknown" || len(*got) != 0 {
 		t.Errorf("a service with a certificate of another's: %+v, %d requests", im, len(*got))

@@ -405,7 +405,15 @@ func TestTheTargetsSpaceIsItsDisksOrItsQuotas(t *testing.T) {
 		t.Errorf("a disk's space: %d %s", code, body)
 	}
 	b2 := s3Target()
-	b2.Target = backup.Target{Kind: backup.B2, Region: "eu-central-003", Bucket: "household", QuotaBytes: 1 << 40}
+	b2.Target = backup.Target{Kind: backup.B2, Region: "eu-central-003", Bucket: "household"}
+	if code, body := call(t, sock, "PUT", "/v1/backups", b2); code != http.StatusOK {
+		t.Fatalf("a B2 target: %d %s", code, body)
+	}
+	before := len(h.Restic())
+	if code, body := call(t, sock, "GET", "/v1/backups/space", nil); code != http.StatusOK || json.Unmarshal(body, &sp) != nil || sp != (agent.BackupSpace{}) || len(h.Restic()) != before {
+		t.Errorf("without a quota: %d %s, %d runs of restic", code, body, len(h.Restic())-before)
+	}
+	b2.Target.QuotaBytes = 1 << 40
 	if code, body := call(t, sock, "PUT", "/v1/backups", b2); code != http.StatusOK {
 		t.Fatalf("a B2 target: %d %s", code, body)
 	}

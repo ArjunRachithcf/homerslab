@@ -122,6 +122,7 @@ func (m *Manager) putBackupTarget(w http.ResponseWriter, r *http.Request) {
 		m.internal(w, "keeping the backup target", err)
 		return
 	}
+	_ = m.db.ResolveWarnings(ctx, warnBackup+"space", m.cfg.Now()) // the old target's
 	m.log.Info("backups go to a new target", "repository", out.Repository, "immutable", out.Immutability.Immutable, "why", out.Immutability.Why)
 	writeJSON(w, http.StatusOK, out)
 }
@@ -285,8 +286,14 @@ func (m *Manager) BackUpDue(ctx context.Context) {
 			_ = m.db.SaveAnswers(ctx, map[string]string{ansPrunedAt: now.UTC().Format(time.RFC3339)})
 		}
 	}
-	m.checkSpace(ctx, run)
+	// Its own time: a run that used all of its own still reads how full the target is, when that matters most.
+	space, cancel := context.WithTimeout(ctx, spaceWait)
+	defer cancel()
+	m.checkSpace(ctx, space)
 }
+
+// spaceWait is the longest reading how full the target is takes: restic counts the repository's snapshots.
+const spaceWait = 15 * time.Minute
 
 // due says whether every (less a few minutes) has passed since last (RFC 3339, or "" for never).
 func due(last string, now time.Time, every time.Duration) bool {

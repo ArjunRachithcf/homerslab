@@ -318,6 +318,12 @@ func TestATargetEightyPercentFullIsAWarningUntilItIsnt(t *testing.T) {
 	if w := warnings(); len(w) != 1 || w[0].Resolved == "" {
 		t.Errorf("half full again: %+v", w)
 	}
+	// Full again, then another target: the old one's warning isn't the new one's.
+	run(900)
+	withB2(t, p, 1<<40)
+	if w := warnings(); len(w) != 2 || w[0].Resolved == "" || w[1].Resolved == "" {
+		t.Errorf("after a new target: %+v", w)
+	}
 
 	q := bentoWithData(t)
 	withB2(t, q, 0)

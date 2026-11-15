@@ -68,7 +68,7 @@ func ReadImmutability(ctx context.Context, t Target, c Credentials) Immutability
 		Years   int    `xml:"Rule>DefaultRetention>Years"`
 	}
 	switch {
-	case code == http.StatusNotFound && bytes.Contains(body, []byte("ObjectLockConfigurationNotFound")):
+	case bytes.Contains(body, []byte("ObjectLockConfigurationNotFound")), code == http.StatusNotFound && !bytes.Contains(body, []byte("NoSuchBucket")):
 		return Immutability{Why: "no-object-lock"}
 	case code != http.StatusOK || xml.Unmarshal(body, &lock) != nil:
 		return Immutability{Why: "unknown"}
@@ -118,27 +118,41 @@ func s3Do(ctx context.Context, t Target, c Credentials, method, sub string, body
 		tc.RootCAs = pool
 	}
 	client := &http.Client{
-		Transport: &http.Transport{TLSClientConfig: tc, Proxy: nil, ForceAttemptHTTP2: true},
+		Transport: &http.Transport{TLSClientConfig: tc, Proxy: nil, ForceAttemptHTTP2: true, DisableKeepAlives: true},
 		// A redirect would send the signed request elsewhere: it is an answer, never followed.
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 	}
 	host := t.endpoint()
-	req, err := http.NewRequestWithContext(ctx, method, "https://"+host+"/"+t.Bucket+"?"+sub, bytes.NewReader(body))
+	send := func(region string) (*http.Response, []byte, error) {
+		req, err := http.NewRequestWithContext(ctx, method, "https://"+host+"/"+t.Bucket+"?"+sub, bytes.NewReader(body))
+		if err != nil {
+			return nil, nil, err
+		}
+		if body != nil {
+			sum := md5.Sum(body) // S3 wants it for a bucket's settings
+			req.Header.Set("Content-MD5", base64.StdEncoding.EncodeToString(sum[:]))
+		}
+		sign(req, host, region, c, body, time.Now().UTC())
+		resp, err := client.Do(req)
+		if err != nil {
+			return nil, nil, err
+		}
+		defer resp.Body.Close()
+		b, err := io.ReadAll(io.LimitReader(resp.Body, maxAnswer))
+		return resp, b, err
+	}
+	resp, b, err := send(cmp.Or(t.Region, "us-east-1"))
+	// A target that names no region (restic finds it itself): AWS says the bucket's own when the guess was wrong, and
+	// the request is signed again for it, at the same endpoint, never somewhere else.
+	if err == nil && t.Region == "" && resp.StatusCode != http.StatusOK {
+		if r := resp.Header.Get("X-Amz-Bucket-Region"); region.MatchString(r) && r != "us-east-1" {
+			resp, b, err = send(r)
+		}
+	}
 	if err != nil {
 		return 0, nil, err
 	}
-	if body != nil {
-		sum := md5.Sum(body) // S3 wants it for a bucket's settings
-		req.Header.Set("Content-MD5", base64.StdEncoding.EncodeToString(sum[:]))
-	}
-	sign(req, host, cmp.Or(t.Region, "us-east-1"), c, body, time.Now().UTC())
-	resp, err := client.Do(req)
-	if err != nil {
-		return 0, nil, err
-	}
-	defer resp.Body.Close()
-	b, err := io.ReadAll(io.LimitReader(resp.Body, maxAnswer))
-	return resp.StatusCode, b, err
+	return resp.StatusCode, b, nil
 }
 
 // sign signs req (a path-style request about a bucket, with one bare query key) with AWS Signature Version 4.

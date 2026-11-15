@@ -346,6 +346,16 @@ func (a *Agent) getBackupSpace(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, BackupSpace{UsedBytes: sp.SizeBytes - sp.FreeBytes, SizeBytes: sp.SizeBytes})
 		return
 	}
+	if st.Target.QuotaBytes == 0 { // nothing to measure against: restic's count, a walk of every snapshot, is skipped
+		writeJSON(w, http.StatusOK, BackupSpace{})
+		return
+	}
+	// Never while the target's credentials folder is changed.
+	if !a.backingUp.TryLock() {
+		fail(w, http.StatusConflict, "backups-running")
+		return
+	}
+	defer a.backingUp.Unlock()
 	used, err := a.repo(*st, a.backupDir()).Used(r.Context())
 	if err != nil {
 		a.log.Error("the repository's use at the target", "err", err)
