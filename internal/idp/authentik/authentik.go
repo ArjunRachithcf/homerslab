@@ -1353,8 +1353,32 @@ const (
 // embeddedOutpost is Authentik's own outpost, which its server runs: the guards' forward-auth endpoint.
 const embeddedOutpost = "goauthentik.io/outposts/embedded"
 
+// RoleHeader is the header of the guard's answer that names the person's role (#236): admin, adult or kid, or empty
+// for none. The edge takes the role from it alone, never from X-Authentik-Groups, whose names Authentik joins with "|":
+// a group may be named "x|homerslab-admins".
+const RoleHeader = "X-Authentik-Homerslab-Role"
+
+// roleMapping is the scope mapping every guard's provider carries, which computes RoleHeader: from the role groups the
+// person is in directly, by their exact names, one of them or none. A group below a role's group (which its audience
+// counts) gives no role. Its scope sorts after ak_proxy, Authentik's own proxy mapping, which merges the person's
+// attributes into the same additionalHeaders before it, so an attribute can't stand in for it.
+const roleMapping = "HomersLab: the person's role at the edge"
+
+func roleExpression() string {
+	var roles []string
+	for _, r := range idp.Roles() {
+		roles = append(roles, fmt.Sprintf("%q: %q", idp.RoleGroup(r), string(r)))
+	}
+	return "# HomersLab (#236): the person's role at the edge, from the role groups they're in directly, by exact name.\n" +
+		"roles = {" + strings.Join(roles, ", ") + "}\n" +
+		"mine = set(user.groups.filter(name__in=list(roles)).values_list(\"name\", flat=True))\n" +
+		"role = roles[mine.pop()] if len(mine) == 1 else \"\"\n" +
+		"return {\"ak_proxy\": {\"user_attributes\": {\"additionalHeaders\": {" + fmt.Sprintf("%q", RoleHeader) + ": role}}}}\n"
+}
+
 // EnsureGuard makes an app's guard: a proxy provider of its own in forward_single mode, at the app's one URL, its
-// application, which only the guard's roles may open, on Authentik's embedded outpost (#83: never forward_domain).
+// application, which only the guard's roles may open, on Authentik's embedded outpost (#83: never forward_domain). Its
+// provider carries HomersLab's role mapping beside the ones Authentik gives every proxy provider.
 func (a *Authentik) EnsureGuard(ctx context.Context, g idp.Guard) error {
 	if u, err := url.Parse(g.URL); !strings.HasPrefix(g.Slug, "homerslab-") || err != nil || u.Scheme != "https" || u.Hostname() == "" ||
 		u.User != nil || u.Path != "" || u.RawQuery != "" || u.Fragment != "" || strings.Contains(u.Host, "*") {
@@ -1371,9 +1395,14 @@ func (a *Authentik) EnsureGuard(ctx context.Context, g idp.Guard) error {
 	if consent == nil || inval == nil {
 		return errors.New("authentik: its default provider flows are missing")
 	}
+	role, err := a.ensure(ctx, "/propertymappings/provider/scope/", roleMapping, map[string]any{"name": roleMapping,
+		"scope_name": "homerslab", "description": "HomersLab: the role the edge passes to an app", "expression": roleExpression()})
+	if err != nil {
+		return err
+	}
 	body := map[string]any{"name": g.Slug, "authorization_flow": consent.PK, "invalidation_flow": inval.PK, "mode": "forward_single",
 		"external_host": g.URL, "internal_host": "", "basic_auth_enabled": false, "intercept_header_auth": false, "cookie_domain": "",
-		"access_token_validity": "hours=12", "authentication_flow": nil}
+		"access_token_validity": "hours=12", "authentication_flow": nil, "property_mappings": []string{role}}
 	type provider struct {
 		PK   int     `json:"pk"`
 		Host string  `json:"external_host"`

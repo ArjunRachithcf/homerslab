@@ -39,6 +39,8 @@ func newFake() *fakeAuthentik {
 		{"pk": "outpost-embedded", "managed": embeddedOutpost, "providers": []int{}}}
 	f.objs["/core/applications/"], f.objs["/policies/bindings/"], f.objs["/providers/proxy/"] = nil, nil, nil
 	f.objs["/policies/expression/"] = []map[string]any{{"pk": "policy-other", "name": "default-source-enrollment-if-username"}}
+	f.objs["/propertymappings/provider/scope/"] = []map[string]any{{"pk": "m-proxy", "name": "authentik default OAuth Mapping: Proxy outpost",
+		"managed": "goauthentik.io/providers/proxy/scope-proxy", "scope_name": "ak_proxy"}}
 	return f
 }
 
@@ -357,6 +359,45 @@ func TestBindingsOfAnotherTargetAreNeverTouched(t *testing.T) {
 	for _, ch := range f.changes {
 		if strings.HasPrefix(ch, "DELETE /policies/bindings/") || strings.HasPrefix(ch, "PATCH /policies/bindings/") {
 			t.Error(ch)
+		}
+	}
+}
+
+// Every guard's provider carries HomersLab's one role mapping (#236): it names the role in its own header from the role
+// groups' exact names, so the edge never reads a group's name; its scope sorts after Authentik's own proxy mapping,
+// whose attributes it would otherwise lose to. Made once, whatever the number of guards.
+func TestEveryGuardCarriesTheRoleMapping(t *testing.T) {
+	testenv.Isolate(t)
+	f := newFake()
+	a := f.open(t)
+	for _, g := range []idp.Guard{pdf, chores, pdf} {
+		if err := a.EnsureGuard(context.Background(), g); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var mine []map[string]any
+	for _, m := range f.objs["/propertymappings/provider/scope/"] {
+		if m["name"] == roleMapping {
+			mine = append(mine, m)
+		}
+	}
+	if len(mine) != 1 {
+		t.Fatalf("role mappings: %v, want one", mine)
+	}
+	m := mine[0]
+	expr, _ := m["expression"].(string)
+	if scope, _ := m["scope_name"].(string); scope <= "ak_proxy" {
+		t.Errorf("its scope %q sorts before ak_proxy's", scope)
+	}
+	for _, want := range []string{`"homerslab-admins": "admin"`, `"homerslab-adults": "adult"`, `"homerslab-kids": "kid"`, "user.groups.filter(name__in=",
+		"if len(mine) == 1 else", `"` + RoleHeader + `": role`} {
+		if !strings.Contains(expr, want) {
+			t.Errorf("its expression lacks %s:\n%s", want, expr)
+		}
+	}
+	for name, p := range f.providers() {
+		if ms, _ := p["property_mappings"].([]any); len(ms) != 1 || ms[0] != m["pk"] {
+			t.Errorf("%s's provider carries %v, want the role mapping %v", name, p["property_mappings"], m["pk"])
 		}
 	}
 }

@@ -56,8 +56,8 @@ type World interface {
 	AskGuard(t *testing.T, host string) (status int, location string)
 	// PassGuard goes to host in a browser holding a's passkeys, as username, the way the guard sends a browser with no
 	// session (signing in where it is asked to), then asks the guard for host with whatever session that left; it
-	// returns the guard's status.
-	PassGuard(t *testing.T, a *webauthntest.Authenticator, username, host string) (status int)
+	// returns the guard's status, and the role its answer names for the edge (#236): admin, adult or kid, or "" for none.
+	PassGuard(t *testing.T, a *webauthntest.Authenticator, username, host string) (status int, role string)
 }
 
 // Enrolment is what a provider asked the browser for when it made a passkey.
@@ -583,10 +583,15 @@ func Run(t *testing.T, w World, version string) {
 		for _, c := range []struct {
 			who, host string
 			in        bool
-		}{{"bea", "pdf", true}, {"bea", "chores", false}, {"lia", "chores", true}, {"lia", "pdf", false}} {
-			status := w.PassGuard(t, people[c.who], c.who, c.host+"."+h.Domain)
+			role      idp.Role
+		}{{"bea", "pdf", true, idp.Adult}, {"bea", "chores", false, ""}, {"lia", "chores", true, idp.Kid}, {"lia", "pdf", false, ""}} {
+			status, role := w.PassGuard(t, people[c.who], c.who, c.host+"."+h.Domain)
 			if in := status/100 == 2; in != c.in {
 				t.Errorf("%s at %s: the guard answered %d, want let in: %v", c.who, c.host, status, c.in)
+			}
+			// The role the edge passes on is the provider's answer, the one role group they're in (#236).
+			if in := status/100 == 2; in && role != string(c.role) {
+				t.Errorf("%s at %s: the guard names the role %q, want %q", c.who, c.host, role, c.role)
 			}
 		}
 	})

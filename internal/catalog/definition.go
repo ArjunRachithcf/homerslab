@@ -149,8 +149,9 @@ const (
 )
 
 // Identity is the identity contract an app relies on (#236). Edge names it: homerslab-v1, which the edge keeps for
-// every guarded app. The app learns who someone is from X-HomersLab-Person (a stable id that a rename doesn't change),
-// X-HomersLab-Name and X-HomersLab-Role (admin, adult or kid), which only the edge sets: it deletes every X-HomersLab-*
+// every guarded app. The app learns who someone is from X-HomersLab-Person (a stable id that a rename doesn't change, and
+// the only one to key people on), X-HomersLab-Name (text the person may change, never to split or authorise on) and
+// X-HomersLab-Role (admin, adult or kid), which only the edge sets: it deletes every X-HomersLab-*
 // header a client sends, on every name it serves, and refuses a person with no id or not exactly one role. No identity
 // provider's own headers reach the app, so it works the same with Authentik and with Kanidm.
 type Identity struct {

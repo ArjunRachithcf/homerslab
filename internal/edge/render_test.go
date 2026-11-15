@@ -450,14 +450,20 @@ func TestAGuardedAppsSiteAsksTheGuardFirst(t *testing.T) {
 			t.Errorf("the site doesn't strip %s", h)
 		}
 	}
-	// The provider's own headers set nothing for the app: only the identity contract's (#236).
+	// The provider's own headers set nothing for the app: only the identity contract's (#236). Authentik's role comes
+	// from its own role header, matched exactly; its groups' names are never read (review round 1).
 	if bytes.Contains(b, []byte(`"set":{"X-Authentik`)) || !strings.Contains(string(b), `"X-HomersLab-Role": [`) {
 		t.Error("the guard's answer reaches the app as the provider's own headers")
+	}
+	if site := string(siteOf(t, b, "pdf.example.test")); strings.Contains(site, "X-Authentik-Groups") || strings.Contains(site, "vars_regexp") ||
+		!strings.Contains(site, `"{http.reverse_proxy.header.X-Authentik-Homerslab-Role}": [`) {
+		t.Error("Authentik's guard reads the role from the groups' names, not its role header")
 	}
 	// An app without its guard, or a guard without its provider, or one whose answer says nobody's id, name, groups or
 	// how they're separated, isn't rendered.
 	for _, g := range []func(*edge.Guard){func(g *edge.Guard) { g.Person = "" }, func(g *edge.Guard) { g.Name = "" }, func(g *edge.Guard) { g.Username = "" },
-		func(g *edge.Guard) { g.Groups = "" }, func(g *edge.Guard) { g.GroupSep = "" }, func(g *edge.Guard) { g.GroupSep = ", " }} {
+		func(g *edge.Guard) { g.Groups = "" }, func(g *edge.Guard) { g.GroupSep = "" }, func(g *edge.Guard) { g.GroupSep = ", " },
+		func(g *edge.Guard) { g.Role = "X-Role" }} { // a role both ways
 		guard := edge.KanidmGuard("172.31.250.10:9000")
 		g(guard)
 		c := withSignIn()

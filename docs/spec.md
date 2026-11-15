@@ -425,11 +425,19 @@ Stories 120–121 are decided in #87.
     - `X-HomersLab-Person` (the provider's stable id for the person, which a rename doesn't change: Authentik's uid,
       Kanidm's UUID), `X-HomersLab-Name`, and `X-HomersLab-Role` (`admin`, `adult` or `kid`, from the one role group
       the person is in);
-    - `X-HomersLab-Name` is the person's name, or their username when the provider has none;
+    - `X-HomersLab-Name` is the person's name, or their username when the provider has none: text they may change
+      themselves, raw UTF-8, which may hold commas. An app keys people on `X-HomersLab-Person` only, and never splits,
+      matches or authorises on the name;
+    - the role is computed from exact group names, never by splitting a joined list of them: with Authentik, the guard's
+      provider carries HomersLab's scope mapping, which names the role in its own header from the role groups the
+      person is in directly (a group below one gives none); with Kanidm, oauth2-proxy's comma-joined short names, since
+      Kanidm refuses a comma in a name. oauth2-proxy never runs with `--skip-jwt-bearer-tokens`, which would let a bearer
+      token stand in for the session;
     - a person without an id, without a name or username, in no role group or in more than one, is refused (403), never
       taken for an adult;
     - every name the edge serves deletes every `X-HomersLab-*` header a client sends, in any case, with underscores or
-      dots for dashes too; an app's name also deletes every provider's identity headers (`X-Authentik-*`,
+      dots for dashes too (Caddy 2.11.9 already drops a name with `_` or `.` before the upstream: the edge's deletes
+      are a second layer); an app's name also deletes every provider's identity headers (`X-Authentik-*`,
       `X-Auth-Request-*`, `X-Forwarded-User` and the like), and none of them reaches an app.
   - **Apps are same-site with Admin and the sign-in**, so the edge keeps their cookies apart (#83):
     - it strips the guard's own cookie from the request before proxying to the app;

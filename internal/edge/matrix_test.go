@@ -262,6 +262,9 @@ var people = map[string]person{
 	"twice": {"ak-uid-3e3e", "twice", "Twice", []string{"homerslab-admins", "homerslab-kids"}},
 	// A 2xx without the person's id.
 	"anon": {"", "anon", "Anonymous", []string{"homerslab-adults"}},
+	// A group named with Authentik's separator in it (#236, review round 1): never a role. Kanidm refuses a comma in a
+	// name (TestKanidmsGroupNamesHoldNoComma), so no group can split in its list.
+	"pipe": {"ak-uid-51d4", "pipe", "Pipe", []string{"x|homerslab-admins"}},
 	// No name: their username stands in; with neither, nobody to show.
 	"nameless": {"ak-uid-4a4a", "nameless", "", []string{"homerslab-adults"}},
 	"blank":    {"ak-uid-4b4b", "", "", []string{"homerslab-adults"}},
@@ -284,6 +287,14 @@ func guard(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-Authentik-Name", who.name)
 		w.Header().Set("X-Authentik-Email", who.username+"@example.test")
 		w.Header().Set("X-Authentik-Groups", strings.Join(who.groups, "|"))
+		// HomersLab's role mapping (authentik.RoleHeader): the one role group they're in, by its exact name, or none.
+		var roles []string
+		for _, g := range who.groups {
+			if r, ok := map[string]string{"homerslab-admins": "admin", "homerslab-adults": "adult", "homerslab-kids": "kid"}[g]; ok {
+				roles = append(roles, r)
+			}
+		}
+		w.Header().Set("X-Authentik-Homerslab-Role", map[bool]string{true: strings.Join(roles, "")}[len(roles) == 1])
 		// The session, refreshed (an expiry has a comma in it), and a second cookie: each reaches the browser whole.
 		w.Header().Add("Set-Cookie", "authentik_proxy_7f3a="+c.Value+"; Path=/; Expires=Wed, 21 Oct 2026 07:28:00 GMT; HttpOnly; Secure")
 		w.Header().Add("Set-Cookie", "authentik_proxy_7f3a_csrf=c; Path=/; HttpOnly; Secure")
@@ -664,6 +675,7 @@ func TestTheEdgesRequestMatrix(t *testing.T) {
 			{"theo", "403 "},
 			{"vera", "403 "},
 			{"ugo", "403 "},
+			{"pipe", "403 "},  // a group's name with a separator in it
 			{"none", "403 "},  // no group at all
 			{"twice", "403 "}, // two roles
 			{"anon", "403 "},  // no stable id
@@ -685,8 +697,10 @@ func TestTheEdgesRequestMatrix(t *testing.T) {
 				}
 			})
 		}
-		// Every spelling of a forged identity, HomersLab's and every provider's: names in any case, with underscores for
-		// dashes (an app behind CGI, WSGI or PHP reads X_HomersLab_Role as X-HomersLab-Role), and a name twice.
+		// Every spelling of a forged identity, HomersLab's and every provider's: names in any case, with underscores or
+		// dots for dashes (an app behind CGI, WSGI or PHP reads X_HomersLab_Role as X-HomersLab-Role), and a name twice.
+		// Caddy itself already drops a name with an underscore or a dot before the upstream, so these rows hold without
+		// the edge's deletes of those spellings; TestEverySiteDeletesHomersLabsOwnHeaders pins that second layer.
 		forged := [][2]string{
 			{"X-HomersLab-Person", "forged"}, {"x-homerslab-person", "forged"}, {"X-HOMERSLAB-ROLE", "admin"}, {"X-HomersLab-Role", "admin"},
 			{"X-HomersLab-Role", "admin"}, {"X_HomersLab_Role", "admin"}, {"x_homerslab-person", "forged"}, {"X-Homerslab_Name", "forged"},

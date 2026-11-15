@@ -472,70 +472,70 @@
                                         {
                                           "not": [
                                             {
-                                              "vars_regexp": {
-                                                "{http.reverse_proxy.header.X-Authentik-Groups}": {
-                                                  "pattern": "(^|\\|)homerslab-adults(\\||$)"
-                                                }
+                                              "vars": {
+                                                "{http.reverse_proxy.header.X-Authentik-Homerslab-Role}": [
+                                                  "adult"
+                                                ]
                                               }
                                             },
                                             {
-                                              "vars_regexp": {
-                                                "{http.reverse_proxy.header.X-Authentik-Groups}": {
-                                                  "pattern": "(^|\\|)homerslab-kids(\\||$)"
-                                                }
+                                              "vars": {
+                                                "{http.reverse_proxy.header.X-Authentik-Homerslab-Role}": [
+                                                  "kid"
+                                                ]
                                               }
                                             }
                                           ],
-                                          "vars_regexp": {
-                                            "{http.reverse_proxy.header.X-Authentik-Groups}": {
-                                              "pattern": "(^|\\|)homerslab-admins(\\||$)"
-                                            }
+                                          "vars": {
+                                            "{http.reverse_proxy.header.X-Authentik-Homerslab-Role}": [
+                                              "admin"
+                                            ]
                                           }
                                         },
                                         {
                                           "not": [
                                             {
-                                              "vars_regexp": {
-                                                "{http.reverse_proxy.header.X-Authentik-Groups}": {
-                                                  "pattern": "(^|\\|)homerslab-admins(\\||$)"
-                                                }
+                                              "vars": {
+                                                "{http.reverse_proxy.header.X-Authentik-Homerslab-Role}": [
+                                                  "admin"
+                                                ]
                                               }
                                             },
                                             {
-                                              "vars_regexp": {
-                                                "{http.reverse_proxy.header.X-Authentik-Groups}": {
-                                                  "pattern": "(^|\\|)homerslab-kids(\\||$)"
-                                                }
+                                              "vars": {
+                                                "{http.reverse_proxy.header.X-Authentik-Homerslab-Role}": [
+                                                  "kid"
+                                                ]
                                               }
                                             }
                                           ],
-                                          "vars_regexp": {
-                                            "{http.reverse_proxy.header.X-Authentik-Groups}": {
-                                              "pattern": "(^|\\|)homerslab-adults(\\||$)"
-                                            }
+                                          "vars": {
+                                            "{http.reverse_proxy.header.X-Authentik-Homerslab-Role}": [
+                                              "adult"
+                                            ]
                                           }
                                         },
                                         {
                                           "not": [
                                             {
-                                              "vars_regexp": {
-                                                "{http.reverse_proxy.header.X-Authentik-Groups}": {
-                                                  "pattern": "(^|\\|)homerslab-admins(\\||$)"
-                                                }
+                                              "vars": {
+                                                "{http.reverse_proxy.header.X-Authentik-Homerslab-Role}": [
+                                                  "admin"
+                                                ]
                                               }
                                             },
                                             {
-                                              "vars_regexp": {
-                                                "{http.reverse_proxy.header.X-Authentik-Groups}": {
-                                                  "pattern": "(^|\\|)homerslab-adults(\\||$)"
-                                                }
+                                              "vars": {
+                                                "{http.reverse_proxy.header.X-Authentik-Homerslab-Role}": [
+                                                  "adult"
+                                                ]
                                               }
                                             }
                                           ],
-                                          "vars_regexp": {
-                                            "{http.reverse_proxy.header.X-Authentik-Groups}": {
-                                              "pattern": "(^|\\|)homerslab-kids(\\||$)"
-                                            }
+                                          "vars": {
+                                            "{http.reverse_proxy.header.X-Authentik-Homerslab-Role}": [
+                                              "kid"
+                                            ]
                                           }
                                         }
                                       ]
@@ -559,24 +559,24 @@
                                     {
                                       "not": [
                                         {
-                                          "vars_regexp": {
-                                            "{http.reverse_proxy.header.X-Authentik-Groups}": {
-                                              "pattern": "(^|\\|)homerslab-adults(\\||$)"
-                                            }
+                                          "vars": {
+                                            "{http.reverse_proxy.header.X-Authentik-Homerslab-Role}": [
+                                              "adult"
+                                            ]
                                           }
                                         },
                                         {
-                                          "vars_regexp": {
-                                            "{http.reverse_proxy.header.X-Authentik-Groups}": {
-                                              "pattern": "(^|\\|)homerslab-kids(\\||$)"
-                                            }
+                                          "vars": {
+                                            "{http.reverse_proxy.header.X-Authentik-Homerslab-Role}": [
+                                              "kid"
+                                            ]
                                           }
                                         }
                                       ],
-                                      "vars_regexp": {
-                                        "{http.reverse_proxy.header.X-Authentik-Groups}": {
-                                          "pattern": "(^|\\|)homerslab-admins(\\||$)"
-                                        }
+                                      "vars": {
+                                        "{http.reverse_proxy.header.X-Authentik-Homerslab-Role}": [
+                                          "admin"
+                                        ]
                                       }
                                     }
                                   ]
@@ -598,24 +598,24 @@
                                     {
                                       "not": [
                                         {
-                                          "vars_regexp": {
-                                            "{http.reverse_proxy.header.X-Authentik-Groups}": {
-                                              "pattern": "(^|\\|)homerslab-admins(\\||$)"
-                                            }
+                                          "vars": {
+                                            "{http.reverse_proxy.header.X-Authentik-Homerslab-Role}": [
+                                              "admin"
+                                            ]
                                           }
                                         },
                                         {
-                                          "vars_regexp": {
-                                            "{http.reverse_proxy.header.X-Authentik-Groups}": {
-                                              "pattern": "(^|\\|)homerslab-kids(\\||$)"
-                                            }
+                                          "vars": {
+                                            "{http.reverse_proxy.header.X-Authentik-Homerslab-Role}": [
+                                              "kid"
+                                            ]
                                           }
                                         }
                                       ],
-                                      "vars_regexp": {
-                                        "{http.reverse_proxy.header.X-Authentik-Groups}": {
-                                          "pattern": "(^|\\|)homerslab-adults(\\||$)"
-                                        }
+                                      "vars": {
+                                        "{http.reverse_proxy.header.X-Authentik-Homerslab-Role}": [
+                                          "adult"
+                                        ]
                                       }
                                     }
                                   ]
@@ -637,24 +637,24 @@
                                     {
                                       "not": [
                                         {
-                                          "vars_regexp": {
-                                            "{http.reverse_proxy.header.X-Authentik-Groups}": {
-                                              "pattern": "(^|\\|)homerslab-admins(\\||$)"
-                                            }
+                                          "vars": {
+                                            "{http.reverse_proxy.header.X-Authentik-Homerslab-Role}": [
+                                              "admin"
+                                            ]
                                           }
                                         },
                                         {
-                                          "vars_regexp": {
-                                            "{http.reverse_proxy.header.X-Authentik-Groups}": {
-                                              "pattern": "(^|\\|)homerslab-adults(\\||$)"
-                                            }
+                                          "vars": {
+                                            "{http.reverse_proxy.header.X-Authentik-Homerslab-Role}": [
+                                              "adult"
+                                            ]
                                           }
                                         }
                                       ],
-                                      "vars_regexp": {
-                                        "{http.reverse_proxy.header.X-Authentik-Groups}": {
-                                          "pattern": "(^|\\|)homerslab-kids(\\||$)"
-                                        }
+                                      "vars": {
+                                        "{http.reverse_proxy.header.X-Authentik-Homerslab-Role}": [
+                                          "kid"
+                                        ]
                                       }
                                     }
                                   ]

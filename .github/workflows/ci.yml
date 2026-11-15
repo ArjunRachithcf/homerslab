@@ -263,7 +263,7 @@ jobs:
           CONTAINER_HOST: unix:///nonexistent
           CGO_ENABLED: "0"
         # The containers' logs, which the suites print when they fail, are third-party text too.
-        run: sh .github/scripts/stop-commands.sh go test -count=1 -v -run 'TestTheDNSProviderContract$|TestTheEdgesRequestMatrix' ./internal/certs/ ./internal/edge/
+        run: sh .github/scripts/stop-commands.sh go test -count=1 -v -run 'TestTheDNSProviderContract$|TestTheEdgesRequestMatrix|TestKanidmsGroupNamesHoldNoComma$' ./internal/certs/ ./internal/edge/
 
   engine:
     name: Container-engine contract (Docker, the runner's own, a throwaway engine)

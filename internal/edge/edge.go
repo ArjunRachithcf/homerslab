@@ -103,26 +103,31 @@ type Guard struct {
 	AuthURI string
 	// Paths are the provider's own paths on the app's name (its callback), proxied to it, never to the app.
 	Paths []string
-	// Person, Name and Groups are the headers of the provider's 2xx answer that say who someone is: a stable id that
-	// survives a rename, the name to show (Username when it's empty), and their groups, separated by GroupSep. The edge turns them into the
-	// identity contract (Contract); none of them reaches the app.
-	Person, Name, Username, Groups, GroupSep string
+	// Person, Name and Username are the headers of the provider's 2xx answer that say who someone is: a stable id that
+	// survives a rename, and the name to show (Username when Name is empty). Role names their role itself, exactly admin,
+	// adult or kid, as the provider computes it from exact group names; a provider that can't gives Groups instead, their
+	// groups separated by GroupSep, which no group's name may hold. The edge turns them into the identity contract
+	// (Contract); none of them reaches the app.
+	Person, Name, Username, Role, Groups, GroupSep string
 	// Cookie is the prefix of the provider's own cookies on the app's name, which the app never sees (#83).
 	Cookie string
 }
 
 // AuthentikGuard is Authentik's embedded outpost, on its server, as the guard of an app with its own proxy provider in
 // forward_single mode (#83: never one for the whole domain). X-Authentik-Uid is the person's uid, a hash of their
-// primary key that a rename doesn't change; X-Authentik-Groups joins their groups with |.
+// primary key that a rename doesn't change. The role is HomersLab's own header, which the guard's provider computes
+// (authentik.RoleHeader): X-Authentik-Groups joins names with |, which a group's own name may hold.
 func AuthentikGuard(dial string) *Guard {
 	return &Guard{Dial: dial, AuthURI: "/outpost.goauthentik.io/auth/caddy", Paths: []string{"/outpost.goauthentik.io/*"},
-		Person: "X-Authentik-Uid", Name: "X-Authentik-Name", Username: "X-Authentik-Username", Groups: "X-Authentik-Groups", GroupSep: "|", Cookie: "authentik_proxy_"}
+		Person: "X-Authentik-Uid", Name: "X-Authentik-Name", Username: "X-Authentik-Username", Role: "X-Authentik-Homerslab-Role",
+		Cookie: "authentik_proxy_"}
 }
 
 // KanidmGuard is oauth2-proxy in front of Kanidm, one per app, answering with --set-xauthrequest (research:
 // 2026-11-09-spike-kanidm-forward-auth): X-Auth-Request-User is the person's sub, their UUID in Kanidm; oauth2-proxy
 // names no display name, so the name is their preferred username; X-Auth-Request-Groups joins their groups with commas,
-// by their short names.
+// by their short names (scope groups_name), and Kanidm refuses a comma in a name (TestKanidmsGroupNamesHoldNoComma).
+// oauth2-proxy must never run with --skip-jwt-bearer-tokens: a bearer token would stand in for the session cookie.
 func KanidmGuard(dial string) *Guard {
 	return &Guard{Dial: dial, AuthURI: "/oauth2/auth", Paths: []string{"/oauth2/*"},
 		Person: "X-Auth-Request-User", Name: "X-Auth-Request-Preferred-Username", Username: "X-Auth-Request-Preferred-Username", Groups: "X-Auth-Request-Groups", GroupSep: ",",
@@ -130,7 +135,8 @@ func KanidmGuard(dial string) *Guard {
 }
 
 // Contract is the identity contract the edge keeps for every guarded app (#236): the app learns who someone is from
-// PersonHeader, NameHeader and RoleHeader alone, which the edge sets from its guard's answer, the same whichever
+// PersonHeader (the one to key people on), NameHeader (text the person may change: never split nor authorise on it) and
+// RoleHeader alone, which the edge sets from its guard's answer, the same whichever
 // provider the household runs. NameHeader is their name, or their username when the provider has none. RoleHeader is
 // admin, adult or kid, from the one role group the person is in; a person in none of them, or in more than one, or
 // without an id or any name, is refused, never taken for an adult. Every site deletes every
@@ -406,7 +412,8 @@ func appRoute(a App, domains []string) (obj, error) {
 	}
 	g := a.Guard
 	if a.Name == "" || !validDial(a.Dial) || g == nil || !validDial(g.Dial) || g.AuthURI == "" || g.Cookie == "" || len(a.Refused) > 0 ||
-		g.Person == "" || g.Name == "" || g.Username == "" || g.Groups == "" || len(g.GroupSep) != 1 {
+		g.Person == "" || g.Name == "" || g.Username == "" ||
+		(g.Role == "") == (g.Groups == "") || g.Groups != "" && len(g.GroupSep) != 1 {
 		return nil, fmt.Errorf("an app's site needs its name, its upstream and its guard: %+v", a)
 	}
 	copied := slices.Concat([]obj{{"handle": []obj{{"handler": "vars"}}}}, identity(g))
@@ -503,12 +510,15 @@ func nativeRoute(a App, domains []string) (obj, error) {
 
 // identity are the routes of a guard's 2xx answer that keep the identity contract (Contract): the person's id, name
 // (their username when the provider has no name for them) and role, set on the request the app gets; or 403, when the
-// answer names no id, no name at all, or not exactly one role group.
+// answer names no id, no name at all, or no role: not exactly one role group, or no role the provider names exactly.
 func identity(g *Guard) []obj {
 	ph := func(h string) string { return "{http.reverse_proxy.header." + h + "}" }
 	empty := func(h string) obj { return obj{"vars": obj{ph(h): []string{""}}} }
 	sep := regexp.QuoteMeta(g.GroupSep)
 	in := func(r idp.Role) obj {
+		if g.Role != "" { // the provider's own answer, exactly
+			return obj{"vars": obj{ph(g.Role): []string{string(r)}}}
+		}
 		return obj{"vars_regexp": obj{ph(g.Groups): obj{"pattern": "(^|" + sep + ")" + regexp.QuoteMeta(idp.RoleGroup(r)) + "(" + sep + "|$)"}}}
 	}
 	set := func(h, v string) []obj {
