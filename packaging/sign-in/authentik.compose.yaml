@@ -16,7 +16,10 @@
 #   - X-Forwarded-* trusted only from the sign-in network's gateway, where the edge and the manager connect from;
 #   - no telemetry: no error reporting, no startup analytics, no update check;
 #   - warnings and errors logged only: Authentik logs each request's URL at info, an enrolment link's token with it,
-#     and the unit's log is the journal.
+#     and the unit's log is the journal;
+#   - HomersLab's LDAP outpost (#204), in profile ldap, only once an app signs in over LDAP: Authentik's own image for
+#     it, at its fixed address on the sign-in network (172.31.250.11), plain LDAP on 3389, which only the node's LDAPS
+#     listener reaches (ADR 0020). Its token is a file like the others, exported in its own entrypoint.
 name: homerslab-authentik
 
 networks:
@@ -37,6 +40,8 @@ secrets:
     file: /run/homerslab-authentik/postgres-password-db
   bootstrap-token:
     file: /run/homerslab-authentik/bootstrap-token
+  ldap-token:
+    file: /run/homerslab-authentik/ldap-token
 
 volumes:
   database: {}
@@ -127,3 +132,31 @@ services:
       - postgres-password
     networks:
       - database
+
+  ldap:
+    # ghcr.io/goauthentik/ldap:2026.8.5
+    image: ghcr.io/goauthentik/ldap@sha256:4c75bd27918418d2d6fbbfe4581bbd5a199fe38942d24559c4483edd64a1ea87
+    profiles: [ldap]
+    restart: "no"
+    security_opt:
+      - label=level:s0:c1000,c1001
+      - no-new-privileges:true
+    entrypoint:
+      - /bin/sh
+      - -ec
+      - |
+        AUTHENTIK_TOKEN="$$(cat /run/secrets/ldap-token)"
+        export AUTHENTIK_TOKEN
+        exec /ldap
+    environment:
+      AUTHENTIK_HOST: http://server:9000
+      AUTHENTIK_INSECURE: "true"
+      AUTHENTIK_LOG_LEVEL: warning
+    secrets:
+      - ldap-token
+    depends_on:
+      server:
+        condition: service_started
+    networks:
+      sign-in:
+        ipv4_address: 172.31.250.11

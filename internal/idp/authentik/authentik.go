@@ -79,6 +79,8 @@ type Authentik struct {
 	h   idp.Household
 	// Landing is where a finished enrolment goes: Admin, for an admin.
 	landing string
+	// ldapRetire is how long a closed LDAP application and its provider stay off the outpost before they go.
+	ldapRetire time.Duration
 }
 
 // Open is Authentik at its upstream base (http://<its bridge address>:9000), as the sign-in of household h, with
@@ -88,7 +90,7 @@ func Open(base string, h idp.Household, token idp.Secret, landing string) (*Auth
 	if err != nil {
 		return nil, err
 	}
-	return &Authentik{api: a, h: h, landing: landing}, nil
+	return &Authentik{api: a, h: h, landing: landing, ldapRetire: ldapRetireAfter}, nil
 }
 
 var _ idp.Provider = (*Authentik)(nil)
@@ -458,34 +460,58 @@ func (a *Authentik) bindStages(ctx context.Context, flowPK string, want []stageB
 	if err != nil {
 		return err
 	}
-	kept := map[int]target{}
-	for _, h := range have {
-		i := slices.IndexFunc(want, func(w stageBinding) bool { return w.Stage == h.Stage })
-		if i >= 0 && h.Order == (i+1)*10 && !h.OnPlan && h.ReEval && h.Invalid == "retry" {
-			if _, dup := kept[i]; !dup {
-				kept[i] = target{PBM: h.PBM, PK: h.PK}
+	// The wanted stages are in place before anything else goes, so a flow being put back never runs with a stage
+	// missing (the LDAP bind flow without its password stage would bind anyone, #204): a binding of the stage that is
+	// there already is changed in place, a missing one is made, and only then are the others deleted.
+	conforms := func(h fsb, i int) bool { return h.Order == (i+1)*10 && !h.OnPlan && h.ReEval && h.Invalid == "retry" }
+	used := make([]bool, len(have))
+	for i, w := range want {
+		j := -1 // this stage's binding: one that conforms, or else any to change in place
+		for k, h := range have {
+			if used[k] || h.Stage != w.Stage {
 				continue
 			}
+			if conforms(h, i) {
+				j = k
+				break
+			}
+			if j < 0 {
+				j = k
+			}
 		}
-		if err := a.api.call(ctx, http.MethodDelete, "/flows/bindings/"+h.PK+"/", nil, nil); err != nil {
-			return err
-		}
-	}
-	for i, w := range want {
-		id, ok := kept[i]
-		if !ok {
+		body := map[string]any{"target": flowPK, "stage": w.Stage, "order": (i + 1) * 10, "evaluate_on_plan": false,
+			"re_evaluate_policies": true, "invalid_response_action": "retry", "policy_engine_mode": "all"}
+		var id target
+		switch {
+		case j >= 0 && conforms(have[j], i):
+			id = target{PBM: have[j].PBM, PK: have[j].PK}
+		case j >= 0:
+			if err := a.api.call(ctx, http.MethodPatch, "/flows/bindings/"+have[j].PK+"/", body, nil); err != nil {
+				return err
+			}
+			id = target{PBM: have[j].PBM, PK: have[j].PK}
+		default:
 			var out struct {
 				PK  string `json:"pk"`
 				PBM string `json:"policybindingmodel_ptr_id"`
 			}
-			if err := a.api.call(ctx, http.MethodPost, "/flows/bindings/", map[string]any{"target": flowPK, "stage": w.Stage,
-				"order": (i + 1) * 10, "evaluate_on_plan": false, "re_evaluate_policies": true, "invalid_response_action": "retry",
-				"policy_engine_mode": "all"}, &out); err != nil {
+			if err := a.api.call(ctx, http.MethodPost, "/flows/bindings/", body, &out); err != nil {
 				return err
 			}
 			id = target{PBM: out.PBM, PK: out.PK}
 		}
+		if j >= 0 {
+			used[j] = true
+		}
 		if err := a.bindPolicies(ctx, id, w.Policies); err != nil {
+			return err
+		}
+	}
+	for j, h := range have {
+		if used[j] {
+			continue
+		}
+		if err := a.api.call(ctx, http.MethodDelete, "/flows/bindings/"+h.PK+"/", nil, nil); err != nil {
 			return err
 		}
 	}
@@ -638,6 +664,19 @@ func (a *Authentik) Prepare(ctx context.Context, h idp.Household) error {
 	if err := a.refuseElsewhere(ctx, signIn, pks[stageNotHere], household); err != nil {
 		return err
 	}
+	// The LDAP bind flow, once an app has made it, back to app passwords only, at an outpost only (#204).
+	if f, err := a.flow(ctx, LDAPBindFlow); err != nil {
+		return err
+	} else if f != nil {
+		if _, err := a.ldapBindFlow(ctx); err != nil {
+			return err
+		}
+	}
+	// The LDAP outpost back to HomersLab's providers alone, each with its own application: orphaned providers are
+	// removed.
+	if _, err := a.ldapTidy(ctx, true); err != nil {
+		return err
+	}
 	return a.ensureBrand(ctx, signIn)
 }
 
@@ -669,7 +708,8 @@ func (a *Authentik) loginsElsewhere(ctx context.Context, signIn string) (map[str
 	}
 	bindings, at := map[string][]flowBinding{}, map[string]int{}
 	for _, f := range flows {
-		if f.PK == signIn || f.Slug == SignInFlow || f.Slug == EnrolmentFlow {
+		// The LDAP bind flow takes an app password, for an app's LDAP bind, and runs only at an outpost (#204).
+		if f.PK == signIn || f.Slug == SignInFlow || f.Slug == EnrolmentFlow || f.Slug == LDAPBindFlow {
 			continue
 		}
 		bs, err := where[flowBinding](ctx, a.api, "/flows/bindings/?target="+q(f.PK), "target", f.PK)
@@ -1476,7 +1516,17 @@ func (a *Authentik) Report(ctx context.Context) (idp.Report, error) {
 		if err != nil {
 			return idp.Report{}, err
 		}
-		r.PasskeyOnlySignIn = only
+		ldap, err := a.ldapBindIntact(ctx)
+		if err != nil {
+			return idp.Report{}, err
+		}
+		// A provider the outpost serves without HomersLab's application for it would bind people that application
+		// never let in.
+		tidy, err := a.ldapTidy(ctx, false)
+		if err != nil {
+			return idp.Report{}, err
+		}
+		r.PasskeyOnlySignIn = only && ldap && tidy
 	}
 	ak, err := find[user](ctx, a.api, "/core/users/?username="+q(firstAdmin), "username", firstAdmin)
 	if err != nil {

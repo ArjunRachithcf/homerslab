@@ -1,0 +1,488 @@
+package authentik_test
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"net"
+	"net/http"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"slices"
+	"testing"
+	"time"
+
+	"github.com/ArjunRachithcf/homerslab/internal/idp"
+	"github.com/ArjunRachithcf/homerslab/internal/idp/authentik"
+	"github.com/ArjunRachithcf/homerslab/internal/ldaps/ldaptest"
+)
+
+// The LDAP outpost of the packaged compose file (service ldap, profile ldap), at its address in the test's range.
+var outpostLDAP = signInNet + ".11:3389"
+
+func (w *world) LDAP() idp.LDAP { return w.provider }
+
+// StartOutpost does what the sign-in's unit does once an app signs in over LDAP: the outpost's token in its file, then
+// the compose file's ldap profile.
+func (w *world) StartOutpost(t *testing.T, token idp.Secret) {
+	t.Helper()
+	f := filepath.Join(w.dir, "ldap-token")
+	_ = os.Remove(f)
+	if err := os.WriteFile(f, []byte(token.Reveal()), 0o444); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat("/sys/fs/selinux/enforce"); err == nil {
+		if out, err := exec.Command("chcon", "-t", "container_file_t", "-l", "s0:c1000,c1001", f).CombinedOutput(); err != nil {
+			t.Fatalf("labelling the outpost's token: %v %s", err, out)
+		}
+	}
+	// Recreated: the outpost reads its token only as it starts, as the unit restarts it.
+	w.compose(t, "--profile", "ldap", "up", "-d", "--quiet-pull", "--force-recreate", "--no-deps", "ldap")
+	for deadline := time.Now().Add(2 * time.Minute); ; time.Sleep(time.Second) {
+		c, err := net.DialTimeout("tcp", outpostLDAP, 2*time.Second)
+		if err == nil {
+			c.Close()
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the LDAP outpost never listened: %v", err)
+		}
+	}
+}
+
+// AppPassword is an app password of the person's, made as Home will make one for them: never shown again after.
+func (w *world) AppPassword(t *testing.T, username string) string {
+	t.Helper()
+	id := "hltest-app-password-" + username
+	if w.status(t, w.own, "/api/v3/core/tokens/"+id+"/") == http.StatusNotFound {
+		w.raw(t, w.own, "POST", "/api/v3/core/tokens/", map[string]any{"identifier": id, "intent": "app_password",
+			"user": w.userPK(t, username), "expiring": false}, nil)
+	}
+	var k struct {
+		Key string `json:"key"`
+	}
+	w.raw(t, w.own, "GET", "/api/v3/core/tokens/"+id+"/view_key/", nil, &k)
+	if k.Key == "" {
+		t.Fatalf("no app password for %s", username)
+	}
+	return k.Key
+}
+
+func (w *world) Search(t *testing.T, dn, password, base string) ([]ldaptest.Entry, error) {
+	t.Helper()
+	c, err := net.DialTimeout("tcp", outpostLDAP, 5*time.Second)
+	if err != nil {
+		return nil, err
+	}
+	defer c.Close()
+	return ldaptest.Search(c, dn, password, base)
+}
+
+func (w *world) Bind(t *testing.T, dn, password string) error {
+	t.Helper()
+	c, err := net.DialTimeout("tcp", outpostLDAP, 5*time.Second)
+	if err != nil {
+		return err
+	}
+	defer c.Close()
+	return ldaptest.Bind(c, dn, password)
+}
+
+// ldapFlowOnlyAtTheOutpost checks that a browser can't run the bind flow: an app password signs nobody in to the
+// provider itself.
+func ldapFlowOnlyAtTheOutpost(t *testing.T) {
+	req, _ := http.NewRequest("GET", upstream+"/api/v3/flows/executor/"+authentik.LDAPBindFlow+"/?query=", nil)
+	req.Host = household.SignIn()
+	req.Header.Set("X-Forwarded-Proto", "https")
+	resp, err := (&http.Client{Timeout: 20 * time.Second}).Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	var ch struct {
+		Component string `json:"component"`
+	}
+	_ = json.NewDecoder(resp.Body).Decode(&ch)
+	if ch.Component != "ak-stage-access-denied" {
+		t.Errorf("the bind flow, from a browser: %d %q, want access denied", resp.StatusCode, ch.Component)
+	}
+}
+
+// ldapDrift opens the bind flow to passwords behind HomersLab's back, as an admin in Authentik's console could: the
+// report says the sign-in is no longer passkey-only, and Prepare puts the flow back.
+func ldapDrift(w *world, a *authentik.Authentik) func(*testing.T) {
+	return func(t *testing.T) {
+		ctx := context.Background()
+		var st struct {
+			Results []struct {
+				PK string `json:"pk"`
+			}
+		}
+		w.raw(t, w.own, "GET", "/api/v3/stages/password/?name=homerslab-ldap-app-password", nil, &st)
+		if len(st.Results) != 1 {
+			t.Fatalf("the bind flow's password stage: %+v", st.Results)
+		}
+		w.raw(t, w.own, "PATCH", "/api/v3/stages/password/"+st.Results[0].PK+"/",
+			map[string]any{"backends": []string{"authentik.core.auth.InbuiltBackend", "authentik.core.auth.TokenBackend"}}, nil)
+		if r, err := a.Report(ctx); err != nil || r.PasskeyOnlySignIn {
+			t.Errorf("a bind flow that takes passwords: %+v %v, want not passkey-only", r, err)
+		}
+		w.raw(t, w.own, "PATCH", "/api/v3/flows/instances/"+authentik.LDAPBindFlow+"/", map[string]any{"authentication": "none"}, nil)
+		if err := a.Prepare(ctx, household); err != nil {
+			t.Fatal(err)
+		}
+		if r, err := a.Report(ctx); err != nil || !r.PasskeyOnlySignIn {
+			t.Errorf("after Prepare: %+v %v", r, err)
+		}
+		ldapFlowOnlyAtTheOutpost(t)
+		// The app password's stage taken out of the flow: a username alone would bind.
+		var bs struct {
+			Results []struct {
+				PK    string `json:"pk"`
+				Stage string `json:"stage"`
+			}
+		}
+		w.raw(t, w.own, "GET", "/api/v3/flows/bindings/?target="+flowPK(t, w), nil, &bs)
+		for _, b := range bs.Results {
+			if b.Stage == st.Results[0].PK {
+				w.raw(t, w.own, "DELETE", "/api/v3/flows/bindings/"+b.PK+"/", nil, nil)
+			}
+		}
+		if r, err := a.Report(ctx); err != nil || r.PasskeyOnlySignIn {
+			t.Errorf("a bind flow without its password stage: %+v %v, want not passkey-only", r, err)
+		}
+		if err := a.Prepare(ctx, household); err != nil {
+			t.Fatal(err)
+		}
+		if r, err := a.Report(ctx); err != nil || !r.PasskeyOnlySignIn {
+			t.Errorf("after Prepare, again: %+v %v", r, err)
+		}
+		// A policy on the password stage's binding: one that fails would skip the stage, and bind anyone.
+		var never struct {
+			Results []struct {
+				PK string `json:"pk"`
+			}
+		}
+		w.raw(t, w.own, "GET", "/api/v3/policies/expression/?name=homerslab-never", nil, &never)
+		var fsb struct {
+			Results []struct {
+				Stage string `json:"stage"`
+				PBM   string `json:"policybindingmodel_ptr_id"`
+			}
+		}
+		w.raw(t, w.own, "GET", "/api/v3/flows/bindings/?target="+flowPK(t, w), nil, &fsb)
+		for _, b := range fsb.Results {
+			if b.Stage == st.Results[0].PK && len(never.Results) == 1 {
+				w.raw(t, w.own, "POST", "/api/v3/policies/bindings/", map[string]any{"target": b.PBM, "policy": never.Results[0].PK, "order": 0}, nil)
+			}
+		}
+		if r, err := a.Report(ctx); err != nil || r.PasskeyOnlySignIn {
+			t.Errorf("a bind flow with a policy on its password stage: %+v %v, want not passkey-only", r, err)
+		}
+		if err := a.Prepare(ctx, household); err != nil {
+			t.Fatal(err)
+		}
+		if r, err := a.Report(ctx); err != nil || !r.PasskeyOnlySignIn {
+			t.Errorf("after Prepare, a third time: %+v %v", r, err)
+		}
+	}
+}
+
+func flowPK(t *testing.T, w *world) string {
+	var f struct {
+		PK string `json:"pk"`
+	}
+	w.raw(t, w.own, "GET", "/api/v3/flows/instances/"+authentik.LDAPBindFlow+"/", nil, &f)
+	return f.PK
+}
+
+// ldapBesideTheAppsOwn checks that an app's directory keeps apart from the app's own application, homerslab-<app> (its
+// OIDC client's or its guard's): made beside it, and deleted, it leaves it as it was.
+func ldapBesideTheAppsOwn(w *world, a *authentik.Authentik) func(*testing.T) {
+	return func(t *testing.T) {
+		ctx := context.Background()
+		w.raw(t, w.own, "POST", "/api/v3/core/applications/", map[string]any{"name": "Books", "slug": "homerslab-books"}, nil)
+		app := idp.LDAPApp{Slug: "homerslab-books", Name: "Books", Roles: []idp.Role{idp.Adult}}
+		if _, err := a.EnsureLDAP(ctx, app); err != nil {
+			t.Fatalf("the directory, beside the app's own application: %v", err)
+		}
+		if err := a.DeleteLDAP(ctx, app.Slug); err != nil {
+			t.Fatal(err)
+		}
+		var got struct {
+			Name     string `json:"name"`
+			Provider *int   `json:"provider"`
+		}
+		w.raw(t, w.own, "GET", "/api/v3/core/applications/homerslab-books/", nil, &got)
+		if got.Name != "Books" || got.Provider != nil {
+			t.Errorf("the app's own application, after its directory came and went: %+v", got)
+		}
+	}
+}
+
+// ldapOrphan deletes an app's LDAP application behind HomersLab's back, as an admin in Authentik's console could, while
+// the outpost serves its provider: the report says so, and Prepare closes it to nobody at once and takes the provider
+// off the outpost (orphaned providers are removed). A later pass deletes them.
+func ldapOrphan(w *world, a *authentik.Authentik) func(*testing.T) {
+	return func(t *testing.T) {
+		ctx := context.Background()
+		app := idp.LDAPApp{Slug: "homerslab-orphan", Name: "Orphan", Roles: []idp.Role{idp.Adult}}
+		creds, err := a.EnsureLDAP(ctx, app)
+		if err != nil {
+			t.Fatal(err)
+		}
+		pw := map[string]string{}
+		for _, who := range []string{"lena", "kiko", "olga"} {
+			pw[who] = w.AppPassword(t, who)
+		}
+		bind := func(who string) error { return w.Bind(t, fmt.Sprintf(creds.UserDN, who), pw[who]) }
+		for deadline := time.Now().Add(90 * time.Second); bind("lena") != nil; time.Sleep(3 * time.Second) {
+			if time.Now().After(deadline) {
+				t.Fatal("the outpost never served the app's provider")
+			}
+		}
+		if r, err := a.Report(ctx); err != nil || !r.PasskeyOnlySignIn {
+			t.Fatalf("before: %+v %v", r, err)
+		}
+		w.raw(t, w.own, "DELETE", "/api/v3/core/applications/homerslab-orphan-ldap/", nil, nil)
+		if r, err := a.Report(ctx); err != nil || r.PasskeyOnlySignIn {
+			t.Errorf("a provider at the outpost without its application: %+v %v, want not passkey-only", r, err)
+		}
+		if err := a.Prepare(ctx, household); err != nil {
+			t.Fatal(err)
+		}
+		for end := time.Now().Add(15 * time.Second); time.Now().Before(end); {
+			for _, who := range []string{"lena", "kiko", "olga"} {
+				if bind(who) == nil {
+					t.Fatalf("%s bound to an orphaned provider after Prepare", who)
+				}
+			}
+		}
+		if r, err := a.Report(ctx); err != nil || !r.PasskeyOnlySignIn {
+			t.Errorf("after Prepare: %+v %v", r, err)
+		}
+		var o struct {
+			Results []struct {
+				Providers []int `json:"providers"`
+			}
+		}
+		w.raw(t, w.own, "GET", "/api/v3/outposts/instances/?name__iexact="+authentik.LDAPOutpostName, nil, &o)
+		var p struct {
+			Results []struct {
+				PK   int    `json:"pk"`
+				Name string `json:"name"`
+			}
+		}
+		w.raw(t, w.own, "GET", "/api/v3/providers/ldap/?name__iexact=homerslab-orphan-ldap", nil, &p)
+		if len(o.Results) != 1 || len(p.Results) != 1 {
+			t.Fatalf("the outpost %+v, the provider %+v", o.Results, p.Results)
+		}
+		for _, pk := range o.Results[0].Providers {
+			if pk == p.Results[0].PK {
+				t.Error("the orphaned provider is still at the outpost")
+			}
+		}
+		// The later pass: once off the outpost long enough (here at once), the closed application and its provider go.
+		authentik.SetLDAPRetire(a, 0)
+		defer authentik.SetLDAPRetire(a, 5*time.Minute)
+		if err := a.Prepare(ctx, household); err != nil {
+			t.Fatal(err)
+		}
+		if code := w.status(t, w.own, "/api/v3/core/applications/homerslab-orphan-ldap/"); code != http.StatusNotFound {
+			t.Errorf("the closed application, after the later pass: %d", code)
+		}
+		if code := w.status(t, w.own, fmt.Sprintf("/api/v3/providers/ldap/%d/", p.Results[0].PK)); code != http.StatusNotFound {
+			t.Errorf("the provider, after the later pass: %d", code)
+		}
+		if r, err := a.Report(ctx); err != nil || !r.PasskeyOnlySignIn {
+			t.Errorf("after the later pass: %+v %v", r, err)
+		}
+	}
+}
+
+// ldapImpostors puts providers at the outpost behind HomersLab's back, as an admin in Authentik's console could, named
+// as an app's and with an application of their own that has no binding: one with a copy of a real app's base DN, one
+// with a base DN of its own. The report says so; Prepare takes them off the outpost, and nobody binds through them.
+// The outpost asks for its providers every minute, not only when told.
+func ldapImpostors(w *world, a *authentik.Authentik) func(*testing.T) {
+	return func(t *testing.T) {
+		ctx := context.Background()
+		var cfg struct {
+			Results []struct {
+				PK        string         `json:"pk"`
+				Providers []int          `json:"providers"`
+				Config    map[string]any `json:"config"`
+			}
+		}
+		outpost := func() (string, []int) {
+			w.raw(t, w.own, "GET", "/api/v3/outposts/instances/?name__iexact="+authentik.LDAPOutpostName, nil, &cfg)
+			if len(cfg.Results) != 1 {
+				t.Fatalf("the outpost: %+v", cfg.Results)
+			}
+			return cfg.Results[0].PK, cfg.Results[0].Providers
+		}
+		outpost()
+		if got := cfg.Results[0].Config["refresh_interval"]; got != "minutes=1" {
+			t.Errorf("the outpost's refresh_interval: %v, want minutes=1", got)
+		}
+		real := idp.LDAPApp{Slug: "homerslab-real", Name: "Real", Roles: []idp.Role{idp.Adult}}
+		creds, err := a.EnsureLDAP(ctx, real)
+		if err != nil {
+			t.Fatal(err)
+		}
+		pw := map[string]string{}
+		for _, who := range []string{"lena", "kiko", "olga"} {
+			pw[who] = w.AppPassword(t, who)
+		}
+		bindAt := func(userDN, who string) error { return w.Bind(t, fmt.Sprintf(userDN, who), pw[who]) }
+		waitFor := func(userDN string) {
+			t.Helper()
+			for deadline := time.Now().Add(150 * time.Second); bindAt(userDN, "lena") != nil; time.Sleep(3 * time.Second) {
+				if time.Now().After(deadline) {
+					t.Fatalf("the outpost never served %s", userDN)
+				}
+			}
+		}
+		waitFor(creds.UserDN)
+		var inval struct {
+			Results []struct {
+				PK string `json:"pk"`
+			}
+		}
+		w.raw(t, w.own, "GET", "/api/v3/flows/instances/?slug=default-provider-invalidation-flow", nil, &inval)
+		if len(inval.Results) != 1 {
+			t.Fatalf("the invalidation flow: %+v", inval.Results)
+		}
+		groupPK := func(name string) string {
+			var g struct {
+				Results []struct {
+					PK   string `json:"pk"`
+					Name string `json:"name"`
+				}
+			}
+			w.raw(t, w.own, "GET", "/api/v3/core/groups/?name="+name, nil, &g)
+			for _, x := range g.Results {
+				if x.Name == name {
+					return x.PK
+				}
+			}
+			t.Fatalf("no group %s", name)
+			return ""
+		}
+		kids := groupPK(idp.RoleGroup(idp.Kid))
+		// provider puts a provider of the console's at the outpost, first, with an application of its own that the
+		// given bindings open (none: open to everyone).
+		provider := func(t *testing.T, name, baseDN string, binds []map[string]any) (int, string) {
+			var p struct {
+				PK int `json:"pk"`
+			}
+			w.raw(t, w.own, "POST", "/api/v3/providers/ldap/", map[string]any{"name": name, "authorization_flow": flowPK(t, w),
+				"invalidation_flow": inval.Results[0].PK, "base_dn": baseDN, "bind_mode": "direct", "search_mode": "direct"}, &p)
+			var app struct {
+				PBM string `json:"pbm_uuid"`
+			}
+			w.raw(t, w.own, "POST", "/api/v3/core/applications/", map[string]any{"name": name, "slug": name, "provider": p.PK}, &app)
+			for i, b := range binds {
+				b["target"], b["order"] = app.PBM, i*10
+				w.raw(t, w.own, "POST", "/api/v3/policies/bindings/", b, nil)
+			}
+			pk, ps := outpost()
+			w.raw(t, w.own, "PATCH", "/api/v3/outposts/instances/"+pk+"/", map[string]any{"providers": append([]int{p.PK}, ps...)}, nil)
+			return p.PK, "cn=%s,ou=users," + baseDN
+		}
+		// binding gives the real app's application one more binding of the console's.
+		binding := func(t *testing.T, b map[string]any) {
+			var app struct {
+				PBM string `json:"pbm_uuid"`
+			}
+			w.raw(t, w.own, "GET", "/api/v3/core/applications/"+real.Slug+"-ldap/", nil, &app)
+			b["target"], b["order"] = app.PBM, 100
+			w.raw(t, w.own, "POST", "/api/v3/policies/bindings/", b, nil)
+		}
+		for _, c := range []struct {
+			name  string
+			drift func(t *testing.T) (int, string) // the console's provider and its DN template, if it made one
+		}{
+			{"a copy of the real app's base DN", func(t *testing.T) (int, string) {
+				return provider(t, "homerslab-evil-ldap", authentik.LDAPBaseDN(real.Slug), nil)
+			}},
+			{"a base DN of its own", func(t *testing.T) (int, string) {
+				return provider(t, "homerslab-evil2-ldap", "dc=evil2,dc=homerslab", nil)
+			}},
+			{"the tree above every app's, opened to the kids", func(t *testing.T) (int, string) {
+				return provider(t, "homerslab-evil3-ldap", "dc=homerslab", []map[string]any{{"group": kids, "enabled": true, "timeout": 30}})
+			}},
+			{"the real app opened to one kid more", func(t *testing.T) (int, string) {
+				binding(t, map[string]any{"user": w.userPK(t, "kiko"), "enabled": true, "timeout": 30})
+				return 0, ""
+			}},
+			{"the real app opened to everyone but the kids", func(t *testing.T) (int, string) {
+				binding(t, map[string]any{"group": kids, "negate": true, "enabled": true, "timeout": 30})
+				return 0, ""
+			}},
+		} {
+			t.Run(c.name, func(t *testing.T) {
+				pk, evil := c.drift(t)
+				if r, err := a.Report(ctx); err != nil || r.PasskeyOnlySignIn {
+					t.Errorf("drift at the outpost: %+v %v, want not passkey-only", r, err)
+				}
+				if err := a.Prepare(ctx, household); err != nil {
+					t.Fatal(err)
+				}
+				if _, ps := outpost(); pk != 0 && slices.Contains(ps, pk) {
+					t.Error("the console's provider is still at the outpost")
+				}
+				if r, err := a.Report(ctx); err != nil || !r.PasskeyOnlySignIn {
+					t.Errorf("after Prepare: %+v %v", r, err)
+				}
+				for end := time.Now().Add(15 * time.Second); time.Now().Before(end); {
+					for _, who := range []string{"kiko", "olga"} {
+						if bindAt(creds.UserDN, who) == nil || evil != "" && bindAt(evil, who) == nil {
+							t.Fatalf("%s bound, outside the audience, after Prepare", who)
+						}
+					}
+				}
+				// The real app as it should be, with its next EnsureLDAP (Prepare closed it, if its own was changed).
+				if _, err := a.EnsureLDAP(ctx, real); err != nil {
+					t.Fatal(err)
+				}
+				waitFor(creds.UserDN)
+				for _, who := range []string{"kiko", "olga"} {
+					if bindAt(creds.UserDN, who) == nil {
+						t.Errorf("%s bound, outside the audience, with the real app back", who)
+					}
+				}
+				if r, err := a.Report(ctx); err != nil || !r.PasskeyOnlySignIn {
+					t.Errorf("with the real app back: %+v %v", r, err)
+				}
+			})
+		}
+		// The outpost's own application, opened to the adults: only the policy that refuses everyone may open it.
+		t.Run("the outpost's own application opened to the adults", func(t *testing.T) {
+			var app struct {
+				PBM string `json:"pbm_uuid"`
+			}
+			w.raw(t, w.own, "GET", "/api/v3/core/applications/homerslab-outpost-ldap/", nil, &app)
+			w.raw(t, w.own, "POST", "/api/v3/policies/bindings/", map[string]any{"target": app.PBM, "order": 100,
+				"group": groupPK(idp.RoleGroup(idp.Adult)), "enabled": true, "timeout": 30}, nil)
+			if r, err := a.Report(ctx); err != nil || r.PasskeyOnlySignIn {
+				t.Errorf("the outpost's own application opened: %+v %v, want not passkey-only", r, err)
+			}
+			if err := a.Prepare(ctx, household); err != nil {
+				t.Fatal(err)
+			}
+			if r, err := a.Report(ctx); err != nil || !r.PasskeyOnlySignIn {
+				t.Errorf("after Prepare: %+v %v", r, err)
+			}
+			for end := time.Now().Add(10 * time.Second); time.Now().Before(end); {
+				if bindAt("cn=%s,ou=users,ou=outpost,dc=homerslab", "lena") == nil {
+					t.Fatal("lena bound at the outpost's own base DN after Prepare")
+				}
+			}
+		})
+		if err := a.DeleteLDAP(ctx, real.Slug); err != nil {
+			t.Fatal(err)
+		}
+	}
+}

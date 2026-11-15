@@ -11,7 +11,8 @@
 #   - the agent's firewall table goes into the edge's machine through a companion in its network namespace (NET_ADMIN
 #     there only), and the LAN host routes the mesh's addresses through the edge's LAN address, as a LAN host can;
 #   - the companion also does the agent's part of the sign-in listener (#19): its address on the edge machine's loopback,
-#     and the apps' network as a bridge there, as an engine's is.
+#     and the apps' networks as bridges there, as an engine's are; the LDAPS port (#204) runs in the edge's machine as
+#     its own user, in front of a stand-in LDAP outpost on the sign-in network.
 name: hltest-16-edge
 
 networks:
@@ -37,6 +38,12 @@ networks:
     ipam:
       config:
         - subnet: 10.216.4.0/24
+  # An LDAP app's own network (#204): it alone reaches the sign-in listener's LDAPS port.
+  ldap-apps:
+    internal: true
+    ipam:
+      config:
+        - subnet: 10.216.5.0/24
 
 x-machine: &machine
   image: alpine:3.22@sha256:49340b346798875b5592e5d420241f2f9cfba5f47e62ebb1446a1b34734e898f
@@ -71,6 +78,11 @@ services:
         ipv4_address: 10.216.3.20
       apps:
         ipv4_address: 10.216.4.20
+      ldap-apps:
+        ipv4_address: 10.216.5.20
+    # The LDAPS port's process binds 636 as its own user here; on a node, systemd binds it (homerslab-ldaps.socket).
+    sysctls:
+      net.ipv4.ip_unprivileged_port_start: "600"
 
   # The agent's side of the edge's machine: its firewall table, applied in the edge's network namespace.
   firewall:
@@ -121,6 +133,16 @@ services:
     networks:
       apps:
         ipv4_address: 10.216.4.10
+
+  # An app whose sign-in method is LDAP (#204), as a stub on its own network: it binds at the sign-in listener's
+  # LDAPS port, through the edge's machine.
+  ldap-app:
+    <<: *machine
+    command: ["sh", "-c", "ip route add 10.216.9.1/32 via 10.216.5.20 && exec sleep infinity"]
+    cap_add: [NET_ADMIN]
+    networks:
+      ldap-apps:
+        ipv4_address: 10.216.5.10
 
   phone:
     <<: *machine
