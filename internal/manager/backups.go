@@ -143,21 +143,24 @@ func (m *Manager) backupRoutes(mux *http.ServeMux, terminal bool) {
 			fail(w, http.StatusBadRequest, "not-json")
 			return
 		}
-		var req targetRequest
-		if json.Unmarshal(body, &req) != nil || req.Target.Check() != nil {
+		_, action, err := targetChange(body)
+		if err != nil {
 			fail(w, http.StatusBadRequest, "bad-target")
 			return
 		}
-		action, err := settingAction(actionBackupTarget, body)
-		if err == nil {
-			err = m.passStepUp(r, action)
-		}
+		// The grant is held while the change is made, and given back if it isn't.
+		ap, err := m.reserveStepUp(r, action)
 		if err != nil {
 			m.stepUpRefusal(w, err)
 			return
 		}
+		defer ap.release()
 		r.Body = io.NopCloser(bytes.NewReader(body))
-		m.putBackupTarget(w, r)
+		rec := &statusWriter{ResponseWriter: w}
+		m.putBackupTarget(rec, r)
+		if rec.status == http.StatusOK {
+			ap.applied()
+		}
 	})
 }
 

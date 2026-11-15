@@ -184,12 +184,15 @@ func (m *Manager) apply(w http.ResponseWriter, r *http.Request, terminal bool) {
 		fail(w, http.StatusConflict, errNoSignInYet.Error())
 		return
 	}
-	// Everything else checked, nothing changed yet: the step-up last, so a refusal above leaves it for the retry.
+	// Everything else checked, nothing changed yet: the step-up last, held while the plan is applied, spent only once it
+	// is, and given back for the retry when applying fails.
+	var ap *approval
 	if p.Risky && !terminal {
-		if err := m.passStepUp(r, "plan:"+p.ID); err != nil {
+		if ap, err = m.reserveStepUp(r, "plan:"+p.ID); err != nil {
 			m.stepUpRefusal(w, err)
 			return
 		}
+		defer ap.release()
 	}
 	var native *catalog.SignIn // an app's own OIDC client: how it takes it
 	if p.SignIn.Method == catalog.OIDC {
@@ -280,6 +283,7 @@ func (m *Manager) apply(w http.ResponseWriter, r *http.Request, terminal bool) {
 		m.internal(w, "keeping an app", err)
 		return
 	}
+	ap.applied()
 	m.log.Info("applied an install plan", "plan", p.ID, "app", a.ID, "host", p.Name.Host)
 	if err := m.RefreshHome(ctx); err != nil {
 		m.log.Warn("Home's projection, after an install", "err", err)

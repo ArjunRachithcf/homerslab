@@ -38,6 +38,8 @@ type World interface {
 	// GiveFactors gives a person a password and a second factor that isn't a passkey (TOTP), as an admin in the
 	// provider's own console could, and returns them.
 	GiveFactors(t *testing.T, username string) Factors
+	// GiveOthers gives a person an app password and recovery codes, as an admin in the provider's own console could.
+	GiveOthers(t *testing.T, username string)
 	// SetUpAuthenticators runs, in b, each of the provider's own flows that set up a way to sign in (a passkey on a,
 	// TOTP, recovery codes, a password), signed in as the person with b's passkey first. It returns those that set
 	// anything up; one that neither does nor refuses fails the test.
@@ -349,6 +351,10 @@ func Run(t *testing.T, w World, version string) {
 		if c, err := p.Credentials(ctx, "ines"); err != nil || c.PasskeysOnly() || !slices.Contains(c.Others, idp.CredPassword) ||
 			!slices.Contains(c.Others, idp.CredTOTP) || c.Passkeys != 1 {
 			t.Errorf("the admin's credentials with a password and TOTP: %+v %v", c, err)
+		}
+		w.GiveOthers(t, "ines")
+		if c, err := p.Credentials(ctx, "ines"); err != nil || !slices.Contains(c.Others, idp.CredToken) || !slices.Contains(c.Others, idp.CredRecoveryCodes) {
+			t.Errorf("the admin's credentials with an app password and recovery codes: %+v %v", c, err)
 		}
 		thief := w.Browser(t, webauthntest.New(h.Origin()))
 		if err := w.ProviderSignIn(t, thief, "ines", f); err == nil {

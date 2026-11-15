@@ -996,6 +996,19 @@ func (w *world) GiveFactors(t *testing.T, username string) idptest.Factors {
 	return idptest.Factors{Password: pw, TOTP: totp(t, base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString(key))}
 }
 
+// GiveOthers makes an app password through the API, and recovery codes (a static device) in Authentik's own shell.
+func (w *world) GiveOthers(t *testing.T, username string) {
+	t.Helper()
+	w.raw(t, w.own, "POST", "/api/v3/core/tokens/", map[string]any{"identifier": "hltest-app-password-" + username, "intent": "app_password",
+		"user": w.userPK(t, username), "expiring": false}, nil)
+	code := "from authentik.core.models import User\nfrom authentik.stages.authenticator_static.models import StaticDevice, StaticToken\n" +
+		fmt.Sprintf("d = StaticDevice.objects.create(user=User.objects.get(username=%q), name=\"hltest\", confirmed=True)\n", username) +
+		"StaticToken.objects.create(device=d, token=\"hltest00\")\n"
+	if out, err := w.composeOut("exec", "-T", "server", "ak", "shell", "-c", code); err != nil {
+		t.Fatalf("making recovery codes: %v %s", err, out)
+	}
+}
+
 // SetUpAuthenticators signs in with the passkey through HomersLab's sign-in, then runs Authentik's default setup flows
 // for a passkey (with a), TOTP, recovery codes and a password, and reads through the API which of them set anything up.
 func (w *world) SetUpAuthenticators(t *testing.T, ib idptest.Browser, username string, a *webauthntest.Authenticator) []string {

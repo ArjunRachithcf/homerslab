@@ -140,12 +140,26 @@ func TestApplyingARestorePlanFromAdminNeedsAStepUp(t *testing.T) {
 	if back := a.stepUp(fs, "plan:"+pl.ID); back != "/plans/"+pl.ID+"?step-up=done" {
 		t.Fatalf("the restore's step-up: %s", back)
 	}
+	// A restore of the app already running (from the terminal) refuses Admin's, and leaves its step-up for later.
+	held, release := p.host.Hold("restore --target " + bentoDocuments)
+	if r := p.control("POST", "/api/v1/plans/"+pl.ID+"/apply", nil); r.Code != http.StatusAccepted {
+		t.Fatalf("the terminal's restore: %d %s", r.Code, r.Body)
+	}
+	<-held
+	if rec := a.apply(pl.ID); rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "restore-running") {
+		t.Errorf("Admin's restore while one runs: %d %s", rec.Code, rec.Body)
+	}
+	release()
+	p.m.WaitRestores()
 	if rec := a.apply(pl.ID); rec.Code != http.StatusAccepted {
 		t.Fatalf("applying with a step-up: %d %s", rec.Code, rec.Body)
 	}
 	p.m.WaitRestores()
-	if len(p.host.Restored()) == 0 {
-		t.Error("the restore with a step-up didn't run")
+	if len(p.host.Restored()) < 2 {
+		t.Errorf("the restore with a step-up didn't run: %v", p.host.Restored())
+	}
+	if rec := a.apply(pl.ID); rec.Code != http.StatusForbidden {
+		t.Errorf("a restore again on the spent step-up: %d %s", rec.Code, rec.Body)
 	}
 }
 

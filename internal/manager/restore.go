@@ -190,15 +190,18 @@ func (m *Manager) applyRestore(w http.ResponseWriter, r *http.Request, body []by
 		m.internal(w, "reading an app", err)
 		return
 	}
-	if !terminal { // the step-up last, once the plan is known to be good
-		if err := m.passStepUp(r, "plan:"+rp.ID); err != nil {
-			m.stepUpRefusal(w, err)
-			return
-		}
-	}
 	if _, running := m.restoring.LoadOrStore(a.ID, true); running {
 		fail(w, http.StatusConflict, "restore-running")
 		return
+	}
+	if !terminal { // the step-up last, once the plan is known to be good and no restore of the app runs
+		ap, err := m.reserveStepUp(r, "plan:"+rp.ID)
+		if err != nil {
+			m.restoring.Delete(a.ID)
+			m.stepUpRefusal(w, err)
+			return
+		}
+		ap.applied() // the restore starts now, and runs to its end
 	}
 	req := agent.RestoreRequest{}
 	for _, it := range rp.Items {

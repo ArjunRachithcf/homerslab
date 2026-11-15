@@ -343,3 +343,70 @@ func TestChangingTheBackupTargetFromAdminTakesAStepUp(t *testing.T) {
 		t.Errorf("again on the same step-up: %d %s", rec.Code, rec.Body)
 	}
 }
+
+// The backup target's step-up approves exactly the change it was asked for: the JSON is decoded strictly on both sides
+// (a key twice, in any case, an unknown key, a number the target can't hold exactly, all refused), and the digest is
+// of what was decoded. Go's own decoder would take {"target":A,"Target":B} as B and {"Target":B,"target":A} as A.
+func TestTheBackupTargetsStepUpApprovesThatExactChange(t *testing.T) {
+	testenv.Isolate(t)
+	_, fs, a, _ := withWritableStorage(t)
+	both := []string{`{"target":{"kind":"disk","path":"/srv/backups"},"Target":{"kind":"disk","path":"/srv/elsewhere"}}`,
+		`{"Target":{"kind":"disk","path":"/srv/elsewhere"},"target":{"kind":"disk","path":"/srv/backups"}}`,
+		`{"target":{"kind":"disk","path":"/srv/backups"},"target":{"kind":"disk","path":"/srv/elsewhere"}}`,
+		`{"target":{"kind":"disk","path":"/srv/backups","Path":"/srv/elsewhere"}}`,
+		`{"target":{"kind":"disk","path":"/srv/backups"},"extra":1}`}
+	for _, raw := range both {
+		if rec := a.send("POST", "/api/v1/step-up", map[string]any{"action": "backups/target", "change": json.RawMessage(raw)}); rec.Code != http.StatusBadRequest {
+			t.Errorf("a step-up for %s: %d %s", raw, rec.Code, rec.Body)
+		}
+	}
+	if got := a.stepUp(fs, "backups/target", disk); got != "/?step-up=done" {
+		t.Fatalf("the step-up: %s", got)
+	}
+	for _, raw := range both {
+		rec := a.do("PUT", "/api/v1/backups/target", sameOrigin, func(r *http.Request) {
+			r.Body, r.ContentLength = io.NopCloser(strings.NewReader(raw)), int64(len(raw))
+		})
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("the PUT %s on the step-up for the disk: %d %s", raw, rec.Code, rec.Body)
+		}
+	}
+	if rec := a.send("PUT", "/api/v1/backups/target", disk); rec.Code != http.StatusOK {
+		t.Errorf("the change approved, after the refusals: %d %s", rec.Code, rec.Body)
+	}
+	// A number beyond 2^53 is held exactly, so one a unit off is another change; one the target can't hold is refused.
+	big := json.RawMessage(`{"target":{"kind":"b2","region":"eu-central-003","bucket":"household","quotaBytes":9007199254740993},` +
+		`"credentials":{"accessKeyId":"005b2keyid0000000001","secretAccessKey":"B2-SECRET-PLACEHOLDER"}}`)
+	off := json.RawMessage(strings.Replace(string(big), "9007199254740993", "9007199254740992", 1))
+	if got := a.stepUp(fs, "backups/target", big); got != "/?step-up=done" {
+		t.Fatalf("the step-up for a quota past 2^53: %s", got)
+	}
+	if rec := a.send("PUT", "/api/v1/backups/target", off); rec.Code != http.StatusForbidden {
+		t.Errorf("a quota one byte less, on that step-up: %d %s", rec.Code, rec.Body)
+	}
+	tooBig := json.RawMessage(strings.Replace(string(big), "9007199254740993", "18446744073709551616", 1))
+	if rec := a.send("POST", "/api/v1/step-up", map[string]any{"action": "backups/target", "change": tooBig}); rec.Code != http.StatusBadRequest {
+		t.Errorf("a quota past what the target holds: %d %s", rec.Code, rec.Body)
+	}
+}
+
+// A grant is spent only by the change it approves being made: a change that fails, or is refused for another reason
+// once the step-up is checked, leaves it for the retry.
+func TestAStepUpIsSpentOnlyWhenTheChangeIsMade(t *testing.T) {
+	testenv.Isolate(t)
+	p, fs, a, _ := withWritableStorage(t)
+	if got := a.stepUp(fs, "backups/target", disk); got != "/?step-up=done" {
+		t.Fatalf("the step-up: %s", got)
+	}
+	p.host.FailRestic("init", 1)
+	if rec := a.send("PUT", "/api/v1/backups/target", disk); rec.Code == http.StatusOK || rec.Code == http.StatusForbidden {
+		t.Fatalf("with restic failing: %d %s", rec.Code, rec.Body)
+	}
+	p.host.FailRestic("init", 0)
+	if rec := a.send("PUT", "/api/v1/backups/target", disk); rec.Code != http.StatusOK {
+		t.Errorf("the retry, on the same step-up: %d %s", rec.Code, rec.Body)
+	}
+	if rec := a.send("PUT", "/api/v1/backups/target", disk); rec.Code != http.StatusForbidden {
+		t.Errorf("once made, again: %d %s", rec.Code, rec.Body)
+	}
+}

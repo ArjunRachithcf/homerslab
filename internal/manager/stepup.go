@@ -34,8 +34,9 @@ import (
 //     admin, and they hold passkeys and nothing else, as the provider lists it now. Anything else there refuses it and
 //     raises a security event (#84).
 //  3. That leaves a grant, in memory only: for this Admin session and this one action (for a setting, that exact
-//     change), for StepUpLife from the passkey's assertion, used once. Making the change takes it, once everything
-//     else about the change has been checked, and checks again that the person is still an admin. Another session,
+//     change), for StepUpLife from the passkey's assertion, used once. Once everything else about the change has been
+//     checked, making it holds the grant (no other request can use it meanwhile) and checks again that the person is
+//     still an admin; the grant is spent when the change is made, and given back when it isn't. Another session,
 //     another device, another action or another change never finds it.
 //
 // The step-up's sign-in must be made after the step-up began, by the issuer's auth_time: the sign-in runs on the
@@ -145,6 +146,15 @@ func (s *stepUps) grant(session []byte, action string, g grant, now time.Time) b
 	return true
 }
 
+// giveBack puts a grant taken for a change that wasn't made back, while it lasts.
+func (s *stepUps) giveBack(session []byte, action string, g grant) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, there := s.grants[grantKey(session, action)]; !there {
+		s.grants[grantKey(session, action)] = g
+	}
+}
+
 // take uses a grant up: it is there once, for its session and action, until it expires.
 func (s *stepUps) take(session []byte, action string, now time.Time) (grant, bool) {
 	s.mu.Lock()
@@ -178,18 +188,28 @@ func signedInAs(r *http.Request) (string, []byte) {
 }
 
 // settingAction is the action a risky setting's step-up approves: the setting and a digest of the change itself, as
-// JSON with its keys in order, so the step-up approves that change and no other.
-func settingAction(setting string, change json.RawMessage) (string, error) {
-	var v any
-	if err := json.Unmarshal(change, &v); err != nil || v == nil {
-		return "", errors.New("not a change")
-	}
-	b, err := json.Marshal(v)
+// it was decoded exactly (decodeExact) and marshalled again, so the step-up approves that change and no other.
+func settingAction(setting string, change any) (string, error) {
+	b, err := json.Marshal(change)
 	if err != nil {
 		return "", err
 	}
 	sum := sha256.Sum256(b)
 	return setting + ":" + hex.EncodeToString(sum[:]), nil
+}
+
+// targetChange is a change of the backup target as a step-up approves it and the PUT makes it: decoded exactly, and
+// a target that checks out.
+func targetChange(raw []byte) (targetRequest, string, error) {
+	var req targetRequest
+	if err := decodeExact(raw, &req); err != nil {
+		return req, "", err
+	}
+	if err := req.Target.Check(); err != nil {
+		return req, "", err
+	}
+	action, err := settingAction(actionBackupTarget, req)
+	return req, action, err
 }
 
 // stepUpAction says whether an action is a risky change a step-up approves, and which page asked for it.
@@ -238,7 +258,7 @@ func (m *Manager) postStepUp(w http.ResponseWriter, r *http.Request) {
 	}
 	switch {
 	case body.Action == actionBackupTarget:
-		a, err := settingAction(body.Action, body.Change)
+		_, a, err := targetChange(body.Change)
 		if err != nil {
 			fail(w, http.StatusBadRequest, "no-change")
 			return
@@ -368,7 +388,12 @@ func (m *Manager) stepUpCheck(r *http.Request, a stepUpAttempt, live bool) strin
 			"), so their passkey approves no risky change. Another admin, or sudo homerslab admin recover on the primary, puts it right.")
 		return stepUpNotKeyed
 	}
-	if !m.stepUps.grant(a.session, a.action, grant{user: a.user, expires: cl.AuthTime.Add(StepUpLife)}, m.cfg.Now()) {
+	// StepUpLife from the passkey's assertion, and never longer from now, whatever the issuer's clock says.
+	expires := cl.AuthTime.Add(StepUpLife)
+	if limit := m.cfg.Now().Add(StepUpLife); expires.After(limit) {
+		expires = limit
+	}
+	if !m.stepUps.grant(a.session, a.action, grant{user: a.user, expires: expires}, m.cfg.Now()) {
 		return refuse("too many step-ups under way")
 	}
 	m.log.Info("a step-up passed", "username", a.user, "action", a.action)
@@ -378,40 +403,92 @@ func (m *Manager) stepUpCheck(r *http.Request, a stepUpAttempt, live bool) strin
 // warnStepUp is the security event's source, per admin.
 const warnStepUp = "security:step-up:"
 
-// passStepUp is the step-up a risky change from Admin needs: this session's grant for this action, used up, and the
-// person still an admin. It comes last before the change is made, so a change refused for another reason leaves the
-// grant for the retry.
-func (m *Manager) passStepUp(r *http.Request, action string) error {
+// approval is a step-up's grant, held while the change it approves is made: taken out of the grants at once, so no
+// other request can use it meanwhile, and given back unless the change was made.
+type approval struct {
+	s       *stepUps
+	session []byte
+	action  string
+	g       grant
+	done    bool
+}
+
+// applied says the change was made: the grant is spent.
+func (a *approval) applied() {
+	if a != nil {
+		a.done = true
+	}
+}
+
+// release gives the grant back unless the change was made, for the retry, while it lasts. It is safe to call twice,
+// or on no approval at all (the terminal's).
+func (a *approval) release() {
+	if a == nil || a.done {
+		return
+	}
+	a.done = true
+	a.s.giveBack(a.session, a.action, a.g)
+}
+
+// reserveStepUp is the step-up a risky change from Admin needs: this session's grant for this action, held, with the
+// person still an admin. It comes once everything else about the change is checked; the caller makes the change, says
+// applied() when it was, and release()s (deferred) so a change that failed leaves the grant for the retry. A person
+// who is no longer an admin spends it.
+func (m *Manager) reserveStepUp(r *http.Request, action string) (*approval, error) {
 	ctx := r.Context()
 	user, sess := signedInAs(r)
 	if user == "" {
-		return errStepUp
+		return nil, errStepUp
 	}
 	g, ok := m.stepUps.take(sess, action, m.cfg.Now())
 	if !ok || g.user != user {
-		return errStepUp
+		return nil, errStepUp
 	}
+	ap := &approval{s: &m.stepUps, session: sess, action: action, g: g}
 	ans, err := m.db.Answers(ctx)
 	if err != nil {
-		return err
+		ap.release()
+		return nil, err
 	}
 	p, err := m.provider(ctx, ans)
 	if err != nil {
-		return err
+		ap.release()
+		return nil, err
 	}
 	admins, err := p.People(ctx, idp.Admin)
 	if err != nil {
-		return err
+		ap.release()
+		return nil, err
 	}
 	if !slices.ContainsFunc(admins, func(x idp.Person) bool { return x.Username == user }) {
 		m.log.Warn("refused a risky change: the person is no longer an admin", "username", user, "action", action)
-		return errStepUp
+		return nil, errStepUp
 	}
 	m.log.Info("a risky change, approved by its step-up", "username", user, "action", action)
-	return nil
+	return ap, nil
 }
 
-// stepUpRefusal answers a risky change that passStepUp refused.
+// statusWriter keeps the status a handler answered with.
+type statusWriter struct {
+	http.ResponseWriter
+	status int
+}
+
+func (w *statusWriter) WriteHeader(code int) {
+	if w.status == 0 {
+		w.status = code
+	}
+	w.ResponseWriter.WriteHeader(code)
+}
+
+func (w *statusWriter) Write(b []byte) (int, error) {
+	if w.status == 0 {
+		w.status = http.StatusOK
+	}
+	return w.ResponseWriter.Write(b)
+}
+
+// stepUpRefusal answers a risky change that reserveStepUp refused.
 func (m *Manager) stepUpRefusal(w http.ResponseWriter, err error) {
 	if !errors.Is(err, errStepUp) {
 		m.log.Warn("checking a step-up", "err", err)
