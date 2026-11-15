@@ -23,6 +23,8 @@ type fakeAuthentik struct {
 	next    int
 	changes []string // every POST, PATCH and DELETE, as "METHOD path"
 	after   func()   // called once each change is made
+	// allBindings ignores the bindings' target filter too.
+	allBindings bool
 }
 
 func newFake() *fakeAuthentik {
@@ -69,7 +71,7 @@ func (f *fakeAuthentik) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		defer f.after()
 	}
 	switch {
-	case id == "" && r.Method == http.MethodGet && coll == "/policies/bindings/":
+	case id == "" && r.Method == http.MethodGet && coll == "/policies/bindings/" && !f.allBindings:
 		// The one filter it honours: a binding answers its target as the target's own pk, so the adapter can't check it.
 		var bs []map[string]any
 		for _, b := range f.objs[coll] {
@@ -87,8 +89,9 @@ func (f *fakeAuthentik) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			pk = f.next
 		}
 		body["pk"] = pk
-		if coll == "/core/applications/" {
+		if coll == "/core/applications/" { // an application's pk is its policy binding model's, as in Authentik
 			body["pbm_uuid"] = fmt.Sprintf("app-%d", f.next)
+			body["pk"] = body["pbm_uuid"]
 		}
 		f.objs[coll] = append(f.objs[coll], body)
 		reply(body)
@@ -205,8 +208,17 @@ func TestAGuardNeverRewritesAnotherAppsProvider(t *testing.T) {
 			}
 		}
 	}
-	// Its own, unassigned yet (a guard made halfway before), is brought in line.
+	// Its own application's, at the app's old URL (a new domain or port), follows the app.
 	f := newFake()
+	f.objs["/providers/proxy/"] = []map[string]any{{"pk": 7, "name": chores.Slug, "external_host": "https://chores.old.test", "assigned_application_slug": chores.Slug}}
+	if err := f.open(t).EnsureGuard(context.Background(), chores); err != nil {
+		t.Errorf("its own provider, at its old URL: %v", err)
+	}
+	if p := f.providers()[chores.Slug]; p["external_host"] != chores.URL {
+		t.Errorf("its provider: %v, want it at %s", p, chores.URL)
+	}
+	// Its own, unassigned yet (a guard made halfway before), is brought in line.
+	f = newFake()
 	f.objs["/providers/proxy/"] = []map[string]any{{"pk": 7, "name": chores.Slug, "external_host": chores.URL, "assigned_application_slug": nil}}
 	if err := f.open(t).EnsureGuard(context.Background(), chores); err != nil {
 		t.Errorf("its own provider, unassigned: %v", err)
@@ -310,6 +322,8 @@ func TestAClientNeverTouchesAnotherApplicationsProvider(t *testing.T) {
 	f.objs["/propertymappings/provider/scope/"] = []map[string]any{{"pk": "m1", "managed": "goauthentik.io/providers/oauth2/scope-openid"},
 		{"pk": "m2", "managed": "goauthentik.io/providers/oauth2/scope-email"}, {"pk": "m3", "managed": "goauthentik.io/providers/oauth2/scope-profile"}}
 	f.objs["/crypto/certificatekeypairs/"] = []map[string]any{{"pk": "c1", "name": selfSignedCert}}
+	// Its own application is there too: refusing comes before anything is deleted.
+	f.objs["/core/applications/"] = []map[string]any{{"slug": "homerslab-mealie", "pbm_uuid": "app-m", "provider_obj": map[string]any{"meta_model_name": clientProviderModel}}}
 	a := f.open(t)
 	ctx := context.Background()
 	if _, err := a.EnsureClient(ctx, idp.Client{Slug: "homerslab-mealie", Name: "Mealie", RedirectURIs: []string{"https://meals.example.test/cb"},
@@ -321,6 +335,27 @@ func TestAClientNeverTouchesAnotherApplicationsProvider(t *testing.T) {
 	}
 	for _, ch := range f.changes {
 		if strings.Contains(ch, "/providers/") || strings.Contains(ch, "/core/") {
+			t.Error(ch)
+		}
+	}
+}
+
+// Bindings of another target in the answer (Authentik ignoring the target filter) are never touched: deleting them
+// would leave every other application unbound, open to everyone (#219).
+func TestBindingsOfAnotherTargetAreNeverTouched(t *testing.T) {
+	testenv.Isolate(t)
+	f := newFake()
+	a := f.open(t)
+	ctx := context.Background()
+	if err := a.EnsureGuard(ctx, pdf); err != nil {
+		t.Fatal(err)
+	}
+	f.allBindings, f.changes = true, nil
+	if err := a.EnsureGuard(ctx, chores); err != nil {
+		t.Fatal(err)
+	}
+	for _, ch := range f.changes {
+		if strings.HasPrefix(ch, "DELETE /policies/bindings/") || strings.HasPrefix(ch, "PATCH /policies/bindings/") {
 			t.Error(ch)
 		}
 	}

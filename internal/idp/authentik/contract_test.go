@@ -178,11 +178,13 @@ func TestTheIdentityProviderContractOnAuthentik(t *testing.T) {
 		// Inês, an admin, is of neither audience: Authentik's own access check for her runs all along, as the changes
 		// are made. An application with no binding at all would let her in.
 		ines := w.userPK(t, "ines")
-		var app struct {
-			Slug string `json:"slug"`
-		}
-		w.raw(t, own, "GET", "/api/v3/core/applications/homerslab-chores/", nil, &app)
-		stop, done := make(chan struct{}), make(chan []string)
+		stop, done := make(chan struct{}), make(chan []string, 1)
+		stopped := false
+		defer func() {
+			if !stopped {
+				close(stop)
+			}
+		}()
 		go func() {
 			var let []string
 			for checks := 0; ; checks++ {
@@ -199,6 +201,7 @@ func TestTheIdentityProviderContractOnAuthentik(t *testing.T) {
 				if code != http.StatusOK || json.Unmarshal(b, &r) != nil || r.Passing {
 					let = append(let, fmt.Sprintf("%d %s", code, b))
 				}
+				time.Sleep(2 * time.Millisecond) // a check is tens of milliseconds: the window it looks for is of that order
 			}
 		}()
 		g := idp.Guard{Slug: "homerslab-chores", Name: "Chores", URL: "https://chores.example.test"}
@@ -209,6 +212,7 @@ func TestTheIdentityProviderContractOnAuthentik(t *testing.T) {
 			}
 		}
 		close(stop)
+		stopped = true
 		let := <-done
 		t.Log(let[len(let)-1])
 		if len(let) > 1 {
@@ -635,7 +639,10 @@ func (w *world) PassGuard(t *testing.T, a *webauthntest.Authenticator, username,
 		})}
 	b := &browser{w: w, c: c, a: a}
 	next := "https://" + host + "/outpost.goauthentik.io/start?rd=" + url.QueryEscape("https://"+host+"/")
-	for range 20 {
+	for step := 0; ; step++ {
+		if step == 20 {
+			t.Fatalf("%s at %s: the sign-in never came back to the app nor refused, at %s", username, host, next)
+		}
 		u, _ := url.Parse(next)
 		if u.Host == host && u.Path == "/" { // back at the app: the session is the browser's
 			break

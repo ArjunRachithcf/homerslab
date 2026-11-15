@@ -318,7 +318,7 @@ func (a *Authentik) closeFirstAdmin(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	return a.bindPolicies(ctx, f.PBM, []binding{{Policy: never}})
+	return a.bindPolicies(ctx, target{PBM: f.PBM, PK: f.PK}, []binding{{Policy: never}})
 }
 
 // randomPassword is a password nobody knows or keeps: it only makes the account's password usable, so a flow that
@@ -373,19 +373,22 @@ type binding struct {
 	Negate bool   `json:"negate"`
 }
 
-// bindPolicies makes exactly these policy bindings on a target (a flow, a stage binding, an application), in order.
-func (a *Authentik) bindPolicies(ctx context.Context, target string, want []binding) error {
+// target is what policies are bound to (a flow, a stage binding, an application): as a policy binding model, which
+// bindings are made and asked for by, and as itself, its own pk, which is how a binding answers its target.
+type target struct{ PBM, PK string }
+
+// bindPolicies makes exactly these policy bindings on a target, in order.
+func (a *Authentik) bindPolicies(ctx context.Context, t target, want []binding) error {
 	type pb struct {
 		PK     string `json:"pk"`
+		Target string `json:"target"`
 		Policy string `json:"policy"`
 		Group  string `json:"group"`
 		Negate bool   `json:"negate"`
 		Order  int    `json:"order"`
 		On     bool   `json:"enabled"`
 	}
-	// A binding answers its target as the target's own pk, not the policy binding model's it is asked by, so the filter
-	// can't be checked here; 2026.8.5 declares it (PolicyBindingFilter), and the contract suite holds it to that.
-	have, err := list[pb](ctx, a.api, "/policies/bindings/?target="+q(target))
+	have, err := where[pb](ctx, a.api, "/policies/bindings/?target="+q(t.PBM), "target", t.PK)
 	if err != nil {
 		return err
 	}
@@ -403,7 +406,7 @@ func (a *Authentik) bindPolicies(ctx context.Context, target string, want []bind
 		if kept[i] {
 			continue
 		}
-		body := map[string]any{"target": target, "order": i * 10, "enabled": true, "negate": w.Negate, "timeout": 30, "policy": nil, "group": nil}
+		body := map[string]any{"target": t.PBM, "order": i * 10, "enabled": true, "negate": w.Negate, "timeout": 30, "policy": nil, "group": nil}
 		if w.Policy != "" {
 			body["policy"] = w.Policy
 		}
@@ -455,12 +458,12 @@ func (a *Authentik) bindStages(ctx context.Context, flowPK string, want []stageB
 	if err != nil {
 		return err
 	}
-	kept := map[int]string{}
+	kept := map[int]target{}
 	for _, h := range have {
 		i := slices.IndexFunc(want, func(w stageBinding) bool { return w.Stage == h.Stage })
 		if i >= 0 && h.Order == (i+1)*10 && !h.OnPlan && h.ReEval && h.Invalid == "retry" {
 			if _, dup := kept[i]; !dup {
-				kept[i] = h.PBM
+				kept[i] = target{PBM: h.PBM, PK: h.PK}
 				continue
 			}
 		}
@@ -472,6 +475,7 @@ func (a *Authentik) bindStages(ctx context.Context, flowPK string, want []stageB
 		id, ok := kept[i]
 		if !ok {
 			var out struct {
+				PK  string `json:"pk"`
 				PBM string `json:"policybindingmodel_ptr_id"`
 			}
 			if err := a.api.call(ctx, http.MethodPost, "/flows/bindings/", map[string]any{"target": flowPK, "stage": w.Stage,
@@ -479,7 +483,7 @@ func (a *Authentik) bindStages(ctx context.Context, flowPK string, want []stageB
 				"policy_engine_mode": "all"}, &out); err != nil {
 				return err
 			}
-			id = out.PBM
+			id = target{PBM: out.PBM, PK: out.PK}
 		}
 		if err := a.bindPolicies(ctx, id, w.Policies); err != nil {
 			return err
@@ -693,21 +697,22 @@ func (a *Authentik) refuseElsewhere(ctx context.Context, signIn, refusal, househ
 		return err
 	}
 	for f, bs := range flows {
-		kept := ""
+		kept := target{}
 		for _, b := range bs {
 			if b.Stage != refusal {
 				continue
 			}
-			if kept == "" && b.Order == at[f] && !b.OnPlan && b.ReEval {
-				kept = b.PBM
+			if kept.PBM == "" && b.Order == at[f] && !b.OnPlan && b.ReEval {
+				kept = target{PBM: b.PBM, PK: b.PK}
 				continue
 			}
 			if err := a.api.call(ctx, http.MethodDelete, "/flows/bindings/"+b.PK+"/", nil, nil); err != nil {
 				return err
 			}
 		}
-		if kept == "" {
+		if kept.PBM == "" {
 			var out struct {
+				PK  string `json:"pk"`
 				PBM string `json:"policybindingmodel_ptr_id"`
 			}
 			if err := a.api.call(ctx, http.MethodPost, "/flows/bindings/", map[string]any{"target": f, "stage": refusal,
@@ -715,7 +720,7 @@ func (a *Authentik) refuseElsewhere(ctx context.Context, signIn, refusal, househ
 				"policy_engine_mode": "all"}, &out); err != nil {
 				return err
 			}
-			kept = out.PBM
+			kept = target{PBM: out.PBM, PK: out.PK}
 		}
 		if err := a.bindPolicies(ctx, kept, []binding{{Policy: household}}); err != nil {
 			return err
@@ -752,11 +757,12 @@ func (a *Authentik) refusedElsewhere(ctx context.Context) (bool, error) {
 				continue
 			}
 			type pb struct {
+				Target string `json:"target"`
 				Policy string `json:"policy"`
 				Negate bool   `json:"negate"`
 				On     bool   `json:"enabled"`
 			}
-			ps, err := list[pb](ctx, a.api, "/policies/bindings/?target="+q(b.PBM))
+			ps, err := where[pb](ctx, a.api, "/policies/bindings/?target="+q(b.PBM), "target", b.PK)
 			if err != nil {
 				return false, err
 			}
@@ -875,7 +881,7 @@ func (a *Authentik) EnsurePerson(ctx context.Context, p idp.Person) error {
 func (a *Authentik) People(ctx context.Context, r idp.Role) ([]idp.Person, error) {
 	g, err := find[group](ctx, a.api, "/core/groups/?name="+q(idp.RoleGroup(r)), "name", idp.RoleGroup(r))
 	if err != nil || g == nil {
-		return nil, fmt.Errorf("authentik: the group of %s is missing: %v", r, err)
+		return []idp.Person{}, err // no group yet: nobody in the role
 	}
 	us, err := where[user](ctx, a.api, "/core/users/?is_active=true&path="+q(userPath)+"&groups_by_name="+q(idp.RoleGroup(r)), "path", userPath)
 	if err != nil {
@@ -1181,6 +1187,18 @@ func (a *Authentik) DeleteClient(ctx context.Context, slug string) error {
 	if !strings.HasPrefix(slug, "homerslab-") || slug == adminClient || slug == homeClient {
 		return errors.New("authentik: only an app's own client, homerslab-<app>, is deleted")
 	}
+	// Its provider, checked before anything is deleted: never another application's (#219).
+	type provider struct {
+		PK  int     `json:"pk"`
+		App *string `json:"assigned_application_slug"`
+	}
+	p, err := find[provider](ctx, a.api, "/providers/oauth2/?name="+q(slug), "name", slug)
+	if err != nil {
+		return err
+	}
+	if p != nil && p.App != nil && *p.App != slug {
+		return fmt.Errorf("authentik: the provider %s is another application's, refused", slug)
+	}
 	// Its application, unless it is another kind's (a guard's, of the same slug): only an OIDC client's, or one left
 	// without its provider.
 	var app struct {
@@ -1199,16 +1217,8 @@ func (a *Authentik) DeleteClient(ctx context.Context, slug string) error {
 			return err
 		}
 	}
-	type provider struct {
-		PK  int     `json:"pk"`
-		App *string `json:"assigned_application_slug"`
-	}
-	p, err := find[provider](ctx, a.api, "/providers/oauth2/?name="+q(slug), "name", slug)
-	if err != nil || p == nil {
-		return err
-	}
-	if p.App != nil && *p.App != slug { // another application's provider is never deleted (#219)
-		return fmt.Errorf("authentik: the provider %s is another application's, refused", slug)
+	if p == nil {
+		return nil
 	}
 	if err := a.api.call(ctx, http.MethodDelete, fmt.Sprintf("/providers/oauth2/%d/", p.PK), nil, nil); err != nil && !notFound(err) {
 		return err
@@ -1251,13 +1261,14 @@ func (a *Authentik) EnsureGuard(ctx context.Context, g idp.Guard) error {
 		Host string  `json:"external_host"`
 		App  *string `json:"assigned_application_slug"`
 	}
-	// Proxy providers take name__iexact, never name (#219): found by name, the guard's own provider must also be at the
-	// app's URL and nobody else's application, or it is another app's guard, which is never rewritten.
+	// Proxy providers take name__iexact, never name (#219): found by name, the guard's own provider must also be this
+	// app's application's, or not yet any application's and at the app's URL; otherwise it is another app's guard, which
+	// is never rewritten. The app's own provider follows the app to a new URL (a new domain or port).
 	p, err := find[provider](ctx, a.api, "/providers/proxy/?name__iexact="+q(g.Slug), "name", g.Slug)
 	if err != nil {
 		return err
 	}
-	if p != nil && (p.Host != g.URL || p.App != nil && *p.App != g.Slug) {
+	if p != nil && (p.App != nil && *p.App != g.Slug || p.App == nil && p.Host != g.URL) {
 		return fmt.Errorf("authentik: the provider %s isn't this app's guard (at %s), refused", g.Slug, p.Host)
 	}
 	if p == nil {
@@ -1305,7 +1316,8 @@ func (a *Authentik) ensureApp(ctx context.Context, slug, name string, provider i
 		return err
 	}
 	var full struct {
-		PK string `json:"pbm_uuid"`
+		PBM string `json:"pbm_uuid"`
+		PK  string `json:"pk"`
 	}
 	if err := a.api.call(ctx, http.MethodGet, "/core/applications/"+slug+"/", nil, &full); err != nil {
 		return err
@@ -1314,7 +1326,7 @@ func (a *Authentik) ensureApp(ctx context.Context, slug, name string, provider i
 	if err != nil {
 		return err
 	}
-	return a.bindPolicies(ctx, full.PK, bs)
+	return a.bindPolicies(ctx, target{PBM: full.PBM, PK: full.PK}, bs)
 }
 
 func (a *Authentik) neverPK(ctx context.Context) (string, error) {
