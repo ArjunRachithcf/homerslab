@@ -584,12 +584,13 @@ func browserRun(t *testing.T, a *authentik.Authentik, c oidc.Client, e oidc.Endp
 		return err
 	}
 	at := oidc.FreshAttempt(time.Now()) // as Admin asks
+	su := oidc.StepUpAttempt(time.Now(), fmt.Sprintf("plan-browser-run-%d", run))
 
 	dir := t.TempDir()
-	out := filepath.Join(dir, "callback.txt")
+	out, outStepUp := filepath.Join(dir, "callback.txt"), filepath.Join(dir, "step-up.txt")
 	spec, _ := json.Marshal(map[string]string{"address": strings.TrimPrefix(edgeURL, "https://"), "spki": spki,
 		"enrolment": link.URL.Reveal(), "authorize": c.AuthorizeURL(e, at), "username": username, "redirect": redirect,
-		"landing": landing, "out": out})
+		"landing": landing, "out": out, "stepUp": c.AuthorizeURL(e, su), "outStepUp": outStepUp})
 	if err := os.WriteFile(filepath.Join(dir, "world.json"), spec, 0o600); err != nil {
 		return err
 	}
@@ -625,6 +626,19 @@ func browserRun(t *testing.T, a *authentik.Authentik, c oidc.Client, e oidc.Endp
 	}
 	if cl.Username != username || !slices.Contains(cl.Groups, idp.RoleGroup(idp.Admin)) {
 		return fmt.Errorf("claims %+v", cl)
+	}
+	// The step-up's code: its own nonce, and a sign-in later than the one its session began with (#25).
+	b, err = os.ReadFile(outStepUp)
+	if err != nil {
+		return err
+	}
+	cb, _ = url.Parse(strings.TrimSpace(string(b)))
+	up, err := c.Finish(ctx, e, su, cb.Query().Get("state"), cb.Query().Get("code"), time.Now())
+	if err != nil {
+		return fmt.Errorf("the step-up's code: %v", err)
+	}
+	if up.Username != username || !up.AuthTime.After(cl.AuthTime) {
+		return fmt.Errorf("the step-up signed in %s at %v, the session at %v: want a new sign-in", up.Username, up.AuthTime, cl.AuthTime)
 	}
 	return nil
 }

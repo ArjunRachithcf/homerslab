@@ -270,8 +270,8 @@ func TestARetryThatFailsKeepsTheClientAnEarlierApplyMade(t *testing.T) {
 	}
 }
 
-// A plan with an extra is a risky change, which needs the admin's passkey (#25): it is refused until step-up is built.
-// An app with native sign-in that can't take its client from HomersLab yet (Immich: no settings in its manifest), and
+// A plan with an extra is a risky change, which needs the admin's passkey (#25); the agent doesn't run extras yet, so
+// it isn't applied, even from the terminal, rather than installed without them. An app with native sign-in that can't take its client from HomersLab yet (Immich: no settings in its manifest), and
 // LDAP apps (#49), aren't applied either.
 func TestOnlyPlansThatCanBeWiredWithoutExtrasApplySoFar(t *testing.T) {
 	testenv.Isolate(t)
@@ -280,7 +280,7 @@ func TestOnlyPlansThatCanBeWiredWithoutExtrasApplySoFar(t *testing.T) {
 	}})
 	p, fs := installable(t, cat)
 	risky := planFor(t, p, "bentopdf")
-	if r := p.control("POST", "/api/v1/plans/"+risky.ID+"/apply", nil); r.Code != http.StatusForbidden || !strings.Contains(string(r.Body), "step-up-required") {
+	if r := p.control("POST", "/api/v1/plans/"+risky.ID+"/apply", nil); r.Code != http.StatusUnprocessableEntity || !strings.Contains(string(r.Body), "extras-not-built") {
 		t.Errorf("a plan with an extra: %d %s", r.Code, r.Body)
 	}
 	oidc := planFor(t, p, "immich")

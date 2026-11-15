@@ -24,6 +24,7 @@ func (m *Manager) Admin() http.Handler {
 	for _, p := range []string{"/api/v1/catalog", "/api/v1/catalog/", "/api/v1/plans", "/api/v1/plans/", "/api/v1/apps", "/api/v1/apps/", "/api/v1/storage", "/api/v1/storage/", "/api/v1/backups/"} {
 		mux.Handle(p, m.signedIn(store))
 	}
+	mux.Handle("POST /api/v1/step-up", m.signedIn(http.HandlerFunc(m.postStepUp)))
 	mux.HandleFunc("/api/", notFound)
 	for _, p := range []string{"GET /{$}", "GET /store", "GET /store/apps/{id}", "GET /plans/{id}"} {
 		mux.Handle(p, m.signedIn(http.HandlerFunc(m.adminPage)))

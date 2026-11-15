@@ -12,6 +12,7 @@ import (
 	"math/big"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -159,6 +160,59 @@ func TestAFreshSignInIsRefusedAnOlderSession(t *testing.T) {
 		if !tc.ok && !errors.Is(err, oidc.ErrRefused) {
 			t.Errorf("%s: %v, want ErrRefused", name, err)
 		}
+	}
+}
+
+// A step-up asks the issuer for a sign-in of seconds ago at most (max_age, never 0), and takes only one made after it
+// began, in a later second (auth_time is in whole seconds, and a sign-in in the same second may be the one it followed): a session at the issuer from before, however recent, never stands in for the passkey
+// (#25). Its nonce is the one the caller bound to the action.
+func TestAStepUpTakesOnlyASignInMadeAfterItBegan(t *testing.T) {
+	testenv.Isolate(t)
+	is := newIssuer(t)
+	c := oidc.Client{Issuer: "https://auth.example.test/application/o/homerslab-admin/", ID: "admin", Secret: "s",
+		Redirect: "https://admin.example.test/auth/callback"}
+	var claims map[string]any
+	tokens := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]string{"id_token": is.token(map[string]string{"alg": "RS256", "kid": "k1"}, claims, is.key)})
+	}))
+	defer tokens.Close()
+	e := oidc.Endpoints{Authorize: "https://auth.example.test/application/o/authorize/", Keys: is.srv.URL, Token: tokens.URL}
+	began := now.Add(400 * time.Millisecond)
+	a := oidc.StepUpAttempt(began, "bound-nonce")
+	if a.Nonce != "bound-nonce" || a.State == "" || a.Verifier == "" {
+		t.Fatalf("the attempt: %+v", a)
+	}
+	u, _ := url.Parse(c.AuthorizeURL(e, a))
+	if u.Query().Get("max_age") != "5" || u.Query().Get("nonce") != "bound-nonce" || u.Query().Get("prompt") != "" {
+		t.Errorf("the authorize URL %s: want max_age=5 and the bound nonce", u)
+	}
+	for name, tc := range map[string]struct {
+		auth any
+		ok   bool
+	}{
+		"signed in after it began":             {now.Add(3 * time.Second).Unix(), true},
+		"signed in the second after":           {now.Add(time.Second).Unix(), true},
+		"signed in within the second it began": {now.Unix(), false},
+		"signed in a second before":            {now.Add(-time.Second).Unix(), false},
+		"signed in ten seconds before":         {now.Add(-10 * time.Second).Unix(), false},
+		"no auth_time":                         {nil, false},
+	} {
+		claims = map[string]any{"iss": c.Issuer, "aud": "admin", "sub": "s1", "nonce": a.Nonce, "exp": now.Add(5 * time.Minute).Unix(),
+			"iat": now.Unix()}
+		if tc.auth != nil {
+			claims["auth_time"] = tc.auth
+		}
+		_, err := c.Finish(context.Background(), e, a, a.State, "code", now.Add(10*time.Second))
+		if tc.ok != (err == nil) {
+			t.Errorf("%s: %v", name, err)
+		}
+		if !tc.ok && tc.auth != nil && !errors.Is(err, oidc.ErrNotFresh) {
+			t.Errorf("%s: %v, want ErrNotFresh", name, err)
+		}
+	}
+	claims["auth_time"], claims["nonce"] = now.Add(3*time.Second).Unix(), "another-actions-nonce"
+	if _, err := c.Finish(context.Background(), e, a, a.State, "code", now.Add(10*time.Second)); err == nil {
+		t.Error("an ID token bound to another action's nonce passed")
 	}
 }
 

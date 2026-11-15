@@ -128,16 +128,36 @@ func (m *Manager) putBackupTarget(w http.ResponseWriter, r *http.Request) {
 }
 
 // backupRoutes are the household's backup target, the same on Admin's socket and the control socket (terminal), but
-// for changing it: from Admin, that is a risky change, which needs the admin's passkey again (step-up, #25), so it is
-// refused until then; on the terminal, root on the primary can already do anything.
+// for changing it: from Admin, that is a risky change, which needs the admin's passkey again (step-up, stepup.go); on
+// the terminal, root on the primary can already do anything.
 func (m *Manager) backupRoutes(mux *http.ServeMux, terminal bool) {
 	mux.HandleFunc("GET /api/v1/backups/target", m.getBackupTarget)
 	if terminal {
 		mux.HandleFunc("PUT /api/v1/backups/target", m.putBackupTarget)
 		return
 	}
-	mux.HandleFunc("PUT /api/v1/backups/target", func(w http.ResponseWriter, _ *http.Request) {
-		fail(w, http.StatusForbidden, errStepUp.Error())
+	mux.HandleFunc("PUT /api/v1/backups/target", func(w http.ResponseWriter, r *http.Request) {
+		// The step-up approved this change, the target and its credentials exactly, and no other.
+		body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 64<<10))
+		if err != nil {
+			fail(w, http.StatusBadRequest, "not-json")
+			return
+		}
+		var req targetRequest
+		if json.Unmarshal(body, &req) != nil || req.Target.Check() != nil {
+			fail(w, http.StatusBadRequest, "bad-target")
+			return
+		}
+		action, err := settingAction(actionBackupTarget, body)
+		if err == nil {
+			err = m.passStepUp(r, action)
+		}
+		if err != nil {
+			m.stepUpRefusal(w, err)
+			return
+		}
+		r.Body = io.NopCloser(bytes.NewReader(body))
+		m.putBackupTarget(w, r)
 	})
 }
 

@@ -81,6 +81,30 @@ type Passkey struct {
 	RPID string `json:"rpId"`
 }
 
+// Credentials are everything a person holds that can sign them in, as the provider lists it: their passkeys, and the
+// kinds of anything else (a password, TOTP, recovery codes, an app password or API token, a linked account at another
+// sign-in, another kind of device). None of it is secret.
+//
+// Before accepting a step-up, HomersLab reads an admin's credentials and refuses it when anything but passkeys is
+// there (ADR 0004, amended; #84): no claim of the ID token says what the admin holds, and a password or second factor
+// a stolen session added could otherwise stand in for the passkey somewhere.
+type Credentials struct {
+	Passkeys int      `json:"passkeys"`
+	Others   []string `json:"others"`
+}
+
+// PasskeysOnly says the person holds at least one passkey and nothing else.
+func (c Credentials) PasskeysOnly() bool { return c.Passkeys > 0 && len(c.Others) == 0 }
+
+// The kinds of credentials that aren't passkeys, as Credentials names them.
+const (
+	CredPassword      = "password"
+	CredTOTP          = "totp"
+	CredRecoveryCodes = "recovery-codes"
+	CredToken         = "token"          // an app password, an API token or a recovery link
+	CredLinkedAccount = "linked-account" // a sign-in through another provider
+)
+
 // EnrolmentLife is how long an enrolment link works, once (#84, #87).
 const EnrolmentLife = 30 * time.Minute
 
@@ -161,6 +185,8 @@ type Provider interface {
 	People(ctx context.Context, r Role) ([]Person, error)
 	// Passkeys are a person's passkeys.
 	Passkeys(ctx context.Context, username string) ([]Passkey, error)
+	// Credentials are everything the person holds that can sign them in. It reads the provider each time, never a copy.
+	Credentials(ctx context.Context, username string) (Credentials, error)
 	// EnrolmentLink mints a one-time link that adds a passkey to a person's account at the sign-in's own address. It
 	// works once, for EnrolmentLife, and runs HomersLab's own flow with only a passkey-enrolment stage, never the
 	// provider's recovery flow.

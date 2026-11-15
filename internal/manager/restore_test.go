@@ -106,7 +106,8 @@ func TestAdminListsAnAppsBackupsAndPlansARestore(t *testing.T) {
 }
 
 // Applying a restore plan is a risky change: from Admin it needs the admin's passkey again (step-up), so a session
-// alone, stolen or not, restores nothing. Nothing is stopped, backed up or put back.
+// alone, stolen or not, restores nothing. Nothing is stopped, backed up or put back. With a step-up for the plan, it
+// runs.
 func TestApplyingARestorePlanFromAdminNeedsAStepUp(t *testing.T) {
 	testenv.Isolate(t)
 	p, _, _ := backedUp(t)
@@ -131,6 +132,20 @@ func TestApplyingARestorePlanFromAdminNeedsAStepUp(t *testing.T) {
 	adm(p, "GET", "/api/v1/apps/bentopdf/backups", nil).json(t, &got)
 	if got.Restore != nil {
 		t.Errorf("a refused restore is kept as %+v", got.Restore)
+	}
+	fs := p.signIn.(*fakeSignIn)
+	fs.passkeys["ines"] = 1
+	a := p.adminBrowser(t)
+	a.cookies["__Host-homerslab-session"] = &http.Cookie{Name: "__Host-homerslab-session", Value: p.adminSession()}
+	if back := a.stepUp(fs, "plan:"+pl.ID); back != "/plans/"+pl.ID+"?step-up=done" {
+		t.Fatalf("the restore's step-up: %s", back)
+	}
+	if rec := a.apply(pl.ID); rec.Code != http.StatusAccepted {
+		t.Fatalf("applying with a step-up: %d %s", rec.Code, rec.Body)
+	}
+	p.m.WaitRestores()
+	if len(p.host.Restored()) == 0 {
+		t.Error("the restore with a step-up didn't run")
 	}
 }
 

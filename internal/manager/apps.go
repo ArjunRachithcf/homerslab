@@ -29,7 +29,9 @@ import (
 //     none of it);
 //   - the household keeps that the plan was applied.
 //
-// A plan with an extra is a risky change: it needs the admin's passkey (step-up, #25), so it is refused until then.
+// A risky plan (one with an extra, or a storage location the app writes to) needs the admin's passkey again from Admin
+// (step-up, stepup.go), bound to the plan; the terminal needs none. A plan with an extra isn't applied yet: the agent
+// runs extras with the next part of #25.
 // A plan whose sign-in isn't wired isn't applied either: LDAP apps come with #49, and an OIDC app applies once its
 // manifest says how it takes its client.
 
@@ -37,6 +39,7 @@ import (
 var (
 	errStalePlan   = errors.New("stale-plan")
 	errStepUp      = errors.New("step-up-required")
+	errExtras      = errors.New("extras-not-built")
 	errNotBuilt    = errors.New("sign-in-not-built")
 	errNoSignInYet = errors.New("sign-in-not-ready")
 )
@@ -112,7 +115,7 @@ func (m *Manager) current(ctx context.Context, p plan.Plan) (catalog.App, error)
 }
 
 // applyPlan applies a plan by its id; terminal says the request came on the control socket, from the machine's
-// terminal, where a risky restore needs no step-up.
+// terminal, where a risky plan needs no step-up.
 func (m *Manager) applyPlan(terminal bool) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) { m.apply(w, r, terminal) }
 }
@@ -141,8 +144,9 @@ func (m *Manager) apply(w http.ResponseWriter, r *http.Request, terminal bool) {
 	case p.Kind != "install":
 		fail(w, http.StatusUnprocessableEntity, "not-an-install")
 		return
-	case p.Risky:
-		fail(w, http.StatusForbidden, errStepUp.Error())
+	case len(p.Extras) > 0:
+		// The agent doesn't run extras yet: an app is never installed without what its plan says it gets.
+		fail(w, http.StatusUnprocessableEntity, errExtras.Error())
 		return
 	}
 	// One apply at a time: an install that fails deletes the client it made, which must be no other apply's.
@@ -179,6 +183,13 @@ func (m *Manager) apply(w http.ResponseWriter, r *http.Request, terminal bool) {
 		m.log.Warn("the household account, to guard an app", "err", err)
 		fail(w, http.StatusConflict, errNoSignInYet.Error())
 		return
+	}
+	// Everything else checked, nothing changed yet: the step-up last, so a refusal above leaves it for the retry.
+	if p.Risky && !terminal {
+		if err := m.passStepUp(r, "plan:"+p.ID); err != nil {
+			m.stepUpRefusal(w, err)
+			return
+		}
 	}
 	var native *catalog.SignIn // an app's own OIDC client: how it takes it
 	if p.SignIn.Method == catalog.OIDC {

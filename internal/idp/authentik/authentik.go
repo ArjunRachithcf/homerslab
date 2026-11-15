@@ -924,6 +924,84 @@ func (a *Authentik) Passkeys(ctx context.Context, username string) ([]idp.Passke
 	return out, nil
 }
 
+// Credentials are everything a person holds that signs them in: their confirmed authenticator devices, a password,
+// app passwords, API tokens and recovery links that haven't expired, and accounts linked at other sources. A password
+// once set stays counted: Authentik says when one was set, never whether it still works. A list filter Authentik
+// ignored would only add other people's devices, which refuses a step-up rather than allows one.
+func (a *Authentik) Credentials(ctx context.Context, username string) (idp.Credentials, error) {
+	u, err := a.person(ctx, username)
+	if err != nil {
+		return idp.Credentials{}, err
+	}
+	out := idp.Credentials{Others: []string{}}
+	add := func(kind string) {
+		if !slices.Contains(out.Others, kind) {
+			out.Others = append(out.Others, kind)
+		}
+	}
+	// Every kind of device Authentik has, enterprise ones included; the list isn't paginated.
+	var ds []struct {
+		Type      string `json:"type"`
+		Confirmed bool   `json:"confirmed"`
+	}
+	if err := a.api.call(ctx, http.MethodGet, fmt.Sprintf("/authenticators/admin/all/?user=%d", u.PK), nil, &ds); err != nil {
+		return idp.Credentials{}, err
+	}
+	for _, d := range ds {
+		switch {
+		case !d.Confirmed: // a setup never finished signs nobody in
+		case d.Type == "authentik_stages_authenticator_webauthn.WebAuthnDevice":
+			out.Passkeys++
+		case d.Type == "authentik_stages_authenticator_totp.TOTPDevice":
+			add(idp.CredTOTP)
+		case d.Type == "authentik_stages_authenticator_static.StaticDevice":
+			add(idp.CredRecoveryCodes)
+		default:
+			add(strings.TrimPrefix(strings.ToLower(d.Type), "authentik_stages_authenticator_"))
+		}
+	}
+	// A password: Authentik stamps password_change_date at every password set, and at the account's making, which
+	// sets none (HomersLab's people get an unusable one).
+	var self struct {
+		Joined  time.Time `json:"date_joined"`
+		Changed time.Time `json:"password_change_date"`
+	}
+	if err := a.api.call(ctx, http.MethodGet, fmt.Sprintf("/core/users/%d/", u.PK), nil, &self); err != nil {
+		return idp.Credentials{}, err
+	}
+	if self.Changed.Sub(self.Joined) > time.Second {
+		add(idp.CredPassword)
+	}
+	type token struct {
+		Intent   string     `json:"intent"`
+		Expiring bool       `json:"expiring"`
+		Expires  *time.Time `json:"expires"`
+		User     int        `json:"user"`
+	}
+	ts, err := list[token](ctx, a.api, "/core/tokens/?user__username="+q(username))
+	if err != nil {
+		return idp.Credentials{}, err
+	}
+	for _, t := range ts {
+		live := !t.Expiring || t.Expires == nil || t.Expires.After(time.Now())
+		if t.User == u.PK && live && (t.Intent == "api" || t.Intent == "app_password" || t.Intent == "recovery") {
+			add(idp.CredToken)
+		}
+	}
+	type connection struct {
+		User int `json:"user"`
+	}
+	cs, err := list[connection](ctx, a.api, fmt.Sprintf("/sources/user_connections/all/?user=%d", u.PK))
+	if err != nil {
+		return idp.Credentials{}, err
+	}
+	if slices.ContainsFunc(cs, func(c connection) bool { return c.User == u.PK }) {
+		add(idp.CredLinkedAccount)
+	}
+	slices.Sort(out.Others)
+	return out, nil
+}
+
 // EnrolmentLink mints an invitation for HomersLab's enrolment flow, for one person, single use, for
 // idp.EnrolmentLife. A new link ends the person's earlier ones.
 func (a *Authentik) EnrolmentLink(ctx context.Context, username string) (idp.Link, error) {

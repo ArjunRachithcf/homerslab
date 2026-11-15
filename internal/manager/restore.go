@@ -170,17 +170,13 @@ func (m *Manager) newRestorePlan(w http.ResponseWriter, r *http.Request) {
 }
 
 // applyRestore applies a restore plan. From Admin it needs the admin's passkey, asked again and bound to this plan
-// (step-up, #25): until that is built, Admin refuses, as it refuses every risky plan. terminal says the request needs
-// none: it came on the control socket, from the machine's terminal.
+// (step-up, stepup.go). terminal says the request needs none: it came on the control socket, from the machine's
+// terminal.
 func (m *Manager) applyRestore(w http.ResponseWriter, r *http.Request, body []byte, terminal bool) {
 	ctx := r.Context()
 	var rp plan.Restore
 	if err := json.Unmarshal(body, &rp); err != nil {
 		m.internal(w, "reading a plan", err)
-		return
-	}
-	if !terminal {
-		fail(w, http.StatusForbidden, errStepUp.Error())
 		return
 	}
 	// The plan must still be the app's: the same install, and each backup still the one the node holds for that thing
@@ -193,6 +189,12 @@ func (m *Manager) applyRestore(w http.ResponseWriter, r *http.Request, body []by
 	if err != nil {
 		m.internal(w, "reading an app", err)
 		return
+	}
+	if !terminal { // the step-up last, once the plan is known to be good
+		if err := m.passStepUp(r, "plan:"+rp.ID); err != nil {
+			m.stepUpRefusal(w, err)
+			return
+		}
 	}
 	if _, running := m.restoring.LoadOrStore(a.ID, true); running {
 		fail(w, http.StatusConflict, "restore-running")

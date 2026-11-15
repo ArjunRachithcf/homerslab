@@ -238,7 +238,7 @@ func withB2(t *testing.T, p *primary, quota uint64) response {
 }
 
 // Admin shows where backups go and whether a box taken over could delete them, never the target's credentials.
-// Changing the target from Admin is a risky change, which needs a step-up: until #25 builds it, Admin refuses.
+// Changing the target from Admin is a risky change, which needs a step-up (stepup_test.go): without one, Admin refuses.
 func TestAdminShowsTheBackupTargetAndNeverItsCredentials(t *testing.T) {
 	testenv.Isolate(t)
 	p := bentoWithData(t)

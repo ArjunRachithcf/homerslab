@@ -54,6 +54,8 @@ type Endpoints struct {
 // Errors of a sign-in, so a surface can say what went wrong without saying more.
 var (
 	ErrRefused = errors.New("the sign-in was refused") // a bad state, code, token or claim
+	// ErrNotFresh is a refusal because the person signed in at the issuer before the attempt asked for.
+	ErrNotFresh = errors.New("not a fresh sign-in")
 )
 
 func (c Client) http() *http.Client {
@@ -99,12 +101,29 @@ type Attempt struct {
 	// within FreshFor, whatever session they hold there, and an ID token whose auth_time is older than that is
 	// refused.
 	Since time.Time
+	// StepUp makes it a step-up: the person signs in at the issuer again unless they did within StepUpFor, and an ID
+	// token whose auth_time isn't in a second after Since's is refused, so only a sign-in made after the attempt began
+	// passes.
+	StepUp bool
 }
 
 // FreshFor is how recent a fresh sign-in is: the max_age a fresh attempt asks for. A session at the issuer older than
 // that doesn't stand in for signing in. It is short, but long enough for the issuer's redirect back to authorize
 // after the person signed in, which the issuer checks against it too.
 const FreshFor = 30 * time.Second
+
+// StepUpFor is the max_age a step-up asks for: short, so a session at the issuer only seconds old doesn't stand in for
+// the passkey, and never 0, which some issuers take as no limit at all. It still lets the issuer's redirect back to
+// authorize, right after the person signed in, through.
+const StepUpFor = 5 * time.Second
+
+// StepUpAttempt is an attempt at a step-up, started at now: the issuer asks for the passkey again, and only an ID token
+// from a sign-in made after now passes. Its nonce is bound, which the caller derives from the one action it approves.
+func StepUpAttempt(now time.Time, nonce string) Attempt {
+	a := NewAttempt()
+	a.Since, a.StepUp, a.Nonce = now, true, nonce
+	return a
+}
 
 // NewAttempt makes a sign-in's state, nonce and PKCE verifier: 256 random bits each.
 func NewAttempt() Attempt {
@@ -139,7 +158,10 @@ func (c Client) AuthorizeURL(e Endpoints, a Attempt) string {
 		"code_challenge":        {base64.RawURLEncoding.EncodeToString(sum[:])},
 		"code_challenge_method": {"S256"},
 	}
-	if !a.Since.IsZero() {
+	switch {
+	case a.StepUp:
+		v.Set("max_age", strconv.Itoa(int(StepUpFor/time.Second)))
+	case !a.Since.IsZero():
 		v.Set("max_age", strconv.Itoa(int(FreshFor/time.Second)))
 	}
 	sep := "?"
@@ -190,11 +212,20 @@ func (c Client) Finish(ctx context.Context, e Endpoints, a Attempt, state, code 
 		return Claims{}, fmt.Errorf("%w: the token endpoint answered %d %s", ErrRefused, resp.StatusCode, tok.Error)
 	}
 	cl, err := c.Verify(ctx, e, tok.IDToken, a.Nonce, now)
-	// auth_time is in whole seconds: a second's leeway, and a few for the clocks.
-	if err == nil && !a.Since.IsZero() && (cl.AuthTime.IsZero() || cl.AuthTime.Before(a.Since.Add(-FreshFor-5*time.Second))) {
-		return Claims{}, fmt.Errorf("%w: not a fresh sign-in: the person signed in at %v, before this attempt", ErrRefused, cl.AuthTime)
+	if err != nil {
+		return Claims{}, err
 	}
-	return cl, err
+	switch {
+	// auth_time is in whole seconds: a step-up's sign-in is in a second after the one Since is in. A sign-in in that
+	// same second could be the one the step-up followed (a page that asks for a step-up the moment the person signed
+	// in), and no person answers a passkey prompt within the second it appeared.
+	case a.StepUp && (cl.AuthTime.IsZero() || !cl.AuthTime.After(a.Since.Truncate(time.Second))):
+		return Claims{}, fmt.Errorf("%w: %w: the person signed in at %v, before this step-up began", ErrRefused, ErrNotFresh, cl.AuthTime)
+	// A fresh sign-in: a second's leeway, and a few for the clocks.
+	case !a.Since.IsZero() && (cl.AuthTime.IsZero() || cl.AuthTime.Before(a.Since.Add(-FreshFor-5*time.Second))):
+		return Claims{}, fmt.Errorf("%w: %w: the person signed in at %v, before this attempt", ErrRefused, ErrNotFresh, cl.AuthTime)
+	}
+	return cl, nil
 }
 
 // skew is the clock difference allowed between the issuer and the relying party.

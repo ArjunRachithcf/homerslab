@@ -158,6 +158,9 @@ func (m *Manager) signInStart(w http.ResponseWriter, r *http.Request) {
 // passkey step and closes the LAN listener for good.
 func (m *Manager) signInDone(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
+	if m.stepUpReturn(w, r) {
+		return
+	}
 	ck, err := r.Cookie(signInCookie)
 	setCookie(w, signInCookie, "", 0)
 	if err != nil {
@@ -258,7 +261,10 @@ func (m *Manager) signOut(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-type ctxUser struct{}
+type (
+	ctxUser    struct{}
+	ctxSession struct{} // the session token's hash
+)
 
 // signedIn wants a live Admin session; without one, a page goes to the sign-in and an API call is refused.
 func (m *Manager) signedIn(next http.Handler) http.Handler {
@@ -279,7 +285,11 @@ func (m *Manager) signedIn(next http.Handler) http.Handler {
 			m.internal(w, "checking a session", err)
 			return
 		}
-		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), ctxUser{}, user)))
+		var sess []byte
+		if ck, err := r.Cookie(sessionCookie); err == nil {
+			sess = hash(ck.Value)
+		}
+		next.ServeHTTP(w, r.WithContext(context.WithValue(context.WithValue(r.Context(), ctxUser{}, user), ctxSession{}, sess)))
 	})
 }
 

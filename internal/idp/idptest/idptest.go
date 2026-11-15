@@ -172,6 +172,19 @@ func Run(t *testing.T, w World, version string) {
 		}
 	})
 
+	t.Run("credentials: what a person holds, as the provider lists it, passkeys alone for a new admin (#25, #84)", func(t *testing.T) {
+		c, err := p.Credentials(ctx, "ines")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if c.Passkeys != 1 || len(c.Others) != 0 || !c.PasskeysOnly() {
+			t.Errorf("the admin's credentials: %+v, want one passkey and nothing else", c)
+		}
+		if _, err := p.Credentials(ctx, "nobody"); !errors.Is(err, idp.ErrNoPerson) {
+			t.Errorf("nobody's credentials: %v, want ErrNoPerson", err)
+		}
+	})
+
 	t.Run("an expired enrolment link, and a new link ending the older one", func(t *testing.T) {
 		old, err := p.EnrolmentLink(ctx, "ines")
 		if err != nil {
@@ -276,6 +289,47 @@ func Run(t *testing.T, w World, version string) {
 		}
 	})
 
+	// Step-up (#25): a fresh passkey assertion, bound to one action by the nonce. The provider asks for the passkey
+	// again on a session older than oidc.StepUpFor, and a session younger than that never passes for one: its
+	// sign-in is from before the step-up began.
+	t.Run("step-up: the passkey asked again on a live session, its nonce the action's (#25)", func(t *testing.T) {
+		b := w.Browser(t, phone)
+		if _, err := signInWith(t, b, "ines", Factors{}); err != nil {
+			t.Fatal(err)
+		}
+		// The software authenticator answers within the second; a person never does: it waits for the next.
+		stepUp := func(nonce string) (oidc.Claims, error) {
+			at := oidc.StepUpAttempt(time.Now(), nonce)
+			time.Sleep(time.Until(at.Since.Truncate(time.Second).Add(time.Second)))
+			state, code, err := b.SignIn(t, c.AuthorizeURL(e, at), "ines", Factors{})
+			if err != nil {
+				return oidc.Claims{}, err
+			}
+			return c.Finish(ctx, e, at, state, code, time.Now())
+		}
+		// Seconds after the sign-in, the provider may pass on its session: then the ID token's sign-in is from before
+		// the step-up, and refused. Either way, no step-up passes without the passkey asked again.
+		before := phone.Assertions()
+		if _, err := stepUp("plan-too-soon"); err == nil && phone.Assertions() == before {
+			t.Error("a step-up passed on the session made a moment before, without asking for the passkey")
+		} else if err != nil && !errors.Is(err, oidc.ErrNotFresh) {
+			t.Errorf("a step-up on a session made a moment before: %v, want refused as not fresh", err)
+		}
+		time.Sleep(oidc.StepUpFor + 2*time.Second)
+		before = phone.Assertions()
+		began := time.Now()
+		cl, err := stepUp("plan-0123456789abcdef")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if n := phone.Assertions() - before; n != 1 {
+			t.Errorf("the step-up asked for the passkey %d times, want once", n)
+		}
+		if cl.Username != "ines" || !cl.AuthTime.After(began.Truncate(time.Second)) {
+			t.Errorf("the step-up's claims: %+v (began %v)", cl, began)
+		}
+	})
+
 	t.Run("authenticator setup flows refuse the household's people, like the sign-in flows (#84)", func(t *testing.T) {
 		other := webauthntest.New(h.Origin())
 		if took := w.SetUpAuthenticators(t, w.Browser(t, phone), "ines", other); len(took) > 0 {
@@ -291,6 +345,11 @@ func Run(t *testing.T, w World, version string) {
 
 	t.Run("a password and TOTP open nothing: not the provider's own sign-in, not Admin (#84)", func(t *testing.T) {
 		f := w.GiveFactors(t, "ines")
+		// Step-up reads what the admin holds before it accepts their passkey (#25): the password and TOTP show.
+		if c, err := p.Credentials(ctx, "ines"); err != nil || c.PasskeysOnly() || !slices.Contains(c.Others, idp.CredPassword) ||
+			!slices.Contains(c.Others, idp.CredTOTP) || c.Passkeys != 1 {
+			t.Errorf("the admin's credentials with a password and TOTP: %+v %v", c, err)
+		}
 		thief := w.Browser(t, webauthntest.New(h.Origin()))
 		if err := w.ProviderSignIn(t, thief, "ines", f); err == nil {
 			t.Error("the provider's own sign-in let the admin in with a password and TOTP")
