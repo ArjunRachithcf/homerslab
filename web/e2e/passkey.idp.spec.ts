@@ -7,8 +7,12 @@
 //   - the enrolment link makes a passkey whose RP ID is the sign-in's own name, with user verification;
 //   - Admin's client signs the admin in with that passkey, and nothing else;
 //   - an authenticator that can't verify the person signs nobody in.
+//
+// The virtual authenticator answers at once, a person never does: passkeys.ts holds its answer until the page's own
+// requests to the flow are answered, as a person's touch would come after them (#222).
 import { readFileSync, writeFileSync } from 'node:fs';
-import { expect, test, type BrowserContext, type CDPSession, type Page } from '@playwright/test';
+import { expect, test, type Page } from '@playwright/test';
+import { asAPersonWould, authenticator } from './passkeys';
 
 type World = {
   address: string; // host:port of the sign-in's TLS stand-in for the edge, on this machine
@@ -40,16 +44,6 @@ let passkey: Record<string, unknown> | null = null;
 // Where Admin's client was sent back, with its code: handed to the suite once both tests are done (it then ends).
 let callback = '';
 
-async function authenticator(context: BrowserContext, page: Page, verifies: boolean): Promise<{ cdp: CDPSession; id: string }> {
-  const cdp = await context.newCDPSession(page);
-  await cdp.send('WebAuthn.enable', { enableUI: false });
-  const { authenticatorId } = await cdp.send('WebAuthn.addVirtualAuthenticator', {
-    options: { protocol: 'ctap2', transport: 'internal', hasResidentKey: true, hasUserVerification: true,
-      isUserVerified: verifies, automaticPresenceSimulation: true },
-  });
-  return { cdp, id: authenticatorId };
-}
-
 async function signIn(page: Page, w: World) {
   await page.goto(w.authorize);
   // Authentik also keeps hidden username and password fields, off the screen, for password managers.
@@ -63,6 +57,7 @@ async function signIn(page: Page, w: World) {
 test('the enrolment link makes a passkey for the sign-in’s own name, and Admin’s client signs in with it', async ({ browser }) => {
   const w = world as World;
   const context = await browser.newContext();
+  await asAPersonWould(context);
   const page = await context.newPage();
   const { cdp, id } = await authenticator(context, page, true);
 
@@ -78,6 +73,7 @@ test('the enrolment link makes a passkey for the sign-in’s own name, and Admin
 
   // The same passkey, on the person's device next time: a fresh browser with it on its authenticator.
   const later = await browser.newContext();
+  await asAPersonWould(later);
   const again = await later.newPage();
   const second = await authenticator(later, again, true);
   await second.cdp.send('WebAuthn.addCredential', { authenticatorId: second.id, credential: passkey as never });
@@ -91,6 +87,7 @@ test('the same passkey, on an authenticator that doesn’t verify the person (a 
   const w = world as World;
   expect(passkey).not.toBeNull();
   const context = await browser.newContext();
+  await asAPersonWould(context);
   const page = await context.newPage();
   const { cdp, id } = await authenticator(context, page, false);
   await cdp.send('WebAuthn.addCredential', { authenticatorId: id, credential: passkey as never });
