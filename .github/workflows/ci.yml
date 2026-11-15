@@ -7,6 +7,12 @@ on:
   push:
     branches: [main]
   pull_request:
+  # By hand: the identity job's browser side that many times in a row, to prove a flake gone (#222).
+  workflow_dispatch:
+    inputs:
+      browser_runs:
+        description: Runs of web/e2e/passkey.idp.spec.ts in the identity job, each with a person of its own
+        default: "20"
 
 permissions:
   contents: read
@@ -326,7 +332,8 @@ jobs:
   identity:
     name: Identity provider contract (Authentik in containers, Chromium's virtual authenticator)
     runs-on: ubuntu-24.04
-    timeout-minutes: 35
+    # 20 browser runs by hand take about ten minutes more than the one of a pull request.
+    timeout-minutes: 50
     # Modules come only from the step that fetches them, as in the Go job.
     env:
       GOPROXY: "off"
@@ -353,6 +360,15 @@ jobs:
         run: |
           sh ../.github/scripts/stop-commands.sh npm ci --ignore-scripts
           sh ../.github/scripts/stop-commands.sh npx playwright install --with-deps chromium
+      # Docker Hub refuses pulls past its rate limit ("toomanyrequests"), and the runners share their addresses: the
+      # engine takes Docker Hub's images from Google's mirror first, and every image is pulled before the suite, each
+      # refusal tried again with a growing wait (#222).
+      - name: The images, before the suite
+        run: |
+          sudo sh -c 'f=/etc/docker/daemon.json; [ -s "$f" ] || echo "{}" > "$f"; jq ". + {\"registry-mirrors\": [\"https://mirror.gcr.io\"]}" "$f" > "$f.new" && mv "$f.new" "$f"'
+          sudo systemctl restart docker
+          sh .github/scripts/stop-commands.sh sh .github/scripts/pull-images.sh packaging/sign-in/authentik.compose.yaml \
+            internal/idp/authentik/native_test.go catalogs/official/apps/mealie/compose.yaml
       # The harness, and only the harness, reaches the runner's Docker (HOMERSLAB_TEST_DOCKER_HOST), for compose project
       # hltest-17; the code under test points at nowhere. Images are pinned by digest in packaging/sign-in. The suite
       # runs web/e2e/passkey.idp.spec.ts against the Authentik it set up (HOMERSLAB_TEST_BROWSER).
@@ -360,11 +376,22 @@ jobs:
         env:
           HOMERSLAB_TEST_DOCKER_HOST: unix:///var/run/docker.sock
           HOMERSLAB_TEST_BROWSER: "1"
+          HOMERSLAB_TEST_BROWSER_RUNS: ${{ inputs.browser_runs || '1' }}
           PLAYWRIGHT_BROWSERS_PATH: /home/runner/ms-playwright
           DOCKER_HOST: unix:///nonexistent
           CONTAINER_HOST: unix:///nonexistent
         # The containers' logs and the browser's output, which the suite prints, are third-party text too.
-        run: sh .github/scripts/stop-commands.sh go test -count=1 -v -timeout 30m -run TestTheIdentityProviderContractOnAuthentik ./internal/idp/authentik/
+        run: sh .github/scripts/stop-commands.sh go test -count=1 -v -timeout 45m -run TestTheIdentityProviderContractOnAuthentik ./internal/idp/authentik/
+      # What Playwright kept of a failed browser run: its trace (the page's requests and answers, screenshots) and the
+      # page as it was, one folder per run (web/test-results/passkey-<run>, native-sign-in).
+      - name: The browser's traces, when it failed
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: identity-browser-traces
+          path: web/test-results/
+          retention-days: 14
+          if-no-files-found: ignore
 
   web:
     name: Web app (lint, types, build)

@@ -282,7 +282,8 @@ secrets:
 			}
 		}
 	} else {
-		cmd := exec.Command("npx", "playwright", "test", "e2e/native-sign-in.idp.spec.ts", "--project=desktop", "--reporter=list")
+		cmd := exec.Command("npx", "playwright", "test", "e2e/native-sign-in.idp.spec.ts", "--project=desktop", "--reporter=list",
+			"--output=test-results/native-sign-in")
 		cmd.Dir = filepath.Join(root, "web")
 		cmd.Env = append(os.Environ(), "HOMERSLAB_TEST_NATIVE="+world)
 		got, err := cmd.CombinedOutput()

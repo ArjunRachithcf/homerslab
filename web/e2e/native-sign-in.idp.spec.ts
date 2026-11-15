@@ -12,7 +12,8 @@
 //     asked again and no sign-in page shown;
 //   - the app has no password sign-in of its own to fall back on.
 import { readFileSync, writeFileSync } from 'node:fs';
-import { expect, test, type BrowserContext, type CDPSession, type Page } from '@playwright/test';
+import { expect, test, type CDPSession, type Page } from '@playwright/test';
+import { asAPersonWould, authenticator } from './passkeys';
 
 type World = {
   address: string; // host:port of the edge, which serves auth.example.test, admin.example.test and the app's name
@@ -40,35 +41,14 @@ test.use({
     : {},
 });
 
-async function authenticator(context: BrowserContext, page: Page): Promise<{ cdp: CDPSession; id: string }> {
-  const cdp = await context.newCDPSession(page);
-  await cdp.send('WebAuthn.enable', { enableUI: false });
-  const { authenticatorId } = await cdp.send('WebAuthn.addVirtualAuthenticator', {
-    options: { protocol: 'ctap2', transport: 'internal', hasResidentKey: true, hasUserVerification: true,
-      isUserVerified: true, automaticPresenceSimulation: true },
-  });
-  return { cdp, id: authenticatorId };
-}
-
-// signInAtAdmin is the person's one sign-in, at Admin: what comes before what this file checks. Authentik's passkey
-// stage sometimes issues a new challenge while the page is answering the one before ("Client data challenge was not
-// expected challenge", over and over, in CI and on a desktop alike), so a sign-in that hasn't landed in 20 seconds is
-// started again, from Admin's authorize URL, up to three times. Opening the app afterwards is never retried.
+// signInAtAdmin is the person's one sign-in, at Admin: what comes before what this file checks.
 async function signInAtAdmin(page: Page, w: World): Promise<void> {
-  for (let attempt = 1; ; attempt++) {
-    await page.goto(w.admin);
-    const user = page.getByRole('textbox', { name: 'Email or Username' });
-    if (await user.waitFor({ timeout: 15_000 }).then(() => true, () => false)) {
-      await user.fill(w.username);
-      await page.getByRole('button', { name: 'Log in' }).click();
-    }
-    try {
-      await page.waitForURL((u) => u.href.startsWith(w.landing), { timeout: 20_000 });
-      return;
-    } catch (e) {
-      if (attempt === 3) throw e;
-    }
-  }
+  await page.goto(w.admin);
+  const user = page.getByRole('textbox', { name: 'Email or Username' });
+  await user.waitFor({ timeout: 30_000 });
+  await user.fill(w.username);
+  await page.getByRole('button', { name: 'Log in' }).click();
+  await page.waitForURL((u) => u.href.startsWith(w.landing), { timeout: 60_000 });
 }
 
 async function signCount(cdp: CDPSession, id: string): Promise<number> {
@@ -80,6 +60,7 @@ async function signCount(cdp: CDPSession, id: string): Promise<number> {
 test('signed in to the household account once, a person opens the app and is in it, with no second login', async ({ browser }) => {
   const w = world as World;
   const context = await browser.newContext();
+  await asAPersonWould(context); // the virtual authenticator answers no sooner than a person would (passkeys.ts, #222)
   const page = await context.newPage();
   const { cdp, id } = await authenticator(context, page);
 
