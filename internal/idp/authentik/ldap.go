@@ -428,14 +428,10 @@ func ptrStr(s *string) string {
 	return *s
 }
 
-// ldapTidy keeps the outpost serving HomersLab's LDAP providers alone (#204). A provider is HomersLab's when its name
-// is an app's (or the outpost's own), its base DN is that app's and no other provider at the outpost has it, and its
-// application is its own, holds it, and is opened by HomersLab's bindings alone. Any other provider leaves the outpost
-// (orphaned providers are removed); one named as HomersLab's, with its application or none, has the application closed
-// to nobody first, unless it is right in all but sharing its base DN, which the next EnsureLDAP puts back. A closed
-// application leaves the outpost too, and goes with its provider once off it for a.ldapRetire; a provider of
-// HomersLab's name left with no application, off the outpost, goes at once. With repair false it changes nothing, and
-// says whether the outpost serves only what it should.
+// ldapTidy keeps the outpost serving HomersLab's LDAP providers alone (#204): an app's name, exactly that app's base DN
+// (names are unique, so no two share one), and its own application, opened by HomersLab's bindings alone. Anything
+// else leaves the outpost, its application closed first when it is HomersLab's by name (orphaned providers are
+// removed). Closed ones go once off the outpost for a.ldapRetire. With repair false it only reports.
 func (a *Authentik) ldapTidy(ctx context.Context, repair bool) (bool, error) {
 	o, err := find[outpostObj](ctx, a.api, "/outposts/instances/?name__iexact="+q(LDAPOutpostName), "name", LDAPOutpostName)
 	if err != nil || o == nil {
@@ -449,10 +445,11 @@ func (a *Authentik) ldapTidy(ctx context.Context, repair bool) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	dns := map[string]int{}
-	for _, p := range ps {
-		if slices.Contains(o.Providers, p.PK) {
-			dns[strings.ToLower(strings.TrimSpace(p.BaseDN))]++
+	// The outpost's own application opens to nobody: the policy that refuses everyone is its one binding.
+	nobody := map[binding]bool{}
+	for b := range own {
+		if b.Policy != "" {
+			nobody[b] = true
 		}
 	}
 	clean, keep := true, slices.Clone(o.Providers)
@@ -471,13 +468,16 @@ func (a *Authentik) ldapTidy(ctx context.Context, repair bool) (bool, error) {
 				return false, err
 			}
 		}
-		fine := named && strings.EqualFold(p.BaseDN, dn) && app != nil && app.Provider != nil && *app.Provider == p.PK
+		fine := named && sameDN(p.BaseDN, dn) && app != nil && app.Provider != nil && *app.Provider == p.PK
 		if fine {
-			if fine, err = a.ldapBoundByUs(ctx, app, own); err != nil {
+			allowed := own
+			if p.Name == ldapNone {
+				allowed = nobody
+			}
+			if fine, err = a.ldapBoundByUs(ctx, app, allowed); err != nil {
 				return false, err
 			}
 		}
-		shared := on && dns[strings.ToLower(strings.TrimSpace(p.BaseDN))] > 1
 		at, closed := time.Time{}, false
 		if app != nil {
 			at, closed = app.closedAt()
@@ -485,14 +485,14 @@ func (a *Authentik) ldapTidy(ctx context.Context, repair bool) (bool, error) {
 		switch {
 		case p.Name == ldapNone && on:
 			// The outpost's own stays: its base DN and its application, closed to nobody, put back.
-			if fine && !shared && !closed {
+			if fine && !closed {
 				continue
 			}
 			clean = false
 			if !repair {
 				continue
 			}
-			if !strings.EqualFold(p.BaseDN, ldapNoneDN) {
+			if !sameDN(p.BaseDN, ldapNoneDN) {
 				if err := a.api.call(ctx, http.MethodPatch, fmt.Sprintf("/providers/ldap/%d/", p.PK), map[string]any{"base_dn": ldapNoneDN}, nil); err != nil {
 					return false, err
 				}
@@ -504,12 +504,12 @@ func (a *Authentik) ldapTidy(ctx context.Context, repair bool) (bool, error) {
 			if err := a.ensureLDAPApp(ctx, ldapNone, "HomersLab LDAP", "", p.PK, nobody); err != nil {
 				return false, err
 			}
-		case on && (!fine || shared || closed):
+		case on && (!fine || closed):
 			clean = false
 			if !repair {
 				continue
 			}
-			if named && (app != nil || p.App == nil) && !(fine && !closed) {
+			if named && (app != nil || p.App == nil) {
 				// An application holding another provider is left as it is: the provider leaves the outpost all the same.
 				if err := a.closeLDAPApp(ctx, p.Name, p.PK); err != nil && !errors.Is(err, errOtherProvider) {
 					return false, err
@@ -533,6 +533,16 @@ func (a *Authentik) ldapTidy(ctx context.Context, repair bool) (bool, error) {
 		}
 	}
 	return clean, nil
+}
+
+// sameDN says whether a base DN is exactly HomersLab's: ASCII only, compared without case.
+func sameDN(got, want string) bool {
+	for i := range len(got) {
+		if got[i] >= 0x80 {
+			return false
+		}
+	}
+	return strings.ToLower(got) == want
 }
 
 // offOutpost leaves the outpost with these providers only.
