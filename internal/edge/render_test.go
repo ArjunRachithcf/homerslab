@@ -456,7 +456,7 @@ func TestAGuardedAppsSiteAsksTheGuardFirst(t *testing.T) {
 	}
 	// An app without its guard, or a guard without its provider, or one whose answer says nobody's id, name, groups or
 	// how they're separated, isn't rendered.
-	for _, g := range []func(*edge.Guard){func(g *edge.Guard) { g.Person = "" }, func(g *edge.Guard) { g.Name = "" },
+	for _, g := range []func(*edge.Guard){func(g *edge.Guard) { g.Person = "" }, func(g *edge.Guard) { g.Name = "" }, func(g *edge.Guard) { g.Username = "" },
 		func(g *edge.Guard) { g.Groups = "" }, func(g *edge.Guard) { g.GroupSep = "" }, func(g *edge.Guard) { g.GroupSep = ", " }} {
 		guard := edge.KanidmGuard("172.31.250.10:9000")
 		g(guard)
@@ -707,7 +707,8 @@ func TestEverySiteDeletesHomersLabsOwnHeaders(t *testing.T) {
 	if err := json.Unmarshal(b, &c); err != nil {
 		t.Fatal(err)
 	}
-	own := []string{"X-Homerslab-*", "X-Homerslab_*", "X_homerslab-*", "X_homerslab_*"}
+	own := []string{"X-Homerslab-*", "X-Homerslab.*", "X-Homerslab_*", "X.homerslab-*", "X.homerslab.*", "X.homerslab_*", "X_homerslab-*",
+		"X_homerslab.*", "X_homerslab_*"}
 	sites := 0
 	for name, srv := range c.Apps.HTTP.Servers {
 		if name == "redirect" {
@@ -729,7 +730,7 @@ func TestEverySiteDeletesHomersLabsOwnHeaders(t *testing.T) {
 	for _, app := range []string{"pdf.example.test", "recipes.example.test"} {
 		site := string(siteOf(t, b, app))
 		for _, h := range []string{"X-Authentik-*", "X_authentik_*", "X-Auth-Request-*", "X_auth_request_*", "X-Forwarded-User",
-			"X_forwarded_user", "X-Forwarded_user", "X_forwarded-User", "Remote-*", "Remote_*"} {
+			"X_forwarded_user", "X-Forwarded_user", "X_forwarded-User", "X.forwarded.user", "Remote-*", "Remote_*", "Remote.*"} {
 			if !strings.Contains(site, `"`+h+`"`) {
 				t.Errorf("%s doesn't delete %s", app, h)
 			}

@@ -104,9 +104,9 @@ type Guard struct {
 	// Paths are the provider's own paths on the app's name (its callback), proxied to it, never to the app.
 	Paths []string
 	// Person, Name and Groups are the headers of the provider's 2xx answer that say who someone is: a stable id that
-	// survives a rename, the name to show, and their groups, separated by GroupSep. The edge turns them into the
+	// survives a rename, the name to show (Username when it's empty), and their groups, separated by GroupSep. The edge turns them into the
 	// identity contract (Contract); none of them reaches the app.
-	Person, Name, Groups, GroupSep string
+	Person, Name, Username, Groups, GroupSep string
 	// Cookie is the prefix of the provider's own cookies on the app's name, which the app never sees (#83).
 	Cookie string
 }
@@ -116,7 +116,7 @@ type Guard struct {
 // primary key that a rename doesn't change; X-Authentik-Groups joins their groups with |.
 func AuthentikGuard(dial string) *Guard {
 	return &Guard{Dial: dial, AuthURI: "/outpost.goauthentik.io/auth/caddy", Paths: []string{"/outpost.goauthentik.io/*"},
-		Person: "X-Authentik-Uid", Name: "X-Authentik-Name", Groups: "X-Authentik-Groups", GroupSep: "|", Cookie: "authentik_proxy_"}
+		Person: "X-Authentik-Uid", Name: "X-Authentik-Name", Username: "X-Authentik-Username", Groups: "X-Authentik-Groups", GroupSep: "|", Cookie: "authentik_proxy_"}
 }
 
 // KanidmGuard is oauth2-proxy in front of Kanidm, one per app, answering with --set-xauthrequest (research:
@@ -125,14 +125,15 @@ func AuthentikGuard(dial string) *Guard {
 // by their short names.
 func KanidmGuard(dial string) *Guard {
 	return &Guard{Dial: dial, AuthURI: "/oauth2/auth", Paths: []string{"/oauth2/*"},
-		Person: "X-Auth-Request-User", Name: "X-Auth-Request-Preferred-Username", Groups: "X-Auth-Request-Groups", GroupSep: ",",
+		Person: "X-Auth-Request-User", Name: "X-Auth-Request-Preferred-Username", Username: "X-Auth-Request-Preferred-Username", Groups: "X-Auth-Request-Groups", GroupSep: ",",
 		Cookie: "_oauth2_proxy"}
 }
 
 // Contract is the identity contract the edge keeps for every guarded app (#236): the app learns who someone is from
 // PersonHeader, NameHeader and RoleHeader alone, which the edge sets from its guard's answer, the same whichever
-// provider the household runs. RoleHeader is admin, adult or kid, from the one role group the person is in; a person in
-// none of them, or in more than one, or without an id, is refused, never taken for an adult. Every site deletes every
+// provider the household runs. NameHeader is their name, or their username when the provider has none. RoleHeader is
+// admin, adult or kid, from the one role group the person is in; a person in none of them, or in more than one, or
+// without an id or any name, is refused, never taken for an adult. Every site deletes every
 // header a client sends under HomersLab's prefix, in any case or spelling (OwnHeaders), so only the edge's reach an app.
 // An app's manifest declares that it relies on it (identity.edge).
 const (
@@ -154,27 +155,25 @@ var IdentityHeaders = []string{"X-Authentik-*", "Remote-*", "X-Remote-*", "X-For
 
 // spellings are the names a client can send for each header, as Caddy's delete compares them: in the form Go's server
 // gives every name it reads (textproto's canonical one, for HTTP/1 and HTTP/2 alike), with each dash also as an
-// underscore, which Go keeps but an app behind CGI, WSGI or PHP reads as a dash. Caddy compares a name ending in * by its
-// prefix, exactly; any other by its canonical form.
+// underscore or a dot, which Go keeps but an app behind CGI, WSGI or PHP may read as a dash. Caddy compares a name
+// ending in * by its prefix, exactly; any other by its canonical form.
 func spellings(names []string) []string {
 	var out []string
 	for _, n := range names {
 		wild := strings.HasSuffix(n, "*")
-		n = strings.TrimSuffix(n, "*")
-		dashes := strings.Count(n, "-")
-		for mask := range 1 << dashes {
-			var b strings.Builder
-			i := 0
-			for _, r := range n {
-				if r == '-' {
-					if mask&(1<<i) != 0 {
-						r = '_'
-					}
-					i++
+		parts := strings.Split(strings.TrimSuffix(n, "*"), "-")
+		spelt := []string{parts[0]}
+		for _, p := range parts[1:] {
+			var next []string
+			for _, s := range spelt {
+				for _, sep := range []string{"-", "_", "."} {
+					next = append(next, s+sep+p)
 				}
-				b.WriteRune(r)
 			}
-			v := textproto.CanonicalMIMEHeaderKey(b.String())
+			spelt = next
+		}
+		for _, v := range spelt {
+			v = textproto.CanonicalMIMEHeaderKey(v)
 			if wild {
 				v += "*"
 			}
@@ -184,6 +183,9 @@ func spellings(names []string) []string {
 	slices.Sort(out)
 	return slices.Compact(out)
 }
+
+// ownSpellings and identitySpellings are OwnHeaders and IdentityHeaders as the edge deletes them.
+var ownSpellings, identitySpellings = spellings(OwnHeaders), spellings(IdentityHeaders)
 
 // Certificate is one domain's wildcard certificate, loaded from files.
 type Certificate struct {
@@ -294,7 +296,7 @@ func Render(c Config) ([]byte, error) {
 		route := obj{
 			"match": []obj{{"host": []string{site.name}}},
 			"handle": []obj{
-				{"handler": "headers", "request": obj{"delete": spellings(OwnHeaders)}, "response": obj{
+				{"handler": "headers", "request": obj{"delete": ownSpellings}, "response": obj{
 					"set":      obj{"Strict-Transport-Security": []string{HSTS}},
 					"replace":  obj{"Set-Cookie": cookies},
 					"deferred": true,
@@ -404,7 +406,7 @@ func appRoute(a App, domains []string) (obj, error) {
 	}
 	g := a.Guard
 	if a.Name == "" || !validDial(a.Dial) || g == nil || !validDial(g.Dial) || g.AuthURI == "" || g.Cookie == "" || len(a.Refused) > 0 ||
-		g.Person == "" || g.Name == "" || g.Groups == "" || len(g.GroupSep) != 1 {
+		g.Person == "" || g.Name == "" || g.Username == "" || g.Groups == "" || len(g.GroupSep) != 1 {
 		return nil, fmt.Errorf("an app's site needs its name, its upstream and its guard: %+v", a)
 	}
 	copied := slices.Concat([]obj{{"handle": []obj{{"handler": "vars"}}}}, identity(g))
@@ -426,7 +428,7 @@ func appRoute(a App, domains []string) (obj, error) {
 		own = []obj{{"match": []obj{{"path": g.Paths}}, "handle": []obj{{"handler": "reverse_proxy", "upstreams": []obj{{"dial": g.Dial}}}}, "terminal": true}}
 	}
 	sub := slices.Concat(
-		[]obj{{"handle": []obj{{"handler": "headers", "request": obj{"delete": spellings(IdentityHeaders)}}}}},
+		[]obj{{"handle": []obj{{"handler": "headers", "request": obj{"delete": identitySpellings}}}}},
 		own,
 		[]obj{{"handle": []obj{guard}}, {"handle": []obj{app, {"handler": "reverse_proxy", "upstreams": []obj{{"dial": a.Dial}}}}}},
 	)
@@ -493,43 +495,44 @@ func nativeRoute(a App, domains []string) (obj, error) {
 		sub = append(sub, obj{"match": []obj{m}, "handle": []obj{{"handler": "static_response", "status_code": 403}}, "terminal": true})
 	}
 	sub = append(sub,
-		obj{"handle": []obj{{"handler": "headers", "request": obj{"delete": spellings(IdentityHeaders)}}}},
+		obj{"handle": []obj{{"handler": "headers", "request": obj{"delete": identitySpellings}}}},
 		obj{"handle": []obj{app, {"handler": "reverse_proxy", "upstreams": []obj{{"dial": a.Dial}}}}},
 	)
 	return obj{"handler": "subroute", "routes": sub}, nil
 }
 
 // identity are the routes of a guard's 2xx answer that keep the identity contract (Contract): the person's id, name
-// and role, set on the request the app gets; or 403, when the answer names no id, or not exactly one role group.
+// (their username when the provider has no name for them) and role, set on the request the app gets; or 403, when the
+// answer names no id, no name at all, or not exactly one role group.
 func identity(g *Guard) []obj {
 	ph := func(h string) string { return "{http.reverse_proxy.header." + h + "}" }
+	empty := func(h string) obj { return obj{"vars": obj{ph(h): []string{""}}} }
+	sep := regexp.QuoteMeta(g.GroupSep)
 	in := func(r idp.Role) obj {
-		sep := regexp.QuoteMeta(g.GroupSep)
 		return obj{"vars_regexp": obj{ph(g.Groups): obj{"pattern": "(^|" + sep + ")" + regexp.QuoteMeta(idp.RoleGroup(r)) + "(" + sep + "|$)"}}}
-	}
-	only := map[idp.Role]obj{}
-	for _, r := range idp.Roles() {
-		var others []obj
-		for _, other := range idp.Roles() {
-			if other != r {
-				others = append(others, in(other))
-			}
-		}
-		m := in(r)
-		m["not"] = others
-		only[r] = m
 	}
 	set := func(h, v string) []obj {
 		return []obj{{"handler": "headers", "request": obj{"set": obj{h: []string{v}}}}}
 	}
-	routes := []obj{{"match": []obj{{"vars": obj{ph(g.Person): []string{""}}}, {"not": []obj{only[idp.Admin], only[idp.Adult], only[idp.Kid]}}},
-		"handle": []obj{{"handler": "static_response", "status_code": 403}}}}
+	var onlyOne, roles []obj // a matcher per role: in its group, and in no other role's
 	for _, r := range idp.Roles() {
-		routes = append(routes, obj{"match": []obj{only[r]}, "handle": set(RoleHeader, string(r))})
+		m, others := in(r), []obj{}
+		for _, o := range idp.Roles() {
+			if o != r {
+				others = append(others, in(o))
+			}
+		}
+		m["not"] = others
+		onlyOne = append(onlyOne, m)
+		roles = append(roles, obj{"match": []obj{m}, "handle": set(RoleHeader, string(r))})
 	}
-	return append(routes,
-		obj{"handle": set(PersonHeader, ph(g.Person))},
-		obj{"match": []obj{{"not": []obj{{"vars": obj{ph(g.Name): []string{""}}}}}}, "handle": set(NameHeader, ph(g.Name))})
+	refused := obj{"match": []obj{empty(g.Person), {"not": []obj{{"not": []obj{empty(g.Name)}}, {"not": []obj{empty(g.Username)}}}}, {"not": onlyOne}},
+		"handle": []obj{{"handler": "static_response", "status_code": 403}}}
+	return slices.Concat([]obj{refused}, roles, []obj{
+		{"handle": set(PersonHeader, ph(g.Person))},
+		{"match": []obj{empty(g.Name)}, "handle": set(NameHeader, ph(g.Username))},
+		{"match": []obj{{"not": []obj{empty(g.Name)}}}, "handle": set(NameHeader, ph(g.Name))},
+	})
 }
 
 // parents are the household's domains and every domain above them, quoted for a regular expression, in order.

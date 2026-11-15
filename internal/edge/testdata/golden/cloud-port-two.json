@@ -28,8 +28,13 @@
                   "request": {
                     "delete": [
                       "X-Homerslab-*",
+                      "X-Homerslab.*",
                       "X-Homerslab_*",
+                      "X.homerslab-*",
+                      "X.homerslab.*",
+                      "X.homerslab_*",
                       "X_homerslab-*",
+                      "X_homerslab.*",
                       "X_homerslab_*"
                     ]
                   },

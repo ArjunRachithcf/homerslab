@@ -425,10 +425,12 @@ Stories 120–121 are decided in #87.
     - `X-HomersLab-Person` (the provider's stable id for the person, which a rename doesn't change: Authentik's uid,
       Kanidm's UUID), `X-HomersLab-Name`, and `X-HomersLab-Role` (`admin`, `adult` or `kid`, from the one role group
       the person is in);
-    - a person without an id, in no role group or in more than one, is refused (403), never taken for an adult;
-    - every name the edge serves deletes every `X-HomersLab-*` header a client sends, in any case, with underscores for
-      dashes too; an app's name also deletes every provider's identity headers (`X-Authentik-*`, `X-Auth-Request-*`,
-      `X-Forwarded-User` and the like), and none of them reaches an app.
+    - `X-HomersLab-Name` is the person's name, or their username when the provider has none;
+    - a person without an id, without a name or username, in no role group or in more than one, is refused (403), never
+      taken for an adult;
+    - every name the edge serves deletes every `X-HomersLab-*` header a client sends, in any case, with underscores or
+      dots for dashes too; an app's name also deletes every provider's identity headers (`X-Authentik-*`,
+      `X-Auth-Request-*`, `X-Forwarded-User` and the like), and none of them reaches an app.
   - **Apps are same-site with Admin and the sign-in**, so the edge keeps their cookies apart (#83):
     - it strips the guard's own cookie from the request before proxying to the app;
     - it drops any `Set-Cookie` in an app's response whose `Domain` is a household domain, unless the app's manifest

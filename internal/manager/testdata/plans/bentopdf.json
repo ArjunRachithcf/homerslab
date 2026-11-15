@@ -1,5 +1,5 @@
 {
-  "id": "p-9b1b74c753d4a47f89eb02107cef67de",
+  "id": "p-ebc135554274b05f875a0e508d4defc1",
   "kind": "install",
   "madeAt": "2026-11-10T13:30:00Z",
   "app": {
@@ -36,6 +36,7 @@
       "name": "Authentik"
     },
     "creates": "guard",
+    "identity": "homerslab-v1",
     "wired": true
   },
   "backups": {

@@ -238,6 +238,9 @@ var people = map[string]person{
 	"twice": {"ak-uid-3e3e", "twice", "Twice", []string{"homerslab-admins", "homerslab-kids"}},
 	// A 2xx without the person's id.
 	"anon": {"", "anon", "Anonymous", []string{"homerslab-adults"}},
+	// No name: their username stands in; with neither, nobody to show.
+	"nameless": {"ak-uid-4a4a", "nameless", "", []string{"homerslab-adults"}},
+	"blank":    {"ak-uid-4b4b", "", "", []string{"homerslab-adults"}},
 }
 
 // guard is the stub of Authentik's embedded outpost: a request with the guard's cookie for someone it knows, at a
@@ -611,12 +614,14 @@ func TestTheEdgesRequestMatrix(t *testing.T) {
 			{"none", "403 "},  // no group at all
 			{"twice", "403 "}, // two roles
 			{"anon", "403 "},  // no stable id
+			{"nameless", "200 App, at " + idp.host + ", as [X-Homerslab-Name=%s X-Homerslab-Person=%s4a4a X-Homerslab-Role=adult]"},
+			{"blank", "403 "}, // nobody to show
 		} {
 			t.Run(idp.name+"'s guard, "+row.who+": "+row.want[:3], func(t *testing.T) {
 				want := row.want
 				if strings.Contains(want, "%s") {
 					name := people[row.who].name
-					if idp.name == "Kanidm" { // oauth2-proxy names no display name: the preferred username
+					if idp.name == "Kanidm" || name == "" { // oauth2-proxy names no display name: the preferred username
 						name = people[row.who].username
 					}
 					want = fmt.Sprintf(want, name, idp.prefix)
@@ -635,6 +640,7 @@ func TestTheEdgesRequestMatrix(t *testing.T) {
 			{"X-HomersLab-Anything", "forged"}, {"X-Authentik-Uid", "forged"}, {"x-authentik-groups", "homerslab-admins"},
 			{"X_Authentik_Groups", "homerslab-admins"}, {"X-Auth-Request-User", "forged"}, {"X-Auth-Request-Groups", "homerslab-admins"},
 			{"x_auth_request_groups", "homerslab-admins"}, {"X-Forwarded-User", "forged"}, {"X_Forwarded_User", "forged"},
+			{"X.HomersLab.Role", "admin"}, {"x.homerslab_person", "forged"}, {"X.Authentik.Groups", "homerslab-admins"}, {"x.forwarded.user", "forged"},
 			{"X-Forwarded-Groups", "homerslab-admins"}, {"Remote-User", "forged"}, {"remote_user", "forged"}, {"X-Remote-User", "forged"},
 		}
 		withForged := func(who string, h2 bool) request {
@@ -681,7 +687,7 @@ func TestTheEdgesRequestMatrix(t *testing.T) {
 			t.Run(fmt.Sprintf("%s, with every forged spelling (HTTP/2 %v): none reaches it", row.name, h2), func(t *testing.T) {
 				q := row.q
 				q.Raw = [][2]string{{"X-HomersLab-Person", "forged"}, {"x_homerslab_role", "admin"}, {"X-HOMERSLAB-NAME", "forged"},
-					{"X_HomersLab-Person", "forged"}, {"X-Homerslab_Role", "admin"}, {"X-Authentik-Uid", "forged"}, {"X_Forwarded_User", "forged"}}
+					{"X_HomersLab-Person", "forged"}, {"X-Homerslab_Role", "admin"}, {"X.HomersLab.Person", "forged"}, {"X-Authentik-Uid", "forged"}, {"X_Forwarded_User", "forged"}}
 				q.H2 = h2
 				if got := ask("phone", q) + "\n"; !strings.HasPrefix(got, row.want) || strings.Contains(got, "forged") {
 					t.Errorf("%q, want %q", got, row.want)
