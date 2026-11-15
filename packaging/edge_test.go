@@ -89,7 +89,10 @@ func TestAdminsSocketIsForTheEdgeOnly(t *testing.T) {
 // rest read-only) and made by tmpfiles.d before it starts (#16's review).
 func TestTheAgentsUnitLetsItWriteWhereItWrites(t *testing.T) {
 	testenv.Isolate(t)
-	rw := strings.Fields(strings.Join(unit(t, "homerslab-agent.service")["ReadWritePaths"], " "))
+	var rw []string
+	for _, p := range strings.Fields(strings.Join(unit(t, "homerslab-agent.service")["ReadWritePaths"], " ")) {
+		rw = append(rw, strings.TrimPrefix(p, "-")) // "-": a folder that may not be there yet doesn't fail the start
+	}
 	tmpfiles, err := os.ReadFile("tmpfiles.d/homerslab.conf")
 	if err != nil {
 		t.Fatal(err)

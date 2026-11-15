@@ -30,6 +30,9 @@ import (
 	"github.com/ArjunRachithcf/homerslab/internal/engine/compose"
 	"github.com/ArjunRachithcf/homerslab/internal/host"
 	"github.com/ArjunRachithcf/homerslab/internal/lan"
+	"github.com/ArjunRachithcf/homerslab/internal/mesh"
+	"github.com/ArjunRachithcf/homerslab/internal/mesh/netbird"
+	"github.com/ArjunRachithcf/homerslab/internal/mesh/tailscale"
 	"github.com/ArjunRachithcf/homerslab/internal/node"
 )
 
@@ -178,6 +181,8 @@ type Host struct {
 	hang          []string          // commands, by prefix, that never answer
 	dockerActive  string            // docker.service's ActiveState and LoadState, when set; else from Engines
 	dockerLoad    string
+	// KeepSocketsOpen: restarting a mesh client leaves its control socket as it was.
+	KeepSocketsOpen bool
 	// Journal, when set, is what journalctl prints instead of the stub's few lines.
 	Journal []byte
 	// The container engine's apps (AppEngine): its projects, and the units systemd doesn't run; an app's unit, once
@@ -770,6 +775,9 @@ func (h *Host) Run(ctx context.Context, c host.Cmd) ([]byte, error) {
 			}
 		}
 		return fmt.Appendf(nil, "LoadState=%s\nActiveState=%s\n", load, active), nil
+	case len(c.Args) == 3 && line == "systemctl --no-block try-restart "+c.Args[2]:
+		h.startMeshDaemon(c.Args[2])
+		return nil, nil
 	case c.Name == "systemctl":
 		return nil, nil
 	case c.Name == "docker" && h.docker != nil && len(c.Args) > 1 && c.Args[1] == "ls":
@@ -828,6 +836,30 @@ func (h *Host) Run(ctx context.Context, c host.Cmd) ([]byte, error) {
 		return base64.StdEncoding.DecodeString(strings.TrimPrefix(string(b), "sealed:"))
 	}
 	return nil, &host.Error{Cmd: line, Err: errors.New("not something this test's machine does")}
+}
+
+// startMeshDaemon stands for systemd restarting a mesh client's daemon, if it runs (its socket's folder or NetBird's
+// CLI path is there), with the agent's drop-in for its control socket as it is on disk: the socket's folder made with
+// the drop-in's mode, and NetBird's link to the socket. Unless h.KeepSocketsOpen: a systemd that doesn't apply it.
+func (h *Host) startMeshDaemon(unit string) {
+	for _, c := range []mesh.ControlSocket{netbird.ControlSocket, tailscale.ControlSocket} {
+		b, err := os.ReadFile(filepath.Join(h.Root, c.DropInPath))
+		if c.Unit != unit || err != nil || !strings.Contains(string(b), "\nRuntimeDirectoryMode=0700\n") || h.KeepSocketsOpen {
+			continue
+		}
+		_, dirErr := os.Lstat(filepath.Join(h.Root, c.Dir))
+		_, linkErr := os.Lstat(filepath.Join(h.Root, c.Link))
+		if dirErr != nil && (c.Link == "" || linkErr != nil) {
+			continue // try-restart leaves a stopped unit stopped
+		}
+		dir := filepath.Join(h.Root, c.Dir)
+		_ = os.MkdirAll(dir, 0o700)
+		_ = os.Chmod(dir, 0o700)
+		if c.Link != "" {
+			_ = os.Remove(filepath.Join(h.Root, c.Link))
+			_ = os.Symlink("/"+c.Socket, filepath.Join(h.Root, c.Link))
+		}
+	}
 }
 
 // Loopback are the addresses the agent put on the machine's loopback.

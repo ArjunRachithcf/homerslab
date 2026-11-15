@@ -39,6 +39,29 @@ func DropIn() []byte {
 	return []byte(b.String())
 }
 
+// The control socket: NetBird's daemon listens on its --daemon-addr and makes the socket 0666 (v0.82.0,
+// client/cmd/service_socket.go), and `netbird service install` writes that address into the unit's ExecStart. The
+// daemon takes NB_DAEMON_ADDR over its command line (SetFlagsFromEnvVars), so the drop-in moves the socket into a folder
+// of root's, and links the CLI's default path, /var/run/netbird.sock, to it: `netbird` as root works as before, and
+// for everyone else the link leads nowhere they may go. The daemon's JSON gateway is off unless installed with
+// --enable-json-socket, and NB_JSON_SOCKET without it stops the daemon from starting, so the drop-in leaves it be.
+var ControlSocket = mesh.ControlSocket{
+	Unit:       "netbird.service",
+	DropInPath: "etc/systemd/system/netbird.service.d/11-homerslab-socket.conf",
+	DropIn: []byte(`# Written by HomersLab's agent, which puts it back if changed. NetBird's control socket is root's only: it controls
+# the node's mesh connection, and the daemon makes it open to every user (0666). It lives in a folder only root may
+# enter, and the CLI's default path links to it, so ` + "`netbird`" + ` as root works as before.
+[Service]
+RuntimeDirectory=netbird
+RuntimeDirectoryMode=0700
+Environment=NB_DAEMON_ADDR=unix:///run/netbird/netbird.sock
+ExecStartPre=/bin/ln -sfn /run/netbird/netbird.sock /run/netbird.sock
+`),
+	Dir:    "run/netbird",
+	Socket: "run/netbird/netbird.sock",
+	Link:   "run/netbird.sock",
+}
+
 // Node is NetBird's client on this machine.
 type Node struct{ Run host.Runner }
 

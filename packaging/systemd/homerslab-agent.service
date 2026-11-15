@@ -39,6 +39,9 @@ RestartSec=2s
 #   - owns the firewall table, inet homerslab, in the host's own network (nft over netlink, CAP_NET_ADMIN);
 #   - joins the mesh: a drop-in for NetBird's service (NAT mapper off), systemctl, netbird up, and a check that the
 #     machine's resolver still answers (AF_INET, AF_INET6);
+#   - since #200, keeps NetBird's and tailscaled's control sockets for root only: a drop-in for each daemon puts its
+#     socket in a folder of mode 0700, which the agent checks (it reads /run, writes nothing there) and has systemd
+#     make again (systemctl try-restart) when it drifts;
 #   - seals the manager's credentials with systemd-creds, in its state directory, with the TPM where there is one;
 #   - since #16, seals the edge's certificates, writes the edge's drop-in, restarts the edge (systemctl) and configures
 #     it through its admin socket (the edge's group);
@@ -70,9 +73,10 @@ RestartSec=2s
 NoNewPrivileges=yes
 CapabilityBoundingSet=CAP_CHOWN CAP_NET_ADMIN CAP_SETUID CAP_SETGID
 ProtectSystem=strict
-# NetBird's, the edge's and the sign-in's drop-ins, and apps' units (agent.RootWrites; the folders come from
-# tmpfiles.d/homerslab.conf).
-ReadWritePaths=/etc/systemd/system/netbird.service.d /etc/systemd/system/homerslab-edge.service.d /etc/systemd/system/homerslab-authentik.service.d /etc/homerslab/units
+# NetBird's, tailscaled's, the edge's and the sign-in's drop-ins, and apps' units (agent.RootWrites; the folders come
+# from tmpfiles.d/homerslab.conf; tailscaled's, new in #200, may not be there yet when an upgrade restarts the agent
+# before tmpfiles runs: "-", so the agent starts and only that drop-in waits).
+ReadWritePaths=/etc/systemd/system/netbird.service.d -/etc/systemd/system/tailscaled.service.d /etc/systemd/system/homerslab-edge.service.d /etc/systemd/system/homerslab-authentik.service.d /etc/homerslab/units
 ProtectHome=yes
 PrivateTmp=yes
 DevicePolicy=closed

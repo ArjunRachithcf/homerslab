@@ -220,6 +220,14 @@ jobs:
           CONTAINER_HOST: unix:///nonexistent
         # The containers' logs, which the suite prints when it fails, are third-party text too.
         run: sh .github/scripts/stop-commands.sh go test -count=1 -v -run TestTheMeshContract ./internal/mesh/netbird/
+      # NetBird's daemon and tailscaled, from their pinned images, started with the drop-ins the agent writes: only root
+      # reaches their control sockets (#200). Labelled for compose project hltest-200; the agent points at nowhere.
+      - name: The mesh clients' control sockets, with the real daemons
+        env:
+          HOMERSLAB_TEST_DOCKER_HOST: unix:///var/run/docker.sock
+          DOCKER_HOST: unix:///nonexistent
+          CONTAINER_HOST: unix:///nonexistent
+        run: sh .github/scripts/stop-commands.sh go test -count=1 -v -run TestTheMeshClientsControlSocketsAreRootsOnlyWithTheRealDaemons ./internal/agent/
 
   domain:
     name: Certificates and the edge (Pebble, BIND and Caddy in containers)
