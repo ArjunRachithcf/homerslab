@@ -26,7 +26,7 @@ func TestDefaultsAreReadyOnceTheBlueprintsHaveApplied(t *testing.T) {
 		case r.URL.Path == "/api/v3/flows/instances/":
 			results = []any{map[string]string{"pk": "f", "slug": r.URL.Query().Get("slug")}}
 		case r.URL.Path == "/api/v3/crypto/certificatekeypairs/":
-			results = []any{map[string]string{"pk": "c"}}
+			results = []any{map[string]string{"pk": "c", "name": selfSignedCert}}
 		case r.URL.Path == "/api/v3/managed/blueprints/":
 			for _, b := range blueprints {
 				results = append(results, b)

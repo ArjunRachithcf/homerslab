@@ -132,9 +132,33 @@ func list[T any](ctx context.Context, a *api, path string) ([]T, error) {
 	}
 }
 
-// one is the only object of a filtered list, or nil when there is none.
-func one[T any](ctx context.Context, a *api, path string) (*T, error) {
-	l, err := list[T](ctx, a, path)
+// where is every object of a list endpoint whose field is exactly value. The path's filter only narrows what Authentik
+// sends: it ignores a filter its viewset doesn't declare (2026.8.5's proxy providers take name__iexact, never name) and
+// some match without regard to case, so the answer is checked here, never trusted (#219).
+func where[T any](ctx context.Context, a *api, path, field, value string) ([]T, error) {
+	raws, err := list[json.RawMessage](ctx, a, path)
+	if err != nil {
+		return nil, err
+	}
+	var out []T
+	for _, raw := range raws {
+		var fields map[string]json.RawMessage
+		var got string
+		if json.Unmarshal(raw, &fields) != nil || json.Unmarshal(fields[field], &got) != nil || got != value {
+			continue
+		}
+		var o T
+		if err := json.Unmarshal(raw, &o); err != nil {
+			return nil, err
+		}
+		out = append(out, o)
+	}
+	return out, nil
+}
+
+// find is the one object of a list endpoint whose field is exactly value, or nil when there is none.
+func find[T any](ctx context.Context, a *api, path, field, value string) (*T, error) {
+	l, err := where[T](ctx, a, path, field, value)
 	if err != nil || len(l) == 0 {
 		return nil, err
 	}
