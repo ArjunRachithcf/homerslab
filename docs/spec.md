@@ -420,6 +420,15 @@ Stories 120–121 are decided in #87.
     browser that reuses a connection for two apps opens a new one (#81).
   - Forward-auth to the identity provider for guarded apps, after stripping identity headers that a client could
     forge, passing the sign-in's refreshed session cookie back to the browser.
+  - **The identity contract `homerslab-v1`** (#236): a guarded app learns who someone is only from the edge, the same
+    with Authentik and with Kanidm:
+    - `X-HomersLab-Person` (the provider's stable id for the person, which a rename doesn't change: Authentik's uid,
+      Kanidm's UUID), `X-HomersLab-Name`, and `X-HomersLab-Role` (`admin`, `adult` or `kid`, from the one role group
+      the person is in);
+    - a person without an id, in no role group or in more than one, is refused (403), never taken for an adult;
+    - every name the edge serves deletes every `X-HomersLab-*` header a client sends, in any case, with underscores for
+      dashes too; an app's name also deletes every provider's identity headers (`X-Authentik-*`, `X-Auth-Request-*`,
+      `X-Forwarded-User` and the like), and none of them reaches an app.
   - **Apps are same-site with Admin and the sign-in**, so the edge keeps their cookies apart (#83):
     - it strips the guard's own cookie from the request before proxying to the app;
     - it drops any `Set-Cookie` in an app's response whose `Domain` is a household domain, unless the app's manifest
@@ -550,6 +559,8 @@ One folder per app: a manifest, a plain compose file (none for a host app), icon
 - **identity**: id, name, description, category;
 - **versions**: image digests per engine and architecture;
 - **sign-in methods**, in order of preference, with their settings;
+- **the identity contract** the app relies on, `identity: {edge: homerslab-v1}`: only for an app with the guard among
+  its sign-in methods; the install plan of a guarded app shows it (#236);
 - **names and exposure**: the default exposure, whether a public path is allowed, and a cookie for the whole domain
   where the app truly needs one (#83);
 - **audience**: the default audience, and the kid view;

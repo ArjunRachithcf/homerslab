@@ -24,6 +24,14 @@
               "handle": [
                 {
                   "handler": "headers",
+                  "request": {
+                    "delete": [
+                      "X-Homerslab-*",
+                      "X-Homerslab_*",
+                      "X_homerslab-*",
+                      "X_homerslab_*"
+                    ]
+                  },
                   "response": {
                     "deferred": true,
                     "replace": {
@@ -67,6 +75,14 @@
               "handle": [
                 {
                   "handler": "headers",
+                  "request": {
+                    "delete": [
+                      "X-Homerslab-*",
+                      "X-Homerslab_*",
+                      "X_homerslab-*",
+                      "X_homerslab_*"
+                    ]
+                  },
                   "response": {
                     "deferred": true,
                     "replace": {
@@ -140,6 +156,14 @@
               "handle": [
                 {
                   "handler": "headers",
+                  "request": {
+                    "delete": [
+                      "X-Homerslab-*",
+                      "X-Homerslab_*",
+                      "X_homerslab-*",
+                      "X_homerslab_*"
+                    ]
+                  },
                   "response": {
                     "deferred": true,
                     "replace": {
@@ -170,20 +194,70 @@
                           "handler": "headers",
                           "request": {
                             "delete": [
-                              "X-Authentik-*",
                               "Remote-*",
-                              "X-Remote-*",
-                              "X-Forwarded-User",
+                              "Remote_*",
+                              "X-Auth-Request-*",
+                              "X-Auth-Request_*",
+                              "X-Auth_request-*",
+                              "X-Auth_request_*",
+                              "X-Authentik-*",
+                              "X-Authentik_*",
+                              "X-Email",
+                              "X-Forwarded-Access-Token",
+                              "X-Forwarded-Access_token",
                               "X-Forwarded-Email",
                               "X-Forwarded-Groups",
                               "X-Forwarded-Preferred-Username",
-                              "X-Forwarded-Access-Token",
-                              "X-Auth-Request-*",
-                              "X-Webauth-*",
+                              "X-Forwarded-Preferred_username",
+                              "X-Forwarded-User",
+                              "X-Forwarded_access-Token",
+                              "X-Forwarded_access_token",
+                              "X-Forwarded_email",
+                              "X-Forwarded_groups",
+                              "X-Forwarded_preferred-Username",
+                              "X-Forwarded_preferred_username",
+                              "X-Forwarded_user",
+                              "X-Remote-*",
+                              "X-Remote_*",
                               "X-Token-User-*",
+                              "X-Token-User_*",
+                              "X-Token_user-*",
+                              "X-Token_user_*",
                               "X-User",
-                              "X-Email",
-                              "X-Username"
+                              "X-Username",
+                              "X-Webauth-*",
+                              "X-Webauth_*",
+                              "X_auth-Request-*",
+                              "X_auth-Request_*",
+                              "X_auth_request-*",
+                              "X_auth_request_*",
+                              "X_authentik-*",
+                              "X_authentik_*",
+                              "X_email",
+                              "X_forwarded-Access-Token",
+                              "X_forwarded-Access_token",
+                              "X_forwarded-Email",
+                              "X_forwarded-Groups",
+                              "X_forwarded-Preferred-Username",
+                              "X_forwarded-Preferred_username",
+                              "X_forwarded-User",
+                              "X_forwarded_access-Token",
+                              "X_forwarded_access_token",
+                              "X_forwarded_email",
+                              "X_forwarded_groups",
+                              "X_forwarded_preferred-Username",
+                              "X_forwarded_preferred_username",
+                              "X_forwarded_user",
+                              "X_remote-*",
+                              "X_remote_*",
+                              "X_token-User-*",
+                              "X_token-User_*",
+                              "X_token_user-*",
+                              "X_token_user_*",
+                              "X_user",
+                              "X_username",
+                              "X_webauth-*",
+                              "X_webauth_*"
                             ]
                           }
                         }
@@ -230,24 +304,87 @@
                                 {
                                   "handle": [
                                     {
-                                      "handler": "headers",
-                                      "request": {
-                                        "set": {
-                                          "X-Authentik-Username": [
-                                            "{http.reverse_proxy.header.X-Authentik-Username}"
-                                          ]
-                                        }
-                                      }
+                                      "handler": "static_response",
+                                      "status_code": 403
                                     }
                                   ],
                                   "match": [
                                     {
+                                      "vars": {
+                                        "{http.reverse_proxy.header.X-Authentik-Uid}": [
+                                          ""
+                                        ]
+                                      }
+                                    },
+                                    {
                                       "not": [
                                         {
-                                          "vars": {
-                                            "{http.reverse_proxy.header.X-Authentik-Username}": [
-                                              ""
-                                            ]
+                                          "not": [
+                                            {
+                                              "vars_regexp": {
+                                                "{http.reverse_proxy.header.X-Authentik-Groups}": {
+                                                  "pattern": "(^|\\|)homerslab-adults(\\||$)"
+                                                }
+                                              }
+                                            },
+                                            {
+                                              "vars_regexp": {
+                                                "{http.reverse_proxy.header.X-Authentik-Groups}": {
+                                                  "pattern": "(^|\\|)homerslab-kids(\\||$)"
+                                                }
+                                              }
+                                            }
+                                          ],
+                                          "vars_regexp": {
+                                            "{http.reverse_proxy.header.X-Authentik-Groups}": {
+                                              "pattern": "(^|\\|)homerslab-admins(\\||$)"
+                                            }
+                                          }
+                                        },
+                                        {
+                                          "not": [
+                                            {
+                                              "vars_regexp": {
+                                                "{http.reverse_proxy.header.X-Authentik-Groups}": {
+                                                  "pattern": "(^|\\|)homerslab-admins(\\||$)"
+                                                }
+                                              }
+                                            },
+                                            {
+                                              "vars_regexp": {
+                                                "{http.reverse_proxy.header.X-Authentik-Groups}": {
+                                                  "pattern": "(^|\\|)homerslab-kids(\\||$)"
+                                                }
+                                              }
+                                            }
+                                          ],
+                                          "vars_regexp": {
+                                            "{http.reverse_proxy.header.X-Authentik-Groups}": {
+                                              "pattern": "(^|\\|)homerslab-adults(\\||$)"
+                                            }
+                                          }
+                                        },
+                                        {
+                                          "not": [
+                                            {
+                                              "vars_regexp": {
+                                                "{http.reverse_proxy.header.X-Authentik-Groups}": {
+                                                  "pattern": "(^|\\|)homerslab-admins(\\||$)"
+                                                }
+                                              }
+                                            },
+                                            {
+                                              "vars_regexp": {
+                                                "{http.reverse_proxy.header.X-Authentik-Groups}": {
+                                                  "pattern": "(^|\\|)homerslab-adults(\\||$)"
+                                                }
+                                              }
+                                            }
+                                          ],
+                                          "vars_regexp": {
+                                            "{http.reverse_proxy.header.X-Authentik-Groups}": {
+                                              "pattern": "(^|\\|)homerslab-kids(\\||$)"
+                                            }
                                           }
                                         }
                                       ]
@@ -260,8 +397,8 @@
                                       "handler": "headers",
                                       "request": {
                                         "set": {
-                                          "X-Authentik-Groups": [
-                                            "{http.reverse_proxy.header.X-Authentik-Groups}"
+                                          "X-HomersLab-Role": [
+                                            "admin"
                                           ]
                                         }
                                       }
@@ -271,13 +408,25 @@
                                     {
                                       "not": [
                                         {
-                                          "vars": {
-                                            "{http.reverse_proxy.header.X-Authentik-Groups}": [
-                                              ""
-                                            ]
+                                          "vars_regexp": {
+                                            "{http.reverse_proxy.header.X-Authentik-Groups}": {
+                                              "pattern": "(^|\\|)homerslab-adults(\\||$)"
+                                            }
+                                          }
+                                        },
+                                        {
+                                          "vars_regexp": {
+                                            "{http.reverse_proxy.header.X-Authentik-Groups}": {
+                                              "pattern": "(^|\\|)homerslab-kids(\\||$)"
+                                            }
                                           }
                                         }
-                                      ]
+                                      ],
+                                      "vars_regexp": {
+                                        "{http.reverse_proxy.header.X-Authentik-Groups}": {
+                                          "pattern": "(^|\\|)homerslab-admins(\\||$)"
+                                        }
+                                      }
                                     }
                                   ]
                                 },
@@ -287,8 +436,8 @@
                                       "handler": "headers",
                                       "request": {
                                         "set": {
-                                          "X-Authentik-Email": [
-                                            "{http.reverse_proxy.header.X-Authentik-Email}"
+                                          "X-HomersLab-Role": [
+                                            "adult"
                                           ]
                                         }
                                       }
@@ -298,13 +447,25 @@
                                     {
                                       "not": [
                                         {
-                                          "vars": {
-                                            "{http.reverse_proxy.header.X-Authentik-Email}": [
-                                              ""
-                                            ]
+                                          "vars_regexp": {
+                                            "{http.reverse_proxy.header.X-Authentik-Groups}": {
+                                              "pattern": "(^|\\|)homerslab-admins(\\||$)"
+                                            }
+                                          }
+                                        },
+                                        {
+                                          "vars_regexp": {
+                                            "{http.reverse_proxy.header.X-Authentik-Groups}": {
+                                              "pattern": "(^|\\|)homerslab-kids(\\||$)"
+                                            }
                                           }
                                         }
-                                      ]
+                                      ],
+                                      "vars_regexp": {
+                                        "{http.reverse_proxy.header.X-Authentik-Groups}": {
+                                          "pattern": "(^|\\|)homerslab-adults(\\||$)"
+                                        }
+                                      }
                                     }
                                   ]
                                 },
@@ -314,7 +475,60 @@
                                       "handler": "headers",
                                       "request": {
                                         "set": {
-                                          "X-Authentik-Name": [
+                                          "X-HomersLab-Role": [
+                                            "kid"
+                                          ]
+                                        }
+                                      }
+                                    }
+                                  ],
+                                  "match": [
+                                    {
+                                      "not": [
+                                        {
+                                          "vars_regexp": {
+                                            "{http.reverse_proxy.header.X-Authentik-Groups}": {
+                                              "pattern": "(^|\\|)homerslab-admins(\\||$)"
+                                            }
+                                          }
+                                        },
+                                        {
+                                          "vars_regexp": {
+                                            "{http.reverse_proxy.header.X-Authentik-Groups}": {
+                                              "pattern": "(^|\\|)homerslab-adults(\\||$)"
+                                            }
+                                          }
+                                        }
+                                      ],
+                                      "vars_regexp": {
+                                        "{http.reverse_proxy.header.X-Authentik-Groups}": {
+                                          "pattern": "(^|\\|)homerslab-kids(\\||$)"
+                                        }
+                                      }
+                                    }
+                                  ]
+                                },
+                                {
+                                  "handle": [
+                                    {
+                                      "handler": "headers",
+                                      "request": {
+                                        "set": {
+                                          "X-HomersLab-Person": [
+                                            "{http.reverse_proxy.header.X-Authentik-Uid}"
+                                          ]
+                                        }
+                                      }
+                                    }
+                                  ]
+                                },
+                                {
+                                  "handle": [
+                                    {
+                                      "handler": "headers",
+                                      "request": {
+                                        "set": {
+                                          "X-HomersLab-Name": [
                                             "{http.reverse_proxy.header.X-Authentik-Name}"
                                           ]
                                         }
@@ -327,33 +541,6 @@
                                         {
                                           "vars": {
                                             "{http.reverse_proxy.header.X-Authentik-Name}": [
-                                              ""
-                                            ]
-                                          }
-                                        }
-                                      ]
-                                    }
-                                  ]
-                                },
-                                {
-                                  "handle": [
-                                    {
-                                      "handler": "headers",
-                                      "request": {
-                                        "set": {
-                                          "X-Authentik-Uid": [
-                                            "{http.reverse_proxy.header.X-Authentik-Uid}"
-                                          ]
-                                        }
-                                      }
-                                    }
-                                  ],
-                                  "match": [
-                                    {
-                                      "not": [
-                                        {
-                                          "vars": {
-                                            "{http.reverse_proxy.header.X-Authentik-Uid}": [
                                               ""
                                             ]
                                           }

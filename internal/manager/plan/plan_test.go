@@ -154,8 +154,13 @@ func TestThePlanUsesTheFirstSignInMethodTheProviderProvides(t *testing.T) {
 			d.SignIn = append(d.SignIn, catalog.SignIn{Method: m})
 		}
 		h.Provider.Provides = c.provides
-		if got := make_(t, d, h).SignIn; got.Method != c.want || got.Creates != c.creates {
+		got := make_(t, d, h).SignIn
+		if got.Method != c.want || got.Creates != c.creates {
 			t.Errorf("the app lists %v, the provider provides %v: %s (%s), want %s (%s)", c.app, c.provides, got.Method, got.Creates, c.want, c.creates)
+		}
+		// A guarded app gets the edge's identity contract, and the plan says so (#236); no other does.
+		if identity := map[bool]string{true: catalog.EdgeIdentity}[c.want == catalog.Guard]; got.Identity != identity {
+			t.Errorf("the app signs in by %s: identity %q, want %q", got.Method, got.Identity, identity)
 		}
 	}
 

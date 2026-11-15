@@ -100,7 +100,7 @@ func helper(mode, arg string) int {
 			w.Header().Add("Set-Cookie", "upper=2; SECURE; Path=/")
 			w.Header().Add("Set-Cookie", "last=3; Path=/; Secure")
 			w.Header().Set("Strict-Transport-Security", "max-age=63072000; includeSubDomains; preload")
-			fmt.Fprintf(w, "Admin, at %s", r.Host)
+			fmt.Fprintf(w, "Admin, at %s%s", r.Host, ours(r))
 		}))
 	case "manager": // the manager's control socket and database, for its own user only, as its unit keeps them
 		_ = os.Remove(controlSock)
@@ -150,11 +150,15 @@ func helper(mode, arg string) int {
 		}
 	case "authentik": // the sign-in's server, on the sign-in network: it says what reached it
 		_ = http.ListenAndServe(signInStub, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if r.URL.Path == "/outpost.goauthentik.io/auth/caddy" { // its embedded outpost, as the guard
+			switch r.URL.Path {
+			case "/outpost.goauthentik.io/auth/caddy": // its embedded outpost, as the guard
 				guard(w, r)
 				return
+			case "/oauth2/auth": // oauth2-proxy, as Kanidm's guard
+				kanidmGuard(w, r)
+				return
 			}
-			fmt.Fprintf(w, "Authentik, at %s %s", r.Host, r.URL.RequestURI())
+			fmt.Fprintf(w, "Authentik, at %s %s%s", r.Host, r.URL.RequestURI(), ours(r))
 		}))
 	case "app": // a guarded app: it says who the request names, and which cookies reached it
 		_ = http.ListenAndServe(appStub, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -168,7 +172,8 @@ func helper(mode, arg string) int {
 			}
 			var named []string
 			for k, v := range r.Header {
-				if k != "Cookie" && k != "Accept-Encoding" && k != "User-Agent" && !strings.HasPrefix(k, "X-Forwarded-") && k != "Via" {
+				// Every header but the browser's own and those the edge's proxy sets: a forged X-Forwarded-User shows.
+				if !slices.Contains([]string{"Cookie", "Accept-Encoding", "User-Agent", "Via", "X-Forwarded-For", "X-Forwarded-Host", "X-Forwarded-Proto"}, k) {
 					named = append(named, k+"="+strings.Join(v, ","))
 				}
 			}
@@ -212,19 +217,88 @@ func helper(mode, arg string) int {
 	return 0
 }
 
-// guard is the stub of Authentik's embedded outpost: a request with the guard's cookie for ines is let on, as ines; any
-// other goes to the sign-in.
+// person is someone the stub guards know, by their session: a stable id, a username, a name and their groups. Some
+// aren't in exactly one role's group, and one has no id.
+type person struct {
+	id, username, name string
+	groups             []string
+}
+
+var people = map[string]person{
+	"ines": {"ak-uid-6f1c", "ines", "Inês Ferreira", []string{"family", "homerslab-adults"}},
+	"rui":  {"ak-uid-02aa", "rui", "Rui Ferreira", []string{"homerslab-admins"}},
+	"kiko": {"ak-uid-9b3e", "kiko", "Kiko", []string{"homerslab-kids", "family"}},
+	// No role: groups that only look like one, each alone.
+	"lena": {"ak-uid-51d0", "lena", "Lena", []string{"homerslab-adults-old", "family"}},
+	"theo": {"ak-uid-51d1", "theo", "Theo", []string{"xhomerslab-admins"}},
+	"vera": {"ak-uid-51d2", "vera", "Vera", []string{"homerslab-kid"}},
+	"ugo":  {"ak-uid-51d3", "ugo", "Ugo", []string{"Homerslab-Kids"}},
+	"none": {"ak-uid-77c2", "none", "Nobody", nil},
+	// Two roles at once: never one of them by guess.
+	"twice": {"ak-uid-3e3e", "twice", "Twice", []string{"homerslab-admins", "homerslab-kids"}},
+	// A 2xx without the person's id.
+	"anon": {"", "anon", "Anonymous", []string{"homerslab-adults"}},
+}
+
+// guard is the stub of Authentik's embedded outpost: a request with the guard's cookie for someone it knows, at a
+// guarded app's name, is let on as them; any other goes to the sign-in.
 func guard(w http.ResponseWriter, r *http.Request) {
-	if c, err := r.Cookie("authentik_proxy_7f3a"); err == nil && c.Value == "ines-session" && r.Header.Get("X-Forwarded-Host") == "pdf.example.test" {
-		w.Header().Set("X-Authentik-Username", "ines")
-		w.Header().Set("X-Authentik-Groups", "homerslab-adults")
+	c, err := r.Cookie("authentik_proxy_7f3a")
+	var who person
+	known := false
+	if err == nil && strings.HasSuffix(c.Value, "-session") {
+		who, known = people[strings.TrimSuffix(c.Value, "-session")]
+	}
+	if known && r.Header.Get("X-Forwarded-Host") == "pdf.example.test" {
+		if who.id != "" {
+			w.Header().Set("X-Authentik-Uid", who.id)
+		}
+		w.Header().Set("X-Authentik-Username", who.username)
+		w.Header().Set("X-Authentik-Name", who.name)
+		w.Header().Set("X-Authentik-Email", who.username+"@example.test")
+		w.Header().Set("X-Authentik-Groups", strings.Join(who.groups, "|"))
 		// The session, refreshed (an expiry has a comma in it), and a second cookie: each reaches the browser whole.
-		w.Header().Add("Set-Cookie", "authentik_proxy_7f3a=ines-session; Path=/; Expires=Wed, 21 Oct 2026 07:28:00 GMT; HttpOnly; Secure")
+		w.Header().Add("Set-Cookie", "authentik_proxy_7f3a="+c.Value+"; Path=/; Expires=Wed, 21 Oct 2026 07:28:00 GMT; HttpOnly; Secure")
 		w.Header().Add("Set-Cookie", "authentik_proxy_7f3a_csrf=c; Path=/; HttpOnly; Secure")
 		w.WriteHeader(http.StatusOK)
 		return
 	}
 	http.Redirect(w, r, "https://auth.example.test/application/o/authorize/?client_id=homerslab-bentopdf", http.StatusFound)
+}
+
+// kanidmGuard is the stub of oauth2-proxy in front of Kanidm, as its --set-xauthrequest answers: 202, the person's
+// sub (a UUID in Kanidm), their preferred username and their groups, comma-separated.
+func kanidmGuard(w http.ResponseWriter, r *http.Request) {
+	c, err := r.Cookie("_oauth2_proxy")
+	if err == nil && r.Header.Get("X-Forwarded-Host") == "chores.example.test" {
+		if who, ok := people[c.Value]; ok {
+			if who.id != "" {
+				w.Header().Set("X-Auth-Request-User", "kanidm-"+who.id)
+			}
+			w.Header().Set("X-Auth-Request-Preferred-Username", who.username)
+			w.Header().Set("X-Auth-Request-Email", who.username+"@example.test")
+			w.Header().Set("X-Auth-Request-Groups", strings.Join(who.groups, ","))
+			w.WriteHeader(http.StatusAccepted)
+			return
+		}
+	}
+	w.WriteHeader(http.StatusUnauthorized)
+}
+
+// ours are a request's headers whose names say HomersLab in any case or spelling, as " [name=value …]": a site that
+// isn't an app's shows them, so a row can see none reached it.
+func ours(r *http.Request) string {
+	var named []string
+	for k, v := range r.Header {
+		if strings.Contains(strings.ToLower(k), "homerslab") {
+			named = append(named, k+"="+strings.Join(v, ","))
+		}
+	}
+	if named == nil {
+		return ""
+	}
+	slices.Sort(named)
+	return " [" + strings.Join(named, " ") + "]"
 }
 
 // request is one request a browser makes: to an address, with a TLS server name and a Host, for a path ("/" when
@@ -238,6 +312,11 @@ type request struct {
 	// Headers are sent as they are, a cookie or a forged identity among them; the answer then also says where it
 	// redirects and which cookies it sets.
 	Headers map[string]string
+	// Raw are headers sent with their names exactly as written, in order, a name more than once among them: Go's
+	// client would otherwise write each name in its canonical form, once.
+	Raw [][2]string
+	// H2 asks for HTTP/2, where every name is in lower case.
+	H2 bool
 	// Target is a plain HTTP request's target, written on the wire as it is (an absolute-form one, say): Go's client
 	// never sends some of them.
 	Target string
@@ -256,7 +335,8 @@ func (q request) do(ctx context.Context) string {
 		DialContext: func(ctx context.Context, n, _ string) (net.Conn, error) {
 			return (&net.Dialer{Timeout: 3 * time.Second}).DialContext(ctx, n, q.Addr)
 		},
-		TLSClientConfig: &tls.Config{ServerName: q.SNI, RootCAs: roots},
+		TLSClientConfig:   &tls.Config{ServerName: q.SNI, RootCAs: roots},
+		ForceAttemptHTTP2: q.H2,
 	}
 	scheme := "https"
 	if q.Plain {
@@ -274,6 +354,9 @@ func (q request) do(ctx context.Context) string {
 	for k, v := range q.Headers {
 		req.Header.Set(k, v)
 	}
+	for _, h := range q.Raw {
+		req.Header[h[0]] = append(req.Header[h[0]], h[1])
+	}
 	// A redirect is an answer to look at, never followed.
 	client := &http.Client{Transport: tr, Timeout: 8 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 	resp, err := client.Do(req)
@@ -281,6 +364,9 @@ func (q request) do(ctx context.Context) string {
 		return "error: " + err.Error()
 	}
 	defer resp.Body.Close()
+	if q.H2 && resp.ProtoMajor != 2 {
+		return "error: answered over " + resp.Proto + ", not HTTP/2"
+	}
 	b, _ := io.ReadAll(io.LimitReader(resp.Body, 400))
 	out := fmt.Sprintf("%d %s", resp.StatusCode, b)
 	for _, h := range shownHeaders {
@@ -305,6 +391,7 @@ func TestTheEdgesRequestMatrix(t *testing.T) {
 		Admin: &edge.Site{Name: "admin.example.test", Upstream: adminSock}, SignIn: &edge.Site{Name: "auth.example.test", Dial: signInStub},
 		Home: &edge.Site{Name: "home.example.test", Upstream: homeSock},
 		Apps: []edge.App{{Name: "pdf.example.test", Dial: appStub, Guard: edge.AuthentikGuard(signInStub)},
+			{Name: "chores.example.test", Dial: appStub, Guard: edge.KanidmGuard(signInStub)},
 			{Name: "recipes.example.test", Dial: appStub, SignsIn: true,
 				Refused: []string{"/api/auth/token", "PUT /api/users", "POST /api/users/register"}}},
 		SignInListen: netip.MustParseAddr(listener)}
@@ -471,7 +558,8 @@ func TestTheEdgesRequestMatrix(t *testing.T) {
 		{name: "without the guard's cookie: a redirect to the sign-in, never the app", q: app("/", map[string]string{"X-Authentik-Username": "ines-the-admin"}),
 			wants: []string{"302 ", "Location: https://auth.example.test/application/o/authorize/"}, notWants: []string{"App,"}},
 		{name: "signed in, with a forged identity: the app sees only the guard's person", q: app("/", signedIn),
-			wants: []string{"200 App, at pdf.example.test, as [X-Authentik-Groups=homerslab-adults X-Authentik-Username=ines]"}, notWants: []string{"ines-the-admin", "Remote-User"}},
+			wants:    []string{"200 App, at pdf.example.test, as [X-Homerslab-Name=Inês Ferreira X-Homerslab-Person=ak-uid-6f1c X-Homerslab-Role=adult]"},
+			notWants: []string{"ines-the-admin", "Remote-User"}},
 		{name: "signed in: the app gets the household's cookies but never the guard's", q: app("/", signedIn),
 			wants: []string{"cookies [theme=dark]\n"}, notWants: []string{"cookies [authentik_proxy", "dark; authentik_proxy"}},
 		{name: "a cookie the app sets for the household's domain never reaches the browser; its own name's does", q: app("/cookies", signedIn),
@@ -495,6 +583,111 @@ func TestTheEdgesRequestMatrix(t *testing.T) {
 				}
 			}
 		})
+	}
+
+	// The identity contract homerslab-v1 (#236): a guarded app learns who someone is only from X-HomersLab-Person (the
+	// provider's stable id), X-HomersLab-Name and X-HomersLab-Role, which the edge sets from the guard's answer, the same
+	// for Authentik and for Kanidm behind oauth2-proxy. The role comes from exactly one role group; anything else is
+	// refused, never taken for an adult. No provider's own header reaches the app.
+	for _, idp := range []struct {
+		name, host, cookie, prefix string
+	}{
+		{"Authentik", "pdf.example.test", "authentik_proxy_7f3a=%s-session", "ak-uid-"},
+		{"Kanidm", "chores.example.test", "_oauth2_proxy=%s", "kanidm-ak-uid-"},
+	} {
+		as := func(who string) request {
+			return request{Addr: edgeMesh + ":443", SNI: idp.host, Host: idp.host, Headers: map[string]string{"Cookie": fmt.Sprintf(idp.cookie, who)}}
+		}
+		for _, row := range []struct {
+			who, want string
+		}{
+			{"ines", "200 App, at " + idp.host + ", as [X-Homerslab-Name=%s X-Homerslab-Person=%s6f1c X-Homerslab-Role=adult]"},
+			{"rui", "200 App, at " + idp.host + ", as [X-Homerslab-Name=%s X-Homerslab-Person=%s02aa X-Homerslab-Role=admin]"},
+			{"kiko", "200 App, at " + idp.host + ", as [X-Homerslab-Name=%s X-Homerslab-Person=%s9b3e X-Homerslab-Role=kid]"},
+			{"lena", "403 "}, // groups that only look like a role's
+			{"theo", "403 "},
+			{"vera", "403 "},
+			{"ugo", "403 "},
+			{"none", "403 "},  // no group at all
+			{"twice", "403 "}, // two roles
+			{"anon", "403 "},  // no stable id
+		} {
+			t.Run(idp.name+"'s guard, "+row.who+": "+row.want[:3], func(t *testing.T) {
+				want := row.want
+				if strings.Contains(want, "%s") {
+					name := people[row.who].name
+					if idp.name == "Kanidm" { // oauth2-proxy names no display name: the preferred username
+						name = people[row.who].username
+					}
+					want = fmt.Sprintf(want, name, idp.prefix)
+				}
+				got := ask("phone", as(row.who))
+				if !strings.HasPrefix(got, want) || strings.HasPrefix(want, "403") && strings.Contains(got, "App,") {
+					t.Errorf("%q, want %q", got, want)
+				}
+			})
+		}
+		// Every spelling of a forged identity, HomersLab's and every provider's: names in any case, with underscores for
+		// dashes (an app behind CGI, WSGI or PHP reads X_HomersLab_Role as X-HomersLab-Role), and a name twice.
+		forged := [][2]string{
+			{"X-HomersLab-Person", "forged"}, {"x-homerslab-person", "forged"}, {"X-HOMERSLAB-ROLE", "admin"}, {"X-HomersLab-Role", "admin"},
+			{"X-HomersLab-Role", "admin"}, {"X_HomersLab_Role", "admin"}, {"x_homerslab-person", "forged"}, {"X-Homerslab_Name", "forged"},
+			{"X-HomersLab-Anything", "forged"}, {"X-Authentik-Uid", "forged"}, {"x-authentik-groups", "homerslab-admins"},
+			{"X_Authentik_Groups", "homerslab-admins"}, {"X-Auth-Request-User", "forged"}, {"X-Auth-Request-Groups", "homerslab-admins"},
+			{"x_auth_request_groups", "homerslab-admins"}, {"X-Forwarded-User", "forged"}, {"X_Forwarded_User", "forged"},
+			{"X-Forwarded-Groups", "homerslab-admins"}, {"Remote-User", "forged"}, {"remote_user", "forged"}, {"X-Remote-User", "forged"},
+		}
+		withForged := func(who string, h2 bool) request {
+			q := as(who)
+			q.Raw, q.H2 = forged, h2
+			return q
+		}
+		for _, row := range []struct {
+			name string
+			q    request
+			want string
+		}{
+			{"signed in as an adult, with every forged spelling: the app sees only what the edge set",
+				withForged("ines", false), "200 App, at " + idp.host + ", as [X-Homerslab-Name="},
+			{"the same over HTTP/2", withForged("ines", true), "200 App, at " + idp.host + ", as [X-Homerslab-Name="},
+			{"signed in with no role, claiming to be an admin: refused", withForged("none", false), "403 "},
+		} {
+			t.Run(idp.name+"'s guard, "+row.name, func(t *testing.T) {
+				got := ask("phone", row.q)
+				if !strings.HasPrefix(got, row.want) {
+					t.Errorf("%q, want %q", got, row.want)
+				}
+				_, named, _ := strings.Cut(got, ", as [")
+				named, _, _ = strings.Cut(named, "]")
+				if strings.Contains(got, "forged") || strings.Contains(got, "Role=admin") || strings.Count(named, "=") > 3 {
+					t.Errorf("a forged identity reached the app: %q", got)
+				}
+			})
+		}
+	}
+	// Every other site deletes them too: an app that signs people in itself, Admin, and the sign-in.
+	for _, row := range []struct {
+		name string
+		q    request
+		want string
+	}{
+		{"an app with native sign-in", request{Addr: edgeMesh + ":443", SNI: "recipes.example.test", Host: "recipes.example.test"},
+			"200 App, at recipes.example.test, as [], cookies"},
+		{"Admin", request{Addr: edgeMesh + ":443", SNI: "admin.example.test", Host: "admin.example.test"}, "200 Admin, at admin.example.test\n"},
+		{"the sign-in", request{Addr: edgeMesh + ":443", SNI: "auth.example.test", Host: "auth.example.test", Path: "/x"},
+			"200 Authentik, at auth.example.test /x\n"},
+	} {
+		for _, h2 := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s, with every forged spelling (HTTP/2 %v): none reaches it", row.name, h2), func(t *testing.T) {
+				q := row.q
+				q.Raw = [][2]string{{"X-HomersLab-Person", "forged"}, {"x_homerslab_role", "admin"}, {"X-HOMERSLAB-NAME", "forged"},
+					{"X_HomersLab-Person", "forged"}, {"X-Homerslab_Role", "admin"}, {"X-Authentik-Uid", "forged"}, {"X_Forwarded_User", "forged"}}
+				q.H2 = h2
+				if got := ask("phone", q) + "\n"; !strings.HasPrefix(got, row.want) || strings.Contains(got, "forged") {
+					t.Errorf("%q, want %q", got, row.want)
+				}
+			})
+		}
 	}
 
 	// The sign-in listener (ADR 0020, #19): an app reaches the sign-in there, with SNI and Host both the sign-in's name;

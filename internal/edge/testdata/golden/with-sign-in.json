@@ -24,6 +24,14 @@
               "handle": [
                 {
                   "handler": "headers",
+                  "request": {
+                    "delete": [
+                      "X-Homerslab-*",
+                      "X-Homerslab_*",
+                      "X_homerslab-*",
+                      "X_homerslab_*"
+                    ]
+                  },
                   "response": {
                     "deferred": true,
                     "replace": {
@@ -67,6 +75,14 @@
               "handle": [
                 {
                   "handler": "headers",
+                  "request": {
+                    "delete": [
+                      "X-Homerslab-*",
+                      "X-Homerslab_*",
+                      "X_homerslab-*",
+                      "X_homerslab_*"
+                    ]
+                  },
                   "response": {
                     "deferred": true,
                     "replace": {

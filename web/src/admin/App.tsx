@@ -358,7 +358,8 @@ function PlanSections({ p }: { p: Plan }) {
         <div className="group">
           <Row lead={p.signIn.method === 'guard' ? 'shield' : 'user'} title={t(`plan.signIn.${p.signIn.method}` as Key, signInVars)}
             sub={<>{t(`plan.signIn.${p.signIn.method}.sub` as Key, signInVars)}
-              {p.signIn.redirectUris?.length ? <><br />{t('plan.signIn.oidc.redirects', { app: p.app.name, addresses: and(p.signIn.redirectUris) })}</> : null}</>} />
+              {p.signIn.redirectUris?.length ? <><br />{t('plan.signIn.oidc.redirects', { app: p.app.name, addresses: and(p.signIn.redirectUris) })}</> : null}
+              {p.signIn.identity ? <><br />{t('plan.signIn.identity', { app: p.app.name })}</> : null}</>} />
         </div>
       </section>
       <section aria-labelledby="pq-name">

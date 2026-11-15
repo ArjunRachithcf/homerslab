@@ -170,6 +170,10 @@ _Avoid_: peer, client, endpoint
 A node's front door: it ends encryption and asks for the household account before an app sees a request.
 _Avoid_: proxy, reverse proxy, ingress, gateway
 
+**Identity contract**:
+What a guarded app is told about who someone is, by the edge alone: their stable id, their name and their role.
+_Avoid_: identity headers (the providers' own, which never reach an app), SSO headers
+
 **Exposure**:
 Whether an app is reachable only over the mesh (the default) or is also **public**.
 _Avoid_: visibility, publishing

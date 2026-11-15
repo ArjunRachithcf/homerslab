@@ -16,10 +16,13 @@ import (
 	"fmt"
 	"maps"
 	"net/netip"
+	"net/textproto"
 	"regexp"
 	"slices"
 	"strconv"
 	"strings"
+
+	"github.com/ArjunRachithcf/homerslab/internal/idp"
 )
 
 // HSTS is the Strict-Transport-Security every name the edge serves answers with (#64): a year, without
@@ -100,26 +103,87 @@ type Guard struct {
 	AuthURI string
 	// Paths are the provider's own paths on the app's name (its callback), proxied to it, never to the app.
 	Paths []string
-	// Copy are the identity headers the provider's 2xx answer names, handed to the app; nothing else is.
-	Copy []string
+	// Person, Name and Groups are the headers of the provider's 2xx answer that say who someone is: a stable id that
+	// survives a rename, the name to show, and their groups, separated by GroupSep. The edge turns them into the
+	// identity contract (Contract); none of them reaches the app.
+	Person, Name, Groups, GroupSep string
 	// Cookie is the prefix of the provider's own cookies on the app's name, which the app never sees (#83).
 	Cookie string
 }
 
 // AuthentikGuard is Authentik's embedded outpost, on its server, as the guard of an app with its own proxy provider in
-// forward_single mode (#83: never one for the whole domain).
+// forward_single mode (#83: never one for the whole domain). X-Authentik-Uid is the person's uid, a hash of their
+// primary key that a rename doesn't change; X-Authentik-Groups joins their groups with |.
 func AuthentikGuard(dial string) *Guard {
 	return &Guard{Dial: dial, AuthURI: "/outpost.goauthentik.io/auth/caddy", Paths: []string{"/outpost.goauthentik.io/*"},
-		Copy:   []string{"X-Authentik-Username", "X-Authentik-Groups", "X-Authentik-Email", "X-Authentik-Name", "X-Authentik-Uid"},
-		Cookie: "authentik_proxy_"}
+		Person: "X-Authentik-Uid", Name: "X-Authentik-Name", Groups: "X-Authentik-Groups", GroupSep: "|", Cookie: "authentik_proxy_"}
 }
 
-// IdentityHeaders are the request headers that name a person to an app behind a guard, Authentik's and those other
-// providers and apps read: a client could forge any of them, so the edge deletes them all from every request to a
-// guarded app before anything else, and only the guard's answer sets any again.
+// KanidmGuard is oauth2-proxy in front of Kanidm, one per app, answering with --set-xauthrequest (research:
+// 2026-11-09-spike-kanidm-forward-auth): X-Auth-Request-User is the person's sub, their UUID in Kanidm; oauth2-proxy
+// names no display name, so the name is their preferred username; X-Auth-Request-Groups joins their groups with commas,
+// by their short names.
+func KanidmGuard(dial string) *Guard {
+	return &Guard{Dial: dial, AuthURI: "/oauth2/auth", Paths: []string{"/oauth2/*"},
+		Person: "X-Auth-Request-User", Name: "X-Auth-Request-Preferred-Username", Groups: "X-Auth-Request-Groups", GroupSep: ",",
+		Cookie: "_oauth2_proxy"}
+}
+
+// Contract is the identity contract the edge keeps for every guarded app (#236): the app learns who someone is from
+// PersonHeader, NameHeader and RoleHeader alone, which the edge sets from its guard's answer, the same whichever
+// provider the household runs. RoleHeader is admin, adult or kid, from the one role group the person is in; a person in
+// none of them, or in more than one, or without an id, is refused, never taken for an adult. Every site deletes every
+// header a client sends under HomersLab's prefix, in any case or spelling (OwnHeaders), so only the edge's reach an app.
+// An app's manifest declares that it relies on it (identity.edge).
+const (
+	Contract     = "homerslab-v1"
+	PersonHeader = "X-HomersLab-Person"
+	NameHeader   = "X-HomersLab-Name"
+	RoleHeader   = "X-HomersLab-Role"
+)
+
+// OwnHeaders are the request headers under HomersLab's prefix, which only the edge sets.
+var OwnHeaders = []string{"X-HomersLab-*"}
+
+// IdentityHeaders are the request headers that name a person to an app, the providers' and those other providers and
+// apps read: a client could forge any of them, so the edge deletes them all from every request to an app before
+// anything else, and none reaches an app again (the guard's answer reaches it as the identity contract).
 var IdentityHeaders = []string{"X-Authentik-*", "Remote-*", "X-Remote-*", "X-Forwarded-User", "X-Forwarded-Email",
 	"X-Forwarded-Groups", "X-Forwarded-Preferred-Username", "X-Forwarded-Access-Token", "X-Auth-Request-*", "X-Webauth-*",
 	"X-Token-User-*", "X-User", "X-Email", "X-Username"}
+
+// spellings are the names a client can send for each header, as Caddy's delete compares them: in the form Go's server
+// gives every name it reads (textproto's canonical one, for HTTP/1 and HTTP/2 alike), with each dash also as an
+// underscore, which Go keeps but an app behind CGI, WSGI or PHP reads as a dash. Caddy compares a name ending in * by its
+// prefix, exactly; any other by its canonical form.
+func spellings(names []string) []string {
+	var out []string
+	for _, n := range names {
+		wild := strings.HasSuffix(n, "*")
+		n = strings.TrimSuffix(n, "*")
+		dashes := strings.Count(n, "-")
+		for mask := range 1 << dashes {
+			var b strings.Builder
+			i := 0
+			for _, r := range n {
+				if r == '-' {
+					if mask&(1<<i) != 0 {
+						r = '_'
+					}
+					i++
+				}
+				b.WriteRune(r)
+			}
+			v := textproto.CanonicalMIMEHeaderKey(b.String())
+			if wild {
+				v += "*"
+			}
+			out = append(out, v)
+		}
+	}
+	slices.Sort(out)
+	return slices.Compact(out)
+}
 
 // Certificate is one domain's wildcard certificate, loaded from files.
 type Certificate struct {
@@ -217,8 +281,9 @@ func Render(c Config) ([]byte, error) {
 		}
 		sites = append(sites, served{app.Name, h})
 	}
-	// Each name the edge serves: HSTS and Secure cookies on whatever it answers, set as the answer is written so they
-	// replace the upstream's, then what answers it. On port 80, a redirect to HTTPS on the same name, and nothing else.
+	// Each name the edge serves: HomersLab's own headers deleted from the request, whatever the site (#236); HSTS and
+	// Secure cookies on whatever it answers, set as the answer is written so they replace the upstream's, then what
+	// answers it. On port 80, a redirect to HTTPS on the same name, and nothing else.
 	var cookies []obj
 	for _, r := range secureCookie {
 		cookies = append(cookies, obj{"search_regexp": r.search, "replace": r.replace})
@@ -229,7 +294,7 @@ func Render(c Config) ([]byte, error) {
 		route := obj{
 			"match": []obj{{"host": []string{site.name}}},
 			"handle": []obj{
-				{"handler": "headers", "response": obj{
+				{"handler": "headers", "request": obj{"delete": spellings(OwnHeaders)}, "response": obj{
 					"set":      obj{"Strict-Transport-Security": []string{HSTS}},
 					"replace":  obj{"Set-Cookie": cookies},
 					"deferred": true,
@@ -338,15 +403,11 @@ func appRoute(a App, domains []string) (obj, error) {
 		return nativeRoute(a, domains)
 	}
 	g := a.Guard
-	if a.Name == "" || !validDial(a.Dial) || g == nil || !validDial(g.Dial) || g.AuthURI == "" || g.Cookie == "" || len(a.Refused) > 0 {
+	if a.Name == "" || !validDial(a.Dial) || g == nil || !validDial(g.Dial) || g.AuthURI == "" || g.Cookie == "" || len(a.Refused) > 0 ||
+		g.Person == "" || g.Name == "" || g.Groups == "" || len(g.GroupSep) != 1 {
 		return nil, fmt.Errorf("an app's site needs its name, its upstream and its guard: %+v", a)
 	}
-	notEmpty := func(v string) []obj { return []obj{{"not": []obj{{"vars": obj{v: []string{""}}}}}} }
-	copied := []obj{{"handle": []obj{{"handler": "vars"}}}}
-	for _, h := range g.Copy {
-		v := "{http.reverse_proxy.header." + h + "}"
-		copied = append(copied, obj{"match": notEmpty(v), "handle": []obj{{"handler": "headers", "request": obj{"set": obj{h: []string{v}}}}}})
-	}
+	copied := slices.Concat([]obj{{"handle": []obj{{"handler": "vars"}}}}, identity(g))
 	// The provider's refreshed cookies, each its own header: a placeholder would join them into one with commas.
 	copied = append(copied, obj{"handle": []obj{{"handler": "copy_response_headers", "include": []string{"Set-Cookie"}}}})
 	guard := obj{"handler": "reverse_proxy", "upstreams": []obj{{"dial": g.Dial}},
@@ -365,7 +426,7 @@ func appRoute(a App, domains []string) (obj, error) {
 		own = []obj{{"match": []obj{{"path": g.Paths}}, "handle": []obj{{"handler": "reverse_proxy", "upstreams": []obj{{"dial": g.Dial}}}}, "terminal": true}}
 	}
 	sub := slices.Concat(
-		[]obj{{"handle": []obj{{"handler": "headers", "request": obj{"delete": IdentityHeaders}}}}},
+		[]obj{{"handle": []obj{{"handler": "headers", "request": obj{"delete": spellings(IdentityHeaders)}}}}},
 		own,
 		[]obj{{"handle": []obj{guard}}, {"handle": []obj{app, {"handler": "reverse_proxy", "upstreams": []obj{{"dial": a.Dial}}}}}},
 	)
@@ -432,10 +493,43 @@ func nativeRoute(a App, domains []string) (obj, error) {
 		sub = append(sub, obj{"match": []obj{m}, "handle": []obj{{"handler": "static_response", "status_code": 403}}, "terminal": true})
 	}
 	sub = append(sub,
-		obj{"handle": []obj{{"handler": "headers", "request": obj{"delete": IdentityHeaders}}}},
+		obj{"handle": []obj{{"handler": "headers", "request": obj{"delete": spellings(IdentityHeaders)}}}},
 		obj{"handle": []obj{app, {"handler": "reverse_proxy", "upstreams": []obj{{"dial": a.Dial}}}}},
 	)
 	return obj{"handler": "subroute", "routes": sub}, nil
+}
+
+// identity are the routes of a guard's 2xx answer that keep the identity contract (Contract): the person's id, name
+// and role, set on the request the app gets; or 403, when the answer names no id, or not exactly one role group.
+func identity(g *Guard) []obj {
+	ph := func(h string) string { return "{http.reverse_proxy.header." + h + "}" }
+	in := func(r idp.Role) obj {
+		sep := regexp.QuoteMeta(g.GroupSep)
+		return obj{"vars_regexp": obj{ph(g.Groups): obj{"pattern": "(^|" + sep + ")" + regexp.QuoteMeta(idp.RoleGroup(r)) + "(" + sep + "|$)"}}}
+	}
+	only := map[idp.Role]obj{}
+	for _, r := range idp.Roles() {
+		var others []obj
+		for _, other := range idp.Roles() {
+			if other != r {
+				others = append(others, in(other))
+			}
+		}
+		m := in(r)
+		m["not"] = others
+		only[r] = m
+	}
+	set := func(h, v string) []obj {
+		return []obj{{"handler": "headers", "request": obj{"set": obj{h: []string{v}}}}}
+	}
+	routes := []obj{{"match": []obj{{"vars": obj{ph(g.Person): []string{""}}}, {"not": []obj{only[idp.Admin], only[idp.Adult], only[idp.Kid]}}},
+		"handle": []obj{{"handler": "static_response", "status_code": 403}}}}
+	for _, r := range idp.Roles() {
+		routes = append(routes, obj{"match": []obj{only[r]}, "handle": set(RoleHeader, string(r))})
+	}
+	return append(routes,
+		obj{"handle": set(PersonHeader, ph(g.Person))},
+		obj{"match": []obj{{"not": []obj{{"vars": obj{ph(g.Name): []string{""}}}}}}, "handle": set(NameHeader, ph(g.Name))})
 }
 
 // parents are the household's domains and every domain above them, quoted for a regular expression, in order.

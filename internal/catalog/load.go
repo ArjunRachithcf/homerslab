@@ -149,6 +149,7 @@ func loadApp(fsys fs.FS, dir string, categories map[string]bool, digestOf func(m
 	}
 	checkVersions(&p, a.Versions)
 	checkSignIn(&p, a.SignIn)
+	checkIdentity(&p, a.Identity, a.SignIn)
 	checkNames(&p, a.Names)
 	switch a.Audience.Default {
 	case "everyone", "adults", "admins":
@@ -241,6 +242,20 @@ func checkSignIn(p *problems, methods []SignIn) {
 			continue
 		}
 		checkOIDC(p, m)
+	}
+}
+
+// checkIdentity checks the identity contract an app relies on: the one the edge keeps, which it keeps for a guarded app
+// only (#236).
+func checkIdentity(p *problems, id *Identity, methods []SignIn) {
+	if id == nil {
+		return
+	}
+	if id.Edge != EdgeIdentity {
+		p.add("identity.edge %q: %s, the identity contract the edge keeps", id.Edge, EdgeIdentity)
+	}
+	if !slices.ContainsFunc(methods, func(m SignIn) bool { return m.Method == Guard }) {
+		p.add("identity.edge: the edge keeps it for a guarded app: signIn needs the guard")
 	}
 }
 
