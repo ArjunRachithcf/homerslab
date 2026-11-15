@@ -261,7 +261,7 @@ func (m *Manager) Control() http.Handler {
 	mux.HandleFunc("GET /api/v1/nodes/primary", m.getPrimary)
 	mux.HandleFunc("GET /api/v1/dns", m.getDNS)
 	mux.HandleFunc("PUT /api/v1/dns/token", m.putDNSToken)
-	mux.HandleFunc("PUT /api/v1/backups/target", m.putBackupTarget)
+	m.backupRoutes(mux, true)
 	mux.HandleFunc("GET /api/v1/warnings", m.getWarnings)
 	m.catalogRoutes(mux, true)
 	m.storageRoutes(mux)

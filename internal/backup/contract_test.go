@@ -1,7 +1,8 @@
 package backup_test
 
-// The backup-target contract suite (spec: Testing Decisions → restic targets): a disk, an SFTP server and an
-// S3-compatible service, in containers (testdata/compose.yaml, compose project hltest-22-targets). It needs Docker: it
+// The backup-target contract suite (spec: Testing Decisions → restic targets): a disk, an SFTP server, an
+// S3-compatible service, and an object-locked one that also stands in for B2's S3-compatible API, in containers
+// (testdata/compose.yaml, compose project hltest-22-targets, or HLTEST22_PROJECT's). It needs Docker: it
 // runs when HOMERSLAB_TEST_DOCKER_HOST names the engine to use, and is skipped otherwise. The code under test never
 // sees that engine (testenv points DOCKER_HOST at nowhere); only this harness does, explicitly.
 //
@@ -10,6 +11,7 @@ package backup_test
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
@@ -31,11 +33,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/minio/minio-go/v7"
+
 	"github.com/ArjunRachithcf/homerslab/internal/backup"
 	"github.com/ArjunRachithcf/homerslab/internal/testenv"
 )
 
-const project = "hltest-22-targets"
+var project = cmp.Or(os.Getenv("HLTEST22_PROJECT"), "hltest-22-targets")
 
 func container(s string) string { return project + "-" + s + "-1" }
 
@@ -67,6 +71,10 @@ func TestTheBackupTargetContract(t *testing.T) {
 		t.Fatal(err)
 	}
 	w.docker(t, nil, "cp", self, container("client")+":/hl.test")
+	// rclone, to read an object-locked bucket as it was, as a household restores by hand (static, from its image).
+	rc := filepath.Join(t.TempDir(), "rclone")
+	w.docker(t, nil, "cp", container("s3")+":/usr/local/bin/rclone", rc)
+	w.docker(t, nil, "cp", rc, container("client")+":/usr/local/bin/rclone")
 	out, err := w.dockerOut(nil, "exec", "-e", "HLTEST22_INSIDE=1", "-e", "HLTEST22_HOST_KEY="+hostKey, "-e", "HLTEST22_S3_ID="+w.s3ID,
 		"-e", "HLTEST22_S3_SECRET="+w.s3Secret, "-e", "HLTEST22_S3_CA="+w.s3Cert, container("client"),
 		"/hl.test", "-test.run", "^TestTheBackupTargetContractInside$", "-test.v", "-test.count=1")
@@ -95,16 +103,29 @@ func TestTheBackupTargetContractInside(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	s3 := backup.Credentials{AccessKeyID: os.Getenv("HLTEST22_S3_ID"), SecretAccessKey: os.Getenv("HLTEST22_S3_SECRET")}
+	ca := os.Getenv("HLTEST22_S3_CA")
+	// B2's S3-compatible API, at the region's endpoint, is the locked service here.
+	t.Cleanup(backup.B2At("locked"))
+	locked := backup.Target{Kind: backup.S3, Host: "locked", Bucket: "locked", Path: "homerslab", CA: ca, Region: "eu-central-003"}
+	b2 := backup.Target{Kind: backup.B2, Region: "eu-central-003", Bucket: "b2-household", Path: "homerslab", CA: ca}
+	// The household made each bucket with Object Lock, in compliance mode for a day, before choosing it.
+	for _, b := range []string{locked.Bucket, b2.Bucket} {
+		lockedBucket(t, locked, s3, b, 1)
+	}
 	worlds := []struct {
 		name   string
 		target backup.Target
 		creds  backup.Credentials
+		// bucket is the object-locked bucket's rclone path, where it is one.
+		bucket string
 	}{
-		{"disk", backup.Target{Kind: backup.Disk, Path: "/srv/backups"}, backup.Credentials{}},
+		{"disk", backup.Target{Kind: backup.Disk, Path: "/srv/backups"}, backup.Credentials{}, ""},
 		{"sftp", backup.Target{Kind: backup.SFTP, Host: "sftp", User: "backup", Path: "/upload", HostKey: os.Getenv("HLTEST22_HOST_KEY")},
-			backup.Credentials{SSHKey: string(sshKey)}},
-		{"s3", backup.Target{Kind: backup.S3, Host: "s3", Bucket: "household", Path: "homerslab", CA: os.Getenv("HLTEST22_S3_CA")},
-			backup.Credentials{AccessKeyID: os.Getenv("HLTEST22_S3_ID"), SecretAccessKey: os.Getenv("HLTEST22_S3_SECRET")}},
+			backup.Credentials{SSHKey: string(sshKey)}, ""},
+		{"s3", backup.Target{Kind: backup.S3, Host: "s3", Bucket: "household", Path: "homerslab", CA: ca}, s3, ""},
+		{"s3-locked", locked, s3, "locked:locked/homerslab"},
+		{"b2", b2, s3, "locked:b2-household/homerslab"},
 	}
 	for _, wd := range worlds {
 		t.Run(wd.name, func(t *testing.T) {
@@ -113,9 +134,145 @@ func TestTheBackupTargetContractInside(t *testing.T) {
 			if lines := strings.Split(strings.TrimSpace(wd.creds.SSHKey), "\n"); len(lines) > 2 {
 				secrets = append(secrets, lines[1]) // the key's first line of base64
 			}
-			contract(t, wd.target, wd.creds, secrets)
+			contract(t, wd.target, wd.creds, secrets, wd.bucket)
 		})
 	}
+	t.Run("s3-locked: an object older than the bucket's Days is still locked after the lock run, and deletable without it", func(t *testing.T) {
+		olderThanDays(t, locked, s3)
+	})
+}
+
+// lockedBucket makes bucket b at the locked service, with Object Lock, and then, unless days is 0, a default retention
+// in compliance mode for days.
+func lockedBucket(t *testing.T, at backup.Target, c backup.Credentials, b string, days uint) {
+	t.Helper()
+	cl, done, err := backup.BucketClient(at, c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer done()
+	ctx := context.Background()
+	for i := 0; ; i++ { // the service may still be starting
+		err := cl.MakeBucket(ctx, b, minio.MakeBucketOptions{Region: at.Region, ObjectLocking: true})
+		if err == nil {
+			break
+		}
+		if i == 20 {
+			t.Fatalf("making bucket %s: %v", b, err)
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+	if days == 0 {
+		return
+	}
+	mode, unit := minio.Compliance, minio.Days
+	if err := cl.SetObjectLockConfig(ctx, b, &mode, &days, &unit); err != nil {
+		t.Fatalf("locking bucket %s: %v", b, err)
+	}
+}
+
+// olderThanDays: two nodes' repositories whose objects were written long ago, their locks about to run out (each locked
+// for seconds here, standing in for Days gone by). The lock run locks one node's again; once the others' locks have run
+// out, a thief deletes every version of that node's repository, and none of the locked one's.
+func olderThanDays(t *testing.T, at backup.Target, c backup.Credentials) {
+	ctx := context.Background()
+	at.Bucket = "aged"
+	lockedBucket(t, at, c, at.Bucket, 0)
+	cl, done, err := backup.BucketClient(at, c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer done()
+	s := &seen{}
+	photos := t.TempDir()
+	if err := os.WriteFile(filepath.Join(photos, "photo.jpg"), []byte("an old photo"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	versions := func(node string) []minio.ObjectInfo {
+		var out []minio.ObjectInfo
+		for o := range cl.ListObjects(ctx, at.Bucket, minio.ListObjectsOptions{Prefix: "homerslab/" + node + "/", Recursive: true, WithVersions: true}) {
+			if o.Err != nil {
+				t.Fatal(o.Err)
+			}
+			out = append(out, o)
+		}
+		return out
+	}
+	var soon time.Time
+	mode := minio.Compliance
+	repos := map[string]backup.Repo{}
+	for _, node := range []string{"kept", "lapsed"} {
+		r := repo(t, s, at, c, node, newKey())
+		if err := ensure(ctx, r); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := r.Backup(ctx, backup.Item{Tags: []string{"app=old", "data=server:/photos"}, Paths: []string{photos}}); err != nil {
+			t.Fatal(err)
+		}
+		repos[node] = r
+		soon = time.Now().Add(5 * time.Second).UTC()
+		for _, o := range versions(node) {
+			if o.IsDeleteMarker { // a run's lock, removed: nothing to lock
+				continue
+			}
+			if err := cl.PutObjectRetention(ctx, at.Bucket, o.Key, minio.PutObjectRetentionOptions{Mode: &mode, RetainUntilDate: &soon, VersionID: o.VersionID}); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	// The household's default retention, a day, came after: it never reaches objects written before.
+	days, unit := uint(1), minio.Days
+	if err := cl.SetObjectLockConfig(ctx, at.Bucket, &mode, &days, &unit); err != nil {
+		t.Fatal(err)
+	}
+	before, err := backup.Lock(ctx, at, c, "kept", backup.Immutability{Why: "compliance", Days: 1, LockedUntil: soon}, time.Now().UTC())
+	if err != nil || !before.Immutable {
+		t.Fatalf("the lock run: %+v %v", before, err)
+	}
+	if !before.LockedUntil.After(time.Now().Add(23 * time.Hour)) {
+		t.Errorf("the lock run locked until %s, not a day on", before.LockedUntil)
+	}
+	time.Sleep(time.Until(soon) + time.Second)
+	for node, want := range map[string]bool{"kept": false, "lapsed": true} {
+		deleted := 0
+		var all []minio.ObjectInfo
+		for _, o := range versions(node) {
+			// The repository as restic sees it: what a run's own lock was (already removed, hidden) isn't, and is
+			// never locked again; removing a delete marker only shows what it hid.
+			if o.IsLatest && !o.IsDeleteMarker {
+				all = append(all, o)
+			}
+		}
+		for _, o := range all {
+			if cl.RemoveObject(ctx, at.Bucket, o.Key, minio.RemoveObjectOptions{VersionID: o.VersionID}) == nil {
+				deleted++
+			}
+		}
+		if want && deleted != len(all) || !want && deleted != 0 {
+			t.Errorf("%s: the thief deleted %d of %d versions", node, deleted, len(all))
+		}
+	}
+	if snaps, err := repos["kept"].Snapshots(ctx); err != nil || len(snaps) != 1 {
+		t.Errorf("the locked repository after the thief: %d snapshots, %v", len(snaps), err)
+	}
+	if _, err := repos["lapsed"].Snapshots(ctx); err == nil {
+		t.Error("the unlocked repository still opens: nothing was deleted")
+	}
+}
+
+// rclone is rclone in the client, with the object-locked service as its remote "locked", configured in its
+// environment.
+func rclone(t *testing.T, args ...string) *exec.Cmd {
+	t.Helper()
+	ca := filepath.Join(os.TempDir(), "hl-locked-ca.pem")
+	if err := os.WriteFile(ca, []byte(os.Getenv("HLTEST22_S3_CA")), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command("rclone", append([]string{"--config", "/dev/null", "--ca-cert", ca, "-q"}, args...)...)
+	cmd.Env = []string{"PATH=/usr/local/bin:/usr/bin:/bin", "HOME=" + os.TempDir(), "RCLONE_CONFIG_LOCKED_TYPE=s3",
+		"RCLONE_CONFIG_LOCKED_PROVIDER=Other", "RCLONE_CONFIG_LOCKED_REGION=eu-central-003", "RCLONE_CONFIG_LOCKED_LOCATION_CONSTRAINT=eu-central-003", "RCLONE_CONFIG_LOCKED_ENDPOINT=https://locked",
+		"RCLONE_CONFIG_LOCKED_ACCESS_KEY_ID=" + os.Getenv("HLTEST22_S3_ID"), "RCLONE_CONFIG_LOCKED_SECRET_ACCESS_KEY=" + os.Getenv("HLTEST22_S3_SECRET")}
+	return cmd
 }
 
 // seen is everything restic was handed and wrote, across a target's runs.
@@ -185,7 +342,7 @@ func repo(t *testing.T, s *seen, target backup.Target, creds backup.Credentials,
 	return backup.Repo{Restic: "restic", Target: target, Node: node, Dir: dir, Cache: filepath.Join(t.TempDir(), "cache"), Run: s.runner}
 }
 
-func contract(t *testing.T, target backup.Target, creds backup.Credentials, secrets []string) {
+func contract(t *testing.T, target backup.Target, creds backup.Credentials, secrets []string, bucket string) {
 	ctx := context.Background()
 	s := &seen{}
 	primaryKey, piKey := newKey(), newKey()
@@ -459,6 +616,76 @@ func contract(t *testing.T, target backup.Target, creds backup.Credentials, secr
 		}
 	})
 
+	t.Run("it says plainly whether whoever holds its credentials can delete its backups", func(t *testing.T) {
+		now := time.Now().UTC()
+		im, _ := backup.Lock(ctx, target, creds, "primary", backup.Immutability{}, now)
+		switch {
+		case bucket != "" && (!im.Immutable || im.Why != "compliance" || im.Days != 1 || !im.LockedUntil.Equal(now.Add(24*time.Hour))):
+			t.Errorf("an object-locked bucket: %+v", im)
+		case bucket == "" && im.Immutable:
+			t.Errorf("a target without Object Lock is immutable: %+v", im)
+		case target.Kind == backup.Disk && im.Why != "disk", target.Kind == backup.SFTP && im.Why != "sftp",
+			target.Kind == backup.S3 && bucket == "" && im.Why != "no-object-lock" && im.Why != "unknown":
+			t.Errorf("%s: %+v", target.Kind, im)
+		}
+	})
+
+	if bucket != "" {
+		t.Run("a box taken over can't delete what it wrote: it is only hidden, and comes back by hand", func(t *testing.T) {
+			photos := t.TempDir()
+			if err := os.WriteFile(filepath.Join(photos, "photo.jpg"), []byte("the family's photo"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			id, err := primary.Backup(ctx, backup.Item{Tags: []string{"app=kept", "data=server:/photos"}, Paths: []string{photos}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			time.Sleep(1100 * time.Millisecond) // the service keeps times to the second
+			before := time.Now().UTC()
+			time.Sleep(1100 * time.Millisecond)
+			// The thief, with the node's own key and credentials: every snapshot forgotten and pruned, then every version
+			// of every object deleted, as far as the service lets it.
+			all, err := primary.Snapshots(ctx)
+			if err != nil || len(all) == 0 {
+				t.Fatalf("the snapshots: %v", err)
+			}
+			args := []string{"forget", "--prune"}
+			for _, s := range all {
+				args = append(args, s.ID)
+			}
+			if _, err := backup.Raw(ctx, primary, args...); err != nil {
+				t.Fatalf("the thief's prune: %v", err)
+			}
+			if out, err := rclone(t, "delete", "--s3-versions", bucket).CombinedOutput(); err == nil {
+				t.Errorf("the service deleted locked versions: %s", out)
+			}
+			if out, err := rclone(t, "delete", "--s3-versions", "--s3-bypass-governance-retention", bucket).CombinedOutput(); err == nil {
+				t.Errorf("the service deleted versions locked in compliance mode, bypassing governance: %s", out)
+			}
+			if left, err := primary.Snapshots(ctx); err != nil || len(left) != 0 {
+				t.Fatalf("after the thief, restic sees %d snapshots, %v", len(left), err)
+			}
+			// Back by hand: the bucket as it was before, served to restic read-only.
+			serve := rclone(t, "serve", "restic", "--addr", "127.0.0.1:8099", "--s3-version-at", before.Format(time.RFC3339), bucket)
+			if err := serve.Start(); err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = serve.Process.Kill(); _ = serve.Wait() }()
+			var b []byte
+			for range 50 {
+				b, err = exec.Command("restic", "-r", "rest:http://127.0.0.1:8099/"+"primary", "--password-file", filepath.Join(primary.Dir, backup.KeyFile),
+					"--no-lock", "--no-cache", "-q", "dump", id, filepath.Join(photos, "photo.jpg")).Output()
+				if err == nil {
+					break
+				}
+				time.Sleep(200 * time.Millisecond)
+			}
+			if err != nil || string(b) != "the family's photo" {
+				t.Errorf("the photo, back by hand from the bucket as it was: %q %v", b, err)
+			}
+		})
+	}
+
 	t.Run("no secret is ever on a command line, in an environment, or in restic's output", func(t *testing.T) {
 		s.mu.Lock()
 		defer s.mu.Unlock()
@@ -479,7 +706,7 @@ func up(t *testing.T, engine string) *world {
 	t.Helper()
 	_, self, _, _ := runtime.Caller(0)
 	w := &world{engine: engine, dir: filepath.Join(filepath.Dir(self), "testdata"), s3ID: "hltest" + string(newKey()[:12]), s3Secret: string(newKey())}
-	w.s3Cert, w.s3Key = selfSigned(t, "s3")
+	w.s3Cert, w.s3Key = selfSigned(t, "s3", "locked")
 	w.compose(t, "down", "-v", "--remove-orphans")
 	t.Cleanup(func() {
 		if t.Failed() {
@@ -492,14 +719,14 @@ func up(t *testing.T, engine string) *world {
 	return w
 }
 
-// selfSigned is a certificate for name that is its own authority, and its key, as PEM.
-func selfSigned(t *testing.T, name string) (string, string) {
+// selfSigned is a certificate for names that is its own authority, and its key, as PEM.
+func selfSigned(t *testing.T, names ...string) (string, string) {
 	t.Helper()
 	k, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		t.Fatal(err)
 	}
-	tmpl := &x509.Certificate{SerialNumber: big.NewInt(1), Subject: pkix.Name{CommonName: name}, DNSNames: []string{name},
+	tmpl := &x509.Certificate{SerialNumber: big.NewInt(1), Subject: pkix.Name{CommonName: names[0]}, DNSNames: names,
 		NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(24 * time.Hour), IsCA: true, BasicConstraintsValid: true,
 		KeyUsage: x509.KeyUsageDigitalSignature | x509.KeyUsageCertSign, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}}
 	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &k.PublicKey, k)

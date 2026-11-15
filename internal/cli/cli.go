@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/ArjunRachithcf/homerslab/internal/agent"
+	"github.com/ArjunRachithcf/homerslab/internal/backup"
 )
 
 // Defaults: where the packaged units put things.
@@ -76,6 +77,8 @@ func Main(ctx context.Context, args []string, env Env) int {
 		err = setupLink(ctx, args[2:], env)
 	case "agent read-project": // the agent's own child for one compose read; not for people
 		return agent.ReadProjectMain(args[2:], os.Stdin, env.Stdout)
+	case "agent backup-lock": // a backup target's lock run, in restic's unit; not for people
+		return backup.LockMain(args[2:], os.Getenv("CREDENTIALS_DIRECTORY"), os.Stdin, env.Stdout, env.Stderr)
 	case "agent check-storage": // an app's unit's own check before each start; not for people
 		return agent.CheckStorageMain(args[2:], env.Stderr)
 	case "plan show":

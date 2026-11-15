@@ -20,11 +20,13 @@ var targets = map[string]backup.Target{
 	"disk": {Kind: backup.Disk, Path: "/srv/backups"},
 	"sftp": {Kind: backup.SFTP, Host: "nas.home.arpa", Port: 2222, User: "backup", Path: "/upload", HostKey: hostKey},
 	"s3":   {Kind: backup.S3, Host: "s3.example.test", Bucket: "household", Path: "homerslab"},
+	"b2":   {Kind: backup.B2, Region: "eu-central-003", Bucket: "household", Path: "homerslab"},
 }
 
 var creds = map[backup.Kind]backup.Credentials{
 	backup.SFTP: {SSHKey: "-----BEGIN OPENSSH PRIVATE KEY-----\nc2VjcmV0LXNzaC1rZXk=\n-----END OPENSSH PRIVATE KEY-----\n"},
 	backup.S3:   {AccessKeyID: "HLACCESSKEY", SecretAccessKey: "s3-secret-value/42"},
+	backup.B2:   {AccessKeyID: "005b2keyid0000000001", SecretAccessKey: "K005b2-application-key/42"},
 }
 
 // Each node has a repository of its own at the household's target (#90): the same target, a path of the node's own.
@@ -34,6 +36,8 @@ func TestEachNodeHasItsOwnRepositoryAtTheTarget(t *testing.T) {
 		"disk": {"/srv/backups/primary", "/srv/backups/pi"},
 		"sftp": {"sftp:backup@nas.home.arpa:/upload/primary", "sftp:backup@nas.home.arpa:/upload/pi"},
 		"s3":   {"s3:https://s3.example.test/household/homerslab/primary", "s3:https://s3.example.test/household/homerslab/pi"},
+		// B2 through its S3-compatible API, as restic recommends, at the region's own endpoint.
+		"b2": {"s3:https://s3.eu-central-003.backblazeb2.com/household/homerslab/primary", "s3:https://s3.eu-central-003.backblazeb2.com/household/homerslab/pi"},
 	}
 	for name, tg := range targets {
 		for i, node := range []string{"primary", "pi"} {
@@ -56,7 +60,14 @@ func TestATargetIsCheckedBeforeItIsUsed(t *testing.T) {
 	testenv.Isolate(t)
 	bad := map[string]backup.Target{
 		"no kind":            {Path: "/srv/backups"},
-		"b2, not yet":        {Kind: "b2", Bucket: "household"},
+		"another kind":       {Kind: "ftp", Host: "nas", Path: "/upload"},
+		"b2, no region":      {Kind: backup.B2, Bucket: "household"},
+		"b2, a bad region":   {Kind: backup.B2, Region: "eu central", Bucket: "household"},
+		"b2, a host":         {Kind: backup.B2, Region: "eu-central-003", Host: "s3.example.test", Bucket: "household"},
+		"b2, no bucket":      {Kind: backup.B2, Region: "eu-central-003"},
+		"s3, a bad region":   {Kind: backup.S3, Host: "s3.example.test", Bucket: "household", Region: "-o x"},
+		"disk, a quota":      {Kind: backup.Disk, Path: "/srv/backups", QuotaBytes: 1 << 40},
+		"sftp, a region":     {Kind: backup.SFTP, Host: "nas", User: "backup", Path: "/upload", HostKey: hostKey, Region: "eu"},
 		"relative folder":    {Kind: backup.Disk, Path: "srv/backups"},
 		"unclean folder":     {Kind: backup.Disk, Path: "/srv/../etc"},
 		"the root":           {Kind: backup.Disk, Path: "/"},
@@ -80,6 +91,52 @@ func TestATargetIsCheckedBeforeItIsUsed(t *testing.T) {
 		if err := tg.Check(); err != nil {
 			t.Errorf("%s: %v", name, err)
 		}
+	}
+	withQuota := targets["sftp"]
+	withQuota.QuotaBytes = 1 << 40
+	if err := withQuota.Check(); err != nil {
+		t.Errorf("an SFTP target with its quota: %v", err)
+	}
+}
+
+// restic signs its requests for the target's region where the admin named one: B2's always, an S3 service's when given.
+func TestResticSignsForTheTargetsRegion(t *testing.T) {
+	testenv.Isolate(t)
+	withRegion := targets["s3"]
+	withRegion.Region = "eu-west-1"
+	for tg, want := range map[backup.Target]string{targets["b2"]: "s3.region=eu-central-003", withRegion: "s3.region=eu-west-1", targets["s3"]: ""} {
+		rec := &recorder{answer: func([]string) ([]byte, error) { return []byte("[]"), nil }}
+		r := backup.Repo{Restic: "restic", Target: tg, Node: "primary", Dir: "/creds", Run: rec.run}
+		if _, err := r.Snapshots(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		got := strings.Join(rec.argv[0], " ")
+		if want == "" && strings.Contains(got, "s3.region") || want != "" && !strings.Contains(got, "-o "+want) {
+			t.Errorf("%s: %s, want %q", tg.Kind, got, want)
+		}
+		if !strings.Contains(strings.Join(rec.env[0], " "), "AWS_SHARED_CREDENTIALS_FILE=/creds/backup-s3") {
+			t.Errorf("%s: restic doesn't read the keys from its credentials folder: %q", tg.Kind, rec.env[0])
+		}
+	}
+}
+
+// How much the node's repository holds at the target is restic's own count of its packed data, read without a lock.
+func TestTheRepositorysUseIsResticsCount(t *testing.T) {
+	testenv.Isolate(t)
+	rec := &recorder{answer: func([]string) ([]byte, error) {
+		return []byte(`{"total_size":123456789,"snapshots_count":4}` + "\n"), nil
+	}}
+	r := backup.Repo{Restic: "restic", Target: targets["b2"], Node: "primary", Dir: "/creds", Run: rec.run}
+	used, err := r.Used(context.Background())
+	if err != nil || used != 123456789 {
+		t.Fatalf("used: %d %v", used, err)
+	}
+	if a := rec.sub("stats"); len(a) != 1 || !strings.HasSuffix(strings.Join(a[0], " "), "stats --no-lock --mode raw-data") {
+		t.Errorf("stats: %q", a)
+	}
+	rec.answer = func([]string) ([]byte, error) { return []byte("not json"), nil }
+	if _, err := r.Used(context.Background()); err == nil {
+		t.Error("an answer restic never gives was read as a size")
 	}
 }
 

@@ -71,6 +71,9 @@ type backupState struct {
 	Files []string `json:"files"`
 	// Incomplete are the latest snapshots restic saved without some of their files: never a point to restore to.
 	Incomplete []string `json:"incomplete,omitempty"`
+	// Immutability is whether the target keeps the node's backups from whoever holds its credentials, as read when it
+	// was set.
+	Immutability backup.Immutability `json:"immutability"`
 }
 
 // maxIncomplete is how many incomplete snapshots the agent remembers; prune forgets older ones long before.
@@ -270,6 +273,9 @@ func (a *Agent) putBackups(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusBadGateway, "target-failed")
 		return
 	}
+	// Whether a box taken over could delete them, read (and on a locked bucket, every object locked) in a unit of its own
+	// with the new credentials, as restic's runs are.
+	st.Immutability = a.lockRun(ctx, st, next)
 	// The old folder is put aside, not removed, until the state names the new one: a failure puts it back.
 	old := a.backupDir() + ".old"
 	_ = os.RemoveAll(old)
@@ -298,8 +304,94 @@ func (a *Agent) putBackups(w http.ResponseWriter, r *http.Request) {
 	}
 	_ = os.RemoveAll(old)
 	loc, _ := st.Target.Location(st.Node)
-	a.log.Info("the node's backups go to the household's target", "repository", loc)
-	writeJSON(w, http.StatusOK, map[string]string{"repository": loc})
+	a.log.Info("the node's backups go to the household's target", "repository", loc, "immutable", st.Immutability.Immutable, "why", st.Immutability.Why)
+	writeJSON(w, http.StatusOK, TargetSet{Repository: loc, Immutability: st.Immutability})
+}
+
+// Self is the agent's own program, which a lock run is (`homerslab agent backup-lock`), in restic's unit.
+const Self = "/usr/bin/homerslab"
+
+// lockRun reads whether the target keeps the node's backups from whoever holds its credentials and, on a bucket locked
+// in compliance mode, locks every object of the node's repository again when it is due (backup.Lock): in a unit of its
+// own with the credentials sealed in dir, as restic runs, so the agent never holds them in the clear. A run that fails
+// says why in a word; a lock that has run out says so.
+func (a *Agent) lockRun(ctx context.Context, st backupState, dir string) backup.Immutability {
+	now := a.cfg.Now().UTC()
+	if st.Target.Kind == backup.Disk || st.Target.Kind == backup.SFTP { // nothing to ask
+		im, _ := backup.Lock(ctx, st.Target, backup.Credentials{}, st.Node, st.Immutability, now)
+		return im
+	}
+	req, err := json.Marshal(backup.LockRequest{Target: st.Target, Node: st.Node, Was: st.Immutability})
+	if err != nil {
+		return backup.Immutability{Why: "unknown", At: now}
+	}
+	out, err := a.repo(st, dir).Run(ctx, []string{Self, "agent", "backup-lock"}, []string{"TZ=UTC"}, req)
+	var im backup.Immutability
+	if jerr := json.Unmarshal(out, &im); jerr != nil || im.Why == "" {
+		im = st.Immutability.Now(now) // what was locked stays locked until it runs out
+		if !im.Immutable {
+			im = backup.Immutability{Why: "unknown", At: now}
+		}
+	}
+	if err != nil {
+		a.log.Error("the backup target's lock run", "err", err, "why", im.Why)
+		im = im.Now(now)
+	}
+	return im
+}
+
+// TargetSet is the node's repository at the target, and whether the target keeps it from whoever holds its credentials.
+type TargetSet struct {
+	Repository   string              `json:"repository"`
+	Immutability backup.Immutability `json:"immutability"`
+}
+
+// BackupSpace is how full the target is: for a disk, its filesystem; for SFTP, S3 and B2, the node's repository (as
+// restic counts it) out of the quota the admin gave, SizeBytes 0 when none.
+type BackupSpace struct {
+	UsedBytes uint64 `json:"usedBytes"`
+	SizeBytes uint64 `json:"sizeBytes"`
+}
+
+// getBackupSpace says how full the node's target is.
+func (a *Agent) getBackupSpace(w http.ResponseWriter, r *http.Request) {
+	st := a.backupTarget()
+	if st == nil {
+		fail(w, http.StatusConflict, "no-target")
+		return
+	}
+	if st.Target.Kind == backup.Disk {
+		fs, ok := a.cfg.Sysroot.(node.StatFS)
+		if !ok {
+			fail(w, http.StatusServiceUnavailable, "no-space")
+			return
+		}
+		sp, err := fs.Statfs(strings.TrimPrefix(st.Target.Path, "/"))
+		if err != nil || sp.FreeBytes > sp.SizeBytes {
+			a.log.Error("the disk target's space", "path", st.Target.Path, "err", err)
+			fail(w, http.StatusServiceUnavailable, "no-space")
+			return
+		}
+		writeJSON(w, http.StatusOK, BackupSpace{UsedBytes: sp.SizeBytes - sp.FreeBytes, SizeBytes: sp.SizeBytes})
+		return
+	}
+	if st.Target.QuotaBytes == 0 { // nothing to measure against: restic's count, a walk of every snapshot, is skipped
+		writeJSON(w, http.StatusOK, BackupSpace{})
+		return
+	}
+	// Never while the target's credentials folder is changed.
+	if !a.backingUp.TryLock() {
+		fail(w, http.StatusConflict, "backups-running")
+		return
+	}
+	defer a.backingUp.Unlock()
+	used, err := a.repo(*st, a.backupDir()).Used(r.Context())
+	if err != nil {
+		a.log.Error("the repository's use at the target", "err", err)
+		fail(w, http.StatusBadGateway, "failed")
+		return
+	}
+	writeJSON(w, http.StatusOK, BackupSpace{UsedBytes: used, SizeBytes: st.Target.QuotaBytes})
 }
 
 func (a *Agent) internal(w http.ResponseWriter, what string, err error) {
@@ -536,5 +628,20 @@ func (a *Agent) postPrune(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusBadGateway, code)
 		return
 	}
-	w.WriteHeader(http.StatusNoContent)
+	// Once a day, after prune: the bucket's lock read again, and every object locked again when that is due.
+	im := a.lockRun(r.Context(), *st, a.backupDir())
+	a.mu.Lock()
+	if a.state.Backup != nil && a.state.Backup.Target == st.Target {
+		a.state.Backup.Immutability = im
+		if err := a.save(); err != nil {
+			a.log.Error("saving the agent's state", "err", err)
+		}
+	}
+	a.mu.Unlock()
+	writeJSON(w, http.StatusOK, Pruned{Immutability: im})
+}
+
+// Pruned is what a prune says: whether the target keeps the node's backups, as its lock run read it after.
+type Pruned struct {
+	Immutability backup.Immutability `json:"immutability"`
 }

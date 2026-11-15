@@ -496,6 +496,7 @@ func (a *Agent) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/backups", a.postBackups)
 	mux.HandleFunc("PUT /v1/backups/manager", a.putManagerBackup)
 	mux.HandleFunc("POST /v1/backups/prune", a.postPrune)
+	mux.HandleFunc("GET /v1/backups/space", a.getBackupSpace)
 	mux.HandleFunc("PUT /v1/storage/{id}", a.putStorage)
 	mux.HandleFunc("GET /v1/storage", a.getStorage)
 	mux.HandleFunc("/", func(w http.ResponseWriter, _ *http.Request) { fail(w, http.StatusNotFound, "not-found") })

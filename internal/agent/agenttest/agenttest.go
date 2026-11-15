@@ -26,6 +26,7 @@ import (
 	"time"
 
 	"github.com/ArjunRachithcf/homerslab/internal/agent"
+	"github.com/ArjunRachithcf/homerslab/internal/backup"
 	"github.com/ArjunRachithcf/homerslab/internal/engine"
 	"github.com/ArjunRachithcf/homerslab/internal/engine/compose"
 	"github.com/ArjunRachithcf/homerslab/internal/host"
@@ -197,6 +198,8 @@ type Host struct {
 	restic     []ResticRun
 	resticFail map[string]int  // restic's exit codes, for runs whose command line has the key
 	repos      map[string]bool // the repositories restic made
+	bucket     backup.Immutability
+	repoSize   uint64          // what restic counts in the node's repository
 	holds      map[string]gate // runs held until the test lets them go, by what their command line has
 	snaps      []Snapshot      // the snapshots restic made, and the test's
 	restored   []string        // what restic and the apps' restore commands put back, in order
@@ -308,6 +311,21 @@ func (h *Host) Mounts(_ context.Context, project string) (map[string][]engine.Mo
 	return out, nil
 }
 
+// BucketLocked makes the lock run (`homerslab agent backup-lock`, in restic's unit) answer im for an S3 or B2 bucket,
+// as of when it runs.
+func (h *Host) BucketLocked(im backup.Immutability) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.bucket = im
+}
+
+// RepoSize makes restic count that much in the node's repository.
+func (h *Host) RepoSize(n uint64) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.repoSize = n
+}
+
 // Restic is every run of restic so far.
 func (h *Host) Restic() []ResticRun {
 	h.mu.Lock()
@@ -375,6 +393,15 @@ func (h *Host) runRestic(c host.Cmd) ([]byte, error) {
 		return nil, nil
 	}
 	h.restic = append(h.restic, run)
+	// The lock run, the agent's own program in restic's unit: what the test said of the bucket.
+	if run.Argv[0] == "/usr/bin/homerslab" && slices.Contains(run.Argv, "backup-lock") {
+		if err := fails(); err != nil {
+			return nil, err
+		}
+		im := cmp.Or(h.bucket, backup.Immutability{Why: "no-object-lock"})
+		im.At = time.Now().UTC()
+		return json.Marshal(im)
+	}
 	tagged := func() []string {
 		var tags []string
 		for i, a := range run.Argv {
@@ -414,6 +441,8 @@ func (h *Host) runRestic(c host.Cmd) ([]byte, error) {
 		}
 		id := h.addSnapshot(time.Now(), path, 1024, tagged())
 		return fmt.Appendf(nil, `{"message_type":"status"}`+"\n"+`{"message_type":"summary","snapshot_id":"%s"}`+"\n", id), nil
+	case slices.Contains(run.Argv, "stats"):
+		return fmt.Appendf(nil, `{"total_size":%d,"snapshots_count":%d}`, h.repoSize, len(h.snaps)), nil
 	case slices.Contains(run.Argv, "snapshots"):
 		out := []Snapshot{}
 		want := tagged()
