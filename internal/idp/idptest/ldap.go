@@ -87,7 +87,7 @@ func RunLDAP(t *testing.T, w LDAPWorld) {
 		t.Fatal("no provider: nothing else can be checked")
 	}
 	dn := func(c idp.LDAPCredentials, username string) string { return fmt.Sprintf(c.UserDN, username) }
-	lena, kiko, olga := w.AppPassword(t, "lena"), w.AppPassword(t, "kiko"), w.AppPassword(t, "olga")
+	lena, maria, kiko, olga := w.AppPassword(t, "lena"), w.AppPassword(t, "maria"), w.AppPassword(t, "kiko"), w.AppPassword(t, "olga")
 	// The outpost takes a new provider in a while: until it does, nobody binds there.
 	ready := func(c idp.LDAPCredentials, username, password string) error {
 		var err error
@@ -226,41 +226,58 @@ func RunLDAP(t *testing.T, w LDAPWorld) {
 		}
 	})
 	t.Run("a deleted provider: from the moment it is deleted, nobody binds there, and deleting again is done", func(t *testing.T) {
-		// Those outside the audience try all along, from before the delete; once it returns, the audience too.
 		type try struct{ who, password string }
-		outside := []try{{"kiko", kiko}, {"olga", olga}, {"kiko", lena}}
-		stop := make(chan struct{})
+		for _, x := range []try{{"lena", lena}, {"maria", maria}} {
+			if err := w.Bind(t, dn(creds, x.who), x.password); err != nil {
+				t.Fatalf("%s, of the audience, before the delete: %v", x.who, err)
+			}
+		}
+		// Those outside the audience try all along, from before the delete, three clients each; once it returns, the
+		// audience too, until 15 s after. A window of a moment would show.
 		var (
-			wg   sync.WaitGroup
-			mu   sync.Mutex
-			seen = map[string]int{}
+			wg     sync.WaitGroup
+			mu     sync.Mutex
+			seen   = map[string]int{}
+			after  = make(chan struct{})
+			finish = make(chan struct{})
 		)
-		let := func(who string) { mu.Lock(); seen[who]++; mu.Unlock() }
-		wg.Add(1)
-		go func() {
+		trying := func(x try, from <-chan struct{}, when string) {
 			defer wg.Done()
+			if from != nil {
+				select {
+				case <-from:
+				case <-finish:
+					return
+				}
+			}
 			for {
 				select {
-				case <-stop:
+				case <-finish:
 					return
 				default:
 				}
-				for _, x := range outside {
-					if w.Bind(t, dn(creds, x.who), x.password) == nil {
-						let(x.who + " (outside the audience, while it was deleted)")
-					}
-				}
-			}
-		}()
-		err := l.DeleteLDAP(ctx, media.Slug)
-		for end := time.Now().Add(15 * time.Second); time.Now().Before(end); {
-			for _, x := range []try{{"lena", lena}, {"maria", lena}, {"kiko", kiko}, {"olga", olga}} {
 				if w.Bind(t, dn(creds, x.who), x.password) == nil {
-					let(x.who + " (after the delete returned)")
+					mu.Lock()
+					seen[x.who+" "+when]++
+					mu.Unlock()
 				}
 			}
 		}
-		close(stop)
+		for range 3 {
+			for _, x := range []try{{"kiko", kiko}, {"olga", olga}} {
+				wg.Add(2)
+				go trying(x, nil, "(outside the audience)")
+				go trying(x, after, "(outside the audience, after the delete returned)")
+			}
+			for _, x := range []try{{"lena", lena}, {"maria", maria}} {
+				wg.Add(1)
+				go trying(x, after, "(after the delete returned)")
+			}
+		}
+		err := l.DeleteLDAP(ctx, media.Slug)
+		close(after)
+		time.Sleep(15 * time.Second)
+		close(finish)
 		wg.Wait()
 		if err != nil {
 			t.Fatal(err)

@@ -45,6 +45,8 @@ const (
 	// ldapRetireAfter is how long a closed application and its provider stay after the provider left the outpost,
 	// before a later pass deletes them: long past the outpost's taking the change.
 	ldapRetireAfter = 5 * time.Minute
+	// ldapRefresh is how often the outpost reads its providers again of itself.
+	ldapRefresh     = "minutes=1"
 	outpostTokenFmt = "ak-outpost-%s-api"
 )
 
@@ -189,9 +191,10 @@ func (a *Authentik) ldapBindIntact(ctx context.Context) (bool, error) {
 }
 
 type ldapProviderObj struct {
-	PK   int     `json:"pk"`
-	Name string  `json:"name"`
-	App  *string `json:"assigned_application_slug"`
+	PK     int     `json:"pk"`
+	Name   string  `json:"name"`
+	App    *string `json:"assigned_application_slug"`
+	BaseDN string  `json:"base_dn"`
 }
 
 // ensureLDAPProvider makes an LDAP provider of a base DN, by name, or brings it in line: never another application's
@@ -245,7 +248,10 @@ func (a *Authentik) ldapOutpost(ctx context.Context, bind string, add int) (*out
 	if err != nil {
 		return nil, err
 	}
-	cfg := map[string]any{"authentik_host": a.h.Origin(), "authentik_host_insecure": false, "log_level": "warning"}
+	// The outpost also asks for its providers every minute, not only when Authentik tells it they changed: a provider
+	// off it is gone from it well within ldapRetireAfter, even when the notice never came.
+	cfg := map[string]any{"authentik_host": a.h.Origin(), "authentik_host_insecure": false, "log_level": "warning",
+		"refresh_interval": ldapRefresh}
 	if o == nil {
 		o = &outpostObj{}
 		ps := []int{none}
@@ -299,11 +305,15 @@ func (a *Authentik) ensureLDAPApp(ctx context.Context, slug, name, desc string, 
 		return errors.New("authentik: an application with no binding opens to everyone")
 	}
 	var full struct {
-		PBM  string `json:"pbm_uuid"`
-		PK   string `json:"pk"`
-		Name string `json:"name"`
+		PBM      string `json:"pbm_uuid"`
+		PK       string `json:"pk"`
+		Name     string `json:"name"`
+		Provider *int   `json:"provider"`
 	}
 	err := a.api.call(ctx, http.MethodGet, "/core/applications/"+slug+"/", nil, &full)
+	if err == nil && full.Provider != nil && *full.Provider != provider {
+		return fmt.Errorf("%w: %s, refused", errOtherProvider, slug)
+	}
 	if notFound(err) {
 		if name == "" {
 			name = slug
@@ -327,7 +337,8 @@ func (a *Authentik) ensureLDAPApp(ctx context.Context, slug, name, desc string, 
 		"provider": provider, "policy_engine_mode": "any", "meta_hide": true, "meta_description": desc}, nil)
 }
 
-// closeLDAPApp closes an LDAP provider's application to nobody, making one if it has none, and marks it closed now.
+// closeLDAPApp closes an LDAP provider's application to nobody, making one if it has none, and marks it closed now. An
+// application of that slug that holds another provider is refused (errOtherProvider).
 func (a *Authentik) closeLDAPApp(ctx context.Context, slug string, provider int) error {
 	nobody, err := a.audience(ctx, nil)
 	if err != nil {
@@ -336,9 +347,15 @@ func (a *Authentik) closeLDAPApp(ctx context.Context, slug string, provider int)
 	return a.ensureLDAPApp(ctx, slug, "", ldapClosed+time.Now().UTC().Format(time.RFC3339), provider, nobody)
 }
 
+// errOtherProvider is an application, by an LDAP provider's name, that holds another provider.
+var errOtherProvider = errors.New("authentik: an LDAP application holds another provider")
+
 // ldapAppState is an LDAP application as the outpost's tidying reads it.
 type ldapAppState struct {
-	Desc string `json:"meta_description"`
+	PBM      string `json:"pbm_uuid"`
+	PK       string `json:"pk"`
+	Desc     string `json:"meta_description"`
+	Provider *int   `json:"provider"`
 }
 
 // closedAt is when HomersLab closed the application, if it did.
@@ -357,11 +374,68 @@ func (a *Authentik) ldapApp(ctx context.Context, slug string) (*ldapAppState, er
 	return &s, err
 }
 
-// ldapTidy keeps the outpost serving HomersLab's LDAP providers alone, each with its own application (#204): a provider
-// whose application is gone, is another's or was closed leaves the outpost (orphaned providers are removed), its
-// application closed to nobody first when it is HomersLab's or there is none. A closed application and its provider are
-// deleted once the provider has been off the outpost for a.ldapRetire. With repair false it changes nothing, and says
-// whether the outpost serves only what it should.
+// ldapOwnBindings are the bindings HomersLab gives an LDAP application: a role's group, or the policy that refuses
+// everyone. Only what is there now is listed, and nothing is made.
+func (a *Authentik) ldapOwnBindings(ctx context.Context) (map[binding]bool, error) {
+	own := map[binding]bool{}
+	for _, r := range idp.Roles() {
+		g, err := find[group](ctx, a.api, "/core/groups/?name="+q(idp.RoleGroup(r)), "name", idp.RoleGroup(r))
+		if err != nil {
+			return nil, err
+		}
+		if g != nil {
+			own[binding{Group: g.PK}] = true
+		}
+	}
+	never, err := find[struct {
+		PK string `json:"pk"`
+	}](ctx, a.api, "/policies/expression/?name="+q(policyNever), "name", policyNever)
+	if err != nil {
+		return nil, err
+	}
+	if never != nil {
+		own[binding{Policy: never.PK}] = true
+	}
+	return own, nil
+}
+
+// ldapBoundByUs says whether an application is opened by HomersLab's bindings alone: at least one, each enabled and
+// one of own.
+func (a *Authentik) ldapBoundByUs(ctx context.Context, app *ldapAppState, own map[binding]bool) (bool, error) {
+	type pb struct {
+		Policy *string `json:"policy"`
+		Group  *string `json:"group"`
+		User   *int    `json:"user"`
+		Negate bool    `json:"negate"`
+		On     bool    `json:"enabled"`
+	}
+	bs, err := where[pb](ctx, a.api, "/policies/bindings/?target="+q(app.PBM), "target", app.PK)
+	if err != nil || len(bs) == 0 {
+		return false, err
+	}
+	for _, b := range bs {
+		if !b.On || b.User != nil || !own[binding{Policy: ptrStr(b.Policy), Group: ptrStr(b.Group), Negate: b.Negate}] {
+			return false, nil
+		}
+	}
+	return true, nil
+}
+
+func ptrStr(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
+}
+
+// ldapTidy keeps the outpost serving HomersLab's LDAP providers alone (#204). A provider is HomersLab's when its name
+// is an app's (or the outpost's own), its base DN is that app's and no other provider at the outpost has it, and its
+// application is its own, holds it, and is opened by HomersLab's bindings alone. Any other provider leaves the outpost
+// (orphaned providers are removed); one named as HomersLab's, with its application or none, has the application closed
+// to nobody first, unless it is right in all but sharing its base DN, which the next EnsureLDAP puts back. A closed
+// application leaves the outpost too, and goes with its provider once off it for a.ldapRetire; a provider of
+// HomersLab's name left with no application, off the outpost, goes at once. With repair false it changes nothing, and
+// says whether the outpost serves only what it should.
 func (a *Authentik) ldapTidy(ctx context.Context, repair bool) (bool, error) {
 	o, err := find[outpostObj](ctx, a.api, "/outposts/instances/?name__iexact="+q(LDAPOutpostName), "name", LDAPOutpostName)
 	if err != nil || o == nil {
@@ -371,11 +445,24 @@ func (a *Authentik) ldapTidy(ctx context.Context, repair bool) (bool, error) {
 	if err != nil {
 		return false, err
 	}
+	own, err := a.ldapOwnBindings(ctx)
+	if err != nil {
+		return false, err
+	}
+	dns := map[string]int{}
+	for _, p := range ps {
+		if slices.Contains(o.Providers, p.PK) {
+			dns[strings.ToLower(strings.TrimSpace(p.BaseDN))]++
+		}
+	}
 	clean, keep := true, slices.Clone(o.Providers)
 	for _, p := range ps {
 		on := slices.Contains(o.Providers, p.PK)
-		ours := p.Name == ldapNone || strings.HasSuffix(p.Name, "-ldap") && validLDAPSlug(strings.TrimSuffix(p.Name, "-ldap")) == nil
-		if !on && !ours {
+		dn, named := ldapNoneDN, p.Name == ldapNone
+		if slug := strings.TrimSuffix(p.Name, "-ldap"); !named && slug != p.Name && validLDAPSlug(slug) == nil {
+			dn, named = LDAPBaseDN(slug), true
+		}
+		if !on && !named {
 			continue
 		}
 		var app *ldapAppState
@@ -384,39 +471,56 @@ func (a *Authentik) ldapTidy(ctx context.Context, repair bool) (bool, error) {
 				return false, err
 			}
 		}
+		fine := named && strings.EqualFold(p.BaseDN, dn) && app != nil && app.Provider != nil && *app.Provider == p.PK
+		if fine {
+			if fine, err = a.ldapBoundByUs(ctx, app, own); err != nil {
+				return false, err
+			}
+		}
+		shared := on && dns[strings.ToLower(strings.TrimSpace(p.BaseDN))] > 1
 		at, closed := time.Time{}, false
 		if app != nil {
 			at, closed = app.closedAt()
 		}
 		switch {
-		case p.Name == ldapNone:
-			// The outpost's own: on it, and its application, closed to nobody, there.
-			if on && app == nil {
-				clean = false
-				if repair {
-					nobody, err := a.audience(ctx, nil)
-					if err != nil {
-						return false, err
-					}
-					if err := a.ensureLDAPApp(ctx, ldapNone, "HomersLab LDAP", "", p.PK, nobody); err != nil {
-						return false, err
-					}
-				}
+		case p.Name == ldapNone && on:
+			// The outpost's own stays: its base DN and its application, closed to nobody, put back.
+			if fine && !shared && !closed {
+				continue
 			}
-		case on && (!ours || app == nil || closed):
 			clean = false
 			if !repair {
 				continue
 			}
-			if ours && (app != nil || p.App == nil) {
-				if err := a.closeLDAPApp(ctx, p.Name, p.PK); err != nil {
+			if !strings.EqualFold(p.BaseDN, ldapNoneDN) {
+				if err := a.api.call(ctx, http.MethodPatch, fmt.Sprintf("/providers/ldap/%d/", p.PK), map[string]any{"base_dn": ldapNoneDN}, nil); err != nil {
+					return false, err
+				}
+			}
+			nobody, err := a.audience(ctx, nil)
+			if err != nil {
+				return false, err
+			}
+			if err := a.ensureLDAPApp(ctx, ldapNone, "HomersLab LDAP", "", p.PK, nobody); err != nil {
+				return false, err
+			}
+		case on && (!fine || shared || closed):
+			clean = false
+			if !repair {
+				continue
+			}
+			if named && (app != nil || p.App == nil) && !(fine && !closed) {
+				// An application holding another provider is left as it is: the provider leaves the outpost all the same.
+				if err := a.closeLDAPApp(ctx, p.Name, p.PK); err != nil && !errors.Is(err, errOtherProvider) {
 					return false, err
 				}
 			}
 			keep = slices.DeleteFunc(keep, func(x int) bool { return x == p.PK })
-		case !on && closed && repair && time.Since(at) >= a.ldapRetire:
-			if err := gone(a.api.call(ctx, http.MethodDelete, "/core/applications/"+p.Name+"/", nil, nil)); err != nil {
-				return false, err
+		case !on && named && p.Name != ldapNone && repair && (p.App == nil || closed && time.Since(at) >= a.ldapRetire):
+			if p.App != nil {
+				if err := gone(a.api.call(ctx, http.MethodDelete, "/core/applications/"+p.Name+"/", nil, nil)); err != nil {
+					return false, err
+				}
 			}
 			if err := gone(a.api.call(ctx, http.MethodDelete, fmt.Sprintf("/providers/ldap/%d/", p.PK), nil, nil)); err != nil {
 				return false, err

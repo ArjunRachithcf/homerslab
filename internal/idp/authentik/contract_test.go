@@ -185,6 +185,7 @@ func TestTheIdentityProviderContractOnAuthentik(t *testing.T) {
 		t.Run("drift: a bind flow that takes passwords shows in the report, and Prepare puts it back", ldapDrift(w, a))
 		t.Run("an app's directory keeps apart from the app's own application", ldapBesideTheAppsOwn(w, a))
 		t.Run("drift: a provider at the outpost without its application is closed and taken off, then deleted", ldapOrphan(w, a))
+		t.Run("drift: providers of the console's at the outpost, named as an app's, are taken off", ldapImpostors(w, a))
 	})
 
 	t.Run("an app's audience changes without the app ever being open to someone of neither audience (#219)", func(t *testing.T) {

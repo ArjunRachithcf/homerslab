@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"testing"
 	"time"
 
@@ -296,6 +297,109 @@ func ldapOrphan(w *world, a *authentik.Authentik) func(*testing.T) {
 		}
 		if r, err := a.Report(ctx); err != nil || !r.PasskeyOnlySignIn {
 			t.Errorf("after the later pass: %+v %v", r, err)
+		}
+	}
+}
+
+// ldapImpostors puts providers at the outpost behind HomersLab's back, as an admin in Authentik's console could, named
+// as an app's and with an application of their own that has no binding: one with a copy of a real app's base DN, one
+// with a base DN of its own. The report says so; Prepare takes them off the outpost, and nobody binds through them.
+// The outpost asks for its providers every minute, not only when told.
+func ldapImpostors(w *world, a *authentik.Authentik) func(*testing.T) {
+	return func(t *testing.T) {
+		ctx := context.Background()
+		var cfg struct {
+			Results []struct {
+				PK        string         `json:"pk"`
+				Providers []int          `json:"providers"`
+				Config    map[string]any `json:"config"`
+			}
+		}
+		outpost := func() (string, []int) {
+			w.raw(t, w.own, "GET", "/api/v3/outposts/instances/?name__iexact="+authentik.LDAPOutpostName, nil, &cfg)
+			if len(cfg.Results) != 1 {
+				t.Fatalf("the outpost: %+v", cfg.Results)
+			}
+			return cfg.Results[0].PK, cfg.Results[0].Providers
+		}
+		outpost()
+		if got := cfg.Results[0].Config["refresh_interval"]; got != "minutes=1" {
+			t.Errorf("the outpost's refresh_interval: %v, want minutes=1", got)
+		}
+		real := idp.LDAPApp{Slug: "homerslab-real", Name: "Real", Roles: []idp.Role{idp.Adult}}
+		creds, err := a.EnsureLDAP(ctx, real)
+		if err != nil {
+			t.Fatal(err)
+		}
+		pw := map[string]string{}
+		for _, who := range []string{"lena", "kiko", "olga"} {
+			pw[who] = w.AppPassword(t, who)
+		}
+		bindAt := func(userDN, who string) error { return w.Bind(t, fmt.Sprintf(userDN, who), pw[who]) }
+		waitFor := func(userDN string) {
+			t.Helper()
+			for deadline := time.Now().Add(150 * time.Second); bindAt(userDN, "lena") != nil; time.Sleep(3 * time.Second) {
+				if time.Now().After(deadline) {
+					t.Fatalf("the outpost never served %s", userDN)
+				}
+			}
+		}
+		waitFor(creds.UserDN)
+		var inval struct {
+			Results []struct {
+				PK string `json:"pk"`
+			}
+		}
+		w.raw(t, w.own, "GET", "/api/v3/flows/instances/?slug=default-provider-invalidation-flow", nil, &inval)
+		if len(inval.Results) != 1 {
+			t.Fatalf("the invalidation flow: %+v", inval.Results)
+		}
+		for _, c := range []struct{ slug, baseDN string }{
+			{"homerslab-evil", authentik.LDAPBaseDN(real.Slug)},
+			{"homerslab-evil2", "dc=evil2,dc=homerslab"},
+		} {
+			t.Run(c.baseDN, func(t *testing.T) {
+				name := c.slug + "-ldap"
+				var p struct {
+					PK int `json:"pk"`
+				}
+				w.raw(t, w.own, "POST", "/api/v3/providers/ldap/", map[string]any{"name": name, "authorization_flow": flowPK(t, w),
+					"invalidation_flow": inval.Results[0].PK, "base_dn": c.baseDN, "bind_mode": "direct", "search_mode": "direct"}, &p)
+				w.raw(t, w.own, "POST", "/api/v3/core/applications/", map[string]any{"name": name, "slug": name, "provider": p.PK}, nil)
+				pk, ps := outpost()
+				w.raw(t, w.own, "PATCH", "/api/v3/outposts/instances/"+pk+"/", map[string]any{"providers": append(ps, p.PK)}, nil)
+				if r, err := a.Report(ctx); err != nil || r.PasskeyOnlySignIn {
+					t.Errorf("a provider of the console's at the outpost: %+v %v, want not passkey-only", r, err)
+				}
+				if err := a.Prepare(ctx, household); err != nil {
+					t.Fatal(err)
+				}
+				if _, ps := outpost(); slices.Contains(ps, p.PK) {
+					t.Error("the console's provider is still at the outpost")
+				}
+				if r, err := a.Report(ctx); err != nil || !r.PasskeyOnlySignIn {
+					t.Errorf("after Prepare: %+v %v", r, err)
+				}
+				// The real app is back with its next EnsureLDAP (a copy of its base DN took it off too).
+				if _, err := a.EnsureLDAP(ctx, real); err != nil {
+					t.Fatal(err)
+				}
+				waitFor(creds.UserDN)
+				evil := "cn=%s,ou=users," + c.baseDN
+				for end := time.Now().Add(15 * time.Second); time.Now().Before(end); {
+					for _, who := range []string{"kiko", "olga"} {
+						if bindAt(creds.UserDN, who) == nil || bindAt(evil, who) == nil {
+							t.Fatalf("%s bound, outside the audience, after Prepare", who)
+						}
+					}
+				}
+				if r, err := a.Report(ctx); err != nil || !r.PasskeyOnlySignIn {
+					t.Errorf("with the real app back: %+v %v", r, err)
+				}
+			})
+		}
+		if err := a.DeleteLDAP(ctx, real.Slug); err != nil {
+			t.Fatal(err)
 		}
 	}
 }
