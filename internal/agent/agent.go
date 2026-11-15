@@ -28,6 +28,7 @@ import (
 	"time"
 
 	"github.com/ArjunRachithcf/homerslab/internal/atomicfile"
+	"github.com/ArjunRachithcf/homerslab/internal/backup"
 	"github.com/ArjunRachithcf/homerslab/internal/engine"
 	"github.com/ArjunRachithcf/homerslab/internal/engine/compose"
 	"github.com/ArjunRachithcf/homerslab/internal/firewall"
@@ -101,6 +102,9 @@ type Config struct {
 	Users func(name string) (uint32, bool)
 	// Restic is the pinned restic the node's backups run (backup.Restic when "").
 	Restic string
+	// Immutability reads whether a backup target keeps what the node wrote from whoever holds its credentials, with the
+	// credentials the manager hands over as it sets the target: backup.ReadImmutability when nil.
+	Immutability func(ctx context.Context, t backup.Target, c backup.Credentials) backup.Immutability
 	// VolumesDir is where the engine keeps its local volumes, each <name>/_data (DockerVolumes when "").
 	VolumesDir string
 	// HealthWait is how long a restore waits for the app to be healthy again (five minutes when 0).
@@ -496,6 +500,7 @@ func (a *Agent) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/backups", a.postBackups)
 	mux.HandleFunc("PUT /v1/backups/manager", a.putManagerBackup)
 	mux.HandleFunc("POST /v1/backups/prune", a.postPrune)
+	mux.HandleFunc("GET /v1/backups/space", a.getBackupSpace)
 	mux.HandleFunc("PUT /v1/storage/{id}", a.putStorage)
 	mux.HandleFunc("GET /v1/storage", a.getStorage)
 	mux.HandleFunc("/", func(w http.ResponseWriter, _ *http.Request) { fail(w, http.StatusNotFound, "not-found") })

@@ -358,3 +358,64 @@ func raw(t *testing.T, sock, method, path string, body []byte) (int, []byte) {
 	_, _ = buf.ReadFrom(resp.Body)
 	return resp.StatusCode, buf.Bytes()
 }
+
+// Setting the target, the agent reads whether a box taken over could delete what it writes there, with the credentials
+// the manager handed over, keeps the answer (never the credentials) and says it.
+func TestATargetSaysWhetherItsBackupsCanBeDeleted(t *testing.T) {
+	testenv.Isolate(t)
+	var asked []backup.Credentials
+	locked := backup.Immutability{Immutable: true, Why: "compliance", Days: 30}
+	sock, _ := agenttest.StartWith(t, agent.Config{Immutability: func(_ context.Context, tg backup.Target, c backup.Credentials) backup.Immutability {
+		asked = append(asked, c)
+		if tg.Kind != backup.B2 || tg.Bucket != "household" {
+			return backup.Immutability{Why: "unknown"}
+		}
+		return locked
+	}})
+	b2 := s3Target()
+	b2.Target = backup.Target{Kind: backup.B2, Region: "eu-central-003", Bucket: "household", Path: "homerslab"}
+	code, body := call(t, sock, "PUT", "/v1/backups", b2)
+	var set agent.TargetSet
+	if err := json.Unmarshal(body, &set); err != nil || code != http.StatusOK || set.Repository != "s3:https://s3.eu-central-003.backblazeb2.com/household/homerslab/primary" || set.Immutability != locked {
+		t.Fatalf("a B2 target: %d %s", code, body)
+	}
+	if len(asked) != 1 || asked[0].SecretAccessKey != s3Secret {
+		t.Errorf("the bucket's lock was read with %d sets of credentials", len(asked))
+	}
+	if bytes.Contains(body, []byte(s3Secret)) {
+		t.Error("the answer holds the target's secret")
+	}
+}
+
+// How full the target is: a disk target's filesystem; for SFTP, S3 and B2, what restic counts in the node's repository,
+// out of the quota the admin gave (none: unknown).
+func TestTheTargetsSpaceIsItsDisksOrItsQuotas(t *testing.T) {
+	testenv.Isolate(t)
+	sock, h := agenttest.StartWith(t, agent.Config{Sysroot: agenttest.WithSpace(agenttest.Primary(), 1e11, 1e12)})
+	if code, _ := call(t, sock, "GET", "/v1/backups/space", nil); code != http.StatusConflict {
+		t.Errorf("without a target: %d", code)
+	}
+	disk := s3Target()
+	disk.Target, disk.Credentials = backup.Target{Kind: backup.Disk, Path: "/srv/backups"}, backup.Credentials{}
+	if code, body := call(t, sock, "PUT", "/v1/backups", disk); code != http.StatusOK || !strings.Contains(string(body), `"why":"disk"`) {
+		t.Fatalf("a disk target: %d %s", code, body)
+	}
+	var sp agent.BackupSpace
+	if code, body := call(t, sock, "GET", "/v1/backups/space", nil); code != http.StatusOK || json.Unmarshal(body, &sp) != nil || sp != (agent.BackupSpace{UsedBytes: 9e11, SizeBytes: 1e12}) {
+		t.Errorf("a disk's space: %d %s", code, body)
+	}
+	b2 := s3Target()
+	b2.Target = backup.Target{Kind: backup.B2, Region: "eu-central-003", Bucket: "household", QuotaBytes: 1 << 40}
+	if code, body := call(t, sock, "PUT", "/v1/backups", b2); code != http.StatusOK {
+		t.Fatalf("a B2 target: %d %s", code, body)
+	}
+	h.RepoSize(5e11)
+	from := len(h.Restic())
+	if code, body := call(t, sock, "GET", "/v1/backups/space", nil); code != http.StatusOK || json.Unmarshal(body, &sp) != nil || sp != (agent.BackupSpace{UsedBytes: 5e11, SizeBytes: 1 << 40}) {
+		t.Errorf("a B2 bucket's space: %d %s", code, body)
+	}
+	runs := h.Restic()[from:]
+	if len(runs) != 1 || !slices.Contains(runs[0].Argv, "stats") || !slices.Contains(runs[0].Argv, "--no-lock") || !strings.Contains(strings.Join(runs[0].Unit, " "), "LoadCredentialEncrypted=backup-s3:") {
+		t.Errorf("restic's count: %+v", runs)
+	}
+}

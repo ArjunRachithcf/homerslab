@@ -71,6 +71,9 @@ type backupState struct {
 	Files []string `json:"files"`
 	// Incomplete are the latest snapshots restic saved without some of their files: never a point to restore to.
 	Incomplete []string `json:"incomplete,omitempty"`
+	// Immutability is whether the target keeps the node's backups from whoever holds its credentials, as read when it
+	// was set.
+	Immutability backup.Immutability `json:"immutability"`
 }
 
 // maxIncomplete is how many incomplete snapshots the agent remembers; prune forgets older ones long before.
@@ -270,6 +273,12 @@ func (a *Agent) putBackups(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusBadGateway, "target-failed")
 		return
 	}
+	// Whether a box taken over could delete them, read with the credentials in hand, now: the agent keeps them only sealed.
+	immutability := a.cfg.Immutability
+	if immutability == nil {
+		immutability = backup.ReadImmutability
+	}
+	st.Immutability = immutability(ctx, req.Target, req.Credentials)
 	// The old folder is put aside, not removed, until the state names the new one: a failure puts it back.
 	old := a.backupDir() + ".old"
 	_ = os.RemoveAll(old)
@@ -298,8 +307,52 @@ func (a *Agent) putBackups(w http.ResponseWriter, r *http.Request) {
 	}
 	_ = os.RemoveAll(old)
 	loc, _ := st.Target.Location(st.Node)
-	a.log.Info("the node's backups go to the household's target", "repository", loc)
-	writeJSON(w, http.StatusOK, map[string]string{"repository": loc})
+	a.log.Info("the node's backups go to the household's target", "repository", loc, "immutable", st.Immutability.Immutable, "why", st.Immutability.Why)
+	writeJSON(w, http.StatusOK, TargetSet{Repository: loc, Immutability: st.Immutability})
+}
+
+// TargetSet is the node's repository at the target, and whether the target keeps it from whoever holds its credentials.
+type TargetSet struct {
+	Repository   string              `json:"repository"`
+	Immutability backup.Immutability `json:"immutability"`
+}
+
+// BackupSpace is how full the target is: for a disk, its filesystem; for SFTP, S3 and B2, the node's repository (as
+// restic counts it) out of the quota the admin gave, SizeBytes 0 when none.
+type BackupSpace struct {
+	UsedBytes uint64 `json:"usedBytes"`
+	SizeBytes uint64 `json:"sizeBytes"`
+}
+
+// getBackupSpace says how full the node's target is.
+func (a *Agent) getBackupSpace(w http.ResponseWriter, r *http.Request) {
+	st := a.backupTarget()
+	if st == nil {
+		fail(w, http.StatusConflict, "no-target")
+		return
+	}
+	if st.Target.Kind == backup.Disk {
+		fs, ok := a.cfg.Sysroot.(node.StatFS)
+		if !ok {
+			fail(w, http.StatusServiceUnavailable, "no-space")
+			return
+		}
+		sp, err := fs.Statfs(strings.TrimPrefix(st.Target.Path, "/"))
+		if err != nil || sp.FreeBytes > sp.SizeBytes {
+			a.log.Error("the disk target's space", "path", st.Target.Path, "err", err)
+			fail(w, http.StatusServiceUnavailable, "no-space")
+			return
+		}
+		writeJSON(w, http.StatusOK, BackupSpace{UsedBytes: sp.SizeBytes - sp.FreeBytes, SizeBytes: sp.SizeBytes})
+		return
+	}
+	used, err := a.repo(*st, a.backupDir()).Used(r.Context())
+	if err != nil {
+		a.log.Error("the repository's use at the target", "err", err)
+		fail(w, http.StatusBadGateway, "failed")
+		return
+	}
+	writeJSON(w, http.StatusOK, BackupSpace{UsedBytes: used, SizeBytes: st.Target.QuotaBytes})
 }
 
 func (a *Agent) internal(w http.ResponseWriter, what string, err error) {

@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/ArjunRachithcf/homerslab/internal/agent"
@@ -32,6 +33,8 @@ const (
 	ansBackupAt     = "backupAt"       // when the last run started
 	ansBackupDone   = "backupDoneAt"   // when the last run that got to its end ended, or the target was set
 	ansPrunedAt     = "backupPrunedAt" // when the last prune ran
+	ansBackupLock   = "backupImmutability"
+	ansBackupSpace  = "backupSpace" // how full the target was at the last run's end
 	credTarget      = "manager-backup-target"
 	warnBackup      = "backup:"
 	primaryNode     = "primary"
@@ -83,7 +86,7 @@ func (m *Manager) putBackupTarget(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusServiceUnavailable, errAgent.Error())
 		return
 	}
-	var out struct{ Repository string }
+	var out agent.TargetSet
 	err = m.agent.with(m.agent.backups).call(ctx, http.MethodPut, "/v1/backups",
 		agent.BackupTarget{Node: primaryNode, Target: req.Target, Key: key.Reveal(), Credentials: req.Credentials}, &out)
 	var e *agentError
@@ -109,7 +112,9 @@ func (m *Manager) putBackupTarget(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	target, _ := json.Marshal(req.Target)
-	save := map[string]string{ansBackupTarget: string(target)}
+	lock, _ := json.Marshal(out.Immutability)
+	// A new target's space is unknown until its first run.
+	save := map[string]string{ansBackupTarget: string(target), ansBackupLock: string(lock), ansBackupSpace: ""}
 	if ans, err := m.db.Answers(ctx); err == nil && ans[ansBackupDone] == "" {
 		save[ansBackupDone] = m.cfg.Now().UTC().Format(time.RFC3339) // lateness counts from here
 	}
@@ -117,8 +122,89 @@ func (m *Manager) putBackupTarget(w http.ResponseWriter, r *http.Request) {
 		m.internal(w, "keeping the backup target", err)
 		return
 	}
-	m.log.Info("backups go to a new target", "repository", out.Repository)
-	writeJSON(w, http.StatusOK, map[string]string{"repository": out.Repository})
+	m.log.Info("backups go to a new target", "repository", out.Repository, "immutable", out.Immutability.Immutable, "why", out.Immutability.Why)
+	writeJSON(w, http.StatusOK, out)
+}
+
+// backupRoutes are the household's backup target, the same on Admin's socket and the control socket (terminal), but
+// for changing it: from Admin, that is a risky change, which needs the admin's passkey again (step-up, #25), so it is
+// refused until then; on the terminal, root on the primary can already do anything.
+func (m *Manager) backupRoutes(mux *http.ServeMux, terminal bool) {
+	mux.HandleFunc("GET /api/v1/backups/target", m.getBackupTarget)
+	if terminal {
+		mux.HandleFunc("PUT /api/v1/backups/target", m.putBackupTarget)
+		return
+	}
+	mux.HandleFunc("PUT /api/v1/backups/target", func(w http.ResponseWriter, _ *http.Request) {
+		fail(w, http.StatusForbidden, errStepUp.Error())
+	})
+}
+
+// targetStatus is the household's backup target as Admin shows it: none of it secret.
+type targetStatus struct {
+	Target       *backup.Target       `json:"target"`
+	Repository   string               `json:"repository,omitempty"`
+	Immutability *backup.Immutability `json:"immutability,omitempty"`
+	Space        *targetSpace         `json:"space,omitempty"`
+}
+
+// targetSpace is how full the target was, and when that was read; SizeBytes 0 when unknown.
+type targetSpace struct {
+	agent.BackupSpace
+	At time.Time `json:"at"`
+}
+
+// getBackupTarget is `GET /api/v1/backups/target`: where backups go, whether a box taken over could delete them and why
+// in a word, and how full the target is. The target's credentials are never part of it.
+func (m *Manager) getBackupTarget(w http.ResponseWriter, r *http.Request) {
+	ans, err := m.db.Answers(r.Context())
+	if err != nil {
+		m.internal(w, "reading the backup target", err)
+		return
+	}
+	st := targetStatus{}
+	if ans[ansBackupTarget] != "" {
+		var t backup.Target
+		if err := json.Unmarshal([]byte(ans[ansBackupTarget]), &t); err != nil {
+			m.internal(w, "reading the backup target", err)
+			return
+		}
+		st.Target = &t
+		st.Repository, _ = t.Location(primaryNode)
+	}
+	if ans[ansBackupLock] != "" {
+		st.Immutability = &backup.Immutability{}
+		_ = json.Unmarshal([]byte(ans[ansBackupLock]), st.Immutability)
+	}
+	if ans[ansBackupSpace] != "" {
+		st.Space = &targetSpace{}
+		_ = json.Unmarshal([]byte(ans[ansBackupSpace]), st.Space)
+	}
+	writeJSON(w, http.StatusOK, st)
+}
+
+// spaceAlert is how full the target may get before the admins hear of it (#22's review): early enough that prune can
+// still free space.
+const spaceAlert = 80
+
+// checkSpace reads how full the target is, keeps it, and warns the admins once it is spaceAlert% full, until it isn't.
+// A target that doesn't say its size (SFTP, S3 or B2 without a quota given) never warns.
+func (m *Manager) checkSpace(ctx, run context.Context) {
+	var sp agent.BackupSpace
+	if err := m.agent.with(m.agent.backups).call(run, http.MethodGet, "/v1/backups/space", nil, &sp); err != nil {
+		m.log.Error("how full the backup target is", "err", err)
+		return
+	}
+	b, _ := json.Marshal(targetSpace{BackupSpace: sp, At: m.cfg.Now().UTC()})
+	_ = m.db.SaveAnswers(ctx, map[string]string{ansBackupSpace: string(b)})
+	if sp.SizeBytes == 0 {
+		return
+	}
+	if float64(sp.UsedBytes) >= float64(sp.SizeBytes)*spaceAlert/100 {
+		m.warnOnce(ctx, warnBackup+"space", "target-full "+strconv.Itoa(spaceAlert))
+		return
+	}
+	_ = m.db.ResolveWarnings(ctx, warnBackup+"space", m.cfg.Now())
 }
 
 // BackUpDue backs up the household when an hour has passed since the last run, and prunes once a day. The scheduler
@@ -190,16 +276,16 @@ func (m *Manager) BackUpDue(ctx context.Context) {
 		_ = m.db.SaveAnswers(ctx, map[string]string{ansBackupDone: m.cfg.Now().UTC().Format(time.RFC3339)})
 		_ = m.db.ResolveWarnings(ctx, warnBackup+"late", now)
 	}
-	if !due(ans[ansPrunedAt], now, pruneEvery) {
-		return
+	if due(ans[ansPrunedAt], now, pruneEvery) {
+		if err := m.agent.with(m.agent.backups).call(run, http.MethodPost, "/v1/backups/prune", nil, nil); err != nil {
+			m.log.Error("pruning the node's repository", "err", err)
+			m.warnOnce(ctx, warnBackup+"prune", "prune-failed")
+		} else {
+			_ = m.db.ResolveWarnings(ctx, warnBackup+"prune", now)
+			_ = m.db.SaveAnswers(ctx, map[string]string{ansPrunedAt: now.UTC().Format(time.RFC3339)})
+		}
 	}
-	if err := m.agent.with(m.agent.backups).call(run, http.MethodPost, "/v1/backups/prune", nil, nil); err != nil {
-		m.log.Error("pruning the node's repository", "err", err)
-		m.warnOnce(ctx, warnBackup+"prune", "prune-failed")
-		return
-	}
-	_ = m.db.ResolveWarnings(ctx, warnBackup+"prune", now)
-	_ = m.db.SaveAnswers(ctx, map[string]string{ansPrunedAt: now.UTC().Format(time.RFC3339)})
+	m.checkSpace(ctx, run)
 }
 
 // due says whether every (less a few minutes) has passed since last (RFC 3339, or "" for never).

@@ -1,7 +1,8 @@
 package backup_test
 
-// The backup-target contract suite (spec: Testing Decisions → restic targets): a disk, an SFTP server and an
-// S3-compatible service, in containers (testdata/compose.yaml, compose project hltest-22-targets). It needs Docker: it
+// The backup-target contract suite (spec: Testing Decisions → restic targets): a disk, an SFTP server, an
+// S3-compatible service, and an object-locked one that also stands in for B2's S3-compatible API, in containers
+// (testdata/compose.yaml, compose project hltest-22-targets, or HLTEST22_PROJECT's). It needs Docker: it
 // runs when HOMERSLAB_TEST_DOCKER_HOST names the engine to use, and is skipped otherwise. The code under test never
 // sees that engine (testenv points DOCKER_HOST at nowhere); only this harness does, explicitly.
 //
@@ -10,6 +11,7 @@ package backup_test
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
@@ -35,7 +37,7 @@ import (
 	"github.com/ArjunRachithcf/homerslab/internal/testenv"
 )
 
-const project = "hltest-22-targets"
+var project = cmp.Or(os.Getenv("HLTEST22_PROJECT"), "hltest-22-targets")
 
 func container(s string) string { return project + "-" + s + "-1" }
 
@@ -67,6 +69,10 @@ func TestTheBackupTargetContract(t *testing.T) {
 		t.Fatal(err)
 	}
 	w.docker(t, nil, "cp", self, container("client")+":/hl.test")
+	// rclone, to read an object-locked bucket as it was, as a household restores by hand (static, from its image).
+	rc := filepath.Join(t.TempDir(), "rclone")
+	w.docker(t, nil, "cp", container("s3")+":/usr/local/bin/rclone", rc)
+	w.docker(t, nil, "cp", rc, container("client")+":/usr/local/bin/rclone")
 	out, err := w.dockerOut(nil, "exec", "-e", "HLTEST22_INSIDE=1", "-e", "HLTEST22_HOST_KEY="+hostKey, "-e", "HLTEST22_S3_ID="+w.s3ID,
 		"-e", "HLTEST22_S3_SECRET="+w.s3Secret, "-e", "HLTEST22_S3_CA="+w.s3Cert, container("client"),
 		"/hl.test", "-test.run", "^TestTheBackupTargetContractInside$", "-test.v", "-test.count=1")
@@ -95,16 +101,45 @@ func TestTheBackupTargetContractInside(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	s3 := backup.Credentials{AccessKeyID: os.Getenv("HLTEST22_S3_ID"), SecretAccessKey: os.Getenv("HLTEST22_S3_SECRET")}
+	ca := os.Getenv("HLTEST22_S3_CA")
+	// B2's S3-compatible API, at the region's endpoint, is the locked service here.
+	t.Cleanup(backup.B2At("locked"))
+	locked := backup.Target{Kind: backup.S3, Host: "locked", Bucket: "locked", Path: "homerslab", CA: ca, Region: "eu-central-003"}
+	b2 := backup.Target{Kind: backup.B2, Region: "eu-central-003", Bucket: "b2-household", Path: "homerslab", CA: ca}
+	// The household made each bucket with Object Lock, in compliance mode for a day, before choosing it.
+	for _, b := range []string{locked.Bucket, b2.Bucket} {
+		for i := 0; ; i++ { // the service may still be starting
+			out, err := rclone(t, "mkdir", "--s3-bucket-object-lock-enabled", "locked:"+b).CombinedOutput()
+			if err == nil {
+				break
+			}
+			if i == 20 {
+				t.Fatalf("making bucket %s: %v %s", b, err, out)
+			}
+			time.Sleep(500 * time.Millisecond)
+		}
+		at := locked
+		at.Bucket = b
+		cfg := `<ObjectLockConfiguration xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><ObjectLockEnabled>Enabled</ObjectLockEnabled>` +
+			`<Rule><DefaultRetention><Mode>COMPLIANCE</Mode><Days>1</Days></DefaultRetention></Rule></ObjectLockConfiguration>`
+		if code, body, err := backup.S3Do(context.Background(), at, s3, "PUT", "object-lock", []byte(cfg)); err != nil || code != 200 {
+			t.Fatalf("locking bucket %s: %d %s %v", b, code, body, err)
+		}
+	}
 	worlds := []struct {
 		name   string
 		target backup.Target
 		creds  backup.Credentials
+		// bucket is the object-locked bucket's rclone path, where it is one.
+		bucket string
 	}{
-		{"disk", backup.Target{Kind: backup.Disk, Path: "/srv/backups"}, backup.Credentials{}},
+		{"disk", backup.Target{Kind: backup.Disk, Path: "/srv/backups"}, backup.Credentials{}, ""},
 		{"sftp", backup.Target{Kind: backup.SFTP, Host: "sftp", User: "backup", Path: "/upload", HostKey: os.Getenv("HLTEST22_HOST_KEY")},
-			backup.Credentials{SSHKey: string(sshKey)}},
-		{"s3", backup.Target{Kind: backup.S3, Host: "s3", Bucket: "household", Path: "homerslab", CA: os.Getenv("HLTEST22_S3_CA")},
-			backup.Credentials{AccessKeyID: os.Getenv("HLTEST22_S3_ID"), SecretAccessKey: os.Getenv("HLTEST22_S3_SECRET")}},
+			backup.Credentials{SSHKey: string(sshKey)}, ""},
+		{"s3", backup.Target{Kind: backup.S3, Host: "s3", Bucket: "household", Path: "homerslab", CA: ca}, s3, ""},
+		{"s3-locked", locked, s3, "locked:locked/homerslab"},
+		{"b2", b2, s3, "locked:b2-household/homerslab"},
 	}
 	for _, wd := range worlds {
 		t.Run(wd.name, func(t *testing.T) {
@@ -113,9 +148,24 @@ func TestTheBackupTargetContractInside(t *testing.T) {
 			if lines := strings.Split(strings.TrimSpace(wd.creds.SSHKey), "\n"); len(lines) > 2 {
 				secrets = append(secrets, lines[1]) // the key's first line of base64
 			}
-			contract(t, wd.target, wd.creds, secrets)
+			contract(t, wd.target, wd.creds, secrets, wd.bucket)
 		})
 	}
+}
+
+// rclone is rclone in the client, with the object-locked service as its remote "locked", configured in its
+// environment.
+func rclone(t *testing.T, args ...string) *exec.Cmd {
+	t.Helper()
+	ca := filepath.Join(os.TempDir(), "hl-locked-ca.pem")
+	if err := os.WriteFile(ca, []byte(os.Getenv("HLTEST22_S3_CA")), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command("rclone", append([]string{"--config", "/dev/null", "--ca-cert", ca, "-q"}, args...)...)
+	cmd.Env = []string{"PATH=/usr/local/bin:/usr/bin:/bin", "HOME=" + os.TempDir(), "RCLONE_CONFIG_LOCKED_TYPE=s3",
+		"RCLONE_CONFIG_LOCKED_PROVIDER=Other", "RCLONE_CONFIG_LOCKED_REGION=eu-central-003", "RCLONE_CONFIG_LOCKED_LOCATION_CONSTRAINT=eu-central-003", "RCLONE_CONFIG_LOCKED_ENDPOINT=https://locked",
+		"RCLONE_CONFIG_LOCKED_ACCESS_KEY_ID=" + os.Getenv("HLTEST22_S3_ID"), "RCLONE_CONFIG_LOCKED_SECRET_ACCESS_KEY=" + os.Getenv("HLTEST22_S3_SECRET")}
+	return cmd
 }
 
 // seen is everything restic was handed and wrote, across a target's runs.
@@ -185,7 +235,7 @@ func repo(t *testing.T, s *seen, target backup.Target, creds backup.Credentials,
 	return backup.Repo{Restic: "restic", Target: target, Node: node, Dir: dir, Cache: filepath.Join(t.TempDir(), "cache"), Run: s.runner}
 }
 
-func contract(t *testing.T, target backup.Target, creds backup.Credentials, secrets []string) {
+func contract(t *testing.T, target backup.Target, creds backup.Credentials, secrets []string, bucket string) {
 	ctx := context.Background()
 	s := &seen{}
 	primaryKey, piKey := newKey(), newKey()
@@ -459,6 +509,75 @@ func contract(t *testing.T, target backup.Target, creds backup.Credentials, secr
 		}
 	})
 
+	t.Run("it says plainly whether whoever holds its credentials can delete its backups", func(t *testing.T) {
+		im := backup.ReadImmutability(ctx, target, creds)
+		switch {
+		case bucket != "" && (im != backup.Immutability{Immutable: true, Why: "compliance", Days: 1}):
+			t.Errorf("an object-locked bucket: %+v", im)
+		case bucket == "" && im.Immutable:
+			t.Errorf("a target without Object Lock is immutable: %+v", im)
+		case target.Kind == backup.Disk && im.Why != "disk", target.Kind == backup.SFTP && im.Why != "sftp",
+			target.Kind == backup.S3 && bucket == "" && im.Why != "no-object-lock" && im.Why != "unknown":
+			t.Errorf("%s: %+v", target.Kind, im)
+		}
+	})
+
+	if bucket != "" {
+		t.Run("a box taken over can't delete what it wrote: it is only hidden, and comes back by hand", func(t *testing.T) {
+			photos := t.TempDir()
+			if err := os.WriteFile(filepath.Join(photos, "photo.jpg"), []byte("the family's photo"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			id, err := primary.Backup(ctx, backup.Item{Tags: []string{"app=kept", "data=server:/photos"}, Paths: []string{photos}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			time.Sleep(1100 * time.Millisecond) // the service keeps times to the second
+			before := time.Now().UTC()
+			time.Sleep(1100 * time.Millisecond)
+			// The thief, with the node's own key and credentials: every snapshot forgotten and pruned, then every version
+			// of every object deleted, as far as the service lets it.
+			all, err := primary.Snapshots(ctx)
+			if err != nil || len(all) == 0 {
+				t.Fatalf("the snapshots: %v", err)
+			}
+			args := []string{"forget", "--prune"}
+			for _, s := range all {
+				args = append(args, s.ID)
+			}
+			if _, err := backup.Raw(ctx, primary, args...); err != nil {
+				t.Fatalf("the thief's prune: %v", err)
+			}
+			if out, err := rclone(t, "delete", "--s3-versions", bucket).CombinedOutput(); err == nil {
+				t.Errorf("the service deleted locked versions: %s", out)
+			}
+			if out, err := rclone(t, "delete", "--s3-versions", "--s3-bypass-governance-retention", bucket).CombinedOutput(); err == nil {
+				t.Errorf("the service deleted versions locked in compliance mode, bypassing governance: %s", out)
+			}
+			if left, err := primary.Snapshots(ctx); err != nil || len(left) != 0 {
+				t.Fatalf("after the thief, restic sees %d snapshots, %v", len(left), err)
+			}
+			// Back by hand: the bucket as it was before, served to restic read-only.
+			serve := rclone(t, "serve", "restic", "--addr", "127.0.0.1:8099", "--s3-version-at", before.Format(time.RFC3339), bucket)
+			if err := serve.Start(); err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = serve.Process.Kill(); _ = serve.Wait() }()
+			var b []byte
+			for range 50 {
+				b, err = exec.Command("restic", "-r", "rest:http://127.0.0.1:8099/"+"primary", "--password-file", filepath.Join(primary.Dir, backup.KeyFile),
+					"--no-lock", "--no-cache", "-q", "dump", id, filepath.Join(photos, "photo.jpg")).Output()
+				if err == nil {
+					break
+				}
+				time.Sleep(200 * time.Millisecond)
+			}
+			if err != nil || string(b) != "the family's photo" {
+				t.Errorf("the photo, back by hand from the bucket as it was: %q %v", b, err)
+			}
+		})
+	}
+
 	t.Run("no secret is ever on a command line, in an environment, or in restic's output", func(t *testing.T) {
 		s.mu.Lock()
 		defer s.mu.Unlock()
@@ -479,7 +598,7 @@ func up(t *testing.T, engine string) *world {
 	t.Helper()
 	_, self, _, _ := runtime.Caller(0)
 	w := &world{engine: engine, dir: filepath.Join(filepath.Dir(self), "testdata"), s3ID: "hltest" + string(newKey()[:12]), s3Secret: string(newKey())}
-	w.s3Cert, w.s3Key = selfSigned(t, "s3")
+	w.s3Cert, w.s3Key = selfSigned(t, "s3", "locked")
 	w.compose(t, "down", "-v", "--remove-orphans")
 	t.Cleanup(func() {
 		if t.Failed() {
@@ -492,14 +611,14 @@ func up(t *testing.T, engine string) *world {
 	return w
 }
 
-// selfSigned is a certificate for name that is its own authority, and its key, as PEM.
-func selfSigned(t *testing.T, name string) (string, string) {
+// selfSigned is a certificate for names that is its own authority, and its key, as PEM.
+func selfSigned(t *testing.T, names ...string) (string, string) {
 	t.Helper()
 	k, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		t.Fatal(err)
 	}
-	tmpl := &x509.Certificate{SerialNumber: big.NewInt(1), Subject: pkix.Name{CommonName: name}, DNSNames: []string{name},
+	tmpl := &x509.Certificate{SerialNumber: big.NewInt(1), Subject: pkix.Name{CommonName: names[0]}, DNSNames: names,
 		NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(24 * time.Hour), IsCA: true, BasicConstraintsValid: true,
 		KeyUsage: x509.KeyUsageDigitalSignature | x509.KeyUsageCertSign, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}}
 	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &k.PublicKey, k)

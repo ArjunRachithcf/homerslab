@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/ArjunRachithcf/homerslab/internal/agent/agenttest"
+	"github.com/ArjunRachithcf/homerslab/internal/backup"
 	"github.com/ArjunRachithcf/homerslab/internal/testenv"
 )
 
@@ -219,5 +220,114 @@ func TestBackupsThatStopEndingAreAWarning(t *testing.T) {
 	p.m.BackUpDue(context.Background())
 	if open, resolved := late(); open || !resolved {
 		t.Errorf("after a run that got to its end: open %v, resolved %v", open, resolved)
+	}
+}
+
+const b2Secret = "K005-the-b2-application-key/0123456789"
+
+// withB2 sets a B2 bucket as the household's target, at the terminal, with the quota given (0 for none).
+func withB2(t *testing.T, p *primary, quota uint64) response {
+	t.Helper()
+	r := p.control("PUT", "/api/v1/backups/target", map[string]any{
+		"target":      map[string]any{"kind": "b2", "region": "eu-central-003", "bucket": "household", "path": "homerslab", "quotaBytes": quota},
+		"credentials": map[string]string{"accessKeyId": "005b2keyid0000000001", "secretAccessKey": b2Secret}})
+	if r.Code != http.StatusOK {
+		t.Fatalf("the target: %d %s", r.Code, r.Body)
+	}
+	return r
+}
+
+// Admin shows where backups go and whether a box taken over could delete them, never the target's credentials.
+// Changing the target from Admin is a risky change, which needs a step-up: until #25 builds it, Admin refuses.
+func TestAdminShowsTheBackupTargetAndNeverItsCredentials(t *testing.T) {
+	testenv.Isolate(t)
+	p := bentoWithData(t)
+	if r := adm(p, "GET", "/api/v1/backups/target", nil); r.Code != http.StatusOK || !strings.Contains(string(r.Body), `"target":null`) {
+		t.Fatalf("before a target: %d %s", r.Code, r.Body)
+	}
+	p.host.BucketLocked(backup.Immutability{Immutable: true, Why: "compliance", Days: 30})
+	if r := withB2(t, p, 0); !strings.Contains(string(r.Body), `"immutability":{"immutable":true,"why":"compliance","days":30}`) {
+		t.Errorf("setting it: %s", r.Body)
+	}
+	var st struct {
+		Target struct {
+			Kind, Region, Bucket string
+		}
+		Repository   string
+		Immutability backup.Immutability
+	}
+	r := adm(p, "GET", "/api/v1/backups/target", nil)
+	r.json(t, &st)
+	if st.Target.Kind != "b2" || st.Target.Region != "eu-central-003" || st.Repository != "s3:https://s3.eu-central-003.backblazeb2.com/household/homerslab/primary" ||
+		st.Immutability != (backup.Immutability{Immutable: true, Why: "compliance", Days: 30}) {
+		t.Errorf("Admin's view: %s", r.Body)
+	}
+	for _, r := range []response{r, p.control("GET", "/api/v1/backups/target", nil)} {
+		if strings.Contains(string(r.Body), b2Secret) || strings.Contains(string(r.Body), "accessKeyId") {
+			t.Errorf("the target's credentials are shown: %s", r.Body)
+		}
+	}
+	before := len(p.host.Restic())
+	change := adm(p, "PUT", "/api/v1/backups/target", map[string]any{"target": map[string]string{"kind": "disk", "path": "/srv/backups"}})
+	if change.Code != http.StatusForbidden || !strings.Contains(string(change.Body), "step-up-required") {
+		t.Errorf("changing it from Admin without a step-up: %d %s", change.Code, change.Body)
+	}
+	if n := len(p.host.Restic()) - before; n != 0 || !strings.Contains(string(adm(p, "GET", "/api/v1/backups/target", nil).Body), `"kind":"b2"`) {
+		t.Errorf("a change refused ran restic %d times, or changed the target", n)
+	}
+}
+
+// A target that is 80% full is a warning, once, before prune can no longer free space, until it is less full. A target
+// that doesn't say its size never warns.
+func TestATargetEightyPercentFullIsAWarningUntilItIsnt(t *testing.T) {
+	testenv.Isolate(t)
+	p := bentoWithData(t)
+	warnings := func() []struct{ Source, What, Resolved string } {
+		var w, out []struct{ Source, What, Resolved string }
+		_ = json.Unmarshal(p.control("GET", "/api/v1/warnings", nil).Body, &w)
+		for _, x := range w {
+			if x.Source == "backup:space" {
+				out = append(out, x)
+			}
+		}
+		return out
+	}
+	withB2(t, p, 1000)
+	run := func(used uint64) {
+		p.host.RepoSize(used)
+		p.m.BackUpDue(context.Background())
+		p.clock.Add(time.Hour)
+	}
+	run(799)
+	if w := warnings(); len(w) != 0 {
+		t.Errorf("79.9%% full: %+v", w)
+	}
+	var st struct {
+		Space struct{ UsedBytes, SizeBytes uint64 }
+	}
+	adm(p, "GET", "/api/v1/backups/target", nil).json(t, &st)
+	if st.Space.UsedBytes != 799 || st.Space.SizeBytes != 1000 {
+		t.Errorf("Admin's view of the space: %+v", st.Space)
+	}
+	run(800)
+	run(950)
+	if w := warnings(); len(w) != 1 || w[0].What != "target-full 80" || w[0].Resolved != "" {
+		t.Fatalf("80%% and 95%% full: %+v", w)
+	}
+	run(500)
+	if w := warnings(); len(w) != 1 || w[0].Resolved == "" {
+		t.Errorf("half full again: %+v", w)
+	}
+
+	q := bentoWithData(t)
+	withB2(t, q, 0)
+	q.host.RepoSize(1 << 50)
+	q.m.BackUpDue(context.Background())
+	var all []struct{ Source string }
+	_ = json.Unmarshal(q.control("GET", "/api/v1/warnings", nil).Body, &all)
+	for _, w := range all {
+		if w.Source == "backup:space" {
+			t.Errorf("a target of unknown size warned: %+v", all)
+		}
 	}
 }

@@ -652,6 +652,16 @@ Details are in [ADR 0010](adr/0010-backups-restic-and-a-write-only-archive.md), 
   - A node holds only its own repository's key. The primary holds them all, for restore tests and moves.
   - The recovery kit lists each repository and key, so adding a node asks for a new kit.
   - Moving an app between nodes restores from the source node's repository, then backs up into the target node's.
+- **Immutable where the target supports it** (#22). Admin says plainly, per target, whether a machine taken over could
+  delete its backups:
+  - an S3 or B2 bucket with Object Lock in compliance mode by default (versioning on) is immutable: what prune or a
+    thief deletes is only hidden until each version's lock runs out, and a household restores it by hand by reading
+    the bucket as it was (`rclone serve restic --s3-version-at <time>`). Governance mode is not immutable: a key
+    allowed to bypass it can delete;
+  - a disk and SFTP can't be: the machine writes them, and the account that writes can delete. Only snapshots on the
+    server, out of the machine's reach, keep backups from it.
+- **A target 80% full is a warning** (#22), sent as every backup warning is: a disk target's filesystem; SFTP, S3 and
+  B2 by the node's repository against the quota the admin gave, since those services don't say their size.
 
 ### Names and certificates
 

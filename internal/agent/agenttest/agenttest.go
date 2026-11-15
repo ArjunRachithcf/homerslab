@@ -26,6 +26,7 @@ import (
 	"time"
 
 	"github.com/ArjunRachithcf/homerslab/internal/agent"
+	"github.com/ArjunRachithcf/homerslab/internal/backup"
 	"github.com/ArjunRachithcf/homerslab/internal/engine"
 	"github.com/ArjunRachithcf/homerslab/internal/engine/compose"
 	"github.com/ArjunRachithcf/homerslab/internal/host"
@@ -96,6 +97,9 @@ func StartWith(t testing.TB, c agent.Config) (string, *Host) {
 	}
 	if c.Probe == nil {
 		c.Probe = h.Probe
+	}
+	if c.Immutability == nil {
+		c.Immutability = h.immutability
 	}
 	if c.IsBridge == nil {
 		c.IsBridge = h.IsBridge
@@ -197,6 +201,8 @@ type Host struct {
 	restic     []ResticRun
 	resticFail map[string]int  // restic's exit codes, for runs whose command line has the key
 	repos      map[string]bool // the repositories restic made
+	bucket     backup.Immutability
+	repoSize   uint64          // what restic counts in the node's repository
 	holds      map[string]gate // runs held until the test lets them go, by what their command line has
 	snaps      []Snapshot      // the snapshots restic made, and the test's
 	restored   []string        // what restic and the apps' restore commands put back, in order
@@ -308,6 +314,31 @@ func (h *Host) Mounts(_ context.Context, project string) (map[string][]engine.Mo
 	return out, nil
 }
 
+// immutability answers for an S3 or B2 bucket as the test said (BucketLocked), never asking a service; a disk and SFTP
+// as the adapter does.
+func (h *Host) immutability(ctx context.Context, t backup.Target, c backup.Credentials) backup.Immutability {
+	if t.Kind == backup.Disk || t.Kind == backup.SFTP {
+		return backup.ReadImmutability(ctx, t, c)
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return cmp.Or(h.bucket, backup.Immutability{Why: "no-object-lock"})
+}
+
+// BucketLocked makes an S3 or B2 bucket's settings say im.
+func (h *Host) BucketLocked(im backup.Immutability) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.bucket = im
+}
+
+// RepoSize makes restic count that much in the node's repository.
+func (h *Host) RepoSize(n uint64) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.repoSize = n
+}
+
 // Restic is every run of restic so far.
 func (h *Host) Restic() []ResticRun {
 	h.mu.Lock()
@@ -414,6 +445,8 @@ func (h *Host) runRestic(c host.Cmd) ([]byte, error) {
 		}
 		id := h.addSnapshot(time.Now(), path, 1024, tagged())
 		return fmt.Appendf(nil, `{"message_type":"status"}`+"\n"+`{"message_type":"summary","snapshot_id":"%s"}`+"\n", id), nil
+	case slices.Contains(run.Argv, "stats"):
+		return fmt.Appendf(nil, `{"total_size":%d,"snapshots_count":%d}`, h.repoSize, len(h.snaps)), nil
 	case slices.Contains(run.Argv, "snapshots"):
 		out := []Snapshot{}
 		want := tagged()

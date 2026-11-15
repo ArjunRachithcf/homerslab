@@ -1,5 +1,6 @@
 // Package backup is the backup-target adapter (spec: Adapter contracts → Backup target; ADR 0010, amended for #90):
-// restic, on a disk, over SFTP, or on an S3-compatible service. Each node has a repository of its own at the
+// restic, on a disk, over SFTP, on an S3-compatible service, or on Backblaze B2 (through its S3-compatible API, as restic
+// recommends). Each node has a repository of its own at the
 // household's target (Target.Location), opened by a key of its own, so a stolen node opens only its own backups.
 //
 // restic reads every secret from a file in a credentials folder (Repo.Dir: the $CREDENTIALS_DIRECTORY systemd gives
@@ -45,7 +46,11 @@ const (
 	Disk Kind = "disk"
 	SFTP Kind = "sftp"
 	S3   Kind = "s3" // an S3-compatible service, over HTTPS
+	B2   Kind = "b2" // Backblaze B2, through its S3-compatible API at the region's endpoint
 )
+
+// b2Endpoint is B2's S3-compatible endpoint for a region (the contract suite points it at its own service).
+var b2Endpoint = func(region string) string { return "s3." + region + ".backblazeb2.com" }
 
 // Target is where the household's backups go, as the admin chose it. None of it is secret.
 type Target struct {
@@ -59,9 +64,14 @@ type Target struct {
 	// SFTP: the user, and the server's public key ("ssh-ed25519 AAAA…"), pinned.
 	User    string `json:"user,omitempty"`
 	HostKey string `json:"hostKey,omitempty"`
-	// S3: the bucket, and a certificate authority (PEM) to trust for a service of the household's own.
+	// S3 and B2: the bucket, and a certificate authority (PEM) to trust for a service of the household's own.
 	Bucket string `json:"bucket,omitempty"`
 	CA     string `json:"ca,omitempty"`
+	// Region: B2's (its endpoint is the region's, so no Host), or an S3 service's where it needs one.
+	Region string `json:"region,omitempty"`
+	// QuotaBytes is how much the admin's SFTP, S3 or B2 account holds, for the alert at 80% (0 for unknown: those
+	// services don't say). A disk's space is its filesystem's.
+	QuotaBytes uint64 `json:"quotaBytes,omitempty"`
 }
 
 // Credentials are the target's secrets.
@@ -82,6 +92,7 @@ var (
 	file     = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,62}$`)
 	arg      = regexp.MustCompile(`^[A-Za-z0-9._,=:/@+%-]{1,200}$`)
 	program  = regexp.MustCompile(`^[A-Za-z0-9._/][A-Za-z0-9._/-]{0,199}$`)
+	region   = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,30}[a-z0-9]$`)
 	tag      = regexp.MustCompile(`^[a-z][a-z-]*=[A-Za-z0-9._:/@-]+$`) // at most a service's name and a ValidPath (validTag)
 )
 
@@ -124,11 +135,27 @@ func (t Target) Check() error {
 	if t.Port < 0 || t.Port > 65535 {
 		return bad("the port")
 	}
+	if t.Region != "" && (t.Kind != S3 && t.Kind != B2 || !region.MatchString(t.Region)) {
+		return bad("the region, as the service names it")
+	}
 	switch t.Kind {
 	case Disk:
 		if !ValidPath(t.Path) {
 			return bad("an absolute folder of plain characters")
 		}
+		if t.QuotaBytes != 0 {
+			return bad("no quota: a disk's space is its filesystem's")
+		}
+	case B2:
+		switch {
+		case t.Region == "":
+			return bad("B2's region, as `eu-central-003`")
+		case t.Host != "" || t.Port != 0:
+			return bad("no endpoint: B2's is its region's")
+		}
+		u := t
+		u.Kind, u.Host, u.Region = S3, b2Endpoint(t.Region), ""
+		return u.Check()
 	case SFTP:
 		switch {
 		case !hostname.MatchString(t.Host):
@@ -159,9 +186,21 @@ func (t Target) Check() error {
 			}
 		}
 	default:
-		return bad("a disk, SFTP or S3")
+		return bad("a disk, SFTP, S3 or B2")
 	}
 	return nil
+}
+
+// endpoint is the S3 API's host for an S3 or B2 target, with its port when it isn't 443's.
+func (t Target) endpoint() string {
+	host := t.Host
+	if t.Kind == B2 {
+		host = b2Endpoint(t.Region)
+	}
+	if t.Port != 0 {
+		host += ":" + strconv.Itoa(t.Port)
+	}
+	return host
 }
 
 // Location is the node's own repository at the target: one per node (#90), the target's folder or prefix and the
@@ -179,11 +218,7 @@ func (t Target) Location(nodeName string) (string, error) {
 	case SFTP:
 		return "sftp:" + t.User + "@" + t.Host + ":" + path.Join(t.Path, nodeName), nil
 	}
-	host := t.Host
-	if t.Port != 0 {
-		host += ":" + strconv.Itoa(t.Port)
-	}
-	return "s3:https://" + host + "/" + path.Join(t.Bucket, t.Path, nodeName), nil
+	return "s3:https://" + t.endpoint() + "/" + path.Join(t.Bucket, t.Path, nodeName), nil
 }
 
 // The files of a credentials folder, by credential ID.
@@ -205,7 +240,7 @@ func Files(t Target, key []byte, c Credentials) (map[string][]byte, error) {
 	}
 	out := map[string][]byte{KeyFile: key}
 	switch t.Kind {
-	case S3:
+	case S3, B2: // B2's application key ID and key are its S3 API's access key and secret
 		if !keyID.MatchString(c.AccessKeyID) || !keyID.MatchString(c.SecretAccessKey) {
 			return nil, errors.New("backup target: S3's access key and its secret")
 		}
@@ -278,10 +313,13 @@ func (r Repo) runWith(ctx context.Context, stdin []byte, args ...string) ([]byte
 		argv = append(argv, "-o", fmt.Sprintf("sftp.command=ssh -F none -i %s -o IdentitiesOnly=yes -o UserKnownHostsFile=%s "+
 			"-o StrictHostKeyChecking=yes -o BatchMode=yes -p %d %s@%s -s sftp",
 			path.Join(r.Dir, SSHFile), path.Join(r.Dir, HostsFile), port, r.Target.User, r.Target.Host))
-	case S3:
+	case S3, B2:
 		env = append(env, "AWS_SHARED_CREDENTIALS_FILE="+path.Join(r.Dir, S3File))
 		if r.Target.CA != "" {
 			argv = append(argv, "--cacert", path.Join(r.Dir, CAFile))
+		}
+		if r.Target.Region != "" {
+			argv = append(argv, "-o", "s3.region="+r.Target.Region)
 		}
 	}
 	out, err := r.Run(ctx, append(argv, args...), env, stdin)
@@ -446,6 +484,23 @@ func (r Repo) Prune(ctx context.Context, k Retention) error {
 		"--keep-hourly", strconv.Itoa(k.Hourly), "--keep-daily", strconv.Itoa(k.Daily),
 		"--keep-weekly", strconv.Itoa(k.Weekly), "--keep-monthly", strconv.Itoa(k.Monthly))
 	return err
+}
+
+// Used is how much the node's repository holds at the target, packed and encrypted, as restic counts it. It is read
+// without a lock, so a run under way doesn't hold it up. An object-locked bucket also keeps what prune freed until its
+// lock runs out, which restic doesn't see.
+func (r Repo) Used(ctx context.Context) (uint64, error) {
+	out, err := r.run(ctx, "stats", "--no-lock", "--mode", "raw-data")
+	if err != nil {
+		return 0, err
+	}
+	var s struct {
+		Size *uint64 `json:"total_size"`
+	}
+	if err := json.Unmarshal(out, &s); err != nil || s.Size == nil {
+		return 0, errors.New("backup: restic's stats named no size")
+	}
+	return *s.Size, nil
 }
 
 var snapshotID = regexp.MustCompile(`^[0-9a-f]{8,64}$`)

@@ -20,7 +20,8 @@ func (m *Manager) Admin() http.Handler {
 	store := http.NewServeMux()
 	m.catalogRoutes(store, false)
 	m.storageRoutes(store)
-	for _, p := range []string{"/api/v1/catalog", "/api/v1/catalog/", "/api/v1/plans", "/api/v1/plans/", "/api/v1/apps", "/api/v1/apps/", "/api/v1/storage", "/api/v1/storage/"} {
+	m.backupRoutes(store, false)
+	for _, p := range []string{"/api/v1/catalog", "/api/v1/catalog/", "/api/v1/plans", "/api/v1/plans/", "/api/v1/apps", "/api/v1/apps/", "/api/v1/storage", "/api/v1/storage/", "/api/v1/backups/"} {
 		mux.Handle(p, m.signedIn(store))
 	}
 	mux.HandleFunc("/api/", notFound)
