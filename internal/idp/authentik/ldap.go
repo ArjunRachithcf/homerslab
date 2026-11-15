@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/ArjunRachithcf/homerslab/internal/idp"
 )
@@ -35,9 +36,15 @@ const (
 	// ldapNone is the outpost's own provider, whose application opens to nobody: Authentik keeps no outpost without
 	// a provider, and the outpost (so its token) stays while apps come and go. Its base DN is in an ou, which no app's
 	// (a dc) can ever be.
-	ldapNone        = "homerslab-outpost-ldap"
-	ldapNoneDN      = "ou=outpost,dc=homerslab"
-	appPasswords    = "authentik.core.auth.TokenBackend"
+	ldapNone     = "homerslab-outpost-ldap"
+	ldapNoneDN   = "ou=outpost,dc=homerslab"
+	appPasswords = "authentik.core.auth.TokenBackend"
+	// ldapClosed marks an app's LDAP application that HomersLab closed to nobody on its way out, with the time it
+	// closed: a provider leaves the outpost before its application goes.
+	ldapClosed = "homerslab: closed "
+	// ldapRetireAfter is how long a closed application and its provider stay after the provider left the outpost,
+	// before a later pass deletes them: long past the outpost's taking the change.
+	ldapRetireAfter = 5 * time.Minute
 	outpostTokenFmt = "ak-outpost-%s-api"
 )
 
@@ -231,7 +238,7 @@ func (a *Authentik) ldapOutpost(ctx context.Context, bind string, add int) (*out
 	if err != nil {
 		return nil, err
 	}
-	if err := a.ensureLDAPApp(ctx, ldapNone, "HomersLab LDAP", none, nobody); err != nil {
+	if err := a.ensureLDAPApp(ctx, ldapNone, "HomersLab LDAP", "", none, nobody); err != nil {
 		return nil, err
 	}
 	o, err := find[outpostObj](ctx, a.api, "/outposts/instances/?name__iexact="+q(LDAPOutpostName), "name", LDAPOutpostName)
@@ -284,22 +291,25 @@ func (a *Authentik) LDAPOutpost(ctx context.Context) (idp.Secret, error) {
 	return idp.Secret(k.Key), nil
 }
 
-// ensureLDAPApp makes the application of an LDAP provider, or brings it in line, opened by exactly these bindings.
-func (a *Authentik) ensureLDAPApp(ctx context.Context, slug, name string, provider int, bs []binding) error {
+// ensureLDAPApp makes the application of an LDAP provider, or brings it in line, opened by exactly these bindings,
+// with desc as its description. A new one is made without its provider, bound, and only then given it: an application
+// with no binding opens to everyone. An empty name keeps the one it has.
+func (a *Authentik) ensureLDAPApp(ctx context.Context, slug, name, desc string, provider int, bs []binding) error {
 	if len(bs) == 0 {
 		return errors.New("authentik: an application with no binding opens to everyone")
 	}
-	app := map[string]any{"name": name, "slug": slug, "provider": provider, "policy_engine_mode": "any", "meta_hide": true}
 	var full struct {
-		PBM string `json:"pbm_uuid"`
-		PK  string `json:"pk"`
+		PBM  string `json:"pbm_uuid"`
+		PK   string `json:"pk"`
+		Name string `json:"name"`
 	}
 	err := a.api.call(ctx, http.MethodGet, "/core/applications/"+slug+"/", nil, &full)
-	switch {
-	case notFound(err):
-		err = a.api.call(ctx, http.MethodPost, "/core/applications/", app, &full)
-	case err == nil:
-		err = a.api.call(ctx, http.MethodPatch, "/core/applications/"+slug+"/", app, nil)
+	if notFound(err) {
+		if name == "" {
+			name = slug
+		}
+		err = a.api.call(ctx, http.MethodPost, "/core/applications/", map[string]any{"name": name, "slug": slug,
+			"policy_engine_mode": "any", "meta_hide": true, "meta_description": desc}, &full)
 	}
 	if err != nil {
 		return err
@@ -307,7 +317,131 @@ func (a *Authentik) ensureLDAPApp(ctx context.Context, slug, name string, provid
 	if full.PBM == "" {
 		return errors.New("authentik: the application has no binding target")
 	}
-	return a.bindPolicies(ctx, target{PBM: full.PBM, PK: full.PK}, bs)
+	if err := a.bindPolicies(ctx, target{PBM: full.PBM, PK: full.PK}, bs); err != nil {
+		return err
+	}
+	if name == "" {
+		name = full.Name
+	}
+	return a.api.call(ctx, http.MethodPatch, "/core/applications/"+slug+"/", map[string]any{"name": name, "slug": slug,
+		"provider": provider, "policy_engine_mode": "any", "meta_hide": true, "meta_description": desc}, nil)
+}
+
+// closeLDAPApp closes an LDAP provider's application to nobody, making one if it has none, and marks it closed now.
+func (a *Authentik) closeLDAPApp(ctx context.Context, slug string, provider int) error {
+	nobody, err := a.audience(ctx, nil)
+	if err != nil {
+		return err
+	}
+	return a.ensureLDAPApp(ctx, slug, "", ldapClosed+time.Now().UTC().Format(time.RFC3339), provider, nobody)
+}
+
+// ldapAppState is an LDAP application as the outpost's tidying reads it.
+type ldapAppState struct {
+	Desc string `json:"meta_description"`
+}
+
+// closedAt is when HomersLab closed the application, if it did.
+func (s ldapAppState) closedAt() (time.Time, bool) {
+	t, err := time.Parse(time.RFC3339, strings.TrimPrefix(s.Desc, ldapClosed))
+	return t, strings.HasPrefix(s.Desc, ldapClosed) && err == nil
+}
+
+// ldapApp is an LDAP provider's application, by its slug, or nil.
+func (a *Authentik) ldapApp(ctx context.Context, slug string) (*ldapAppState, error) {
+	var s ldapAppState
+	err := a.api.call(ctx, http.MethodGet, "/core/applications/"+slug+"/", nil, &s)
+	if notFound(err) {
+		return nil, nil
+	}
+	return &s, err
+}
+
+// ldapTidy keeps the outpost serving HomersLab's LDAP providers alone, each with its own application (#204): a provider
+// whose application is gone, is another's or was closed leaves the outpost (orphaned providers are removed), its
+// application closed to nobody first when it is HomersLab's or there is none. A closed application and its provider are
+// deleted once the provider has been off the outpost for a.ldapRetire. With repair false it changes nothing, and says
+// whether the outpost serves only what it should.
+func (a *Authentik) ldapTidy(ctx context.Context, repair bool) (bool, error) {
+	o, err := find[outpostObj](ctx, a.api, "/outposts/instances/?name__iexact="+q(LDAPOutpostName), "name", LDAPOutpostName)
+	if err != nil || o == nil {
+		return err == nil, err
+	}
+	ps, err := list[ldapProviderObj](ctx, a.api, "/providers/ldap/")
+	if err != nil {
+		return false, err
+	}
+	clean, keep := true, slices.Clone(o.Providers)
+	for _, p := range ps {
+		on := slices.Contains(o.Providers, p.PK)
+		ours := p.Name == ldapNone || strings.HasSuffix(p.Name, "-ldap") && validLDAPSlug(strings.TrimSuffix(p.Name, "-ldap")) == nil
+		if !on && !ours {
+			continue
+		}
+		var app *ldapAppState
+		if p.App != nil && *p.App == p.Name {
+			if app, err = a.ldapApp(ctx, p.Name); err != nil {
+				return false, err
+			}
+		}
+		at, closed := time.Time{}, false
+		if app != nil {
+			at, closed = app.closedAt()
+		}
+		switch {
+		case p.Name == ldapNone:
+			// The outpost's own: on it, and its application, closed to nobody, there.
+			if on && app == nil {
+				clean = false
+				if repair {
+					nobody, err := a.audience(ctx, nil)
+					if err != nil {
+						return false, err
+					}
+					if err := a.ensureLDAPApp(ctx, ldapNone, "HomersLab LDAP", "", p.PK, nobody); err != nil {
+						return false, err
+					}
+				}
+			}
+		case on && (!ours || app == nil || closed):
+			clean = false
+			if !repair {
+				continue
+			}
+			if ours && (app != nil || p.App == nil) {
+				if err := a.closeLDAPApp(ctx, p.Name, p.PK); err != nil {
+					return false, err
+				}
+			}
+			keep = slices.DeleteFunc(keep, func(x int) bool { return x == p.PK })
+		case !on && closed && repair && time.Since(at) >= a.ldapRetire:
+			if err := gone(a.api.call(ctx, http.MethodDelete, "/core/applications/"+p.Name+"/", nil, nil)); err != nil {
+				return false, err
+			}
+			if err := gone(a.api.call(ctx, http.MethodDelete, fmt.Sprintf("/providers/ldap/%d/", p.PK), nil, nil)); err != nil {
+				return false, err
+			}
+		}
+	}
+	if len(keep) != len(o.Providers) {
+		if err := a.offOutpost(ctx, o, keep); err != nil {
+			return false, err
+		}
+	}
+	return clean, nil
+}
+
+// offOutpost leaves the outpost with these providers only.
+func (a *Authentik) offOutpost(ctx context.Context, o *outpostObj, keep []int) error {
+	return a.api.call(ctx, http.MethodPatch, "/outposts/instances/"+o.PK+"/", map[string]any{"providers": keep}, nil)
+}
+
+// gone is nil for an object that isn't there.
+func gone(err error) error {
+	if notFound(err) {
+		return nil
+	}
+	return err
 }
 
 // EnsureLDAP makes an app's LDAP provider and its application, which only the app's roles open. The provider joins the
@@ -331,51 +465,65 @@ func (a *Authentik) EnsureLDAP(ctx context.Context, app idp.LDAPApp) (idp.LDAPCr
 	if err != nil {
 		return idp.LDAPCredentials{}, err
 	}
-	if err := a.ensureLDAPApp(ctx, ldapObj(app.Slug), app.Name+" (LDAP)", provider, bs); err != nil {
+	if err := a.ensureLDAPApp(ctx, ldapObj(app.Slug), app.Name+" (LDAP)", "", provider, bs); err != nil {
 		return idp.LDAPCredentials{}, err
 	}
 	if _, err := a.ldapOutpost(ctx, bind, provider); err != nil {
 		return idp.LDAPCredentials{}, err
 	}
+	if _, err := a.ldapTidy(ctx, true); err != nil {
+		return idp.LDAPCredentials{}, err
+	}
 	return idp.LDAPCredentials{BaseDN: LDAPBaseDN(app.Slug), UserDN: LDAPUserDN(app.Slug), Created: created}, nil
 }
 
-// DeleteLDAP deletes an app's LDAP provider and its application: the provider leaves the outpost first, so no bind
-// reaches it on the way. Another application's provider is never deleted.
+// DeleteLDAP closes an app's LDAP application to nobody, at once, then takes its provider off the outpost: a provider
+// leaves the outpost before its application goes. The two are deleted by a later pass (ldapTidy), once the outpost
+// can no longer be serving the provider. Another application's provider is never touched.
 func (a *Authentik) DeleteLDAP(ctx context.Context, slug string) error {
 	if err := validLDAPSlug(slug); err != nil {
 		return err
 	}
-	gone := func(err error) error {
-		if notFound(err) {
-			return nil
-		}
-		return err
-	}
-	p, err := find[ldapProviderObj](ctx, a.api, "/providers/ldap/?name__iexact="+q(ldapObj(slug)), "name", ldapObj(slug))
+	name := ldapObj(slug)
+	p, err := find[ldapProviderObj](ctx, a.api, "/providers/ldap/?name__iexact="+q(name), "name", name)
 	if err != nil {
 		return err
 	}
-	if p != nil && p.App != nil && *p.App != ldapObj(slug) {
-		return fmt.Errorf("authentik: the LDAP provider %s is another application's, refused", ldapObj(slug))
-	}
-	if p != nil {
-		o, err := find[outpostObj](ctx, a.api, "/outposts/instances/?name__iexact="+q(LDAPOutpostName), "name", LDAPOutpostName)
-		if err != nil {
-			return err
-		}
-		if o != nil && slices.Contains(o.Providers, p.PK) {
-			ps := slices.DeleteFunc(slices.Clone(o.Providers), func(x int) bool { return x == p.PK })
-			if err := a.api.call(ctx, http.MethodPatch, "/outposts/instances/"+o.PK+"/", map[string]any{"providers": ps}, nil); err != nil {
-				return err
-			}
-		}
-	}
-	if err := gone(a.api.call(ctx, http.MethodDelete, "/core/applications/"+ldapObj(slug)+"/", nil, nil)); err != nil {
-		return err
+	if p != nil && p.App != nil && *p.App != name {
+		return fmt.Errorf("authentik: the LDAP provider %s is another application's, refused", name)
 	}
 	if p == nil {
-		return nil
+		// No provider: an application left without one opens nothing to bind to.
+		if err := gone(a.api.call(ctx, http.MethodDelete, "/core/applications/"+name+"/", nil, nil)); err != nil {
+			return err
+		}
+		_, err := a.ldapTidy(ctx, true)
+		return err
 	}
-	return gone(a.api.call(ctx, http.MethodDelete, fmt.Sprintf("/providers/ldap/%d/", p.PK), nil, nil))
+	o, err := find[outpostObj](ctx, a.api, "/outposts/instances/?name__iexact="+q(LDAPOutpostName), "name", LDAPOutpostName)
+	if err != nil {
+		return err
+	}
+	on := o != nil && slices.Contains(o.Providers, p.PK)
+	app, err := a.ldapApp(ctx, name)
+	if err != nil {
+		return err
+	}
+	closed := false
+	if app != nil {
+		_, closed = app.closedAt()
+	}
+	// Closed already and off the outpost: kept as it is, so its time off the outpost runs on.
+	if on || !closed {
+		if err := a.closeLDAPApp(ctx, name, p.PK); err != nil {
+			return err
+		}
+	}
+	if on {
+		if err := a.offOutpost(ctx, o, slices.DeleteFunc(slices.Clone(o.Providers), func(x int) bool { return x == p.PK })); err != nil {
+			return err
+		}
+	}
+	_, err = a.ldapTidy(ctx, true)
+	return err
 }

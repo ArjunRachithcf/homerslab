@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -34,6 +35,7 @@ func RunLDAP(t *testing.T, w LDAPWorld) {
 	p, l := w.Provider(), w.LDAP()
 	people := []idp.Person{
 		{Username: "lena", Name: "Lena", Mail: "lena@ferreira.family", Role: idp.Adult},
+		{Username: "maria", Name: "Maria", Mail: "maria@ferreira.family", Role: idp.Adult},
 		{Username: "kiko", Name: "Kiko", Mail: "kiko@ferreira.family", Role: idp.Kid},
 		{Username: "olga", Name: "Olga", Mail: "olga@ferreira.family", Role: idp.Admin},
 	}
@@ -139,7 +141,12 @@ func RunLDAP(t *testing.T, w LDAPWorld) {
 						t.Errorf("her own entry without her role's group: %v", e.Attrs["memberOf"])
 					}
 				case strings.HasPrefix(d, "cn="+idp.RoleGroup(idp.Adult)+",ou=groups,"):
-					// her own role's group
+					// her own role's group, with her alone in it: maria, the other adult, never shows
+					for _, m := range e.Attrs["member"] {
+						if strings.ToLower(m) != own {
+							t.Errorf("her role's group lists %s", m)
+						}
+					}
 				case strings.HasPrefix(d, "cn=lena,ou=virtual-groups,"):
 					// her own group of one, as Authentik's LDAP gives every person
 				case d == strings.ToLower(creds.BaseDN), slices.ContainsFunc([]string{"users", "groups", "virtual-groups"},
@@ -148,7 +155,7 @@ func RunLDAP(t *testing.T, w LDAPWorld) {
 				default:
 					t.Errorf("lena sees %s", e.DN)
 				}
-				for _, other := range []string{"kiko", "olga", "akadmin", "homerslab", "ak-outpost"} {
+				for _, other := range []string{"maria", "bea", "ines", "kiko", "olga", "akadmin", "homerslab", "ak-outpost"} {
 					for k, vs := range e.Attrs {
 						for _, v := range vs {
 							if strings.Contains(strings.ToLower(v), "cn="+other) && !strings.Contains(strings.ToLower(v), "cn=homerslab-") {
@@ -189,7 +196,7 @@ func RunLDAP(t *testing.T, w LDAPWorld) {
 		}
 	})
 	t.Run("a change of role holds at the next bind", func(t *testing.T) {
-		kid := people[0]
+		kid := people[0] // lena
 		kid.Role = idp.Kid
 		if err := p.EnsurePerson(ctx, kid); err != nil {
 			t.Fatal(err)
@@ -218,19 +225,49 @@ func RunLDAP(t *testing.T, w LDAPWorld) {
 			t.Fatal(err)
 		}
 	})
-	t.Run("a deleted provider: nobody binds there, and deleting again is done", func(t *testing.T) {
-		if err := l.DeleteLDAP(ctx, media.Slug); err != nil {
+	t.Run("a deleted provider: from the moment it is deleted, nobody binds there, and deleting again is done", func(t *testing.T) {
+		// Those outside the audience try all along, from before the delete; once it returns, the audience too.
+		type try struct{ who, password string }
+		outside := []try{{"kiko", kiko}, {"olga", olga}, {"kiko", lena}}
+		stop := make(chan struct{})
+		var (
+			wg   sync.WaitGroup
+			mu   sync.Mutex
+			seen = map[string]int{}
+		)
+		let := func(who string) { mu.Lock(); seen[who]++; mu.Unlock() }
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+				}
+				for _, x := range outside {
+					if w.Bind(t, dn(creds, x.who), x.password) == nil {
+						let(x.who + " (outside the audience, while it was deleted)")
+					}
+				}
+			}
+		}()
+		err := l.DeleteLDAP(ctx, media.Slug)
+		for end := time.Now().Add(15 * time.Second); time.Now().Before(end); {
+			for _, x := range []try{{"lena", lena}, {"maria", lena}, {"kiko", kiko}, {"olga", olga}} {
+				if w.Bind(t, dn(creds, x.who), x.password) == nil {
+					let(x.who + " (after the delete returned)")
+				}
+			}
+		}
+		close(stop)
+		wg.Wait()
+		if err != nil {
 			t.Fatal(err)
 		}
-		// The outpost drops the provider when Authentik tells it the outpost changed, a moment after the delete.
-		start := time.Now()
-		for w.Bind(t, dn(creds, "lena"), lena) == nil {
-			if time.Since(start) > 30*time.Second {
-				t.Fatal("a person still binds to a deleted app, 30 s after it was deleted")
-			}
-			time.Sleep(time.Second)
+		for who, n := range seen {
+			t.Errorf("%s bound to a deleted app, %d times", who, n)
 		}
-		t.Logf("refused %s after the delete", time.Since(start).Round(time.Second))
 		if err := l.DeleteLDAP(ctx, media.Slug); err != nil {
 			t.Errorf("again: %v", err)
 		}

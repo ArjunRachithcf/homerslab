@@ -3,6 +3,7 @@ package authentik_test
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net"
 	"net/http"
 	"os"
@@ -53,8 +54,10 @@ func (w *world) StartOutpost(t *testing.T, token idp.Secret) {
 func (w *world) AppPassword(t *testing.T, username string) string {
 	t.Helper()
 	id := "hltest-app-password-" + username
-	w.raw(t, w.own, "POST", "/api/v3/core/tokens/", map[string]any{"identifier": id, "intent": "app_password",
-		"user": w.userPK(t, username), "expiring": false}, nil)
+	if w.status(t, w.own, "/api/v3/core/tokens/"+id+"/") == http.StatusNotFound {
+		w.raw(t, w.own, "POST", "/api/v3/core/tokens/", map[string]any{"identifier": id, "intent": "app_password",
+			"user": w.userPK(t, username), "expiring": false}, nil)
+	}
 	var k struct {
 		Key string `json:"key"`
 	}
@@ -213,6 +216,86 @@ func ldapBesideTheAppsOwn(w *world, a *authentik.Authentik) func(*testing.T) {
 		w.raw(t, w.own, "GET", "/api/v3/core/applications/homerslab-books/", nil, &got)
 		if got.Name != "Books" || got.Provider != nil {
 			t.Errorf("the app's own application, after its directory came and went: %+v", got)
+		}
+	}
+}
+
+// ldapOrphan deletes an app's LDAP application behind HomersLab's back, as an admin in Authentik's console could, while
+// the outpost serves its provider: the report says so, and Prepare closes it to nobody at once and takes the provider
+// off the outpost (orphaned providers are removed). A later pass deletes them.
+func ldapOrphan(w *world, a *authentik.Authentik) func(*testing.T) {
+	return func(t *testing.T) {
+		ctx := context.Background()
+		app := idp.LDAPApp{Slug: "homerslab-orphan", Name: "Orphan", Roles: []idp.Role{idp.Adult}}
+		creds, err := a.EnsureLDAP(ctx, app)
+		if err != nil {
+			t.Fatal(err)
+		}
+		pw := map[string]string{}
+		for _, who := range []string{"lena", "kiko", "olga"} {
+			pw[who] = w.AppPassword(t, who)
+		}
+		bind := func(who string) error { return w.Bind(t, fmt.Sprintf(creds.UserDN, who), pw[who]) }
+		for deadline := time.Now().Add(90 * time.Second); bind("lena") != nil; time.Sleep(3 * time.Second) {
+			if time.Now().After(deadline) {
+				t.Fatal("the outpost never served the app's provider")
+			}
+		}
+		if r, err := a.Report(ctx); err != nil || !r.PasskeyOnlySignIn {
+			t.Fatalf("before: %+v %v", r, err)
+		}
+		w.raw(t, w.own, "DELETE", "/api/v3/core/applications/homerslab-orphan-ldap/", nil, nil)
+		if r, err := a.Report(ctx); err != nil || r.PasskeyOnlySignIn {
+			t.Errorf("a provider at the outpost without its application: %+v %v, want not passkey-only", r, err)
+		}
+		if err := a.Prepare(ctx, household); err != nil {
+			t.Fatal(err)
+		}
+		for end := time.Now().Add(15 * time.Second); time.Now().Before(end); {
+			for _, who := range []string{"lena", "kiko", "olga"} {
+				if bind(who) == nil {
+					t.Fatalf("%s bound to an orphaned provider after Prepare", who)
+				}
+			}
+		}
+		if r, err := a.Report(ctx); err != nil || !r.PasskeyOnlySignIn {
+			t.Errorf("after Prepare: %+v %v", r, err)
+		}
+		var o struct {
+			Results []struct {
+				Providers []int `json:"providers"`
+			}
+		}
+		w.raw(t, w.own, "GET", "/api/v3/outposts/instances/?name__iexact="+authentik.LDAPOutpostName, nil, &o)
+		var p struct {
+			Results []struct {
+				PK   int    `json:"pk"`
+				Name string `json:"name"`
+			}
+		}
+		w.raw(t, w.own, "GET", "/api/v3/providers/ldap/?name__iexact=homerslab-orphan-ldap", nil, &p)
+		if len(o.Results) != 1 || len(p.Results) != 1 {
+			t.Fatalf("the outpost %+v, the provider %+v", o.Results, p.Results)
+		}
+		for _, pk := range o.Results[0].Providers {
+			if pk == p.Results[0].PK {
+				t.Error("the orphaned provider is still at the outpost")
+			}
+		}
+		// The later pass: once off the outpost long enough (here at once), the closed application and its provider go.
+		authentik.SetLDAPRetire(a, 0)
+		defer authentik.SetLDAPRetire(a, 5*time.Minute)
+		if err := a.Prepare(ctx, household); err != nil {
+			t.Fatal(err)
+		}
+		if code := w.status(t, w.own, "/api/v3/core/applications/homerslab-orphan-ldap/"); code != http.StatusNotFound {
+			t.Errorf("the closed application, after the later pass: %d", code)
+		}
+		if code := w.status(t, w.own, fmt.Sprintf("/api/v3/providers/ldap/%d/", p.Results[0].PK)); code != http.StatusNotFound {
+			t.Errorf("the provider, after the later pass: %d", code)
+		}
+		if r, err := a.Report(ctx); err != nil || !r.PasskeyOnlySignIn {
+			t.Errorf("after the later pass: %+v %v", r, err)
 		}
 	}
 }

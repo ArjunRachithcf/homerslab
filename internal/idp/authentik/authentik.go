@@ -79,6 +79,8 @@ type Authentik struct {
 	h   idp.Household
 	// Landing is where a finished enrolment goes: Admin, for an admin.
 	landing string
+	// ldapRetire is how long a closed LDAP application and its provider stay off the outpost before they go.
+	ldapRetire time.Duration
 }
 
 // Open is Authentik at its upstream base (http://<its bridge address>:9000), as the sign-in of household h, with
@@ -88,7 +90,7 @@ func Open(base string, h idp.Household, token idp.Secret, landing string) (*Auth
 	if err != nil {
 		return nil, err
 	}
-	return &Authentik{api: a, h: h, landing: landing}, nil
+	return &Authentik{api: a, h: h, landing: landing, ldapRetire: ldapRetireAfter}, nil
 }
 
 var _ idp.Provider = (*Authentik)(nil)
@@ -669,6 +671,11 @@ func (a *Authentik) Prepare(ctx context.Context, h idp.Household) error {
 		if _, err := a.ldapBindFlow(ctx); err != nil {
 			return err
 		}
+	}
+	// The LDAP outpost back to HomersLab's providers alone, each with its own application: orphaned providers are
+	// removed.
+	if _, err := a.ldapTidy(ctx, true); err != nil {
+		return err
 	}
 	return a.ensureBrand(ctx, signIn)
 }
@@ -1435,7 +1442,13 @@ func (a *Authentik) Report(ctx context.Context) (idp.Report, error) {
 		if err != nil {
 			return idp.Report{}, err
 		}
-		r.PasskeyOnlySignIn = only && ldap
+		// A provider the outpost serves without HomersLab's application for it would bind people that application
+		// never let in.
+		tidy, err := a.ldapTidy(ctx, false)
+		if err != nil {
+			return idp.Report{}, err
+		}
+		r.PasskeyOnlySignIn = only && ldap && tidy
 	}
 	ak, err := find[user](ctx, a.api, "/core/users/?username="+q(firstAdmin), "username", firstAdmin)
 	if err != nil {

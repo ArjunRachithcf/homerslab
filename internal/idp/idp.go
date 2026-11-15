@@ -215,6 +215,7 @@ type LDAP interface {
 	// EnsureLDAP makes an app's LDAP provider, or brings it in line: only its roles bind. Its base DN never changes
 	// once it is made.
 	EnsureLDAP(ctx context.Context, app LDAPApp) (LDAPCredentials, error)
-	// DeleteLDAP deletes an app's LDAP provider; one that isn't there is gone already.
+	// DeleteLDAP deletes an app's LDAP provider: from the moment it returns, nobody binds there. One that isn't there
+	// is gone already.
 	DeleteLDAP(ctx context.Context, slug string) error
 }
