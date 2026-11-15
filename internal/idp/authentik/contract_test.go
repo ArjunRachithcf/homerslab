@@ -56,9 +56,14 @@ import (
 // beside it (HOMERSLAB_TEST_IDP_PROJECT).
 var project = cmp.Or(os.Getenv("HOMERSLAB_TEST_IDP_PROJECT"), "hltest-17")
 
+// signInNet is the test's own range for the sign-in network (the first three octets of a /28 at .0), instead of the
+// package's 172.31.250.0/28; HOMERSLAB_TEST_IDP_NET names another, for a run beside another one on the same machine.
+var (
+	signInNet = cmp.Or(os.Getenv("HOMERSLAB_TEST_IDP_NET"), "10.217.0")
+	upstream  = "http://" + signInNet + ".10:9000"
+)
+
 const (
-	// The test's own range for the sign-in network, instead of the package's 172.31.250.0/28.
-	upstream = "http://10.217.0.10:9000"
 	landing  = "https://admin.example.test/"
 	redirect = "https://admin.example.test/auth/callback"
 )
@@ -174,6 +179,14 @@ func TestTheIdentityProviderContractOnAuthentik(t *testing.T) {
 	w.own = own
 	w.provider = a
 	idptest.Run(t, w, authentik.Version)
+	t.Run("LDAP: an app's directory at the outpost, for its roles only (#204)", func(t *testing.T) {
+		idptest.RunLDAP(t, w)
+		t.Run("the bind flow runs only at the outpost, never in a browser", ldapFlowOnlyAtTheOutpost)
+		t.Run("drift: a bind flow that takes passwords shows in the report, and Prepare puts it back", ldapDrift(w, a))
+		t.Run("an app's directory keeps apart from the app's own application", ldapBesideTheAppsOwn(w, a))
+		t.Run("drift: a provider at the outpost without its application is closed and taken off, then deleted", ldapOrphan(w, a))
+		t.Run("drift: providers of the console's at the outpost, named as an app's, are taken off", ldapImpostors(w, a))
+	})
 
 	t.Run("an app's audience changes without the app ever being open to someone of neither audience (#219)", func(t *testing.T) {
 		// Inês, an admin, is of neither audience: Authentik's own access check for her runs all along, as the changes
@@ -775,7 +788,8 @@ func up(t *testing.T, engine string) *world {
 	}
 	dir := t.TempDir()
 	w := &world{engine: engine, dir: dir, bootstrap: idp.Secret(secret())}
-	secrets := map[string]string{"secret-key": secret() + secret(), "postgres-password": "", "bootstrap-token": w.bootstrap.Reveal()}
+	// The outpost's token is empty until an app signs in over LDAP (StartOutpost), as the unit leaves it.
+	secrets := map[string]string{"secret-key": secret() + secret(), "postgres-password": "", "bootstrap-token": w.bootstrap.Reveal(), "ldap-token": ""}
 	secrets["postgres-password"] = secret()
 	secrets["postgres-password-db"] = secrets["postgres-password"]
 	for name, v := range secrets {
@@ -795,19 +809,19 @@ func up(t *testing.T, engine string) *world {
 			t.Fatalf("labelling the secrets: %v %s", err, out)
 		}
 	}
-	file := strings.NewReplacer("name: homerslab-authentik", "name: "+project, "172.31.250.", "10.217.0.",
+	file := strings.NewReplacer("name: homerslab-authentik", "name: "+project, "172.31.250.", signInNet+".",
 		"/run/homerslab-authentik/", dir+"/").Replace(string(packaged))
 	if err := os.WriteFile(filepath.Join(dir, "compose.yaml"), []byte(file), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	w.composeQuiet("down", "-v", "--remove-orphans")
+	w.composeQuiet("--profile", "ldap", "down", "-v", "--remove-orphans") // the outpost too
 	t.Cleanup(func() {
 		if t.Failed() {
 			out, _ := w.composeOut("logs", "--no-color", "--tail", "80")
 			t.Logf("the containers' logs:\n%s", out)
 		}
 		if os.Getenv("HOMERSLAB_TEST_KEEP") == "" {
-			w.composeQuiet("down", "-v", "--remove-orphans")
+			w.composeQuiet("--profile", "ldap", "down", "-v", "--remove-orphans") // the outpost too
 		}
 	})
 	w.compose(t, "up", "-d", "--quiet-pull")

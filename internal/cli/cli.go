@@ -13,6 +13,7 @@ import (
 
 	"github.com/ArjunRachithcf/homerslab/internal/agent"
 	"github.com/ArjunRachithcf/homerslab/internal/backup"
+	"github.com/ArjunRachithcf/homerslab/internal/ldaps"
 )
 
 // Defaults: where the packaged units put things.
@@ -81,6 +82,8 @@ func Main(ctx context.Context, args []string, env Env) int {
 		return backup.LockMain(args[2:], os.Getenv("CREDENTIALS_DIRECTORY"), os.Stdin, env.Stdout, env.Stderr)
 	case "agent check-storage": // an app's unit's own check before each start; not for people
 		return agent.CheckStorageMain(args[2:], env.Stderr)
+	case "edge ldaps": // the sign-in listener's LDAPS port, its unit's process (#204); not for people
+		return ldaps.Main(ctx, args[2:], env.Stderr)
 	case "plan show":
 		err = showPlanByID(ctx, args[2:], env)
 	case "setup secret":

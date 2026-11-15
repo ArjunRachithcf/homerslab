@@ -19,7 +19,8 @@
 //   - From the mesh: any listener of this machine (the mesh's own policies filter it), but nothing routed: only the
 //     edge, on this machine, reaches an app (#19).
 //   - From the apps (the engines' bridges): this machine's DNS at their bridge's own gateway, the sign-in listener (its
-//     own address, on the household's port: ADR 0020), the resolvers it uses
+//     own address, on the household's port: ADR 0020; its LDAPS port, 636, from LDAP apps' networks only: #204), the
+//     resolvers it uses
 //     out through an uplink (never one at a mesh peer), IPv6 neighbour discovery,
 //     their own bridge, and the internet through an uplink of the packet's address family (the LAN's, or a VPN's
 //     tunnel, which is never the LAN); never another app's bridge, the LAN, the mesh, a private range or a local
@@ -98,12 +99,25 @@ type State struct {
 	// connection into an app's network (ADR 0020, #82).
 	Upstreams []Upstream `json:"upstreams,omitempty"`
 	// SignInListener is where apps reach the sign-in on this node (ADR 0020): the sign-in listener's own address, on
-	// the household's port (and LDAPS's 636 once an LDAP app is installed, #204). The one thing of this machine's an app
+	// the household's port (and LDAPS's 636 for the apps in LDAP, #204). The one thing of this machine's an app
 	// may open besides its engine's DNS.
 	SignInListener []netip.AddrPort `json:"signInListener,omitempty"`
 	// Shares are the servers of the storage locations' network shares (#28), IPv4 only: this machine reaches them
 	// through the mesh only, never the LAN, whatever the route to them says.
 	Shares []netip.Addr `json:"shares,omitempty"`
+	// LDAP are the networks of the apps whose sign-in method is LDAP: they, and no other, reach the sign-in listener's
+	// LDAPS port (ADR 0020, #204).
+	LDAP []LDAPApp `json:"ldap,omitempty"`
+}
+
+// LDAPSPort is the sign-in listener's LDAPS port.
+const LDAPSPort = 636
+
+// LDAPApp is an LDAP app's upstream network: its bridge and its subnet, matched together, so a packet from another
+// bridge that forges the source address is no LDAP app's.
+type LDAPApp struct {
+	Bridge string       `json:"bridge"`
+	Subnet netip.Prefix `json:"subnet"`
 }
 
 // Upstream is one address and TCP port on an app's network, and the users of this machine that may connect to it.
@@ -264,6 +278,15 @@ func Render(s State) string {
 	w("\t\tmeta l4proto { tcp, udp } th dport 53 fib daddr . iif type local accept")
 	if l := listenerAddrs(s.SignInListener); len(l) > 0 {
 		w("\t\tip daddr . tcp dport %s accept", set(l))
+		var ldaps []netip.AddrPort
+		for _, a := range s.SignInListener {
+			ldaps = append(ldaps, netip.AddrPortFrom(a.Addr(), LDAPSPort))
+		}
+		for _, app := range s.LDAP {
+			if ValidName(app.Bridge) && app.Subnet.Addr().Is4() {
+				w("\t\tiifname %q ip saddr %s ip daddr . tcp dport %s accept", app.Bridge, app.Subnet.Masked(), set(listenerAddrs(ldaps)))
+			}
+		}
 	}
 	w("\t\ticmpv6 type { nd-neighbor-solicit, nd-neighbor-advert, nd-router-solicit } accept")
 	w("\t\tdrop")

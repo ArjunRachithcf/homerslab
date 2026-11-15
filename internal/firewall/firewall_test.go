@@ -442,3 +442,30 @@ func TestThisMachineReachesASharesServerThroughTheMeshOnly(t *testing.T) {
 		t.Error("the shares don't count in Equal")
 	}
 }
+
+// An LDAP app's network, and only its, reaches the sign-in listener's LDAPS port (ADR 0020, #204): by its bridge and its
+// own subnet together, so another app's network that forges the source address is dropped there.
+func TestOnlyLDAPAppsReachTheListenersLDAPSPort(t *testing.T) {
+	testenv.Isolate(t)
+	s := firewall.State{Mesh: []string{"wt0"}, LAN: []string{"enp5s0"}, Bridges: []string{"hla0u", "hla1u"}, Virtual: []string{"hla0u", "hla1u"},
+		SignInListener: []netip.AddrPort{netip.MustParseAddrPort("172.31.255.241:443")},
+		LDAP: []firewall.LDAPApp{{Bridge: "hla1u", Subnet: netip.MustParsePrefix("172.31.240.16/28")},
+			{Bridge: "bad\"name", Subnet: netip.MustParsePrefix("172.31.240.32/28")}, {Bridge: "hla2u", Subnet: netip.MustParsePrefix("fd00::/64")}}}
+	r := firewall.Render(s)
+	want := "\t\tip daddr . tcp dport { 172.31.255.241 . 443 } accept\n" +
+		"\t\tiifname \"hla1u\" ip saddr 172.31.240.16/28 ip daddr . tcp dport { 172.31.255.241 . 636 } accept\n" +
+		"\t\ticmpv6"
+	if !strings.Contains(r, want) || strings.Count(r, ". 636") != 1 {
+		t.Errorf("the table lacks the LDAP app's rule, or has more:\n%s", r)
+	}
+	// No listener: no LDAPS port either.
+	s.SignInListener = nil
+	if r := firewall.Render(s); strings.Contains(r, "636") {
+		t.Errorf("without a listener:\n%s", r)
+	}
+	// No LDAP app: 636 is the drop's, like every other port.
+	if r := firewall.Render(firewall.State{Mesh: s.Mesh, LAN: s.LAN, Bridges: s.Bridges, Virtual: s.Virtual,
+		SignInListener: []netip.AddrPort{netip.MustParseAddrPort("172.31.255.241:443")}}); strings.Contains(r, "636") {
+		t.Errorf("without an LDAP app:\n%s", r)
+	}
+}
