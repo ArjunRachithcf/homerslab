@@ -376,7 +376,7 @@ jobs:
         env:
           HOMERSLAB_TEST_DOCKER_HOST: unix:///var/run/docker.sock
           HOMERSLAB_TEST_BROWSER: "1"
-          HOMERSLAB_TEST_BROWSER_RUNS: ${{ inputs.browser_runs || '20' }} # TEMPORARY (#222): 20 on the PR, back to 1 before merge
+          HOMERSLAB_TEST_BROWSER_RUNS: ${{ inputs.browser_runs || '1' }}
           PLAYWRIGHT_BROWSERS_PATH: /home/runner/ms-playwright
           DOCKER_HOST: unix:///nonexistent
           CONTAINER_HOST: unix:///nonexistent
