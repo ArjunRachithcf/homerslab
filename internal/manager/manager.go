@@ -102,6 +102,7 @@ type Manager struct {
 	log       *slog.Logger
 	lanClosed atomic.Bool
 	certMu    sync.Mutex  // one issuance or renewal at a time
+	applying  sync.Mutex  // one plan applied at a time
 	signInMu  sync.Mutex  // one setting-up of the household account at a time
 	attempts  attempts    // sign-ins to Admin under way
 	backingUp atomic.Bool // a backup run is under way

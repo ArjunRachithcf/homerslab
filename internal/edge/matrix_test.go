@@ -303,8 +303,10 @@ func TestTheEdgesRequestMatrix(t *testing.T) {
 	cfg := edge.Config{AdminSocket: adminFile, Storage: "/var/lib/homerslab-edge", Listen: []netip.Addr{netip.MustParseAddr(edgeMesh)},
 		Port: 443, Certificates: []edge.Certificate{{Domain: "example.test", CertFile: credDir + "/tls-example.test.crt", KeyFile: credDir + "/tls-example.test.key"}},
 		Admin: &edge.Site{Name: "admin.example.test", Upstream: adminSock}, SignIn: &edge.Site{Name: "auth.example.test", Dial: signInStub},
-		Home:         &edge.Site{Name: "home.example.test", Upstream: homeSock},
-		Apps:         []edge.App{{Name: "pdf.example.test", Dial: appStub, Guard: edge.AuthentikGuard(signInStub)}},
+		Home: &edge.Site{Name: "home.example.test", Upstream: homeSock},
+		Apps: []edge.App{{Name: "pdf.example.test", Dial: appStub, Guard: edge.AuthentikGuard(signInStub)},
+			{Name: "recipes.example.test", Dial: appStub, SignsIn: true,
+				Refused: []string{"/api/auth/token", "PUT /api/users", "POST /api/users/register"}}},
 		SignInListen: netip.MustParseAddr(listener)}
 	want, err := edge.Render(cfg)
 	if err != nil {
@@ -585,6 +587,58 @@ func TestTheEdgesRequestMatrix(t *testing.T) {
 			t.Errorf("the manager's user:\n%s", got)
 		}
 	})
+
+	// An app that signs people in itself (#20): no guard is asked, and the app answers; but the client's identity headers
+	// never reach it all the same, nor a cookie it sets for the whole household domain (#83).
+	native := func(path string, headers map[string]string) request {
+		return request{Addr: edgeMesh + ":443", SNI: "recipes.example.test", Host: "recipes.example.test", Path: path, Headers: headers}
+	}
+	by := func(method, path string) request {
+		q := native(path, nil)
+		q.Method = method
+		return q
+	}
+	for _, row := range []struct {
+		name            string
+		q               request
+		wants, notWants []string
+	}{
+		{name: "no guard: the app itself, with no identity a client named", q: native("/", signedIn),
+			wants: []string{"200 App, at recipes.example.test, as []"}, notWants: []string{"ines-the-admin", "Remote-User", "302 "}},
+		{name: "a cookie it sets for the household's domain never reaches the browser; its own does", q: native("/cookies", map[string]string{}),
+			wants: []string{"narrow=1"}, notWants: []string{"wide=1", "WIDE2=1", "top=1", "dotted=1"}},
+		{name: "its own password sign-in: 403, never the app", q: native("/api/auth/token", nil), wants: []string{"403 "}, notWants: []string{"App,"}},
+		{name: "its own password sign-in, written otherwise: 403, never the app", q: native("/API/auth/%74oken/", nil), wants: []string{"403 "}, notWants: []string{"App,"}},
+		{name: "beside its password sign-in: the app", q: native("/api/auth/tokens", nil), wants: []string{"200 App,"}},
+		// Who someone is to the app is the household account's to say (#20, review round 1): a person can't change
+		// their own username or address in the app, nor make an account with another's, by any spelling of the route.
+		{name: "a change of a person's own username or address: 403", q: by("PUT", "/api/users/0b9d2c4e-5f1a-4b7e-9c3d-2a1f0e8d7c6b"),
+			wants: []string{"403 "}, notWants: []string{"App,"}},
+		{name: "the same change, written otherwise: 403", q: by("PUT", "/API/Users/0b9d2c4e-5f1a-4b7e-9c3d-2a1f0e8d7c6b/"),
+			wants: []string{"403 "}, notWants: []string{"App,"}},
+		{name: "the same change, escaped: 403", q: by("PUT", "/api/%75sers/0b9d2c4e"), wants: []string{"403 "}, notWants: []string{"App,"}},
+		{name: "the same change, with its method in lower case: 405", q: by("put", "/api/users/0b9d2c4e"),
+			wants: []string{"405 "}, notWants: []string{"App,"}},
+		{name: "a method of no API (PROPFIND): 405", q: by("PROPFIND", "/api/users/0b9d2c4e"), wants: []string{"405 "}, notWants: []string{"App,"}},
+		{name: "an account made from an invitation: 403", q: by("POST", "/api/users/register"), wants: []string{"403 "}, notWants: []string{"App,"}},
+		{name: "who they are, read: the app", q: by("GET", "/api/users/self"), wants: []string{"200 App,"}},
+		{name: "their picture, posted: the app", q: by("POST", "/api/users/0b9d2c4e/image"), wants: []string{"200 App,"}},
+		{name: "another method on the same route: the app", q: by("DELETE", "/api/users/0b9d2c4e"), wants: []string{"200 App,"}},
+	} {
+		t.Run("an app with native sign-in, "+row.name, func(t *testing.T) {
+			got := ask("phone", row.q)
+			for _, want := range row.wants {
+				if !strings.Contains(got, want) {
+					t.Errorf("%q, want %q", got, want)
+				}
+			}
+			for _, bad := range row.notWants {
+				if strings.Contains(got, bad) {
+					t.Errorf("%q has %q", got, bad)
+				}
+			}
+		})
+	}
 
 	// Authentik's first-admin flow is refused on every listener before the provider sees it, its page and its executor
 	// API alike, however the path is written (#84). Today the edge has one listener for people, the mesh one, and the

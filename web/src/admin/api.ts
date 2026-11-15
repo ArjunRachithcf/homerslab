@@ -29,7 +29,7 @@ export type Plan = {
   app: { id: string; name: string; purpose: string; version: string; tier: Tier; catalog: string; publisher: string };
   name: { host: string; asked?: string; why?: string; meshes: string[]; exposure: string; publicAllowed: boolean };
   audience: { default: string; people: { name: string; role: string }[]; kidView?: string };
-  signIn: { method: SignInMethod; provider: { id: string; name: string }; creates: string };
+  signIn: { method: SignInMethod; provider: { id: string; name: string }; creates: string; redirectUris?: string[]; wired: boolean };
   backups: { every: string; restoreTest: string; data: { what: string; kind: 'folder' | 'dump' }[]; left: { what: string; why: string }[] };
   placement: { node: string; architecture: string; engine: string; project: string; services: { name: string; image: string; digest?: string }[] };
   extras: { id: string; kind: string; service: string; device?: string; capability?: string; why: string; optional: boolean }[];
