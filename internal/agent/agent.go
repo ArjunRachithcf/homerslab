@@ -28,7 +28,6 @@ import (
 	"time"
 
 	"github.com/ArjunRachithcf/homerslab/internal/atomicfile"
-	"github.com/ArjunRachithcf/homerslab/internal/backup"
 	"github.com/ArjunRachithcf/homerslab/internal/engine"
 	"github.com/ArjunRachithcf/homerslab/internal/engine/compose"
 	"github.com/ArjunRachithcf/homerslab/internal/firewall"
@@ -102,9 +101,6 @@ type Config struct {
 	Users func(name string) (uint32, bool)
 	// Restic is the pinned restic the node's backups run (backup.Restic when "").
 	Restic string
-	// Immutability reads whether a backup target keeps what the node wrote from whoever holds its credentials, with the
-	// credentials the manager hands over as it sets the target: backup.ReadImmutability when nil.
-	Immutability func(ctx context.Context, t backup.Target, c backup.Credentials) backup.Immutability
 	// VolumesDir is where the engine keeps its local volumes, each <name>/_data (DockerVolumes when "").
 	VolumesDir string
 	// HealthWait is how long a restore waits for the app to be healthy again (five minutes when 0).

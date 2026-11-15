@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ArjunRachithcf/homerslab/internal/agent"
 	"github.com/ArjunRachithcf/homerslab/internal/agent/agenttest"
@@ -72,7 +73,7 @@ func TestTheNodesRepositoryKeyIsACredentialNeverAnArgument(t *testing.T) {
 		}
 	}
 	runs := h.Restic()
-	if len(runs) != 2 || !slices.Contains(runs[0].Argv, "cat") || !slices.Contains(runs[1].Argv, "init") {
+	if len(runs) != 3 || !slices.Contains(runs[0].Argv, "cat") || !slices.Contains(runs[1].Argv, "init") || !slices.Contains(runs[2].Argv, "backup-lock") {
 		t.Fatalf("making the repository: %+v", runs)
 	}
 	for _, c := range h.Cmds() {
@@ -194,7 +195,7 @@ func TestARunBacksUpExactlyWhatThePlanSaid(t *testing.T) {
 	if !slices.Contains(last.Argv, "--stdin") || !slices.Contains(last.Argv, "platform=manager") || string(last.Stdin) != "SQLite format 3\x00…" {
 		t.Errorf("the manager's database: %q", last.Argv)
 	}
-	if code, body := call(t, sock, "POST", "/v1/backups/prune", nil); code != http.StatusNoContent {
+	if code, body := call(t, sock, "POST", "/v1/backups/prune", nil); code != http.StatusOK {
 		t.Errorf("prune: %d %s", code, body)
 	}
 }
@@ -359,31 +360,58 @@ func raw(t *testing.T, sock, method, path string, body []byte) (int, []byte) {
 	return resp.StatusCode, buf.Bytes()
 }
 
-// Setting the target, the agent reads whether a box taken over could delete what it writes there, with the credentials
-// the manager handed over, keeps the answer (never the credentials) and says it.
+// Setting the target, and after every prune, the agent's lock run reads whether a box taken over could delete what it
+// writes there (and on a locked bucket, locks every object again): the agent's own program in restic's unit, with the
+// sealed credentials, never the agent holding them. The answer is kept and said, and a lock that has run out says so.
 func TestATargetSaysWhetherItsBackupsCanBeDeleted(t *testing.T) {
 	testenv.Isolate(t)
-	var asked []backup.Credentials
-	locked := backup.Immutability{Immutable: true, Why: "compliance", Days: 30}
-	sock, _ := agenttest.StartWith(t, agent.Config{Immutability: func(_ context.Context, tg backup.Target, c backup.Credentials) backup.Immutability {
-		asked = append(asked, c)
-		if tg.Kind != backup.B2 || tg.Bucket != "household" {
-			return backup.Immutability{Why: "unknown"}
-		}
-		return locked
-	}})
+	sock, h := agenttest.StartWith(t, agent.Config{})
+	until := time.Now().Add(30 * 24 * time.Hour).UTC().Truncate(time.Second)
+	h.BucketLocked(backup.Immutability{Immutable: true, Why: "compliance", Days: 30, LockedUntil: until})
 	b2 := s3Target()
 	b2.Target = backup.Target{Kind: backup.B2, Region: "eu-central-003", Bucket: "household", Path: "homerslab"}
 	code, body := call(t, sock, "PUT", "/v1/backups", b2)
 	var set agent.TargetSet
-	if err := json.Unmarshal(body, &set); err != nil || code != http.StatusOK || set.Repository != "s3:https://s3.eu-central-003.backblazeb2.com/household/homerslab/primary" || set.Immutability != locked {
+	if err := json.Unmarshal(body, &set); err != nil || code != http.StatusOK || set.Repository != "s3:https://s3.eu-central-003.backblazeb2.com/household/homerslab/primary" ||
+		!set.Immutability.Immutable || !set.Immutability.LockedUntil.Equal(until) || set.Immutability.At.IsZero() {
 		t.Fatalf("a B2 target: %d %s", code, body)
 	}
-	if len(asked) != 1 || asked[0].SecretAccessKey != s3Secret {
-		t.Errorf("the bucket's lock was read with %d sets of credentials", len(asked))
+	lockRuns := func() []agenttest.ResticRun {
+		var out []agenttest.ResticRun
+		for _, r := range h.Restic() {
+			if r.Argv[0] == agent.Self && slices.Equal(r.Argv[1:], []string{"agent", "backup-lock"}) {
+				out = append(out, r)
+			}
+		}
+		return out
+	}
+	runs := lockRuns()
+	if len(runs) != 1 || !strings.Contains(strings.Join(runs[0].Unit, " "), "LoadCredentialEncrypted=backup-s3:") ||
+		bytes.Contains(runs[0].Stdin, []byte(s3Secret)) || !bytes.Contains(runs[0].Stdin, []byte(`"bucket":"household"`)) {
+		t.Fatalf("the lock run: %+v", runs)
 	}
 	if bytes.Contains(body, []byte(s3Secret)) {
 		t.Error("the answer holds the target's secret")
+	}
+	// After a prune, the lock is read again, and what it said last is what it hands the run.
+	h.BucketLocked(backup.Immutability{Why: "governance", Days: 30})
+	code, body = call(t, sock, "POST", "/v1/backups/prune", nil)
+	var pr agent.Pruned
+	if err := json.Unmarshal(body, &pr); err != nil || code != http.StatusOK || pr.Immutability.Why != "governance" {
+		t.Errorf("a prune: %d %s", code, body)
+	}
+	if runs := lockRuns(); len(runs) != 2 || !bytes.Contains(runs[1].Stdin, []byte(`"was":{"immutable":true,"why":"compliance"`)) {
+		t.Errorf("the lock run after prune: %+v", runs)
+	}
+	// A lock run that fails: what was locked stays locked until it runs out, and only that long.
+	h.BucketLocked(backup.Immutability{Immutable: true, Why: "compliance", Days: 30, LockedUntil: until})
+	call(t, sock, "POST", "/v1/backups/prune", nil)
+	if runs := lockRuns(); len(runs) != 3 || !bytes.Contains(runs[2].Stdin, []byte(`"was":{"immutable":false,"why":"governance"`)) {
+		t.Errorf("the lock run after the next prune isn't handed what the last one found: %+v", runs)
+	}
+	h.FailRestic("backup-lock", 1)
+	if _, body := call(t, sock, "POST", "/v1/backups/prune", nil); json.Unmarshal(body, &pr) != nil || !pr.Immutability.Immutable {
+		t.Errorf("a failed lock run, the lock still on: %s", body)
 	}
 }
 

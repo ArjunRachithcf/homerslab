@@ -245,8 +245,9 @@ func TestAdminShowsTheBackupTargetAndNeverItsCredentials(t *testing.T) {
 	if r := adm(p, "GET", "/api/v1/backups/target", nil); r.Code != http.StatusOK || !strings.Contains(string(r.Body), `"target":null`) {
 		t.Fatalf("before a target: %d %s", r.Code, r.Body)
 	}
-	p.host.BucketLocked(backup.Immutability{Immutable: true, Why: "compliance", Days: 30})
-	if r := withB2(t, p, 0); !strings.Contains(string(r.Body), `"immutability":{"immutable":true,"why":"compliance","days":30}`) {
+	until := p.clock.Now().AddDate(0, 0, 30).UTC()
+	p.host.BucketLocked(backup.Immutability{Immutable: true, Why: "compliance", Days: 30, LockedUntil: until})
+	if r := withB2(t, p, 0); !strings.Contains(string(r.Body), `"immutability":{"immutable":true,"why":"compliance","days":30,"at":`) {
 		t.Errorf("setting it: %s", r.Body)
 	}
 	var st struct {
@@ -259,8 +260,15 @@ func TestAdminShowsTheBackupTargetAndNeverItsCredentials(t *testing.T) {
 	r := adm(p, "GET", "/api/v1/backups/target", nil)
 	r.json(t, &st)
 	if st.Target.Kind != "b2" || st.Target.Region != "eu-central-003" || st.Repository != "s3:https://s3.eu-central-003.backblazeb2.com/household/homerslab/primary" ||
-		st.Immutability != (backup.Immutability{Immutable: true, Why: "compliance", Days: 30}) {
+		!st.Immutability.Immutable || st.Immutability.Why != "compliance" || st.Immutability.At.IsZero() || !st.Immutability.LockedUntil.Equal(until) {
 		t.Errorf("Admin's view: %s", r.Body)
+	}
+	// The day's prune reads the bucket's lock again: Admin shows what it found, and when.
+	p.host.BucketLocked(backup.Immutability{Why: "no-default-retention"})
+	p.m.BackUpDue(context.Background())
+	adm(p, "GET", "/api/v1/backups/target", nil).json(t, &st)
+	if st.Immutability.Immutable || st.Immutability.Why != "no-default-retention" || st.Immutability.At.IsZero() {
+		t.Errorf("after the bucket's lock was turned off and a prune: %+v", st.Immutability)
 	}
 	for _, r := range []response{r, p.control("GET", "/api/v1/backups/target", nil)} {
 		if strings.Contains(string(r.Body), b2Secret) || strings.Contains(string(r.Body), "accessKeyId") {
@@ -274,6 +282,23 @@ func TestAdminShowsTheBackupTargetAndNeverItsCredentials(t *testing.T) {
 	}
 	if n := len(p.host.Restic()) - before; n != 0 || !strings.Contains(string(adm(p, "GET", "/api/v1/backups/target", nil).Body), `"kind":"b2"`) {
 		t.Errorf("a change refused ran restic %d times, or changed the target", n)
+	}
+}
+
+// What the lock run locked is locked until it runs out: past that, with no run since, the target isn't immutable.
+func TestALockThatHasRunOutIsNotImmutable(t *testing.T) {
+	testenv.Isolate(t)
+	p := bentoWithData(t)
+	p.host.BucketLocked(backup.Immutability{Immutable: true, Why: "compliance", Days: 30, LockedUntil: p.clock.Now().AddDate(0, 0, 30).UTC()})
+	withB2(t, p, 0)
+	var st struct{ Immutability backup.Immutability }
+	p.clock.Add(29 * 24 * time.Hour)
+	if p.control("GET", "/api/v1/backups/target", nil).json(t, &st); !st.Immutability.Immutable {
+		t.Errorf("before the lock runs out: %+v", st.Immutability)
+	}
+	p.clock.Add(2 * 24 * time.Hour)
+	if p.control("GET", "/api/v1/backups/target", nil).json(t, &st); st.Immutability.Immutable || st.Immutability.Why != "lock-expires" {
+		t.Errorf("past the lock: %+v", st.Immutability)
 	}
 }
 
@@ -310,6 +335,9 @@ func TestATargetEightyPercentFullIsAWarningUntilItIsnt(t *testing.T) {
 		t.Errorf("Admin's view of the space: %+v", st.Space)
 	}
 	run(800)
+	if w := warnings(); len(w) != 1 || w[0].Resolved != "" {
+		t.Errorf("exactly 80%% full: %+v", w)
+	}
 	run(950)
 	if w := warnings(); len(w) != 1 || w[0].What != "target-full 80" || w[0].Resolved != "" {
 		t.Fatalf("80%% and 95%% full: %+v", w)

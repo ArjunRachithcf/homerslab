@@ -156,7 +156,8 @@ type targetSpace struct {
 }
 
 // getBackupTarget is `GET /api/v1/backups/target`: where backups go, whether a box taken over could delete them and why
-// in a word, and how full the target is. The target's credentials are never part of it.
+// in a word (with when the bucket's lock was last read, and until when every object is locked), and how full the target
+// is. The target's credentials are never part of it.
 func (m *Manager) getBackupTarget(w http.ResponseWriter, r *http.Request) {
 	ans, err := m.db.Answers(r.Context())
 	if err != nil {
@@ -174,8 +175,10 @@ func (m *Manager) getBackupTarget(w http.ResponseWriter, r *http.Request) {
 		st.Repository, _ = t.Location(primaryNode)
 	}
 	if ans[ansBackupLock] != "" {
-		st.Immutability = &backup.Immutability{}
-		_ = json.Unmarshal([]byte(ans[ansBackupLock]), st.Immutability)
+		var im backup.Immutability
+		_ = json.Unmarshal([]byte(ans[ansBackupLock]), &im)
+		im = im.Now(m.cfg.Now()) // a lock that has run out since its last run says so
+		st.Immutability = &im
 	}
 	if ans[ansBackupSpace] != "" {
 		st.Space = &targetSpace{}
@@ -278,12 +281,15 @@ func (m *Manager) BackUpDue(ctx context.Context) {
 		_ = m.db.ResolveWarnings(ctx, warnBackup+"late", now)
 	}
 	if due(ans[ansPrunedAt], now, pruneEvery) {
-		if err := m.agent.with(m.agent.backups).call(run, http.MethodPost, "/v1/backups/prune", nil, nil); err != nil {
+		var pruned agent.Pruned
+		if err := m.agent.with(m.agent.backups).call(run, http.MethodPost, "/v1/backups/prune", nil, &pruned); err != nil {
 			m.log.Error("pruning the node's repository", "err", err)
 			m.warnOnce(ctx, warnBackup+"prune", "prune-failed")
 		} else {
+			// The bucket's lock, read again after prune by the lock run (which locked every object again when due).
+			lock, _ := json.Marshal(pruned.Immutability)
 			_ = m.db.ResolveWarnings(ctx, warnBackup+"prune", now)
-			_ = m.db.SaveAnswers(ctx, map[string]string{ansPrunedAt: now.UTC().Format(time.RFC3339)})
+			_ = m.db.SaveAnswers(ctx, map[string]string{ansPrunedAt: now.UTC().Format(time.RFC3339), ansBackupLock: string(lock)})
 		}
 	}
 	// Its own time: a run that used all of its own still reads how full the target is, when that matters most.

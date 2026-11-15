@@ -98,9 +98,6 @@ func StartWith(t testing.TB, c agent.Config) (string, *Host) {
 	if c.Probe == nil {
 		c.Probe = h.Probe
 	}
-	if c.Immutability == nil {
-		c.Immutability = h.immutability
-	}
 	if c.IsBridge == nil {
 		c.IsBridge = h.IsBridge
 	}
@@ -314,18 +311,8 @@ func (h *Host) Mounts(_ context.Context, project string) (map[string][]engine.Mo
 	return out, nil
 }
 
-// immutability answers for an S3 or B2 bucket as the test said (BucketLocked), never asking a service; a disk and SFTP
-// as the adapter does.
-func (h *Host) immutability(ctx context.Context, t backup.Target, c backup.Credentials) backup.Immutability {
-	if t.Kind == backup.Disk || t.Kind == backup.SFTP {
-		return backup.ReadImmutability(ctx, t, c)
-	}
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	return cmp.Or(h.bucket, backup.Immutability{Why: "no-object-lock"})
-}
-
-// BucketLocked makes an S3 or B2 bucket's settings say im.
+// BucketLocked makes the lock run (`homerslab agent backup-lock`, in restic's unit) answer im for an S3 or B2 bucket,
+// as of when it runs.
 func (h *Host) BucketLocked(im backup.Immutability) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -406,6 +393,15 @@ func (h *Host) runRestic(c host.Cmd) ([]byte, error) {
 		return nil, nil
 	}
 	h.restic = append(h.restic, run)
+	// The lock run, the agent's own program in restic's unit: what the test said of the bucket.
+	if run.Argv[0] == "/usr/bin/homerslab" && slices.Contains(run.Argv, "backup-lock") {
+		if err := fails(); err != nil {
+			return nil, err
+		}
+		im := cmp.Or(h.bucket, backup.Immutability{Why: "no-object-lock"})
+		im.At = time.Now().UTC()
+		return json.Marshal(im)
+	}
 	tagged := func() []string {
 		var tags []string
 		for i, a := range run.Argv {

@@ -654,10 +654,15 @@ Details are in [ADR 0010](adr/0010-backups-restic-and-a-write-only-archive.md), 
   - Moving an app between nodes restores from the source node's repository, then backs up into the target node's.
 - **Immutable where the target supports it** (#22). Admin says plainly, per target, whether a machine taken over could
   delete its backups:
-  - an S3 or B2 bucket with Object Lock in compliance mode by default (versioning on) is immutable: what prune or a
-    thief deletes is only hidden until each version's lock runs out, and a household restores it by hand by reading
-    the bucket as it was (`rclone serve restic --s3-version-at <time>`). Governance mode is not immutable: a key
-    allowed to bypass it can delete;
+  - an S3 or B2 bucket with Object Lock in compliance mode by default (versioning on) is immutable once HomersLab's
+    lock run has locked every object of the node's repository. A bucket's default retention locks each object only for
+    its days after it was written, and restic writes its config, its keys and most packs once, so the run, after
+    setting the target and after each daily prune, locks every current object again for those days from now whenever
+    half of the last lock has gone (compliance mode only lets a lock be lengthened). Until that run has worked, or once
+    its lock has run out, Admin says `lock-expires`, not immutable. The run reads the bucket's settings each time, and
+    Admin shows when. What prune or a thief deletes is only hidden until its lock runs out, and a household restores it
+    by hand by reading the bucket as it was (`rclone serve restic --s3-version-at <time>`). Governance mode is not
+    immutable: a key allowed to bypass it can delete;
   - a disk and SFTP can't be: the machine writes them, and the account that writes can delete. Only snapshots on the
     server, out of the machine's reach, keep backups from it.
 - **A target 80% full is a warning** (#22), sent as every backup warning is: a disk target's filesystem; SFTP, S3 and

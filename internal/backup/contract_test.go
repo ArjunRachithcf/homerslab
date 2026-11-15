@@ -33,6 +33,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/minio/minio-go/v7"
+
 	"github.com/ArjunRachithcf/homerslab/internal/backup"
 	"github.com/ArjunRachithcf/homerslab/internal/testenv"
 )
@@ -109,23 +111,7 @@ func TestTheBackupTargetContractInside(t *testing.T) {
 	b2 := backup.Target{Kind: backup.B2, Region: "eu-central-003", Bucket: "b2-household", Path: "homerslab", CA: ca}
 	// The household made each bucket with Object Lock, in compliance mode for a day, before choosing it.
 	for _, b := range []string{locked.Bucket, b2.Bucket} {
-		for i := 0; ; i++ { // the service may still be starting
-			out, err := rclone(t, "mkdir", "--s3-bucket-object-lock-enabled", "locked:"+b).CombinedOutput()
-			if err == nil {
-				break
-			}
-			if i == 20 {
-				t.Fatalf("making bucket %s: %v %s", b, err, out)
-			}
-			time.Sleep(500 * time.Millisecond)
-		}
-		at := locked
-		at.Bucket = b
-		cfg := `<ObjectLockConfiguration xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><ObjectLockEnabled>Enabled</ObjectLockEnabled>` +
-			`<Rule><DefaultRetention><Mode>COMPLIANCE</Mode><Days>1</Days></DefaultRetention></Rule></ObjectLockConfiguration>`
-		if code, body, err := backup.S3Do(context.Background(), at, s3, "PUT", "object-lock", []byte(cfg)); err != nil || code != 200 {
-			t.Fatalf("locking bucket %s: %d %s %v", b, code, body, err)
-		}
+		lockedBucket(t, locked, s3, b, 1)
 	}
 	worlds := []struct {
 		name   string
@@ -150,6 +136,127 @@ func TestTheBackupTargetContractInside(t *testing.T) {
 			}
 			contract(t, wd.target, wd.creds, secrets, wd.bucket)
 		})
+	}
+	t.Run("s3-locked: an object older than the bucket's Days is still locked after the lock run, and deletable without it", func(t *testing.T) {
+		olderThanDays(t, locked, s3)
+	})
+}
+
+// lockedBucket makes bucket b at the locked service, with Object Lock, and then, unless days is 0, a default retention
+// in compliance mode for days.
+func lockedBucket(t *testing.T, at backup.Target, c backup.Credentials, b string, days uint) {
+	t.Helper()
+	cl, done, err := backup.BucketClient(at, c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer done()
+	ctx := context.Background()
+	for i := 0; ; i++ { // the service may still be starting
+		err := cl.MakeBucket(ctx, b, minio.MakeBucketOptions{Region: at.Region, ObjectLocking: true})
+		if err == nil {
+			break
+		}
+		if i == 20 {
+			t.Fatalf("making bucket %s: %v", b, err)
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+	if days == 0 {
+		return
+	}
+	mode, unit := minio.Compliance, minio.Days
+	if err := cl.SetObjectLockConfig(ctx, b, &mode, &days, &unit); err != nil {
+		t.Fatalf("locking bucket %s: %v", b, err)
+	}
+}
+
+// olderThanDays: two nodes' repositories whose objects were written long ago, their locks about to run out (each locked
+// for seconds here, standing in for Days gone by). The lock run locks one node's again; once the others' locks have run
+// out, a thief deletes every version of that node's repository, and none of the locked one's.
+func olderThanDays(t *testing.T, at backup.Target, c backup.Credentials) {
+	ctx := context.Background()
+	at.Bucket = "aged"
+	lockedBucket(t, at, c, at.Bucket, 0)
+	cl, done, err := backup.BucketClient(at, c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer done()
+	s := &seen{}
+	photos := t.TempDir()
+	if err := os.WriteFile(filepath.Join(photos, "photo.jpg"), []byte("an old photo"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	versions := func(node string) []minio.ObjectInfo {
+		var out []minio.ObjectInfo
+		for o := range cl.ListObjects(ctx, at.Bucket, minio.ListObjectsOptions{Prefix: "homerslab/" + node + "/", Recursive: true, WithVersions: true}) {
+			if o.Err != nil {
+				t.Fatal(o.Err)
+			}
+			out = append(out, o)
+		}
+		return out
+	}
+	var soon time.Time
+	mode := minio.Compliance
+	repos := map[string]backup.Repo{}
+	for _, node := range []string{"kept", "lapsed"} {
+		r := repo(t, s, at, c, node, newKey())
+		if err := ensure(ctx, r); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := r.Backup(ctx, backup.Item{Tags: []string{"app=old", "data=server:/photos"}, Paths: []string{photos}}); err != nil {
+			t.Fatal(err)
+		}
+		repos[node] = r
+		soon = time.Now().Add(5 * time.Second).UTC()
+		for _, o := range versions(node) {
+			if o.IsDeleteMarker { // a run's lock, removed: nothing to lock
+				continue
+			}
+			if err := cl.PutObjectRetention(ctx, at.Bucket, o.Key, minio.PutObjectRetentionOptions{Mode: &mode, RetainUntilDate: &soon, VersionID: o.VersionID}); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	// The household's default retention, a day, came after: it never reaches objects written before.
+	days, unit := uint(1), minio.Days
+	if err := cl.SetObjectLockConfig(ctx, at.Bucket, &mode, &days, &unit); err != nil {
+		t.Fatal(err)
+	}
+	before, err := backup.Lock(ctx, at, c, "kept", backup.Immutability{Why: "compliance", Days: 1, LockedUntil: soon}, time.Now().UTC())
+	if err != nil || !before.Immutable {
+		t.Fatalf("the lock run: %+v %v", before, err)
+	}
+	if !before.LockedUntil.After(time.Now().Add(23 * time.Hour)) {
+		t.Errorf("the lock run locked until %s, not a day on", before.LockedUntil)
+	}
+	time.Sleep(time.Until(soon) + time.Second)
+	for node, want := range map[string]bool{"kept": false, "lapsed": true} {
+		deleted := 0
+		var all []minio.ObjectInfo
+		for _, o := range versions(node) {
+			// The repository as restic sees it: what a run's own lock was (already removed, hidden) isn't, and is
+			// never locked again; removing a delete marker only shows what it hid.
+			if o.IsLatest && !o.IsDeleteMarker {
+				all = append(all, o)
+			}
+		}
+		for _, o := range all {
+			if cl.RemoveObject(ctx, at.Bucket, o.Key, minio.RemoveObjectOptions{VersionID: o.VersionID}) == nil {
+				deleted++
+			}
+		}
+		if want && deleted != len(all) || !want && deleted != 0 {
+			t.Errorf("%s: the thief deleted %d of %d versions", node, deleted, len(all))
+		}
+	}
+	if snaps, err := repos["kept"].Snapshots(ctx); err != nil || len(snaps) != 1 {
+		t.Errorf("the locked repository after the thief: %d snapshots, %v", len(snaps), err)
+	}
+	if _, err := repos["lapsed"].Snapshots(ctx); err == nil {
+		t.Error("the unlocked repository still opens: nothing was deleted")
 	}
 }
 
@@ -510,9 +617,10 @@ func contract(t *testing.T, target backup.Target, creds backup.Credentials, secr
 	})
 
 	t.Run("it says plainly whether whoever holds its credentials can delete its backups", func(t *testing.T) {
-		im := backup.ReadImmutability(ctx, target, creds)
+		now := time.Now().UTC()
+		im, _ := backup.Lock(ctx, target, creds, "primary", backup.Immutability{}, now)
 		switch {
-		case bucket != "" && (im != backup.Immutability{Immutable: true, Why: "compliance", Days: 1}):
+		case bucket != "" && (!im.Immutable || im.Why != "compliance" || im.Days != 1 || !im.LockedUntil.Equal(now.Add(24*time.Hour))):
 			t.Errorf("an object-locked bucket: %+v", im)
 		case bucket == "" && im.Immutable:
 			t.Errorf("a target without Object Lock is immutable: %+v", im)
