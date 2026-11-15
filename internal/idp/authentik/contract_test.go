@@ -38,6 +38,7 @@ import (
 	"regexp"
 	"runtime"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -508,14 +509,15 @@ func TestTheIdentityProviderContractOnAuthentik(t *testing.T) {
 // inABrowser runs the browser's side, web/e2e/passkey.idp.spec.ts, against this Authentik behind a TLS stand-in for
 // the edge, which Chromium trusts by its key alone. Chromium makes the passkey from a fresh enrolment link and signs in
 // to Admin's client; the code it brings back is exchanged and its ID token verified here.
+//
+// HOMERSLAB_TEST_BROWSER_RUNS runs the browser's side that many times in a row (CI's manual run proves a flake gone
+// with 20). Each run is a person of its own, with an enrolment link and an authorize attempt of its own: an enrolment
+// link works once, and a run never reuses what another used up.
 func inABrowser(t *testing.T, w *world, a *authentik.Authentik) {
 	ctx := context.Background()
-	if err := a.EnsurePerson(ctx, idp.Person{Username: "marta", Name: "Marta", Mail: "marta@ferreira.family", Role: idp.Admin}); err != nil {
-		t.Fatal(err)
-	}
-	link, err := a.EnrolmentLink(ctx, "marta")
-	if err != nil {
-		t.Fatal(err)
+	runs := 1
+	if n, err := strconv.Atoi(os.Getenv("HOMERSLAB_TEST_BROWSER_RUNS")); err == nil && n > 1 {
+		runs = n
 	}
 	c := w.OIDC()
 	creds, err := a.EnsureClient(ctx, idp.Client{Slug: "homerslab-admin", Name: "Admin", RedirectURIs: []string{redirect}, Roles: []idp.Role{idp.Admin}, PasskeyOnly: true})
@@ -527,11 +529,10 @@ func inABrowser(t *testing.T, w *world, a *authentik.Authentik) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	at := oidc.FreshAttempt(time.Now()) // as Admin asks
 
 	key, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	tmpl := &x509.Certificate{SerialNumber: big.NewInt(17), Subject: pkix.Name{CommonName: "auth.example.test"},
-		DNSNames: []string{"auth.example.test", "admin.example.test"}, NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(time.Hour),
+		DNSNames: []string{"auth.example.test", "admin.example.test"}, NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(2 * time.Hour),
 		ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}}
 	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
 	if err != nil {
@@ -553,13 +554,44 @@ func inABrowser(t *testing.T, w *world, a *authentik.Authentik) {
 	edge.StartTLS()
 	defer edge.Close()
 
+	passed := 0
+	for run := 1; run <= runs; run++ {
+		username := "marta"
+		if run > 1 {
+			username = fmt.Sprintf("marta%d", run)
+		}
+		if err := browserRun(t, a, c, e, edge.URL, base64.StdEncoding.EncodeToString(sum[:]), username, run); err != nil {
+			t.Errorf("browser run %d of %d: %v", run, runs, err)
+			continue
+		}
+		passed++
+	}
+	if runs > 1 {
+		t.Logf("browser runs: %d of %d passed", passed, runs)
+	}
+}
+
+// browserRun is one run of web/e2e/passkey.idp.spec.ts, for a new person: their own enrolment link, a fresh authorize
+// attempt, and its own folder for what Playwright keeps of a failure (web/test-results/passkey-<run>).
+func browserRun(t *testing.T, a *authentik.Authentik, c oidc.Client, e oidc.Endpoints, edgeURL, spki, username string, run int) error {
+	t.Helper()
+	ctx := context.Background()
+	if err := a.EnsurePerson(ctx, idp.Person{Username: username, Name: "Marta", Mail: username + "@ferreira.family", Role: idp.Admin}); err != nil {
+		return err
+	}
+	link, err := a.EnrolmentLink(ctx, username)
+	if err != nil {
+		return err
+	}
+	at := oidc.FreshAttempt(time.Now()) // as Admin asks
+
 	dir := t.TempDir()
 	out := filepath.Join(dir, "callback.txt")
-	spec, _ := json.Marshal(map[string]string{"address": strings.TrimPrefix(edge.URL, "https://"), "spki": base64.StdEncoding.EncodeToString(sum[:]),
-		"enrolment": link.URL.Reveal(), "authorize": c.AuthorizeURL(e, at), "username": "marta", "redirect": redirect,
+	spec, _ := json.Marshal(map[string]string{"address": strings.TrimPrefix(edgeURL, "https://"), "spki": spki,
+		"enrolment": link.URL.Reveal(), "authorize": c.AuthorizeURL(e, at), "username": username, "redirect": redirect,
 		"landing": landing, "out": out})
 	if err := os.WriteFile(filepath.Join(dir, "world.json"), spec, 0o600); err != nil {
-		t.Fatal(err)
+		return err
 	}
 	if os.Getenv("HOMERSLAB_TEST_BROWSER") == "external" {
 		// The browser runs elsewhere (a developer's machine, where Go runs in a container): wait for its answer.
@@ -572,27 +604,29 @@ func inABrowser(t *testing.T, w *world, a *authentik.Authentik) {
 		}
 	} else {
 		_, self, _, _ := runtime.Caller(0)
-		cmd := exec.Command("npx", "playwright", "test", "e2e/passkey.idp.spec.ts", "--project=desktop", "--reporter=list")
+		cmd := exec.Command("npx", "playwright", "test", "e2e/passkey.idp.spec.ts", "--project=desktop", "--reporter=list",
+			fmt.Sprintf("--output=test-results/passkey-%d", run))
 		cmd.Dir = filepath.Join(filepath.Dir(self), "..", "..", "..", "web")
 		cmd.Env = append(os.Environ(), "HOMERSLAB_TEST_SIGNIN="+filepath.Join(dir, "world.json"))
 		got, err := cmd.CombinedOutput()
-		t.Logf("the browser:\n%s", got)
+		t.Logf("the browser, run %d:\n%s", run, got)
 		if err != nil {
-			t.Fatalf("the browser's side failed: %v", err)
+			return fmt.Errorf("the browser's side failed: %v", err)
 		}
 	}
 	b, err := os.ReadFile(out)
 	if err != nil {
-		t.Fatal(err)
+		return err
 	}
 	cb, _ := url.Parse(strings.TrimSpace(string(b)))
 	cl, err := c.Finish(ctx, e, at, cb.Query().Get("state"), cb.Query().Get("code"), time.Now())
 	if err != nil {
-		t.Fatalf("the browser's code: %v", err)
+		return fmt.Errorf("the browser's code: %v", err)
 	}
-	if cl.Username != "marta" || !slices.Contains(cl.Groups, idp.RoleGroup(idp.Admin)) {
-		t.Errorf("claims %+v", cl)
+	if cl.Username != username || !slices.Contains(cl.Groups, idp.RoleGroup(idp.Admin)) {
+		return fmt.Errorf("claims %+v", cl)
 	}
+	return nil
 }
 
 // world is the compose project, and the suite's browser.
