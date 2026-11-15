@@ -149,14 +149,14 @@ func Bootstrap(ctx context.Context, base string, h idp.Household, bootstrap idp.
 	if err := defaultsReady(ctx, b); err != nil {
 		return "", err
 	}
-	admins, err := one[group](ctx, b, "/core/groups/?name="+q(superuserGroup))
+	admins, err := find[group](ctx, b, "/core/groups/?name="+q(superuserGroup), "name", superuserGroup)
 	if err != nil {
 		return "", err
 	}
 	if admins == nil {
 		return "", errors.New("authentik: its superuser group is missing")
 	}
-	svc, err := one[user](ctx, b, "/core/users/?username="+q(ServiceUser))
+	svc, err := find[user](ctx, b, "/core/users/?username="+q(ServiceUser), "username", ServiceUser)
 	if err != nil {
 		return "", err
 	}
@@ -223,7 +223,7 @@ const retryEvery = 20 * time.Second
 // run before they all are there.
 func defaultsReady(ctx context.Context, a *api) error {
 	for _, slug := range DefaultFlows {
-		f, err := one[flow](ctx, a, "/flows/instances/?slug="+q(slug))
+		f, err := find[flow](ctx, a, "/flows/instances/?slug="+q(slug), "slug", slug)
 		if err != nil {
 			return err
 		}
@@ -269,9 +269,9 @@ func defaultsReady(ctx context.Context, a *api) error {
 	if n == 0 {
 		return fmt.Errorf("%w: it hasn't found its blueprints yet", idp.ErrNotReady)
 	}
-	cert, err := one[struct {
+	cert, err := find[struct {
 		PK string `json:"pk"`
-	}](ctx, a, "/crypto/certificatekeypairs/?name="+q(selfSignedCert))
+	}](ctx, a, "/crypto/certificatekeypairs/?name="+q(selfSignedCert), "name", selfSignedCert)
 	if err != nil {
 		return err
 	}
@@ -290,7 +290,7 @@ func notFound(err error) bool {
 // gets a random password and is deactivated (it stays, inactive, so nothing recreates a superuser in its name), the
 // flow wants a superuser, and a policy that refuses everyone is bound to it.
 func (a *Authentik) closeFirstAdmin(ctx context.Context) error {
-	ak, err := one[user](ctx, a.api, "/core/users/?username="+q(firstAdmin))
+	ak, err := find[user](ctx, a.api, "/core/users/?username="+q(firstAdmin), "username", firstAdmin)
 	if err != nil {
 		return err
 	}
@@ -340,7 +340,7 @@ type flow struct {
 }
 
 func (a *Authentik) flow(ctx context.Context, slug string) (*flow, error) {
-	return one[flow](ctx, a.api, "/flows/instances/?slug="+q(slug))
+	return find[flow](ctx, a.api, "/flows/instances/?slug="+q(slug), "slug", slug)
 }
 
 // ensure makes the object named name at a list endpoint, or brings it in line with body, and returns its pk.
@@ -348,7 +348,7 @@ func (a *Authentik) ensure(ctx context.Context, path, name string, body map[stri
 	type obj struct {
 		PK json.RawMessage `json:"pk"`
 	}
-	have, err := one[obj](ctx, a.api, path+"?name="+q(name))
+	have, err := find[obj](ctx, a.api, path+"?name="+q(name), "name", name)
 	if err != nil {
 		return "", err
 	}
@@ -383,33 +383,50 @@ func (a *Authentik) bindPolicies(ctx context.Context, target string, want []bind
 		Order  int    `json:"order"`
 		On     bool   `json:"enabled"`
 	}
+	// A binding answers its target as the target's own pk, not the policy binding model's it is asked by, so the filter
+	// can't be checked here; 2026.8.5 declares it (PolicyBindingFilter), and the contract suite holds it to that.
 	have, err := list[pb](ctx, a.api, "/policies/bindings/?target="+q(target))
 	if err != nil {
 		return err
 	}
-	kept := make([]bool, len(want))
-	for _, h := range have {
+	// The new bindings come before the old ones go: a target with no binding at all is open to everyone, so it is never
+	// left without one, even for a moment (#219). An old binding of the same policy at the same order (which Authentik
+	// keeps unique) is changed in place instead.
+	kept, gone := make([]bool, len(want)), make([]bool, len(have))
+	for j, h := range have {
 		i := slices.IndexFunc(want, func(w binding) bool { return w.Policy == h.Policy && w.Group == h.Group && w.Negate == h.Negate })
 		if i >= 0 && !kept[i] && h.On && h.Order == i*10 {
-			kept[i] = true
-			continue
-		}
-		if err := a.api.call(ctx, http.MethodDelete, "/policies/bindings/"+h.PK+"/", nil, nil); err != nil {
-			return err
+			kept[i], gone[j] = true, true
 		}
 	}
 	for i, w := range want {
 		if kept[i] {
 			continue
 		}
-		body := map[string]any{"target": target, "order": i * 10, "enabled": true, "negate": w.Negate, "timeout": 30}
+		body := map[string]any{"target": target, "order": i * 10, "enabled": true, "negate": w.Negate, "timeout": 30, "policy": nil, "group": nil}
 		if w.Policy != "" {
 			body["policy"] = w.Policy
 		}
 		if w.Group != "" {
 			body["group"] = w.Group
 		}
-		if err := a.api.call(ctx, http.MethodPost, "/policies/bindings/", body, nil); err != nil {
+		j := slices.IndexFunc(have, func(h pb) bool { return w.Policy != "" && h.Policy == w.Policy && h.Order == i*10 })
+		var err error
+		if j >= 0 && !gone[j] {
+			gone[j] = true
+			err = a.api.call(ctx, http.MethodPatch, "/policies/bindings/"+have[j].PK+"/", body, nil)
+		} else {
+			err = a.api.call(ctx, http.MethodPost, "/policies/bindings/", body, nil)
+		}
+		if err != nil {
+			return err
+		}
+	}
+	for j, h := range have {
+		if gone[j] {
+			continue
+		}
+		if err := a.api.call(ctx, http.MethodDelete, "/policies/bindings/"+h.PK+"/", nil, nil); err != nil {
 			return err
 		}
 	}
@@ -434,7 +451,7 @@ func (a *Authentik) bindStages(ctx context.Context, flowPK string, want []stageB
 		ReEval  bool   `json:"re_evaluate_policies"`
 		Invalid string `json:"invalid_response_action"`
 	}
-	have, err := list[fsb](ctx, a.api, "/flows/bindings/?target="+q(flowPK))
+	have, err := where[fsb](ctx, a.api, "/flows/bindings/?target="+q(flowPK), "target", flowPK)
 	if err != nil {
 		return err
 	}
@@ -651,7 +668,7 @@ func (a *Authentik) loginsElsewhere(ctx context.Context, signIn string) (map[str
 		if f.PK == signIn || f.Slug == SignInFlow || f.Slug == EnrolmentFlow {
 			continue
 		}
-		bs, err := list[flowBinding](ctx, a.api, "/flows/bindings/?target="+q(f.PK))
+		bs, err := where[flowBinding](ctx, a.api, "/flows/bindings/?target="+q(f.PK), "target", f.PK)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -710,13 +727,13 @@ func (a *Authentik) refuseElsewhere(ctx context.Context, signIn, refusal, househ
 // refusedElsewhere says whether every other flow that signs a person in or sets something up for them refuses the
 // household's people first, with HomersLab's own policy, unchanged.
 func (a *Authentik) refusedElsewhere(ctx context.Context) (bool, error) {
-	refusal, err1 := one[struct {
+	refusal, err1 := find[struct {
 		PK string `json:"pk"`
-	}](ctx, a.api, "/stages/deny/?name="+q(stageNotHere))
-	household, err2 := one[struct {
+	}](ctx, a.api, "/stages/deny/?name="+q(stageNotHere), "name", stageNotHere)
+	household, err2 := find[struct {
 		PK         string `json:"pk"`
 		Expression string `json:"expression"`
-	}](ctx, a.api, "/policies/expression/?name="+q(policyHousehold))
+	}](ctx, a.api, "/policies/expression/?name="+q(policyHousehold), "name", policyHousehold)
 	signIn, err3 := a.flow(ctx, SignInFlow)
 	if err := errors.Join(err1, err2, err3); err != nil || refusal == nil || household == nil || signIn == nil {
 		return false, err
@@ -800,7 +817,7 @@ func (a *Authentik) ensureBrand(ctx context.Context, signIn string) error {
 }
 
 func (a *Authentik) person(ctx context.Context, username string) (*user, error) {
-	u, err := one[user](ctx, a.api, "/core/users/?username="+q(username))
+	u, err := find[user](ctx, a.api, "/core/users/?username="+q(username), "username", username)
 	if err != nil {
 		return nil, err
 	}
@@ -817,7 +834,7 @@ func (a *Authentik) EnsurePerson(ctx context.Context, p idp.Person) error {
 	}
 	groups := map[string]string{}
 	for _, r := range idp.Roles() {
-		g, err := one[group](ctx, a.api, "/core/groups/?name="+q(idp.RoleGroup(r)))
+		g, err := find[group](ctx, a.api, "/core/groups/?name="+q(idp.RoleGroup(r)), "name", idp.RoleGroup(r))
 		if err != nil {
 			return err
 		}
@@ -832,7 +849,7 @@ func (a *Authentik) EnsurePerson(ctx context.Context, p idp.Person) error {
 			want = id
 		}
 	}
-	u, err := one[user](ctx, a.api, "/core/users/?username="+q(p.Username))
+	u, err := find[user](ctx, a.api, "/core/users/?username="+q(p.Username), "username", p.Username)
 	if err != nil {
 		return err
 	}
@@ -856,13 +873,17 @@ func (a *Authentik) EnsurePerson(ctx context.Context, p idp.Person) error {
 
 // People are the household's people in a role.
 func (a *Authentik) People(ctx context.Context, r idp.Role) ([]idp.Person, error) {
-	us, err := list[user](ctx, a.api, "/core/users/?is_active=true&path="+q(userPath)+"&groups_by_name="+q(idp.RoleGroup(r)))
+	g, err := find[group](ctx, a.api, "/core/groups/?name="+q(idp.RoleGroup(r)), "name", idp.RoleGroup(r))
+	if err != nil || g == nil {
+		return nil, fmt.Errorf("authentik: the group of %s is missing: %v", r, err)
+	}
+	us, err := where[user](ctx, a.api, "/core/users/?is_active=true&path="+q(userPath)+"&groups_by_name="+q(idp.RoleGroup(r)), "path", userPath)
 	if err != nil {
 		return nil, err
 	}
 	out := make([]idp.Person, 0, len(us))
 	for _, u := range us {
-		if u.Type == "internal" {
+		if u.Type == "internal" && u.IsActive && slices.Contains(u.Groups, g.PK) { // the filters are checked, never trusted (#219)
 			out = append(out, idp.Person{Username: u.Username, Name: u.Name, Mail: u.Email, Role: r})
 		}
 	}
@@ -919,7 +940,7 @@ func (a *Authentik) EnrolmentLink(ctx context.Context, username string) (idp.Lin
 		Name      string         `json:"name"`
 		FixedData map[string]any `json:"fixed_data"`
 	}
-	old, err := list[invitation](ctx, a.api, "/stages/invitation/invitations/?flow__slug="+q(EnrolmentFlow))
+	old, err := where[invitation](ctx, a.api, "/stages/invitation/invitations/?flow__slug="+q(EnrolmentFlow), "flow", f.PK)
 	if err != nil {
 		return idp.Link{}, err
 	}
@@ -1021,9 +1042,9 @@ func (a *Authentik) EnsureClient(ctx context.Context, c idp.Client) (idp.ClientC
 		return idp.ClientCredentials{}, errors.New("authentik: its OpenID scope mappings are missing")
 	}
 	slices.Sort(scopes)
-	cert, err := one[struct {
+	cert, err := find[struct {
 		PK string `json:"pk"`
-	}](ctx, a.api, "/crypto/certificatekeypairs/?has_key=true&name="+q(selfSignedCert))
+	}](ctx, a.api, "/crypto/certificatekeypairs/?has_key=true&name="+q(selfSignedCert), "name", selfSignedCert)
 	if err != nil || cert == nil {
 		return idp.ClientCredentials{}, fmt.Errorf("authentik: its signing key is missing: %v", err)
 	}
@@ -1044,13 +1065,17 @@ func (a *Authentik) EnsureClient(ctx context.Context, c idp.Client) (idp.ClientC
 		body["authentication_flow"] = f.PK
 	}
 	type provider struct {
-		PK     int    `json:"pk"`
-		ID     string `json:"client_id"`
-		Secret string `json:"client_secret"`
+		PK     int     `json:"pk"`
+		ID     string  `json:"client_id"`
+		Secret string  `json:"client_secret"`
+		App    *string `json:"assigned_application_slug"`
 	}
-	p, err := one[provider](ctx, a.api, "/providers/oauth2/?name="+q(c.Slug))
+	p, err := find[provider](ctx, a.api, "/providers/oauth2/?name="+q(c.Slug), "name", c.Slug)
 	if err != nil {
 		return idp.ClientCredentials{}, err
+	}
+	if p != nil && p.App != nil && *p.App != c.Slug { // another application's provider is never rewritten (#219)
+		return idp.ClientCredentials{}, fmt.Errorf("authentik: the provider %s is another application's, refused", c.Slug)
 	}
 	issuer := a.h.URL("/application/o/" + c.Slug + "/")
 	if p == nil {
@@ -1124,7 +1149,7 @@ func (a *Authentik) createClient(ctx context.Context, c idp.Client, provider map
 func (a *Authentik) audience(ctx context.Context, roles []idp.Role) ([]binding, error) {
 	var bs []binding
 	for _, r := range roles {
-		g, err := one[group](ctx, a.api, "/core/groups/?name="+q(idp.RoleGroup(r)))
+		g, err := find[group](ctx, a.api, "/core/groups/?name="+q(idp.RoleGroup(r)), "name", idp.RoleGroup(r))
 		if err != nil || g == nil {
 			return nil, fmt.Errorf("authentik: the group of %s is missing: %v", r, err)
 		}
@@ -1134,7 +1159,7 @@ func (a *Authentik) audience(ctx context.Context, roles []idp.Role) ([]binding, 
 		type policy struct {
 			PK string `json:"pk"`
 		}
-		never, err := one[policy](ctx, a.api, "/policies/expression/?name="+q(policyNever))
+		never, err := find[policy](ctx, a.api, "/policies/expression/?name="+q(policyNever), "name", policyNever)
 		if err != nil {
 			return nil, err
 		}
@@ -1175,11 +1200,15 @@ func (a *Authentik) DeleteClient(ctx context.Context, slug string) error {
 		}
 	}
 	type provider struct {
-		PK int `json:"pk"`
+		PK  int     `json:"pk"`
+		App *string `json:"assigned_application_slug"`
 	}
-	p, err := one[provider](ctx, a.api, "/providers/oauth2/?name="+q(slug))
+	p, err := find[provider](ctx, a.api, "/providers/oauth2/?name="+q(slug), "name", slug)
 	if err != nil || p == nil {
 		return err
+	}
+	if p.App != nil && *p.App != slug { // another application's provider is never deleted (#219)
+		return fmt.Errorf("authentik: the provider %s is another application's, refused", slug)
 	}
 	if err := a.api.call(ctx, http.MethodDelete, fmt.Sprintf("/providers/oauth2/%d/", p.PK), nil, nil); err != nil && !notFound(err) {
 		return err
@@ -1218,11 +1247,18 @@ func (a *Authentik) EnsureGuard(ctx context.Context, g idp.Guard) error {
 		"external_host": g.URL, "internal_host": "", "basic_auth_enabled": false, "intercept_header_auth": false, "cookie_domain": "",
 		"access_token_validity": "hours=12", "authentication_flow": nil}
 	type provider struct {
-		PK int `json:"pk"`
+		PK   int     `json:"pk"`
+		Host string  `json:"external_host"`
+		App  *string `json:"assigned_application_slug"`
 	}
-	p, err := one[provider](ctx, a.api, "/providers/proxy/?name="+q(g.Slug))
+	// Proxy providers take name__iexact, never name (#219): found by name, the guard's own provider must also be at the
+	// app's URL and nobody else's application, or it is another app's guard, which is never rewritten.
+	p, err := find[provider](ctx, a.api, "/providers/proxy/?name__iexact="+q(g.Slug), "name", g.Slug)
 	if err != nil {
 		return err
+	}
+	if p != nil && (p.Host != g.URL || p.App != nil && *p.App != g.Slug) {
+		return fmt.Errorf("authentik: the provider %s isn't this app's guard (at %s), refused", g.Slug, p.Host)
 	}
 	if p == nil {
 		p = &provider{}
@@ -1240,7 +1276,7 @@ func (a *Authentik) EnsureGuard(ctx context.Context, g idp.Guard) error {
 		PK        string `json:"pk"`
 		Providers []int  `json:"providers"`
 	}
-	o, err := one[outpost](ctx, a.api, "/outposts/instances/?managed__iexact="+q(embeddedOutpost))
+	o, err := find[outpost](ctx, a.api, "/outposts/instances/?managed__iexact="+q(embeddedOutpost), "managed", embeddedOutpost)
 	if err != nil || o == nil {
 		return fmt.Errorf("authentik: its embedded outpost is missing: %v", err)
 	}
@@ -1331,9 +1367,9 @@ func (a *Authentik) Report(ctx context.Context) (idp.Report, error) {
 		Password *string `json:"password_stage"`
 		Passless *string `json:"passwordless_flow"`
 	}
-	enrol, err1 := one[webauthnSetup](ctx, a.api, "/stages/authenticator/webauthn/?name="+q(stageEnrol))
-	check, err2 := one[validate](ctx, a.api, "/stages/authenticator/validate/?name="+q(stagePasskey))
-	ident, err3 := one[identify](ctx, a.api, "/stages/identification/?name="+q(stageIdentify))
+	enrol, err1 := find[webauthnSetup](ctx, a.api, "/stages/authenticator/webauthn/?name="+q(stageEnrol), "name", stageEnrol)
+	check, err2 := find[validate](ctx, a.api, "/stages/authenticator/validate/?name="+q(stagePasskey), "name", stagePasskey)
+	ident, err3 := find[identify](ctx, a.api, "/stages/identification/?name="+q(stageIdentify), "name", stageIdentify)
 	if err := errors.Join(err1, err2, err3); err != nil {
 		return idp.Report{}, err
 	}
@@ -1352,7 +1388,7 @@ func (a *Authentik) Report(ctx context.Context) (idp.Report, error) {
 		}
 		r.PasskeyOnlySignIn = only
 	}
-	ak, err := one[user](ctx, a.api, "/core/users/?username="+q(firstAdmin))
+	ak, err := find[user](ctx, a.api, "/core/users/?username="+q(firstAdmin), "username", firstAdmin)
 	if err != nil {
 		return idp.Report{}, err
 	}

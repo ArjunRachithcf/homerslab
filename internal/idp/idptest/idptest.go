@@ -52,6 +52,10 @@ type World interface {
 	// AskGuard asks the provider's forward-auth for a request to host, as the edge does before it lets a request
 	// reach a guarded app, from a browser with no session there; it returns the answer's status and Location.
 	AskGuard(t *testing.T, host string) (status int, location string)
+	// PassGuard goes to host in a browser holding a's passkeys, as username, the way the guard sends a browser with no
+	// session (signing in where it is asked to), then asks the guard for host with whatever session that left; it
+	// returns the guard's status.
+	PassGuard(t *testing.T, a *webauthntest.Authenticator, username, host string) (status int)
 }
 
 // Enrolment is what a provider asked the browser for when it made a passkey.
@@ -473,6 +477,51 @@ func Run(t *testing.T, w World, version string) {
 			{Slug: g.Slug, URL: "https://pdf." + h.Domain + "/path"}} {
 			if err := p.EnsureGuard(ctx, bad); err == nil {
 				t.Errorf("made the guard %+v", bad)
+			}
+		}
+	})
+
+	t.Run("a second guarded app: each keeps its own name and audience (#219)", func(t *testing.T) {
+		pdf := idp.Guard{Slug: "homerslab-bentopdf", Name: "BentoPDF", URL: "https://pdf." + h.Domain, Roles: []idp.Role{idp.Admin, idp.Adult}}
+		chores := idp.Guard{Slug: "homerslab-chores", Name: "Chores", URL: "https://chores." + h.Domain, Roles: []idp.Role{idp.Kid}}
+		for _, g := range []idp.Guard{chores, pdf, chores} {
+			if err := p.EnsureGuard(ctx, g); err != nil {
+				t.Fatalf("%s: %v", g.Slug, err)
+			}
+		}
+		people := map[string]*webauthntest.Authenticator{}
+		for _, who := range []idp.Person{{Username: "bea", Name: "Bea", Mail: "bea@ferreira.family", Role: idp.Adult},
+			{Username: "lia", Name: "Lia", Mail: "lia@ferreira.family", Role: idp.Kid}} {
+			if err := p.EnsurePerson(ctx, who); err != nil {
+				t.Fatal(err)
+			}
+			link, err := p.EnrolmentLink(ctx, who.Username)
+			if err != nil {
+				t.Fatal(err)
+			}
+			people[who.Username] = webauthntest.New(h.Origin())
+			if _, err := w.Browser(t, people[who.Username]).Enrol(t, link); err != nil {
+				t.Fatal(err)
+			}
+		}
+		for _, host := range []string{"pdf." + h.Domain, "chores." + h.Domain} {
+			var status int
+			for deadline := time.Now().Add(time.Minute); ; time.Sleep(2 * time.Second) { // the outpost takes its providers in a while
+				if status, _ = w.AskGuard(t, host); status/100 == 3 || time.Now().After(deadline) {
+					break
+				}
+			}
+			if status/100 != 3 {
+				t.Errorf("the guard of %s, with no session: %d, want a redirect to sign in", host, status)
+			}
+		}
+		for _, c := range []struct {
+			who, host string
+			in        bool
+		}{{"bea", "pdf", true}, {"bea", "chores", false}, {"lia", "chores", true}, {"lia", "pdf", false}} {
+			status := w.PassGuard(t, people[c.who], c.who, c.host+"."+h.Domain)
+			if in := status/100 == 2; in != c.in {
+				t.Errorf("%s at %s: the guard answered %d, want let in: %v", c.who, c.host, status, c.in)
 			}
 		}
 	})

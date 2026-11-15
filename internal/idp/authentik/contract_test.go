@@ -174,6 +174,64 @@ func TestTheIdentityProviderContractOnAuthentik(t *testing.T) {
 	w.provider = a
 	idptest.Run(t, w, authentik.Version)
 
+	t.Run("an app's audience changes without the app ever being open to someone of neither audience (#219)", func(t *testing.T) {
+		// Inês, an admin, is of neither audience: Authentik's own access check for her runs all along, as the changes
+		// are made. An application with no binding at all would let her in.
+		ines := w.userPK(t, "ines")
+		var app struct {
+			Slug string `json:"slug"`
+		}
+		w.raw(t, own, "GET", "/api/v3/core/applications/homerslab-chores/", nil, &app)
+		stop, done := make(chan struct{}), make(chan []string)
+		go func() {
+			var let []string
+			for checks := 0; ; checks++ {
+				select {
+				case <-stop:
+					done <- append(let, fmt.Sprintf("checks: %d", checks))
+					return
+				default:
+				}
+				code, b := w.do(t, own, "GET", fmt.Sprintf("/api/v3/core/applications/homerslab-chores/check_access/?for_user=%d", ines), nil)
+				var r struct {
+					Passing bool `json:"passing"`
+				}
+				if code != http.StatusOK || json.Unmarshal(b, &r) != nil || r.Passing {
+					let = append(let, fmt.Sprintf("%d %s", code, b))
+				}
+			}
+		}()
+		g := idp.Guard{Slug: "homerslab-chores", Name: "Chores", URL: "https://chores.example.test"}
+		for i := range 8 {
+			g.Roles = []idp.Role{[]idp.Role{idp.Adult, idp.Kid}[i%2]}
+			if err := w.provider.EnsureGuard(ctx, g); err != nil {
+				t.Fatal(err)
+			}
+		}
+		close(stop)
+		let := <-done
+		t.Log(let[len(let)-1])
+		if len(let) > 1 {
+			t.Errorf("while its audience changed, the app let in someone of neither, or the check failed: %v", let[:len(let)-1])
+		}
+	})
+
+	t.Run("each guard's provider keeps its own app's URL (#219)", func(t *testing.T) {
+		for slug, host := range map[string]string{"homerslab-bentopdf": "https://pdf.example.test", "homerslab-chores": "https://chores.example.test"} {
+			var ps struct {
+				Results []struct {
+					Name string `json:"name"`
+					Host string `json:"external_host"`
+					App  string `json:"assigned_application_slug"`
+				}
+			}
+			w.raw(t, own, "GET", "/api/v3/providers/proxy/?name__iexact="+slug, nil, &ps)
+			if len(ps.Results) != 1 || ps.Results[0].Name != slug || ps.Results[0].Host != host || ps.Results[0].App != slug {
+				t.Errorf("the provider %s: %+v, want one at %s for its own application", slug, ps.Results, host)
+			}
+		}
+	})
+
 	// Authentik applies its own blueprints again when its worker likes (at its start, after an upgrade, hourly). Its
 	// first-admin blueprint must apply over HomersLab's closing of that flow, and the flow stay closed (#195's CI:
 	// the sign-in waited on that blueprint, which had failed at Authentik's first start).
@@ -556,6 +614,88 @@ func (w *world) AskGuard(t *testing.T, host string) (int, string) {
 	defer resp.Body.Close()
 	return resp.StatusCode, resp.Header.Get("Location")
 }
+
+// PassGuard goes to host in a browser holding a's passkeys, as username, the way the guard sends it: to the outpost's
+// start, the sign-in, back to the app's callback; then it asks the guard for host with the session it came back with.
+// A person the app's application refuses never gets that far: the answer is then the guard's to a browser with none.
+func (w *world) PassGuard(t *testing.T, a *webauthntest.Authenticator, username, host string) int {
+	t.Helper()
+	jar, _ := cookiejar.New(nil)
+	c := &http.Client{Timeout: 30 * time.Second, Jar: jar, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+		// Every name of the household's goes to Authentik, under its own Host, as the edge sends it.
+		Transport: roundTrip(func(r *http.Request) (*http.Response, error) {
+			if r.URL.Scheme != "https" || !strings.HasSuffix(r.URL.Hostname(), "."+household.Domain) {
+				return nil, fmt.Errorf("%s isn't the household's", r.URL.Redacted())
+			}
+			out := r.Clone(r.Context())
+			u, _ := url.Parse(upstream)
+			out.URL.Scheme, out.URL.Host, out.Host = u.Scheme, u.Host, r.URL.Host
+			out.Header.Set("X-Forwarded-Proto", "https")
+			return http.DefaultTransport.RoundTrip(out)
+		})}
+	b := &browser{w: w, c: c, a: a}
+	next := "https://" + host + "/outpost.goauthentik.io/start?rd=" + url.QueryEscape("https://"+host+"/")
+	for range 20 {
+		u, _ := url.Parse(next)
+		if u.Host == host && u.Path == "/" { // back at the app: the session is the browser's
+			break
+		}
+		resp, err := c.Get(next)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode == http.StatusOK && u.Path == "/application/o/authorize/" {
+			// Signed in, and the application's policies refuse the person: Authentik answers its own denial page.
+			t.Logf("%s at %s: refused by the application", username, host)
+			break
+		}
+		if loc := resp.Header.Get("Location"); resp.StatusCode/100 == 3 {
+			l, _ := u.Parse(loc)
+			if l.Host == "localhost" {
+				// The embedded outpost sends the browser to Authentik at its own idea of its host (its configuration's
+				// authentik_host_browser, unset): the sign-in's origin is where the edge serves it.
+				o, _ := url.Parse(household.Origin())
+				l.Scheme, l.Host = o.Scheme, o.Host
+			}
+			next = l.String()
+			continue
+		}
+		if resp.StatusCode != http.StatusOK || !strings.HasPrefix(u.Path, "/if/flow/") {
+			t.Fatalf("GET %s%s: %d", u.Host, u.Path, resp.StatusCode)
+		}
+		to, err := b.flow(t, strings.Trim(strings.TrimPrefix(u.Path, "/if/flow/"), "/"), u.RawQuery, username, idptest.Factors{})
+		if errors.Is(err, errDenied) {
+			t.Logf("%s at %s: refused by the sign-in", username, host)
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		l, _ := u.Parse(to)
+		next = l.String()
+	}
+	req, _ := http.NewRequest("GET", upstream+"/outpost.goauthentik.io/auth/caddy", nil)
+	for k, v := range map[string]string{"X-Forwarded-Host": host, "X-Forwarded-Proto": "https", "X-Forwarded-Uri": "/", "X-Forwarded-Method": "GET"} {
+		req.Header.Set(k, v)
+	}
+	for _, ck := range jar.Cookies(&url.URL{Scheme: "https", Host: host, Path: "/"}) {
+		req.AddCookie(ck)
+	}
+	resp, err := (&http.Client{Timeout: 20 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}).Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	return resp.StatusCode
+}
+
+// errDenied is a flow that ended in Authentik's access-denied stage: a policy refused the person.
+var errDenied = errors.New("access denied")
+
+type roundTrip func(*http.Request) (*http.Response, error)
+
+func (f roundTrip) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
 
 func (w *world) Provider() idp.Provider   { return w.provider }
 func (w *world) Household() idp.Household { return household }
@@ -1163,6 +1303,8 @@ func (b *browser) flow(t *testing.T, slug, query, username string, f idptest.Fac
 		case "xak-flow-redirect":
 			to, _ := ch["to"].(string)
 			return to, nil
+		case "ak-stage-access-denied":
+			return "", fmt.Errorf("the flow %s: %w", slug, errDenied)
 		default:
 			return "", fmt.Errorf("the flow %s answered %v: %v", slug, ch["component"], ch)
 		}
