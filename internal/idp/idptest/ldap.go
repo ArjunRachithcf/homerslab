@@ -222,9 +222,15 @@ func RunLDAP(t *testing.T, w LDAPWorld) {
 		if err := l.DeleteLDAP(ctx, media.Slug); err != nil {
 			t.Fatal(err)
 		}
-		if err := w.Bind(t, dn(creds, "lena"), lena); err == nil {
-			t.Error("a person still binds to a deleted app")
+		// The outpost drops the provider when Authentik tells it the outpost changed, a moment after the delete.
+		start := time.Now()
+		for w.Bind(t, dn(creds, "lena"), lena) == nil {
+			if time.Since(start) > 30*time.Second {
+				t.Fatal("a person still binds to a deleted app, 30 s after it was deleted")
+			}
+			time.Sleep(time.Second)
 		}
+		t.Logf("refused %s after the delete", time.Since(start).Round(time.Second))
 		if err := l.DeleteLDAP(ctx, media.Slug); err != nil {
 			t.Errorf("again: %v", err)
 		}
