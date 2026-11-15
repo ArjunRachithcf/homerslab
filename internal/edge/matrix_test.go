@@ -72,13 +72,13 @@ const (
 	// Home (#21): its user, its socket, and the manager's control socket and database it must never reach.
 	homeUID = "4300"
 	// The sign-in listener's LDAPS port (#204): its process's user, the stand-in outpost on the sign-in network, an LDAP
-	// app's network, and the app's own account there.
+	// app's network, and a person who binds there.
 	ldapsUID    = "4400"
 	ldapsCreds  = "/run/credentials/homerslab-ldaps.service"
 	outpostStub = "10.216.3.10:3389"
 	edgeLDAP    = "10.216.5.20"
-	ldapDN      = "cn=homerslab-jellyfin-ldap,ou=users,dc=jellyfin,dc=homerslab"
-	ldapPW      = "the app's own LDAP password"
+	ldapDN      = "cn=lena,ou=users,dc=jellyfin,dc=homerslab"
+	ldapPW      = "lena's app password"
 	homeSock    = "/run/homerslab-home/home.sock"
 	controlSock = "/run/homerslab/manager.sock"
 	managerDB   = "/var/lib/homerslab/manager.db"

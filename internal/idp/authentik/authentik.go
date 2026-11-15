@@ -365,21 +365,12 @@ func (a *Authentik) ensure(ctx context.Context, path, name string, body map[stri
 	return pk(out.PK), nil
 }
 
-func ptrOr(p *int) int {
-	if p == nil {
-		return 0
-	}
-	return *p
-}
-
 func pk(raw json.RawMessage) string { return strings.Trim(string(raw), `"`) }
 
 type binding struct {
 	Policy string `json:"policy,omitempty"`
 	Group  string `json:"group,omitempty"`
-	// User is a user's pk: an LDAP app's own account (#204).
-	User   int  `json:"user,omitempty"`
-	Negate bool `json:"negate"`
+	Negate bool   `json:"negate"`
 }
 
 // target is what policies are bound to (a flow, a stage binding, an application): as a policy binding model, which
@@ -393,7 +384,6 @@ func (a *Authentik) bindPolicies(ctx context.Context, t target, want []binding) 
 		Target string `json:"target"`
 		Policy string `json:"policy"`
 		Group  string `json:"group"`
-		User   *int   `json:"user"`
 		Negate bool   `json:"negate"`
 		Order  int    `json:"order"`
 		On     bool   `json:"enabled"`
@@ -407,9 +397,7 @@ func (a *Authentik) bindPolicies(ctx context.Context, t target, want []binding) 
 	// keeps unique) is changed in place instead.
 	kept, gone := make([]bool, len(want)), make([]bool, len(have))
 	for j, h := range have {
-		i := slices.IndexFunc(want, func(w binding) bool {
-			return w.Policy == h.Policy && w.Group == h.Group && w.User == ptrOr(h.User) && w.Negate == h.Negate
-		})
+		i := slices.IndexFunc(want, func(w binding) bool { return w.Policy == h.Policy && w.Group == h.Group && w.Negate == h.Negate })
 		if i >= 0 && !kept[i] && h.On && h.Order == i*10 {
 			kept[i], gone[j] = true, true
 		}
@@ -418,15 +406,12 @@ func (a *Authentik) bindPolicies(ctx context.Context, t target, want []binding) 
 		if kept[i] {
 			continue
 		}
-		body := map[string]any{"target": t.PBM, "order": i * 10, "enabled": true, "negate": w.Negate, "timeout": 30, "policy": nil, "group": nil, "user": nil}
+		body := map[string]any{"target": t.PBM, "order": i * 10, "enabled": true, "negate": w.Negate, "timeout": 30, "policy": nil, "group": nil}
 		if w.Policy != "" {
 			body["policy"] = w.Policy
 		}
 		if w.Group != "" {
 			body["group"] = w.Group
-		}
-		if w.User != 0 {
-			body["user"] = w.User
 		}
 		j := slices.IndexFunc(have, func(h pb) bool { return w.Policy != "" && h.Policy == w.Policy && h.Order == i*10 })
 		var err error
@@ -473,34 +458,58 @@ func (a *Authentik) bindStages(ctx context.Context, flowPK string, want []stageB
 	if err != nil {
 		return err
 	}
-	kept := map[int]target{}
-	for _, h := range have {
-		i := slices.IndexFunc(want, func(w stageBinding) bool { return w.Stage == h.Stage })
-		if i >= 0 && h.Order == (i+1)*10 && !h.OnPlan && h.ReEval && h.Invalid == "retry" {
-			if _, dup := kept[i]; !dup {
-				kept[i] = target{PBM: h.PBM, PK: h.PK}
+	// The wanted stages are in place before anything else goes, so a flow being put back never runs with a stage
+	// missing (the LDAP bind flow without its password stage would bind anyone, #204): a binding of the stage that is
+	// there already is changed in place, a missing one is made, and only then are the others deleted.
+	conforms := func(h fsb, i int) bool { return h.Order == (i+1)*10 && !h.OnPlan && h.ReEval && h.Invalid == "retry" }
+	used := make([]bool, len(have))
+	for i, w := range want {
+		j := -1 // this stage's binding: one that conforms, or else any to change in place
+		for k, h := range have {
+			if used[k] || h.Stage != w.Stage {
 				continue
 			}
+			if conforms(h, i) {
+				j = k
+				break
+			}
+			if j < 0 {
+				j = k
+			}
 		}
-		if err := a.api.call(ctx, http.MethodDelete, "/flows/bindings/"+h.PK+"/", nil, nil); err != nil {
-			return err
-		}
-	}
-	for i, w := range want {
-		id, ok := kept[i]
-		if !ok {
+		body := map[string]any{"target": flowPK, "stage": w.Stage, "order": (i + 1) * 10, "evaluate_on_plan": false,
+			"re_evaluate_policies": true, "invalid_response_action": "retry", "policy_engine_mode": "all"}
+		var id target
+		switch {
+		case j >= 0 && conforms(have[j], i):
+			id = target{PBM: have[j].PBM, PK: have[j].PK}
+		case j >= 0:
+			if err := a.api.call(ctx, http.MethodPatch, "/flows/bindings/"+have[j].PK+"/", body, nil); err != nil {
+				return err
+			}
+			id = target{PBM: have[j].PBM, PK: have[j].PK}
+		default:
 			var out struct {
 				PK  string `json:"pk"`
 				PBM string `json:"policybindingmodel_ptr_id"`
 			}
-			if err := a.api.call(ctx, http.MethodPost, "/flows/bindings/", map[string]any{"target": flowPK, "stage": w.Stage,
-				"order": (i + 1) * 10, "evaluate_on_plan": false, "re_evaluate_policies": true, "invalid_response_action": "retry",
-				"policy_engine_mode": "all"}, &out); err != nil {
+			if err := a.api.call(ctx, http.MethodPost, "/flows/bindings/", body, &out); err != nil {
 				return err
 			}
 			id = target{PBM: out.PBM, PK: out.PK}
 		}
+		if j >= 0 {
+			used[j] = true
+		}
 		if err := a.bindPolicies(ctx, id, w.Policies); err != nil {
+			return err
+		}
+	}
+	for j, h := range have {
+		if used[j] {
+			continue
+		}
+		if err := a.api.call(ctx, http.MethodDelete, "/flows/bindings/"+h.PK+"/", nil, nil); err != nil {
 			return err
 		}
 	}

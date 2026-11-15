@@ -14,9 +14,13 @@ import (
 
 // LDAP (#204, ADR 0020): one outpost of HomersLab's, homerslab-ldap, which the sign-in unit runs beside Authentik on
 // the sign-in network; the sign-in listener's port 636 leads to its plain LDAP port. Each LDAP app has its own
-// provider there, with a base DN of its own (the outpost picks the provider by the DN a bind names), its own
-// application, which only the app's roles (and the app's own account) may open, and its own service account, which
-// binds with an app password and may search its provider's directory, and nothing else.
+// provider there, with a base DN of its own (the outpost picks the provider by the DN a bind names), and its own
+// application, which only the app's roles may open.
+//
+// Nobody searches the household's directory (the maintainer, #204): there is no app account, and no permission to
+// search is ever granted, so a person who binds sees their own entry and their own groups, and no one else. Authentik
+// has no way to limit a search to an application's audience, and a search of the whole directory would show every
+// app the household's people, their mail, and which of them are kids or admins.
 //
 // People bind through HomersLab's bind flow, which only an outpost may run (never a browser), and which takes an app
 // password only: their passkey can't travel over LDAP, and a password they were given in the console opens nothing.
@@ -29,10 +33,10 @@ const (
 	stageLDAPPass   = "homerslab-ldap-app-password"
 	stageLDAPLogin  = "homerslab-ldap-session"
 	// ldapNone is the outpost's own provider, whose application opens to nobody: Authentik keeps no outpost without
-	// a provider, and the outpost (so its token) stays while apps come and go.
+	// a provider, and the outpost (so its token) stays while apps come and go. Its base DN is in an ou, which no app's
+	// (a dc) can ever be.
 	ldapNone        = "homerslab-outpost-ldap"
-	ldapProvider    = "authentik_providers_ldap.ldapprovider"
-	ldapSearch      = "authentik_providers_ldap.search_full_directory"
+	ldapNoneDN      = "ou=outpost,dc=homerslab"
 	appPasswords    = "authentik.core.auth.TokenBackend"
 	outpostTokenFmt = "ak-outpost-%s-api"
 )
@@ -40,27 +44,23 @@ const (
 // ldapSlug is an LDAP app's slug: HomersLab's prefix, then the app's id; never the outpost's own.
 var ldapSlug = regexp.MustCompile(`^homerslab-[a-z0-9][a-z0-9-]{0,40}$`)
 
-// LDAPBaseDN is an app's directory: dc=<app>,dc=homerslab.
+// LDAPBaseDN is an app's base DN: dc=<app>,dc=homerslab.
 func LDAPBaseDN(slug string) string {
 	return "dc=" + strings.TrimPrefix(slug, "homerslab-") + ",dc=homerslab"
 }
 
-// LDAPBindDN is a person's (or the app's own account's) DN in an app's directory.
-func LDAPBindDN(slug, username string) string {
-	return "cn=" + username + ",ou=users," + LDAPBaseDN(slug)
-}
+// LDAPUserDN is the DN template of a person in an app's base DN, %s for the username.
+func LDAPUserDN(slug string) string { return "cn=%s,ou=users," + LDAPBaseDN(slug) }
 
 // ldapObj is the name of an app's LDAP provider and the slug of its application: the app's slug with -ldap, so an app
 // that also has an OIDC client or a guard (homerslab-<app>) keeps it apart.
-func ldapObj(slug string) string     { return slug + "-ldap" }
-func ldapAccount(slug string) string { return slug + "-ldap" }
-func ldapToken(slug string) string   { return slug + "-ldap-bind" }
-func ldapRole(slug string) string    { return slug + "-ldap-search" }
+func ldapObj(slug string) string { return slug + "-ldap" }
 
 var _ idp.LDAP = (*Authentik)(nil)
 
 func validLDAPSlug(slug string) error {
-	if !ldapSlug.MatchString(slug) || ldapObj(slug) == ldapNone || strings.HasSuffix(slug, "-") || slug == "homerslab-admin" {
+	if !ldapSlug.MatchString(slug) || ldapObj(slug) == ldapNone || strings.HasSuffix(slug, "-") || slug == "homerslab-admin" ||
+		LDAPBaseDN(slug) == ldapNoneDN {
 		return fmt.Errorf("authentik: %q isn't an LDAP app's slug", slug)
 	}
 	return nil
@@ -99,12 +99,22 @@ func (a *Authentik) ldapBindFlow(ctx context.Context) (string, error) {
 	if err := a.bindStages(ctx, f, []stageBinding{{Stage: pks[stageLDAPID]}, {Stage: pks[stageLDAPPass]}, {Stage: pks[stageLDAPLogin]}}); err != nil {
 		return "", err
 	}
+	// No policy on the flow itself either: only the application's decide who binds.
+	fl, err := a.flow(ctx, LDAPBindFlow)
+	if err != nil || fl == nil {
+		return "", fmt.Errorf("authentik: the LDAP bind flow: %v", err)
+	}
+	if err := a.bindPolicies(ctx, target{PBM: fl.PBM, PK: fl.PK}, nil); err != nil {
+		return "", err
+	}
 	return f, nil
 }
 
-// ldapBindIntact says whether the bind flow, if there is one, is exactly HomersLab's: at an outpost only, and bound to
-// its three stages alone, in order (the username with no password of its own, an app password only, the session).
-// Otherwise a password from the console, or no password at all, could sign a person in to an LDAP app (#204).
+// ldapBindIntact says whether the bind flow, if there is one, is exactly HomersLab's: at an outpost only, bound to its
+// three stages alone, in order, each as bindStages makes it (never decided at planning, decided again when reached),
+// with no policy bound to the flow or to any of its stages (a policy that fails skips its stage: a bind with no
+// password), and each stage as it should be (the username with no password of its own, an app password only, the
+// session). Otherwise a password from the console, or no password at all, could sign a person in to an LDAP app (#204).
 func (a *Authentik) ldapBindIntact(ctx context.Context) (bool, error) {
 	f, err := a.flow(ctx, LDAPBindFlow)
 	if err != nil || f == nil {
@@ -114,33 +124,34 @@ func (a *Authentik) ldapBindIntact(ctx context.Context) (bool, error) {
 		return false, nil
 	}
 	type bound struct {
-		Stage string `json:"stage"`
-		Order int    `json:"order"`
-		On    bool   `json:"evaluate_on_plan"`
+		PK      string `json:"pk"`
+		PBM     string `json:"policybindingmodel_ptr_id"`
+		Stage   string `json:"stage"`
+		Order   int    `json:"order"`
+		OnPlan  bool   `json:"evaluate_on_plan"`
+		ReEval  bool   `json:"re_evaluate_policies"`
+		Invalid string `json:"invalid_response_action"`
 	}
-	bs, err := list[bound](ctx, a.api, "/flows/bindings/?target="+q(f.PK))
+	bs, err := where[bound](ctx, a.api, "/flows/bindings/?target="+q(f.PK), "target", f.PK)
 	if err != nil {
 		return false, err
 	}
 	type identify struct {
 		PK       string   `json:"pk"`
-		Name     string   `json:"name"`
 		Fields   []string `json:"user_fields"`
 		Password *string  `json:"password_stage"`
 		Passless *string  `json:"passwordless_flow"`
 	}
 	type password struct {
 		PK       string   `json:"pk"`
-		Name     string   `json:"name"`
 		Backends []string `json:"backends"`
 	}
 	type login struct {
-		PK   string `json:"pk"`
-		Name string `json:"name"`
+		PK string `json:"pk"`
 	}
-	id, err1 := named(ctx, a.api, "/stages/identification/?name="+q(stageLDAPID), stageLDAPID, func(i identify) string { return i.Name })
-	pw, err2 := named(ctx, a.api, "/stages/password/?name="+q(stageLDAPPass), stageLDAPPass, func(p password) string { return p.Name })
-	in, err3 := named(ctx, a.api, "/stages/user_login/?name="+q(stageLDAPLogin), stageLDAPLogin, func(l login) string { return l.Name })
+	id, err1 := find[identify](ctx, a.api, "/stages/identification/?name="+q(stageLDAPID), "name", stageLDAPID)
+	pw, err2 := find[password](ctx, a.api, "/stages/password/?name="+q(stageLDAPPass), "name", stageLDAPPass)
+	in, err3 := find[login](ctx, a.api, "/stages/user_login/?name="+q(stageLDAPLogin), "name", stageLDAPLogin)
 	if err := errors.Join(err1, err2, err3); err != nil || id == nil || pw == nil || in == nil {
 		return false, err
 	}
@@ -152,42 +163,33 @@ func (a *Authentik) ldapBindIntact(ctx context.Context) (bool, error) {
 	if len(bs) != len(want) {
 		return false, nil
 	}
+	targets := []target{{PBM: f.PBM, PK: f.PK}}
 	for i, b := range bs {
-		if b.Stage != want[i] {
+		if b.Stage != want[i] || b.Order != (i+1)*10 || b.OnPlan || !b.ReEval || b.Invalid != "retry" {
 			return false, nil
+		}
+		targets = append(targets, target{PBM: b.PBM, PK: b.PK})
+	}
+	for _, t := range targets {
+		ps, err := where[struct {
+			PK string `json:"pk"`
+		}](ctx, a.api, "/policies/bindings/?target="+q(t.PBM), "target", t.PK)
+		if err != nil || len(ps) > 0 {
+			return false, err
 		}
 	}
 	return true, nil
 }
 
 type ldapProviderObj struct {
-	PK   int    `json:"pk"`
-	Name string `json:"name"`
+	PK   int     `json:"pk"`
+	Name string  `json:"name"`
+	App  *string `json:"assigned_application_slug"`
 }
 
-// named is the object of a list whose name is exactly name, or nil: the list's own filter is only a first cut (some of
-// Authentik's lists ignore a filter they don't know, and answer with everything).
-func named[T any](ctx context.Context, a *api, path, name string, nameOf func(T) string) (*T, error) {
-	l, err := list[T](ctx, a, path)
-	if err != nil {
-		return nil, err
-	}
-	var found *T
-	for i := range l {
-		if nameOf(l[i]) == name {
-			if found != nil {
-				return nil, fmt.Errorf("authentik: two objects named %s at %s", name, path)
-			}
-			found = &l[i]
-		}
-	}
-	return found, nil
-}
-
-func providerName(p ldapProviderObj) string { return p.Name }
-
-// ensureLDAPProvider makes the provider of a base DN, by name, or brings it in line.
-func (a *Authentik) ensureLDAPProvider(ctx context.Context, bind, name, baseDN string) (int, bool, error) {
+// ensureLDAPProvider makes an LDAP provider of a base DN, by name, or brings it in line: never another application's
+// (#219's rule), only its own application's or one no application has yet.
+func (a *Authentik) ensureLDAPProvider(ctx context.Context, bind, name, app, baseDN string) (int, bool, error) {
 	inval, err := a.flow(ctx, invalidateFlow)
 	if err != nil || inval == nil {
 		return 0, false, fmt.Errorf("authentik: its default provider flows are missing: %v", err)
@@ -195,9 +197,12 @@ func (a *Authentik) ensureLDAPProvider(ctx context.Context, bind, name, baseDN s
 	body := map[string]any{"name": name, "authorization_flow": bind, "authentication_flow": nil, "invalidation_flow": inval.PK,
 		"base_dn": baseDN, "bind_mode": "direct", "search_mode": "direct", "mfa_support": false, "certificate": nil,
 		"tls_server_name": "", "property_mappings": []string{}}
-	p, err := named(ctx, a.api, "/providers/ldap/?name__iexact="+q(name), name, providerName)
+	p, err := find[ldapProviderObj](ctx, a.api, "/providers/ldap/?name__iexact="+q(name), "name", name)
 	if err != nil {
 		return 0, false, err
+	}
+	if p != nil && p.App != nil && *p.App != app {
+		return 0, false, fmt.Errorf("authentik: the LDAP provider %s is another application's, refused", name)
 	}
 	created := p == nil
 	if created {
@@ -215,19 +220,10 @@ type outpostObj struct {
 	Providers []int  `json:"providers"`
 }
 
-func outpostName(o outpostObj) string { return o.Name }
-
-type roleObj struct {
-	PK   string `json:"pk"`
-	Name string `json:"name"`
-}
-
-func roleName(r roleObj) string { return r.Name }
-
 // ldapOutpost makes HomersLab's LDAP outpost with its own provider, or brings it in line, adding provider when it is
 // not 0.
 func (a *Authentik) ldapOutpost(ctx context.Context, bind string, add int) (*outpostObj, error) {
-	none, _, err := a.ensureLDAPProvider(ctx, bind, ldapNone, "dc=none,dc=homerslab")
+	none, _, err := a.ensureLDAPProvider(ctx, bind, ldapNone, ldapNone, ldapNoneDN)
 	if err != nil {
 		return nil, err
 	}
@@ -238,7 +234,7 @@ func (a *Authentik) ldapOutpost(ctx context.Context, bind string, add int) (*out
 	if err := a.ensureLDAPApp(ctx, ldapNone, "HomersLab LDAP", none, nobody); err != nil {
 		return nil, err
 	}
-	o, err := named(ctx, a.api, "/outposts/instances/?name__iexact="+q(LDAPOutpostName), LDAPOutpostName, outpostName)
+	o, err := find[outpostObj](ctx, a.api, "/outposts/instances/?name__iexact="+q(LDAPOutpostName), "name", LDAPOutpostName)
 	if err != nil {
 		return nil, err
 	}
@@ -295,7 +291,8 @@ func (a *Authentik) ensureLDAPApp(ctx context.Context, slug, name string, provid
 	}
 	app := map[string]any{"name": name, "slug": slug, "provider": provider, "policy_engine_mode": "any", "meta_hide": true}
 	var full struct {
-		PK string `json:"pbm_uuid"`
+		PBM string `json:"pbm_uuid"`
+		PK  string `json:"pk"`
 	}
 	err := a.api.call(ctx, http.MethodGet, "/core/applications/"+slug+"/", nil, &full)
 	switch {
@@ -307,15 +304,14 @@ func (a *Authentik) ensureLDAPApp(ctx context.Context, slug, name string, provid
 	if err != nil {
 		return err
 	}
-	if full.PK == "" {
+	if full.PBM == "" {
 		return errors.New("authentik: the application has no binding target")
 	}
-	return a.bindPolicies(ctx, full.PK, bs)
+	return a.bindPolicies(ctx, target{PBM: full.PBM, PK: full.PK}, bs)
 }
 
-// EnsureLDAP makes an app's directory: its provider, its own account with an app password that may search it, and its
-// application, which only the app's roles and that account open. The provider joins the outpost last, so nobody binds
-// to it before its application is closed to everyone else.
+// EnsureLDAP makes an app's LDAP provider and its application, which only the app's roles open. The provider joins the
+// outpost last, so nobody binds to it before its application is closed to everyone else.
 func (a *Authentik) EnsureLDAP(ctx context.Context, app idp.LDAPApp) (idp.LDAPCredentials, error) {
 	if err := validLDAPSlug(app.Slug); err != nil {
 		return idp.LDAPCredentials{}, err
@@ -331,109 +327,21 @@ func (a *Authentik) EnsureLDAP(ctx context.Context, app idp.LDAPApp) (idp.LDAPCr
 	if err != nil {
 		return idp.LDAPCredentials{}, err
 	}
-	provider, created, err := a.ensureLDAPProvider(ctx, bind, ldapObj(app.Slug), LDAPBaseDN(app.Slug))
+	provider, created, err := a.ensureLDAPProvider(ctx, bind, ldapObj(app.Slug), ldapObj(app.Slug), LDAPBaseDN(app.Slug))
 	if err != nil {
 		return idp.LDAPCredentials{}, err
 	}
-	account, err := a.ldapAccount(ctx, app.Slug, app.Name)
-	if err != nil {
-		return idp.LDAPCredentials{}, err
-	}
-	password, err := a.ldapPassword(ctx, app.Slug, account)
-	if err != nil {
-		return idp.LDAPCredentials{}, err
-	}
-	if err := a.ldapSearchRole(ctx, app.Slug, account, provider); err != nil {
-		return idp.LDAPCredentials{}, err
-	}
-	if err := a.ensureLDAPApp(ctx, ldapObj(app.Slug), app.Name+" (LDAP)", provider, append(bs, binding{User: account})); err != nil {
+	if err := a.ensureLDAPApp(ctx, ldapObj(app.Slug), app.Name+" (LDAP)", provider, bs); err != nil {
 		return idp.LDAPCredentials{}, err
 	}
 	if _, err := a.ldapOutpost(ctx, bind, provider); err != nil {
 		return idp.LDAPCredentials{}, err
 	}
-	return idp.LDAPCredentials{BaseDN: LDAPBaseDN(app.Slug), BindDN: LDAPBindDN(app.Slug, ldapAccount(app.Slug)),
-		Password: password, Created: created}, nil
+	return idp.LDAPCredentials{BaseDN: LDAPBaseDN(app.Slug), UserDN: LDAPUserDN(app.Slug), Created: created}, nil
 }
 
-// ldapAccount makes an app's own LDAP account, a service account in no group, or brings it in line.
-func (a *Authentik) ldapAccount(ctx context.Context, slug, name string) (int, error) {
-	username := ldapAccount(slug)
-	u, err := named(ctx, a.api, "/core/users/?username="+q(username), username, func(u user) string { return u.Username })
-	if err != nil {
-		return 0, err
-	}
-	body := map[string]any{"username": username, "name": name + " (LDAP)", "type": "service_account", "is_active": true,
-		"groups": []string{}, "path": "homerslab-ldap"}
-	if u == nil {
-		u = &user{}
-		err = a.api.call(ctx, http.MethodPost, "/core/users/", body, u)
-	} else {
-		err = a.api.call(ctx, http.MethodPatch, fmt.Sprintf("/core/users/%d/", u.PK), body, nil)
-	}
-	if err != nil {
-		return 0, err
-	}
-	return u.PK, nil
-}
-
-// ldapPassword is the app password of an app's own account: made once, never expiring, and kept.
-func (a *Authentik) ldapPassword(ctx context.Context, slug string, account int) (idp.Secret, error) {
-	id := ldapToken(slug)
-	type token struct {
-		Identifier string `json:"identifier"`
-		Intent     string `json:"intent"`
-		User       int    `json:"user"`
-		Expiring   bool   `json:"expiring"`
-	}
-	t, err := named(ctx, a.api, "/core/tokens/?identifier="+q(id), id, func(t token) string { return t.Identifier })
-	if err != nil {
-		return "", err
-	}
-	body := map[string]any{"identifier": id, "intent": "app_password", "user": account, "expiring": false,
-		"description": "HomersLab: the app's own LDAP bind"}
-	switch {
-	case t == nil:
-		err = a.api.call(ctx, http.MethodPost, "/core/tokens/", body, nil)
-	case t.Intent != "app_password" || t.User != account || t.Expiring:
-		err = a.api.call(ctx, http.MethodPatch, "/core/tokens/"+id+"/", body, nil)
-	}
-	if err != nil {
-		return "", err
-	}
-	var k struct {
-		Key string `json:"key"`
-	}
-	if err := a.api.call(ctx, http.MethodGet, "/core/tokens/"+id+"/view_key/", nil, &k); err != nil {
-		return "", err
-	}
-	if k.Key == "" {
-		return "", errors.New("authentik: the app's LDAP account has no password")
-	}
-	return idp.Secret(k.Key), nil
-}
-
-// ldapSearchRole gives an app's own account its one permission: to search its own provider's directory.
-func (a *Authentik) ldapSearchRole(ctx context.Context, slug string, account, provider int) error {
-	r, err := named(ctx, a.api, "/rbac/roles/?search="+q(ldapRole(slug)), ldapRole(slug), roleName)
-	if err != nil {
-		return err
-	}
-	if r == nil {
-		r = &roleObj{}
-		if err := a.api.call(ctx, http.MethodPost, "/rbac/roles/", map[string]any{"name": ldapRole(slug)}, r); err != nil {
-			return err
-		}
-	}
-	role := r.PK
-	if err := a.api.call(ctx, http.MethodPost, "/rbac/permissions/assigned_by_roles/"+role+"/assign/", map[string]any{
-		"permissions": []string{ldapSearch}, "model": ldapProvider, "object_pk": fmt.Sprint(provider)}, nil); err != nil {
-		return err
-	}
-	return a.api.call(ctx, http.MethodPatch, fmt.Sprintf("/core/users/%d/", account), map[string]any{"roles": []string{role}}, nil)
-}
-
-// DeleteLDAP deletes an app's directory: its provider leaves the outpost first, so no bind reaches it on the way.
+// DeleteLDAP deletes an app's LDAP provider and its application: the provider leaves the outpost first, so no bind
+// reaches it on the way. Another application's provider is never deleted.
 func (a *Authentik) DeleteLDAP(ctx context.Context, slug string) error {
 	if err := validLDAPSlug(slug); err != nil {
 		return err
@@ -444,12 +352,15 @@ func (a *Authentik) DeleteLDAP(ctx context.Context, slug string) error {
 		}
 		return err
 	}
-	p, err := named(ctx, a.api, "/providers/ldap/?name__iexact="+q(ldapObj(slug)), ldapObj(slug), providerName)
+	p, err := find[ldapProviderObj](ctx, a.api, "/providers/ldap/?name__iexact="+q(ldapObj(slug)), "name", ldapObj(slug))
 	if err != nil {
 		return err
 	}
+	if p != nil && p.App != nil && *p.App != ldapObj(slug) {
+		return fmt.Errorf("authentik: the LDAP provider %s is another application's, refused", ldapObj(slug))
+	}
 	if p != nil {
-		o, err := named(ctx, a.api, "/outposts/instances/?name__iexact="+q(LDAPOutpostName), LDAPOutpostName, outpostName)
+		o, err := find[outpostObj](ctx, a.api, "/outposts/instances/?name__iexact="+q(LDAPOutpostName), "name", LDAPOutpostName)
 		if err != nil {
 			return err
 		}
@@ -463,21 +374,8 @@ func (a *Authentik) DeleteLDAP(ctx context.Context, slug string) error {
 	if err := gone(a.api.call(ctx, http.MethodDelete, "/core/applications/"+ldapObj(slug)+"/", nil, nil)); err != nil {
 		return err
 	}
-	if p != nil {
-		if err := gone(a.api.call(ctx, http.MethodDelete, fmt.Sprintf("/providers/ldap/%d/", p.PK), nil, nil)); err != nil {
-			return err
-		}
+	if p == nil {
+		return nil
 	}
-	if u, err := named(ctx, a.api, "/core/users/?username="+q(ldapAccount(slug)), ldapAccount(slug), func(u user) string { return u.Username }); err != nil {
-		return err
-	} else if u != nil {
-		if err := gone(a.api.call(ctx, http.MethodDelete, fmt.Sprintf("/core/users/%d/", u.PK), nil, nil)); err != nil {
-			return err
-		}
-	}
-	r, err := named(ctx, a.api, "/rbac/roles/?search="+q(ldapRole(slug)), ldapRole(slug), roleName)
-	if err != nil || r == nil {
-		return err
-	}
-	return gone(a.api.call(ctx, http.MethodDelete, "/rbac/roles/"+r.PK+"/", nil, nil))
+	return gone(a.api.call(ctx, http.MethodDelete, fmt.Sprintf("/providers/ldap/%d/", p.PK), nil, nil))
 }

@@ -183,37 +183,38 @@ var (
 	ErrNotReady     = errors.New("the identity provider isn't ready yet")
 )
 
-// LDAPApp is an app that signs people in over LDAP (#204): a directory of its own at the sign-in's LDAP outpost, which
-// only its roles may bind to, and an account of the app's own that binds to look people up.
+// LDAPApp is an app that signs people in over LDAP (#204): an LDAP provider of its own at the sign-in's LDAP outpost,
+// which only its roles may bind to. Each person binds as themselves, by the DN template, and sees only their own entry
+// and their own groups: there is no account that searches the household's directory (the maintainer, #204), so an
+// app that needs one can't sign in over LDAP.
 type LDAPApp struct {
-	// Slug names the app's directory in the provider, homerslab-<app>; Name is what the provider's console shows.
+	// Slug names the app in the provider, homerslab-<app>; Name is what the provider's console shows.
 	Slug string
 	Name string
 	// Roles may bind; nobody else.
 	Roles []Role
 }
 
-// LDAPCredentials are what an app needs of its directory. Password is a credential.
+// LDAPCredentials are what an app needs of its LDAP provider. None of it is secret: a person's own app password is
+// what binds.
 type LDAPCredentials struct {
-	// BaseDN is the app's directory; people are cn=<username>,ou=users,<BaseDN>.
+	// BaseDN is the app's base DN.
 	BaseDN string
-	// BindDN and Password are the app's own account, which binds to search the directory.
-	BindDN   string
-	Password Secret
-	// Created says this call made the directory; false when it was there already.
+	// UserDN is the DN template of a person, with %s for their username: cn=%s,ou=users,<BaseDN>.
+	UserDN string
+	// Created says this call made the provider; false when it was there already.
 	Created bool
 }
 
 // LDAP is a provider that serves apps over LDAP through an outpost of its own: the sign-in listener's port 636 leads to
-// it (ADR 0020). People bind with an app password, never their passkey (LDAP can't carry one); the app's own account
-// searches.
+// it (ADR 0020). People bind with an app password, never their passkey (LDAP can't carry one).
 type LDAP interface {
 	// LDAPOutpost makes the provider's LDAP outpost, or brings it in line, and returns its token: the credential its
 	// container connects to the provider with.
 	LDAPOutpost(ctx context.Context) (Secret, error)
-	// EnsureLDAP makes an app's directory and its own account, or brings them in line: only its roles bind. Its
-	// credentials never change once it is made.
+	// EnsureLDAP makes an app's LDAP provider, or brings it in line: only its roles bind. Its base DN never changes
+	// once it is made.
 	EnsureLDAP(ctx context.Context, app LDAPApp) (LDAPCredentials, error)
-	// DeleteLDAP deletes an app's directory and its account; one that isn't there is gone already.
+	// DeleteLDAP deletes an app's LDAP provider; one that isn't there is gone already.
 	DeleteLDAP(ctx context.Context, slug string) error
 }

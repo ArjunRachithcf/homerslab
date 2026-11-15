@@ -2,11 +2,14 @@ package idptest
 
 import (
 	"context"
+	"fmt"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/ArjunRachithcf/homerslab/internal/idp"
+	"github.com/ArjunRachithcf/homerslab/internal/ldaps/ldaptest"
 )
 
 // LDAPWorld is a provider that serves apps over LDAP, with its outpost in containers (#204).
@@ -20,15 +23,12 @@ type LDAPWorld interface {
 	AppPassword(t *testing.T, username string) string
 	// Bind binds at the outpost as dn with password. It returns nil only when the outpost said yes.
 	Bind(t *testing.T, dn, password string) error
+	// Search binds at the outpost as dn with password, then searches base's whole subtree for every object.
+	Search(t *testing.T, dn, password, base string) ([]ldaptest.Entry, error)
 }
 
-// PersonDN is a person's DN in an app's directory.
-func PersonDN(c idp.LDAPCredentials, username string) string {
-	return "cn=" + username + ",ou=users," + c.BaseDN
-}
-
-// RunLDAP runs the LDAP contract: an app's directory opens to its roles only, its own account binds, and nothing a
-// person has but an app password binds them (#204). The sign-in is prepared already (Run).
+// RunLDAP runs the LDAP contract: an app's provider opens to its roles only, a person sees nobody but themselves, and
+// nothing a person has but an app password binds them (#204). The sign-in is prepared already (Run).
 func RunLDAP(t *testing.T, w LDAPWorld) {
 	ctx := context.Background()
 	p, l := w.Provider(), w.LDAP()
@@ -61,104 +61,128 @@ func RunLDAP(t *testing.T, w LDAPWorld) {
 
 	media := idp.LDAPApp{Slug: "homerslab-jellyfin", Name: "Jellyfin", Roles: []idp.Role{idp.Adult}}
 	var creds idp.LDAPCredentials
-	t.Run("an app's directory: made for its roles, its credentials kept", func(t *testing.T) {
+	t.Run("an app's LDAP provider: made for its roles, its base DN kept, and no account of its own", func(t *testing.T) {
 		var err error
 		if creds, err = l.EnsureLDAP(ctx, media); err != nil {
 			t.Fatal(err)
 		}
-		if !creds.Created || creds.BaseDN == "" || creds.BindDN == "" || creds.Password == "" {
+		if !creds.Created || creds.BaseDN == "" || !strings.Contains(creds.UserDN, "%s") || strings.Count(creds.UserDN, "%") != 1 ||
+			!strings.HasSuffix(creds.UserDN, ","+creds.BaseDN) {
 			t.Fatalf("credentials: %+v", creds)
 		}
 		again, err := l.EnsureLDAP(ctx, media)
-		if err != nil || again.Created || again.Password != creds.Password || again.BindDN != creds.BindDN || again.BaseDN != creds.BaseDN {
-			t.Errorf("again: %+v %v, want the same credentials, not made", again, err)
+		if err != nil || again.Created || again != (idp.LDAPCredentials{BaseDN: creds.BaseDN, UserDN: creds.UserDN}) {
+			t.Errorf("again: %+v %v, want the same, not made", again, err)
 		}
 		for _, bad := range []idp.LDAPApp{{Slug: "jellyfin", Roles: media.Roles}, {Slug: "homerslab-outpost", Roles: media.Roles},
 			{Slug: "homerslab-admin", Roles: media.Roles}, {Slug: "homerslab-Jelly fin", Roles: media.Roles}, {Slug: "homerslab-books"}} {
 			if _, err := l.EnsureLDAP(ctx, bad); err == nil {
-				t.Errorf("made the directory %+v", bad)
+				t.Errorf("made the provider %+v", bad)
 			}
 		}
 	})
-	if creds.Password == "" {
-		t.Fatal("no directory: nothing else can be checked")
+	if creds.BaseDN == "" {
+		t.Fatal("no provider: nothing else can be checked")
 	}
-
-	// The outpost takes a new provider in a while.
-	bound := func(dn, password string) error {
+	dn := func(c idp.LDAPCredentials, username string) string { return fmt.Sprintf(c.UserDN, username) }
+	lena, kiko, olga := w.AppPassword(t, "lena"), w.AppPassword(t, "kiko"), w.AppPassword(t, "olga")
+	// The outpost takes a new provider in a while: until it does, nobody binds there.
+	ready := func(c idp.LDAPCredentials, username, password string) error {
 		var err error
 		for deadline := time.Now().Add(90 * time.Second); ; time.Sleep(3 * time.Second) {
-			if err = w.Bind(t, creds.BindDN, creds.Password.Reveal()); err == nil || time.Now().After(deadline) {
-				break
+			if err = w.Bind(t, dn(c, username), password); err == nil || time.Now().After(deadline) {
+				return err
 			}
 		}
-		if err != nil {
-			return err
-		}
-		return w.Bind(t, dn, password)
 	}
-	lena, kiko, olga := w.AppPassword(t, "lena"), w.AppPassword(t, "kiko"), w.AppPassword(t, "olga")
 
-	t.Run("the app's own account binds", func(t *testing.T) {
-		if err := bound(creds.BindDN, creds.Password.Reveal()); err != nil {
-			t.Fatalf("the app's own account: %v", err)
-		}
-		if err := w.Bind(t, creds.BindDN, creds.Password.Reveal()+"x"); err == nil {
-			t.Error("the app's own account bound with a wrong password")
-		}
-	})
 	t.Run("a person of the audience binds with an app password, and only with it", func(t *testing.T) {
-		if err := bound(PersonDN(creds, "lena"), lena); err != nil {
-			t.Errorf("an adult, in an adults' app: %v", err)
+		if err := ready(creds, "lena", lena); err != nil {
+			t.Fatalf("an adult, in an adults' app: %v", err)
 		}
-		if err := w.Bind(t, PersonDN(creds, "lena"), lena[:len(lena)-1]); err == nil {
+		if err := w.Bind(t, dn(creds, "lena"), lena[:len(lena)-1]); err == nil {
 			t.Error("a wrong app password bound")
 		}
 		f := w.GiveFactors(t, "lena")
-		if err := w.Bind(t, PersonDN(creds, "lena"), f.Password); err == nil {
+		if err := w.Bind(t, dn(creds, "lena"), f.Password); err == nil {
 			t.Error("a password from the provider's console bound: only app passwords may")
 		}
-		if err := w.Bind(t, PersonDN(creds, "lena"), f.Password+";"+f.TOTP()); err == nil {
+		if err := w.Bind(t, dn(creds, "lena"), f.Password+";"+f.TOTP()); err == nil {
 			t.Error("a password and TOTP bound: only app passwords may")
 		}
 	})
 	t.Run("a person outside the audience can't bind: a kid, an admin", func(t *testing.T) {
-		if err := bound(PersonDN(creds, "kiko"), kiko); err == nil {
+		if err := w.Bind(t, dn(creds, "kiko"), kiko); err == nil {
 			t.Error("a kid bound to an adults' app")
 		}
-		if err := w.Bind(t, PersonDN(creds, "olga"), olga); err == nil {
+		if err := w.Bind(t, dn(creds, "olga"), olga); err == nil {
 			t.Error("an admin bound to an adults' app")
 		}
-		if err := w.Bind(t, PersonDN(creds, "kiko"), lena); err == nil {
+		if err := w.Bind(t, dn(creds, "kiko"), lena); err == nil {
 			t.Error("a kid bound with an adult's app password")
 		}
 	})
-	t.Run("each app's directory is its own: an adult can't bind where only kids may", func(t *testing.T) {
+	t.Run("a person sees only their own entry and their own groups: nobody else of the household, nor any account (#204)", func(t *testing.T) {
+		own := strings.ToLower(dn(creds, "lena"))
+		for _, base := range []string{creds.BaseDN, "ou=users," + creds.BaseDN, "ou=groups," + creds.BaseDN} {
+			es, err := w.Search(t, dn(creds, "lena"), lena, base)
+			if err != nil {
+				t.Errorf("searching %s: %v", base, err)
+				continue
+			}
+			t.Logf("lena, searching %s: %d entries", base, len(es))
+			for _, e := range es {
+				d := strings.ToLower(e.DN)
+				switch {
+				case d == own:
+					if !slices.ContainsFunc(e.Attrs["memberOf"], func(g string) bool { return strings.HasPrefix(strings.ToLower(g), "cn="+idp.RoleGroup(idp.Adult)+",") }) {
+						t.Errorf("her own entry without her role's group: %v", e.Attrs["memberOf"])
+					}
+				case strings.HasPrefix(d, "cn="+idp.RoleGroup(idp.Adult)+",ou=groups,"):
+					// her own role's group
+				case strings.HasPrefix(d, "cn=lena,ou=virtual-groups,"):
+					// her own group of one, as Authentik's LDAP gives every person
+				case d == strings.ToLower(creds.BaseDN), slices.ContainsFunc([]string{"users", "groups", "virtual-groups"},
+					func(ou string) bool { return d == "ou="+ou+","+strings.ToLower(creds.BaseDN) }):
+					// the tree itself
+				default:
+					t.Errorf("lena sees %s", e.DN)
+				}
+				for _, other := range []string{"kiko", "olga", "akadmin", "homerslab", "ak-outpost"} {
+					for k, vs := range e.Attrs {
+						for _, v := range vs {
+							if strings.Contains(strings.ToLower(v), "cn="+other) && !strings.Contains(strings.ToLower(v), "cn=homerslab-") {
+								t.Errorf("lena sees %s in %s's %s: %s", other, e.DN, k, v)
+							}
+						}
+					}
+				}
+			}
+		}
+		// Another app's base DN, and the tree above them all: nothing.
+		for _, base := range []string{"dc=homerslab", "dc=kids-books,dc=homerslab", "ou=outpost,dc=homerslab"} {
+			if es, err := w.Search(t, dn(creds, "lena"), lena, base); err == nil && len(es) > 0 {
+				t.Errorf("lena, searching %s: %v", base, es)
+			}
+		}
+	})
+	t.Run("each app's provider is its own: an adult can't bind where only kids may", func(t *testing.T) {
 		books := idp.LDAPApp{Slug: "homerslab-kids-books", Name: "Kids' books", Roles: []idp.Role{idp.Kid}}
 		other, err := l.EnsureLDAP(ctx, books)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if other.BaseDN == creds.BaseDN || other.Password == creds.Password {
-			t.Fatalf("two apps share a directory or a password: %s", other.BaseDN)
+		if other.BaseDN == creds.BaseDN {
+			t.Fatalf("two apps share a base DN: %s", other.BaseDN)
 		}
-		var kid error
-		for deadline := time.Now().Add(90 * time.Second); ; time.Sleep(3 * time.Second) {
-			if kid = w.Bind(t, PersonDN(other, "kiko"), kiko); kid == nil || time.Now().After(deadline) {
-				break
-			}
+		if err := ready(other, "kiko", kiko); err != nil {
+			t.Errorf("a kid, in a kids' app: %v", err)
 		}
-		if kid != nil {
-			t.Errorf("a kid, in a kids' app: %v", kid)
-		}
-		if err := w.Bind(t, PersonDN(other, "lena"), lena); err == nil {
+		if err := w.Bind(t, dn(other, "lena"), lena); err == nil {
 			t.Error("an adult bound to a kids' app")
 		}
-		if err := w.Bind(t, creds.BindDN, creds.Password.Reveal()); err != nil {
-			t.Errorf("the first app's account, still: %v", err)
-		}
-		if err := w.Bind(t, PersonDN(other, cn(creds.BindDN)), creds.Password.Reveal()); err == nil {
-			t.Error("one app's account bound to another's directory")
+		if err := w.Bind(t, dn(creds, "lena"), lena); err != nil {
+			t.Errorf("the adult, still, in the first app: %v", err)
 		}
 		if err := l.DeleteLDAP(ctx, books.Slug); err != nil {
 			t.Fatal(err)
@@ -170,16 +194,36 @@ func RunLDAP(t *testing.T, w LDAPWorld) {
 		if err := p.EnsurePerson(ctx, kid); err != nil {
 			t.Fatal(err)
 		}
-		if err := w.Bind(t, PersonDN(creds, "lena"), lena); err == nil {
+		if err := w.Bind(t, dn(creds, "lena"), lena); err == nil {
 			t.Error("an adult who became a kid still binds to an adults' app")
 		}
+		kid.Role = idp.Adult
+		if err := p.EnsurePerson(ctx, kid); err != nil {
+			t.Fatal(err)
+		}
 	})
-	t.Run("a deleted directory: its account binds no more, and deleting again is done", func(t *testing.T) {
+	t.Run("the audience changes, and the app is never open to everyone on the way (#219)", func(t *testing.T) {
+		media.Roles = []idp.Role{idp.Kid}
+		if _, err := l.EnsureLDAP(ctx, media); err != nil {
+			t.Fatal(err)
+		}
+		if err := w.Bind(t, dn(creds, "lena"), lena); err == nil {
+			t.Error("an adult binds to an app that is the kids' now")
+		}
+		if err := w.Bind(t, dn(creds, "kiko"), kiko); err != nil {
+			t.Errorf("a kid, in an app that is the kids' now: %v", err)
+		}
+		media.Roles = []idp.Role{idp.Adult}
+		if _, err := l.EnsureLDAP(ctx, media); err != nil {
+			t.Fatal(err)
+		}
+	})
+	t.Run("a deleted provider: nobody binds there, and deleting again is done", func(t *testing.T) {
 		if err := l.DeleteLDAP(ctx, media.Slug); err != nil {
 			t.Fatal(err)
 		}
-		if err := w.Bind(t, creds.BindDN, creds.Password.Reveal()); err == nil {
-			t.Error("a deleted app's account still binds")
+		if err := w.Bind(t, dn(creds, "lena"), lena); err == nil {
+			t.Error("a person still binds to a deleted app")
 		}
 		if err := l.DeleteLDAP(ctx, media.Slug); err != nil {
 			t.Errorf("again: %v", err)
@@ -190,10 +234,4 @@ func RunLDAP(t *testing.T, w LDAPWorld) {
 			}
 		}
 	})
-}
-
-// cn is a DN's first value: cn=<username>,… → <username>.
-func cn(dn string) string {
-	v, _, _ := strings.Cut(strings.TrimPrefix(dn, "cn="), ",")
-	return v
 }

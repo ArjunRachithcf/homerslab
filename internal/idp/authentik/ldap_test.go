@@ -65,6 +65,16 @@ func (w *world) AppPassword(t *testing.T, username string) string {
 	return k.Key
 }
 
+func (w *world) Search(t *testing.T, dn, password, base string) ([]ldaptest.Entry, error) {
+	t.Helper()
+	c, err := net.DialTimeout("tcp", outpostLDAP, 5*time.Second)
+	if err != nil {
+		return nil, err
+	}
+	defer c.Close()
+	return ldaptest.Search(c, dn, password, base)
+}
+
 func (w *world) Bind(t *testing.T, dn, password string) error {
 	t.Helper()
 	c, err := net.DialTimeout("tcp", outpostLDAP, 5*time.Second)
@@ -143,6 +153,34 @@ func ldapDrift(w *world, a *authentik.Authentik) func(*testing.T) {
 		}
 		if r, err := a.Report(ctx); err != nil || !r.PasskeyOnlySignIn {
 			t.Errorf("after Prepare, again: %+v %v", r, err)
+		}
+		// A policy on the password stage's binding: one that fails would skip the stage, and bind anyone.
+		var never struct {
+			Results []struct {
+				PK string `json:"pk"`
+			}
+		}
+		w.raw(t, w.own, "GET", "/api/v3/policies/expression/?name=homerslab-never", nil, &never)
+		var fsb struct {
+			Results []struct {
+				Stage string `json:"stage"`
+				PBM   string `json:"policybindingmodel_ptr_id"`
+			}
+		}
+		w.raw(t, w.own, "GET", "/api/v3/flows/bindings/?target="+flowPK(t, w), nil, &fsb)
+		for _, b := range fsb.Results {
+			if b.Stage == st.Results[0].PK && len(never.Results) == 1 {
+				w.raw(t, w.own, "POST", "/api/v3/policies/bindings/", map[string]any{"target": b.PBM, "policy": never.Results[0].PK, "order": 0}, nil)
+			}
+		}
+		if r, err := a.Report(ctx); err != nil || r.PasskeyOnlySignIn {
+			t.Errorf("a bind flow with a policy on its password stage: %+v %v, want not passkey-only", r, err)
+		}
+		if err := a.Prepare(ctx, household); err != nil {
+			t.Fatal(err)
+		}
+		if r, err := a.Report(ctx); err != nil || !r.PasskeyOnlySignIn {
+			t.Errorf("after Prepare, a third time: %+v %v", r, err)
 		}
 	}
 }

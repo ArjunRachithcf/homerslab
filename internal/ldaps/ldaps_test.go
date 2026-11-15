@@ -49,8 +49,8 @@ func certificate(t *testing.T, names ...string) (string, string, *x509.CertPool)
 }
 
 const (
-	bindDN = "cn=homerslab-jellyfin-ldap,ou=users,dc=jellyfin,dc=homerslab"
-	bindPW = "the app's own password"
+	bindDN = "cn=lena,ou=users,dc=jellyfin,dc=homerslab"
+	bindPW = "lena's app password"
 )
 
 // world is the port in front of a stand-in outpost.
@@ -209,15 +209,18 @@ func TestAQuietConnectionIsClosed(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer c.Close()
+	if _, err := c.Write([]byte{0x30}); err != nil { // the start of a request, then nothing
+		t.Fatal(err)
+	}
 	_ = c.SetReadDeadline(time.Now().Add(5 * time.Second))
 	if _, err := c.Read(make([]byte, 1)); err == nil || errors.Is(err, os.ErrDeadlineExceeded) {
 		t.Errorf("a quiet connection, after its idle time: %v, want it closed by the port", err)
 	}
 }
 
-func TestOneAddressCantHoldEveryConnection(t *testing.T) {
+func TestOneAppsNetworkCantHoldEveryConnection(t *testing.T) {
 	testenv.Isolate(t)
-	addr, roots := world(t, ldaps.Config{MaxConns: 8, PerSource: 2})
+	addr, roots := world(t, ldaps.Config{MaxConns: 8, PerNetwork: 2})
 	var quiet []net.Conn
 	for range 2 { // connections that say nothing
 		c, err := net.Dial("tcp", addr)
@@ -234,7 +237,7 @@ func TestOneAddressCantHoldEveryConnection(t *testing.T) {
 		c.Close()
 	}
 	if err == nil {
-		t.Error("a third connection from the same address was carried over its limit of two")
+		t.Error("a third connection from the same network was carried over its limit of two")
 	}
 	for _, q := range quiet {
 		q.Close()
@@ -250,4 +253,31 @@ func TestOneAddressCantHoldEveryConnection(t *testing.T) {
 		}
 	}
 	t.Errorf("once the quiet connections closed, a bind: %v", bound)
+}
+
+func TestAConnectionThatSaysNothingAfterItsHandshakeIsClosed(t *testing.T) {
+	testenv.Isolate(t)
+	addr, roots := world(t, ldaps.Config{FirstRequest: 300 * time.Millisecond, Idle: time.Minute})
+	c, err := dial(addr, &tls.Config{ServerName: "auth.example.test", RootCAs: roots})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	start := time.Now()
+	_ = c.SetReadDeadline(time.Now().Add(5 * time.Second))
+	if _, err := c.Read(make([]byte, 1)); err == nil || errors.Is(err, os.ErrDeadlineExceeded) || time.Since(start) > 3*time.Second {
+		t.Errorf("a connection quiet since its handshake: %v after %s, want it closed within its first-request time", err, time.Since(start))
+	}
+}
+
+// Addresses in one /28 are one app's network; the next /28 is another app's, with slots of its own.
+func TestTheLimitCountsAnAppsWholeNetwork(t *testing.T) {
+	testenv.Isolate(t)
+	for addr, want := range map[string]string{"172.31.240.17:4000": "172.31.240.16/28", "172.31.240.30:1": "172.31.240.16/28",
+		"172.31.240.33:1": "172.31.240.32/28", "[::ffff:172.31.240.17]:9": "172.31.240.16/28", "[fd00::1]:9": "fd00::1"} {
+		a, _ := net.ResolveTCPAddr("tcp", addr)
+		if got := ldaps.Network(a); got != want {
+			t.Errorf("%s: %s, want %s", addr, got, want)
+		}
+	}
 }

@@ -45,6 +45,91 @@ func Bind(c net.Conn, dn, password string) error {
 	return nil
 }
 
+// Entry is one object a search found: its DN, and its attributes' values.
+type Entry struct {
+	DN    string
+	Attrs map[string][]string
+}
+
+// Search binds as dn with password over c, then searches the whole subtree of base for every object (objectClass=*),
+// asking for every attribute, and returns what came back. A refused bind is ErrRefused; a search the directory refuses
+// is an error with its result code.
+func Search(c net.Conn, dn, password, base string) ([]Entry, error) {
+	_ = c.SetDeadline(time.Now().Add(20 * time.Second))
+	r := bufio.NewReader(c)
+	bind := tlv(0x30, cat(tlv(0x02, []byte{1}), tlv(0x60, cat(tlv(0x02, []byte{3}), tlv(0x04, []byte(dn)), tlv(0x80, []byte(password))))))
+	if _, err := c.Write(bind); err != nil {
+		return nil, err
+	}
+	tag, body, err := read(r)
+	if err != nil {
+		return nil, err
+	}
+	if code, err := result(tag, body, 0x61); err != nil {
+		return nil, err
+	} else if code != Success {
+		return nil, fmt.Errorf("%w: result %d", ErrRefused, code)
+	}
+	req := tlv(0x63, cat(tlv(0x04, []byte(base)), tlv(0x0a, []byte{2}), tlv(0x0a, []byte{0}), tlv(0x02, []byte{0}),
+		tlv(0x02, []byte{0}), tlv(0x01, []byte{0}), tlv(0x87, []byte("objectClass")), tlv(0x30, nil)))
+	if _, err := c.Write(tlv(0x30, cat(tlv(0x02, []byte{2}), req))); err != nil {
+		return nil, err
+	}
+	var out []Entry
+	for {
+		tag, body, err := read(r)
+		if err != nil || tag != 0x30 {
+			return out, fmt.Errorf("ldap: the search's answer: %v", err)
+		}
+		_, _, rest, err := next(body)
+		if err != nil {
+			return out, err
+		}
+		op, v, _, err := next(rest)
+		if err != nil {
+			return out, err
+		}
+		switch op {
+		case 0x64: // an entry
+			_, name, attrs, err := next(v)
+			if err != nil {
+				return out, err
+			}
+			_, list, _, _ := next(attrs)
+			e := Entry{DN: string(name), Attrs: map[string][]string{}}
+			for len(list) > 0 {
+				var one []byte
+				if _, one, list, err = next(list); err != nil {
+					return out, err
+				}
+				_, typ, vals, _ := next(one)
+				_, set, _, _ := next(vals)
+				for len(set) > 0 {
+					var val []byte
+					if _, val, set, err = next(set); err != nil {
+						return out, err
+					}
+					e.Attrs[string(typ)] = append(e.Attrs[string(typ)], string(val))
+				}
+			}
+			out = append(out, e)
+		case 0x73: // a referral elsewhere: not followed
+		case 0x65: // done
+			_, code, _, err := next(v)
+			if err != nil || len(code) != 1 {
+				return out, errors.New("ldap: no result code")
+			}
+			_, _ = c.Write(tlv(0x30, cat(tlv(0x02, []byte{3}), []byte{0x42, 0x00})))
+			if code[0] != Success {
+				return out, fmt.Errorf("ldap: search: result %d", code[0])
+			}
+			return out, nil
+		default:
+			return out, fmt.Errorf("ldap: answered with operation %#x", op)
+		}
+	}
+}
+
 // result is the result code of an LDAPMessage whose operation is op.
 func result(tag byte, body []byte, op byte) (int, error) {
 	if tag != 0x30 {

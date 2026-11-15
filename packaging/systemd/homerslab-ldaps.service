@@ -8,7 +8,7 @@ Description=HomersLab sign-in listener, LDAPS
 Documentation=https://github.com/ArjunRachithcf/homerslab
 Requires=homerslab-ldaps.socket
 After=homerslab-ldaps.socket homerslab-agent.service
-ConditionPathExists=/etc/systemd/system/homerslab-ldaps.service.d/50-homerslab-certificate.conf
+ConditionPathExists=/etc/systemd/system/homerslab-ldaps.service.d/50-homerslab-certificates.conf
 
 [Service]
 Type=exec

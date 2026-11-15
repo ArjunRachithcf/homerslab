@@ -41,10 +41,13 @@ type Config struct {
 	Upstream string
 	// MaxConns is how many connections it carries at once; more are closed at once (default 128).
 	MaxConns int
-	// PerSource is how many of them one address may hold (default a quarter of MaxConns), so one app's container
-	// that opens connections and says nothing can't keep the others out.
-	PerSource int
-	// Idle closes a connection that carried nothing either way for this long (default 10 minutes).
+	// PerNetwork is how many of them one app's network may hold (default a quarter of MaxConns): an app's upstream
+	// network is a /28 of its own (the agent's), and only that network reaches the port, so one app can't keep the
+	// others out however many containers it runs.
+	PerNetwork int
+	// FirstRequest closes a connection that sends nothing within this long of its handshake (default 30 seconds).
+	FirstRequest time.Duration
+	// Idle closes a connection that carried nothing either way for this long (default 2 minutes).
 	Idle time.Duration
 }
 
@@ -56,7 +59,10 @@ type Server struct {
 	sem  chan struct{}
 	mu   sync.Mutex
 	from map[string]int
-	dial func(ctx context.Context, network, addr string) (net.Conn, error)
+	// warned is when the last over-the-limit warning went out; dropped, how many were closed since.
+	warned  time.Time
+	dropped int
+	dial    func(ctx context.Context, network, addr string) (net.Conn, error)
 }
 
 // New checks cfg and reads the certificate: one that doesn't cover the sign-in's name is refused.
@@ -83,11 +89,14 @@ func New(cfg Config, log *slog.Logger) (*Server, error) {
 	if cfg.MaxConns == 0 {
 		cfg.MaxConns = 128
 	}
-	if cfg.PerSource <= 0 {
-		cfg.PerSource = max(cfg.MaxConns/4, 1)
+	if cfg.PerNetwork <= 0 {
+		cfg.PerNetwork = max(cfg.MaxConns/4, 1)
+	}
+	if cfg.FirstRequest <= 0 {
+		cfg.FirstRequest = 30 * time.Second
 	}
 	if cfg.Idle <= 0 {
-		cfg.Idle = 10 * time.Minute
+		cfg.Idle = 2 * time.Minute
 	}
 	if log == nil {
 		log = slog.New(slog.DiscardHandler)
@@ -124,13 +133,10 @@ func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
 			}
 			return err
 		}
-		src := c.RemoteAddr().String()
-		if a, err := netip.ParseAddrPort(src); err == nil {
-			src = a.Addr().String()
-		}
+		src := network(c.RemoteAddr())
 		if !s.take(src) {
 			c.Close() // over the limit
-			s.log.Warn("an LDAPS connection over the limit, closed", "from", src, "max", s.cfg.MaxConns, "perSource", s.cfg.PerSource)
+			s.refused(src)
 			continue
 		}
 		wg.Add(1)
@@ -141,11 +147,43 @@ func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
 	}
 }
 
+// AppNetwork is the size of an app's upstream network, as the agent gives them out: the unit the port counts by.
+const AppNetwork = 28
+
+// network is the app network an address is in: its /28 (IPv4), or the address itself.
+func network(a net.Addr) string {
+	ap, err := netip.ParseAddrPort(a.String())
+	if err != nil {
+		return a.String()
+	}
+	if ip := ap.Addr().Unmap(); ip.Is4() {
+		p, _ := ip.Prefix(AppNetwork)
+		return p.String()
+	}
+	return ap.Addr().String()
+}
+
+// refused logs a connection closed over the limit: at most once a minute, with how many since, so a flood of them
+// can't flood the journal.
+func (s *Server) refused(src string) {
+	s.mu.Lock()
+	s.dropped++
+	now := time.Now()
+	if now.Sub(s.warned) < time.Minute {
+		s.mu.Unlock()
+		return
+	}
+	n := s.dropped
+	s.warned, s.dropped = now, 0
+	s.mu.Unlock()
+	s.log.Warn("LDAPS connections over the limit, closed", "last", src, "count", n, "max", s.cfg.MaxConns, "perNetwork", s.cfg.PerNetwork)
+}
+
 // take holds one of the port's connections for src, unless the port or src is at its limit.
 func (s *Server) take(src string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.from[src] >= s.cfg.PerSource {
+	if s.from[src] >= s.cfg.PerNetwork {
 		return false
 	}
 	select {
@@ -176,12 +214,23 @@ func (s *Server) carry(ctx context.Context, c net.Conn) {
 	if err != nil {
 		return // a client that asked for another name, or no TLS: nothing to say about it
 	}
+	// Its first request, within FirstRequest: a connection that holds a slot and says nothing is closed.
+	first := make([]byte, 16<<10)
+	_ = tc.SetReadDeadline(time.Now().Add(s.cfg.FirstRequest))
+	n, err := tc.Read(first)
+	if err != nil {
+		return
+	}
 	up, err := s.dial(ctx, "tcp", s.cfg.Upstream)
 	if err != nil {
 		s.log.Warn("the LDAP outpost can't be reached", "err", err)
 		return
 	}
 	defer up.Close()
+	_ = up.SetWriteDeadline(time.Now().Add(s.cfg.Idle))
+	if _, err := up.Write(first[:n]); err != nil {
+		return
+	}
 	stop := context.AfterFunc(ctx, func() { tc.Close(); up.Close() })
 	defer stop()
 	done := make(chan struct{}, 2)

@@ -39,7 +39,7 @@ func TestTheLDAPSPortIsASocketAndAnUnprivilegedProcess(t *testing.T) {
 		}
 	}
 	if c := section(t, "homerslab-ldaps.service", "[Unit]")["ConditionPathExists"]; len(c) != 1 ||
-		c[0] != "/etc/systemd/system/homerslab-ldaps.service.d/50-homerslab-certificate.conf" {
+		c[0] != "/etc/systemd/system/homerslab-ldaps.service.d/50-homerslab-certificates.conf" {
 		t.Errorf("ConditionPathExists=%v, want the agent's drop-in", c)
 	}
 	exec := one(t, u, "ExecStart")
