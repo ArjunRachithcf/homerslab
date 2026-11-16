@@ -289,7 +289,7 @@ func (a *Authentik) AppPassword(ctx context.Context, slug, username string) (idp
 	if err != nil {
 		return "", err
 	}
-	if p == nil || p.App == nil || *p.App != slug {
+	if p == nil || p.App == nil || *p.App != name {
 		return "", fmt.Errorf("authentik: %s has no LDAP directory", slug)
 	}
 	u, err := find[user](ctx, a.api, "/core/users/?username="+q(username), "username", username)
