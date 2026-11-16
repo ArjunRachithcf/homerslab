@@ -29,6 +29,7 @@ import (
 	"github.com/ArjunRachithcf/homerslab/internal/engine/compose"
 	"github.com/ArjunRachithcf/homerslab/internal/firewall"
 	"github.com/ArjunRachithcf/homerslab/internal/host"
+	"github.com/ArjunRachithcf/homerslab/internal/ldaps"
 	"github.com/ArjunRachithcf/homerslab/internal/storage"
 	"github.com/ArjunRachithcf/homerslab/internal/text"
 )
@@ -72,6 +73,18 @@ var (
 	listenerNet = netip.MustParsePrefix("172.31.255.240/28")
 )
 
+// Each app's network is a /28, the unit the LDAPS port counts connections by (ldaps.AppNetwork): the allocation below
+// assumes it, so the build fails if the two ever differ.
+const _ = uint(ldaps.AppNetwork-28) + uint(28-ldaps.AppNetwork)
+
+// LDAPOutpost is the sign-in's LDAP outpost, at its fixed address on the sign-in network (packaging/sign-in, service
+// ldap, #204), and the ports it listens on: plain LDAP, its own LDAPS and its metrics. Only the LDAPS port's process
+// opens its plain LDAP port; nothing of this machine opens the others.
+var (
+	LDAPOutpost      = netip.MustParseAddr("172.31.250.11")
+	LDAPOutpostPorts = []uint16{3389, 6636, 9300}
+)
+
 // SignInListen is the sign-in listener's own address on every node (ADR 0020): where apps reach the sign-in, on the
 // household's port. The agent puts it on the machine's loopback, so it is a local address no network leads to but this
 // machine's own routing, and every app's container resolves auth.<main domain> to it.
@@ -87,6 +100,7 @@ const (
 	edgeUser    = "homerslab-edge"
 	managerUser = "homerslab"
 	homeUser    = "homerslab-home"
+	ldapsUser   = "homerslab-ldaps"
 )
 
 // reservedApps are ids an app can't have: their units, projects and sign-in clients (homerslab-<id>) are HomersLab's own.
@@ -676,11 +690,12 @@ func (a *Agent) placeApp(id string, prev *appState) (*appState, error) {
 		}
 	}
 	base := upstreamRange.Addr().As4()
-	for i := 0; i < 1<<(28-upstreamRange.Bits()); i++ {
+	for i := 0; i < 1<<(ldaps.AppNetwork-upstreamRange.Bits()); i++ {
 		b := base
 		b[2] += byte(i >> 4)
 		b[3] = byte(i&15) << 4
-		if p := netip.PrefixFrom(netip.AddrFrom4(b), 28); !nets[p] {
+		// The LDAPS port counts its connections by the same /28 (ldaps.AppNetwork): an app's network is one unit there.
+		if p := netip.PrefixFrom(netip.AddrFrom4(b), ldaps.AppNetwork); !nets[p] {
 			next.Subnet = p
 			break
 		}
@@ -1019,6 +1034,14 @@ func (a *Agent) appsFirewall() []firewall.Upstream {
 	if a.state.SignIn != nil {
 		if up, err := netip.ParseAddrPort(a.upstream()); err == nil {
 			out = append(out, firewall.Upstream{Addr: up, UIDs: append(signInUIDs, 0)})
+		}
+		// The LDAP outpost: its plain LDAP port for the LDAPS port's process alone, its other ports for nobody.
+		for _, port := range LDAPOutpostPorts {
+			u := firewall.Upstream{Addr: netip.AddrPortFrom(LDAPOutpost, port), UIDs: []uint32{}}
+			if uid, ok := a.cfg.Users(ldapsUser); ok && port == LDAPOutpostPorts[0] {
+				u.UIDs = append(u.UIDs, uid)
+			}
+			out = append(out, u)
 		}
 	}
 	for _, s := range a.state.Apps {

@@ -19,7 +19,8 @@
 #     and the unit's log is the journal;
 #   - HomersLab's LDAP outpost (#204), in profile ldap, only once an app signs in over LDAP: Authentik's own image for
 #     it, at its fixed address on the sign-in network (172.31.250.11), plain LDAP on 3389, which only the node's LDAPS
-#     listener reaches (ADR 0020). Its token is a file like the others, exported in its own entrypoint.
+#     listener reaches (ADR 0020). Its token is a file like the others, exported in its own entrypoint. Its own unit
+#     runs it (homerslab-ldap.service), so its exit restarts the outpost alone, never the sign-in.
 name: homerslab-authentik
 
 networks:
@@ -41,7 +42,7 @@ secrets:
   bootstrap-token:
     file: /run/homerslab-authentik/bootstrap-token
   ldap-token:
-    file: /run/homerslab-authentik/ldap-token
+    file: /run/homerslab-ldap/ldap-token
 
 volumes:
   database: {}

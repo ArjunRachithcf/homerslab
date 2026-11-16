@@ -9,7 +9,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -400,27 +402,38 @@ func ldapImpostors(w *world, a *authentik.Authentik) func(*testing.T) {
 			b["target"], b["order"] = app.PBM, 100
 			w.raw(t, w.own, "POST", "/api/v3/policies/bindings/", b, nil)
 		}
+		var realP struct {
+			Results []struct {
+				PK   int    `json:"pk"`
+				Name string `json:"name"`
+			}
+		}
+		w.raw(t, w.own, "GET", "/api/v3/providers/ldap/?name__iexact="+real.Slug+"-ldap", nil, &realP)
+		if len(realP.Results) != 1 {
+			t.Fatalf("the real app's provider: %+v", realP.Results)
+		}
 		for _, c := range []struct {
-			name  string
-			drift func(t *testing.T) (int, string) // the console's provider and its DN template, if it made one
+			name      string
+			drift     func(t *testing.T) (int, string) // the console's provider and its DN template, if it made one
+			realStays bool                             // the real app's provider stays at the outpost through Prepare
 		}{
 			{"a copy of the real app's base DN", func(t *testing.T) (int, string) {
 				return provider(t, "homerslab-evil-ldap", authentik.LDAPBaseDN(real.Slug), nil)
-			}},
+			}, true},
 			{"a base DN of its own", func(t *testing.T) (int, string) {
 				return provider(t, "homerslab-evil2-ldap", "dc=evil2,dc=homerslab", nil)
-			}},
+			}, false},
 			{"the tree above every app's, opened to the kids", func(t *testing.T) (int, string) {
 				return provider(t, "homerslab-evil3-ldap", "dc=homerslab", []map[string]any{{"group": kids, "enabled": true, "timeout": 30}})
-			}},
+			}, false},
 			{"the real app opened to one kid more", func(t *testing.T) (int, string) {
 				binding(t, map[string]any{"user": w.userPK(t, "kiko"), "enabled": true, "timeout": 30})
 				return 0, ""
-			}},
+			}, false},
 			{"the real app opened to everyone but the kids", func(t *testing.T) (int, string) {
 				binding(t, map[string]any{"group": kids, "negate": true, "enabled": true, "timeout": 30})
 				return 0, ""
-			}},
+			}, false},
 		} {
 			t.Run(c.name, func(t *testing.T) {
 				pk, evil := c.drift(t)
@@ -430,8 +443,12 @@ func ldapImpostors(w *world, a *authentik.Authentik) func(*testing.T) {
 				if err := a.Prepare(ctx, household); err != nil {
 					t.Fatal(err)
 				}
-				if _, ps := outpost(); pk != 0 && slices.Contains(ps, pk) {
+				_, ps := outpost()
+				if pk != 0 && slices.Contains(ps, pk) {
 					t.Error("the console's provider is still at the outpost")
+				}
+				if c.realStays && !slices.Contains(ps, realP.Results[0].PK) {
+					t.Error("the real app's provider left the outpost with the console's copy of its base DN")
 				}
 				if r, err := a.Report(ctx); err != nil || !r.PasskeyOnlySignIn {
 					t.Errorf("after Prepare: %+v %v", r, err)
@@ -483,6 +500,87 @@ func ldapImpostors(w *world, a *authentik.Authentik) func(*testing.T) {
 		})
 		if err := a.DeleteLDAP(ctx, real.Slug); err != nil {
 			t.Fatal(err)
+		}
+	}
+}
+
+// unitCommand is a packaged unit's own compose command, on the test's project and file, ready to start attached.
+func unitCommand(t *testing.T, w *world, name string) (*exec.Cmd, *strings.Builder) {
+	t.Helper()
+	_, self, _, _ := runtime.Caller(0)
+	u, err := os.ReadFile(filepath.Join(filepath.Dir(self), "..", "..", "..", "packaging", "systemd", name))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var args []string
+	for _, l := range strings.Split(string(u), "\n") {
+		if rest, ok := strings.CutPrefix(l, "ExecStart=/usr/bin/docker compose "); ok {
+			args = strings.Fields(rest)
+		}
+	}
+	if len(args) == 0 {
+		t.Fatalf("no compose command in %s", name)
+	}
+	for i := range args {
+		switch args[i] {
+		case "homerslab-authentik":
+			args[i] = project
+		case "/usr/share/homerslab/sign-in/authentik.compose.yaml":
+			args[i] = filepath.Join(w.dir, "compose.yaml")
+		}
+	}
+	c := exec.Command("docker", append([]string{"compose"}, args...)...)
+	c.Env = append(os.Environ(), "DOCKER_HOST="+w.engine)
+	var out strings.Builder
+	c.Stdout, c.Stderr = &out, &out
+	return c, &out
+}
+
+// ldapOwnUnit runs the sign-in's unit's command and the outpost's, attached to the running containers, then stops the
+// outpost: its own command ends, so systemd would start it again, and the sign-in's goes on. Last of the LDAP checks:
+// the outpost stays stopped.
+func ldapOwnUnit(w *world) func(*testing.T) {
+	return func(t *testing.T) {
+		// started runs a command; its channel is closed when it ends, with its error in *err.
+		started := func(c *exec.Cmd, err *error) chan struct{} {
+			if e := c.Start(); e != nil {
+				t.Fatal(e)
+			}
+			ended := make(chan struct{})
+			go func() { *err = c.Wait(); close(ended) }()
+			return ended
+		}
+		signIn, signInOut := unitCommand(t, w, "homerslab-authentik.service")
+		outpost, outpostOut := unitCommand(t, w, "homerslab-ldap.service")
+		var signInErr, outpostErr error
+		signInEnded, outpostEnded := started(signIn, &signInErr), started(outpost, &outpostErr)
+		defer func() {
+			_ = signIn.Process.Kill() // the client only: the containers go on, as after a crash of the command
+			_ = outpost.Process.Kill()
+			<-signInEnded
+			<-outpostEnded
+		}()
+		time.Sleep(15 * time.Second) // attached
+		select {
+		case <-outpostEnded:
+			t.Fatalf("the outpost's command ended by itself: %v\n%s", outpostErr, outpostOut)
+		case <-signInEnded:
+			t.Fatalf("the sign-in's command ended by itself: %v\n%s", signInErr, signInOut)
+		default:
+		}
+		w.compose(t, "kill", "ldap")
+		select {
+		case <-outpostEnded:
+		case <-time.After(60 * time.Second):
+			t.Error("the outpost stopped, and its unit's command still runs: systemd would never start it again")
+		}
+		select {
+		case <-signInEnded:
+			t.Errorf("the outpost stopped, and the sign-in's command ended with it: %v\n%s", signInErr, signInOut)
+		case <-time.After(20 * time.Second):
+		}
+		if code := w.status(t, w.own, "/api/v3/core/users/me/"); code != http.StatusOK {
+			t.Errorf("Authentik, after the outpost stopped: %d", code)
 		}
 	}
 }
