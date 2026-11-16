@@ -392,11 +392,13 @@ func TestOnlyTheUpstreamsUsersOpenConnectionsIntoAppNetworks(t *testing.T) {
 	if !strings.Contains(none, "\t\toifname \"hla*\" jump to_apps\n") || !strings.Contains(none, "\tchain to_apps {\n\t\tct state established,related accept\n\t\tmeta l4proto { icmp, ipv6-icmp } accept\n\t\tdrop\n\t}\n") {
 		t.Errorf("without an upstream:\n%s", none)
 	}
-	// An upstream that isn't IPv4 with a port, or no user: never rendered.
+	// An upstream that isn't IPv4 with a port: never rendered. One with no user is closed to every process of this
+	// machine (the LDAP outpost's own LDAPS and metrics ports, #204): kept to to_apps, and never let through there.
 	odd := firewall.Render(firewall.State{Upstreams: []firewall.Upstream{{Addr: netip.MustParseAddrPort("[fd00::2]:80"), UIDs: []uint32{0}},
 		{Addr: netip.MustParseAddrPort("172.31.240.2:0"), UIDs: []uint32{0}}, {Addr: netip.MustParseAddrPort("172.31.240.3:80")}}})
-	if strings.Contains(odd, "fd00::2") || strings.Contains(odd, ". 0 ") || strings.Contains(odd, "172.31.240.3") {
-		t.Errorf("an odd upstream was rendered:\n%s", odd)
+	if strings.Contains(odd, "fd00::2") || strings.Contains(odd, ". 0 ") || strings.Contains(odd, "172.31.240.3 . 80 .") ||
+		!strings.Contains(odd, "ip daddr . meta l4proto . th dport { 172.31.240.3 . tcp . 80 } jump to_apps") {
+		t.Errorf("an odd upstream was rendered, or one with no user left open:\n%s", odd)
 	}
 	if !s.Equal(s) || s.Equal(firewall.State{Mesh: s.Mesh, LAN: s.LAN, Bridges: s.Bridges, Virtual: s.Virtual}) {
 		t.Error("the upstreams don't count in Equal")

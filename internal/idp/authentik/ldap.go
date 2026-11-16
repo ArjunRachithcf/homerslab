@@ -446,10 +446,10 @@ func (a *Authentik) ldapTidy(ctx context.Context, repair bool) (bool, error) {
 		return false, err
 	}
 	// The outpost's own application opens to nobody: the policy that refuses everyone is its one binding.
-	nobody := map[binding]bool{}
+	refusesAll := map[binding]bool{}
 	for b := range own {
 		if b.Policy != "" {
-			nobody[b] = true
+			refusesAll[b] = true
 		}
 	}
 	clean, keep := true, slices.Clone(o.Providers)
@@ -472,7 +472,7 @@ func (a *Authentik) ldapTidy(ctx context.Context, repair bool) (bool, error) {
 		if fine {
 			allowed := own
 			if p.Name == ldapNone {
-				allowed = nobody
+				allowed = refusesAll
 			}
 			if fine, err = a.ldapBoundByUs(ctx, app, allowed); err != nil {
 				return false, err

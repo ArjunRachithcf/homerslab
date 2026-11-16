@@ -120,7 +120,8 @@ type LDAPApp struct {
 	Subnet netip.Prefix `json:"subnet"`
 }
 
-// Upstream is one address and TCP port on an app's network, and the users of this machine that may connect to it.
+// Upstream is one address and TCP port on an app's network, and the users of this machine that may connect to it:
+// with none, no process of this machine may.
 type Upstream struct {
 	Addr netip.AddrPort `json:"addr"`
 	UIDs []uint32       `json:"uids"`
@@ -381,10 +382,10 @@ func listenerAddrs(l []netip.AddrPort) []string {
 	return uniqStrings(out)
 }
 
-// usable are the upstreams that can be rendered: IPv4 with a port, and at least one user.
+// usable are the upstreams that can be rendered: IPv4 with a port. One with no user is closed to every process.
 func usable(ups []Upstream) []Upstream {
 	return slices.DeleteFunc(slices.Clone(ups), func(u Upstream) bool {
-		return !u.Addr.Addr().Unmap().Is4() || u.Addr.Port() == 0 || len(u.UIDs) == 0
+		return !u.Addr.Addr().Unmap().Is4() || u.Addr.Port() == 0
 	})
 }
 

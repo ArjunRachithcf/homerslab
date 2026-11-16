@@ -179,6 +179,32 @@ func TestTheEdgeAloneReachesTheApp(t *testing.T) {
 	}
 }
 
+// The sign-in's LDAP outpost (#204): of this machine's processes only the LDAPS port's opens its plain LDAP port, and
+// none its own LDAPS or metrics port, whether an app signs in over LDAP yet or not.
+func TestOnlyTheLDAPSPortsProcessOpensTheOutpost(t *testing.T) {
+	testenv.Isolate(t)
+	users := func(name string) (uint32, bool) {
+		uid, ok := map[string]uint32{"homerslab-edge": 981, "homerslab": 980, "homerslab-home": 982, "homerslab-ldaps": 60604}[name]
+		return uid, ok
+	}
+	_, h, _ := signedIn(t, agent.Config{Users: users})
+	table, _ := h.Table()
+	if !strings.Contains(table, "172.31.250.11 . tcp . 3389, 172.31.250.11 . tcp . 6636, 172.31.250.11 . tcp . 9300 } jump to_apps") {
+		t.Errorf("the outpost's ports aren't kept to to_apps:\n%s", table)
+	}
+	if !strings.Contains(table, "172.31.250.10 . 9000 . 982, 172.31.250.11 . 3389 . 60604 } accept") {
+		t.Errorf("the LDAPS port's process can't open the outpost:\n%s", table)
+	}
+	for _, bad := range []string{"172.31.250.11 . 3389 . 0", "172.31.250.11 . 3389 . 98", "172.31.250.11 . 6636 .", "172.31.250.11 . 9300 ."} {
+		if strings.Contains(table, bad) {
+			t.Errorf("the table lets %q through:\n%s", bad, table)
+		}
+	}
+	if agent.LDAPOutpost.String() != "172.31.250.11" {
+		t.Errorf("the outpost's address: %s", agent.LDAPOutpost)
+	}
+}
+
 // Apps reach the sign-in through the sign-in listener only (ADR 0020): its own address, on the machine's loopback, on
 // the household's port, with the sign-in's route only; every container resolves auth.<main domain> to it, and the
 // firewall table lets the apps' networks open that and nothing else of the machine. Before an app, there is none.

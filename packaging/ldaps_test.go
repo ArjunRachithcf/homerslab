@@ -52,6 +52,9 @@ func TestTheLDAPSPortIsASocketAndAnUnprivilegedProcess(t *testing.T) {
 	if _, rest, ok := strings.Cut(outpost, "ipv4_address: "); ok {
 		addr, _, _ = strings.Cut(rest, "\n")
 	}
+	if addr != agent.LDAPOutpost.String() {
+		t.Errorf("the outpost is at %s; the agent's firewall keeps %s", addr, agent.LDAPOutpost)
+	}
 	if want := "/usr/bin/homerslab edge ldaps --name ${HOMERSLAB_SIGN_IN} --cert %d/tls.crt --key %d/tls.key --upstream " + addr + ":3389"; addr == "" || exec != want {
 		t.Errorf("ExecStart=%s\nwant %s", exec, want)
 	}
@@ -64,5 +67,45 @@ func TestTheLDAPSPortIsASocketAndAnUnprivilegedProcess(t *testing.T) {
 		if strings.Contains(outpost, bad) {
 			t.Errorf("the LDAP outpost's service has %q", bad)
 		}
+	}
+}
+
+// The LDAP outpost is its own unit (#204's review): the sign-in's project and file, its one service, so its exit ends
+// its own command and systemd starts it again, while the sign-in's command never watches it and Authentik stays up.
+// Its token comes only from the agent's drop-in, into a runtime directory of its own.
+func TestTheLDAPOutpostIsAUnitOfItsOwn(t *testing.T) {
+	testenv.Isolate(t)
+	u := unit(t, "homerslab-ldap.service")
+	const compose = "/usr/bin/docker compose --project-name homerslab-authentik --file /usr/share/homerslab/sign-in/authentik.compose.yaml --profile ldap "
+	if s := one(t, u, "ExecStart"); s != compose+"up --no-deps --no-log-prefix --quiet-pull --abort-on-container-exit ldap" {
+		t.Errorf("ExecStart=%s", s)
+	}
+	if s := one(t, u, "ExecStopPost"); s != compose+"stop ldap" {
+		t.Errorf("ExecStopPost=%s, want the outpost stopped alone", s)
+	}
+	for k, want := range map[string]string{"Restart": "always", "SuccessExitStatus": "130", "RuntimeDirectory": "homerslab-ldap", "RuntimeDirectoryMode": "0700"} {
+		if got := one(t, u, k); got != want {
+			t.Errorf("%s=%s, want %s", k, got, want)
+		}
+	}
+	if c := section(t, "homerslab-ldap.service", "[Unit]")["ConditionPathExists"]; len(c) != 1 ||
+		c[0] != "/etc/systemd/system/homerslab-ldap.service.d/50-homerslab-credentials.conf" {
+		t.Errorf("ConditionPathExists=%v, want the agent's drop-in", c)
+	}
+	for _, k := range []string{"LoadCredentialEncrypted", "Environment", "PartOf", "BindsTo"} {
+		if len(u[k]) != 0 {
+			t.Errorf("%s=%v in the packaged unit", k, u[k])
+		}
+	}
+	// The sign-in's own command starts and watches the sign-in's services, never the outpost's profile.
+	if s := one(t, unit(t, "homerslab-authentik.service"), "ExecStart"); strings.Contains(s, "--profile") || strings.Contains(s, "ldap") {
+		t.Errorf("the sign-in's ExecStart=%s: it would watch the outpost", s)
+	}
+	b, err := os.ReadFile("sign-in/authentik.compose.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(b), "  ldap-token:\n    file: /run/homerslab-ldap/ldap-token\n") {
+		t.Error("the outpost's token isn't read from its own unit's runtime directory")
 	}
 }

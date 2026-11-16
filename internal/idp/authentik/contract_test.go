@@ -187,6 +187,7 @@ func TestTheIdentityProviderContractOnAuthentik(t *testing.T) {
 		t.Run("an app's directory keeps apart from the app's own application", ldapBesideTheAppsOwn(w, a))
 		t.Run("drift: a provider at the outpost without its application is closed and taken off, then deleted", ldapOrphan(w, a))
 		t.Run("drift: providers of the console's at the outpost, named as an app's, are taken off", ldapImpostors(w, a))
+		t.Run("the outpost's own unit: its exit ends its own command, never the sign-in's", ldapOwnUnit(w))
 	})
 
 	t.Run("an app's audience changes without the app ever being open to someone of neither audience (#219)", func(t *testing.T) {
@@ -895,7 +896,7 @@ func up(t *testing.T, engine string) *world {
 		}
 	}
 	file := strings.NewReplacer("name: homerslab-authentik", "name: "+project, "172.31.250.", signInNet+".",
-		"/run/homerslab-authentik/", dir+"/").Replace(string(packaged))
+		"/run/homerslab-authentik/", dir+"/", "/run/homerslab-ldap/", dir+"/").Replace(string(packaged))
 	if err := os.WriteFile(filepath.Join(dir, "compose.yaml"), []byte(file), 0o644); err != nil {
 		t.Fatal(err)
 	}
