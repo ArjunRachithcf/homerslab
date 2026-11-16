@@ -72,6 +72,25 @@ func (f *fakeAuthentik) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if f.after != nil && r.Method != http.MethodGet {
 		defer f.after()
 	}
+	if coll == "/flows/bindings/" && (r.Method == http.MethodPost || r.Method == http.MethodPatch) {
+		// Authentik keeps a flow's stage bindings unique by (target, stage, order).
+		merged := map[string]any{}
+		if at >= 0 {
+			for k, v := range f.objs[coll][at] {
+				merged[k] = v
+			}
+		}
+		for k, v := range body {
+			merged[k] = v
+		}
+		for i, o := range f.objs[coll] {
+			if i != at && fmt.Sprint(o["target"], o["stage"], o["order"]) == fmt.Sprint(merged["target"], merged["stage"], merged["order"]) {
+				w.WriteHeader(http.StatusBadRequest)
+				reply(map[string]any{"non_field_errors": []string{"The fields target, stage, order must make a unique set."}})
+				return
+			}
+		}
+	}
 	switch {
 	case id == "" && r.Method == http.MethodGet && coll == "/policies/bindings/" && !f.allBindings:
 		// The one filter it honours: a binding answers its target as the target's own pk, so the adapter can't check it.

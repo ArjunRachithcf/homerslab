@@ -482,6 +482,7 @@ func (a *Authentik) bindStages(ctx context.Context, flowPK string, want []stageB
 		body := map[string]any{"target": flowPK, "stage": w.Stage, "order": (i + 1) * 10, "evaluate_on_plan": false,
 			"re_evaluate_policies": true, "invalid_response_action": "retry", "policy_engine_mode": "all"}
 		var id target
+		refusing := false // the binding holds the stage that refuses until its policies are bound
 		switch {
 		case j >= 0 && conforms(have[j], i):
 			id = target{PBM: have[j].PBM, PK: have[j].PK}
@@ -501,7 +502,23 @@ func (a *Authentik) bindStages(ctx context.Context, flowPK string, want []stageB
 				if err != nil || refuse == nil {
 					return fmt.Errorf("authentik: the stage that refuses, to bind a stage with policies: %v", err)
 				}
-				body["stage"] = refuse.PK
+				body["stage"], refusing = refuse.PK, true
+				// A binding made so before, whose change to the stage never came (a failure or a restart in between), is
+				// there still at this order. Authentik keeps a flow's (stage, order) unique, so that one is taken up,
+				// still refusing, rather than a second one refused for good (#246's review).
+				for k, h := range have {
+					if !used[k] && h.Stage == refuse.PK && h.Order == (i+1)*10 {
+						j = k
+						break
+					}
+				}
+			}
+			if j >= 0 {
+				if err := a.api.call(ctx, http.MethodPatch, "/flows/bindings/"+have[j].PK+"/", body, nil); err != nil {
+					return err
+				}
+				id = target{PBM: have[j].PBM, PK: have[j].PK}
+				break
 			}
 			var out struct {
 				PK  string `json:"pk"`
@@ -518,7 +535,7 @@ func (a *Authentik) bindStages(ctx context.Context, flowPK string, want []stageB
 		if err := a.bindPolicies(ctx, id, w.Policies); err != nil {
 			return err
 		}
-		if j < 0 && len(w.Policies) > 0 {
+		if refusing {
 			body["stage"] = w.Stage
 			if err := a.api.call(ctx, http.MethodPatch, "/flows/bindings/"+id.PK+"/", body, nil); err != nil {
 				return err
@@ -688,22 +705,24 @@ func (a *Authentik) Prepare(ctx context.Context, h idp.Household) error {
 		return err
 	}
 	// The LDAP bind flows, once apps have made them, back to their own app's app passwords only, at an outpost only
-	// (#204).
+	// (#204). One app's flow that can't be put back keeps neither the others' nor the rest of Prepare from theirs: its
+	// error comes back with theirs, at the end (#246's review).
 	objs, err := a.ldapFlows(ctx)
 	if err != nil {
 		return err
 	}
+	var errs []error
 	for _, obj := range objs {
 		if _, err := a.ldapBindFlow(ctx, obj); err != nil {
-			return err
+			errs = append(errs, fmt.Errorf("authentik: the LDAP bind flow of %s: %w", obj, err))
 		}
 	}
 	// The LDAP outpost back to HomersLab's providers alone, each with its own application: orphaned providers are
 	// removed.
 	if _, err := a.ldapTidy(ctx, true); err != nil {
-		return err
+		errs = append(errs, err)
 	}
-	return a.ensureBrand(ctx, signIn)
+	return errors.Join(append(errs, a.ensureBrand(ctx, signIn))...)
 }
 
 // flowBinding is a stage binding of a flow, as the refusal elsewhere reads it.

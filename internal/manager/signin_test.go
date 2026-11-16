@@ -62,9 +62,11 @@ type fakeSignIn struct {
 	made        map[string]bool // the apps' clients the household account holds
 	// others are what people hold besides passkeys, as Credentials lists it (#25); credentials counts its calls.
 	others map[string][]string
-	// outposts counts the outpost's tokens asked for; ldaps are the apps' LDAP directories made, in order (#204).
+	// outposts counts the outpost's tokens asked for; ldaps are the apps' LDAP directories made, in order (#204);
+	// tidies counts the outpost's tidyings, one per EnsureLDAP and one per EnsureLDAPApps.
 	outposts    int
 	ldaps       []idp.LDAPApp
+	tidies      int
 	ldapFails   error
 	credentials int
 }
@@ -314,6 +316,7 @@ func (f *fakeSignIn) EnsureLDAP(_ context.Context, app idp.LDAPApp) (idp.LDAPCre
 		return idp.LDAPCredentials{}, f.ldapFails
 	}
 	f.ldaps = append(f.ldaps, app)
+	f.tidies++
 	if f.made == nil {
 		f.made = map[string]bool{}
 	}
@@ -321,6 +324,23 @@ func (f *fakeSignIn) EnsureLDAP(_ context.Context, app idp.LDAPApp) (idp.LDAPCre
 	f.made[app.Slug+"-ldap"] = true
 	base := "dc=" + strings.TrimPrefix(app.Slug, "homerslab-") + ",dc=homerslab"
 	return idp.LDAPCredentials{BaseDN: base, UserDN: "cn=%s,ou=users," + base, Created: created}, nil
+}
+
+func (f *fakeSignIn) EnsureLDAPApps(_ context.Context, apps []idp.LDAPApp) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.ldapFails != nil {
+		return f.ldapFails
+	}
+	for _, app := range apps {
+		f.ldaps = append(f.ldaps, app)
+		if f.made == nil {
+			f.made = map[string]bool{}
+		}
+		f.made[app.Slug+"-ldap"] = true
+	}
+	f.tidies++
+	return nil
 }
 
 func (f *fakeSignIn) DeleteLDAP(_ context.Context, slug string) error {

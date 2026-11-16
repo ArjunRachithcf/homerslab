@@ -61,10 +61,8 @@ func (m *Manager) ensureLDAPApps(ctx context.Context) error {
 	if err := m.agent.ldapOutpost(ctx, token); err != nil {
 		errs = append(errs, fmt.Errorf("the LDAP outpost's token: %w", err))
 	}
-	for _, app := range want {
-		if _, err := directory.EnsureLDAP(ctx, app); err != nil {
-			errs = append(errs, fmt.Errorf("%s's LDAP directory: %w", app.Slug, err))
-		}
+	if err := directory.EnsureLDAPApps(ctx, want); err != nil {
+		errs = append(errs, fmt.Errorf("the LDAP directories: %w", err))
 	}
 	return errors.Join(errs...)
 }

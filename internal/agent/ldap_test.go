@@ -340,3 +340,31 @@ func TestAnLDAPStepThatFailedIsDoneAgain(t *testing.T) {
 		t.Errorf("the same token after a failed start: %d %s, enabled %d → %d", code, body, n, h.Times(start))
 	}
 }
+
+// A renewal whose sealing for the LDAPS port failed between the certificate and the key (#246's review) leaves a copy
+// that makes no pair: the next check seals the edge's again, and the port restarts to serve it.
+func TestAnLDAPSCopyThatMakesNoPairIsSealedAgain(t *testing.T) {
+	testenv.Isolate(t)
+	sock, h, state := signedIn(t, agent.Config{Users: withLDAPS, CheckEvery: 50 * time.Millisecond})
+	install(t, sock, "books", books(t))
+	keyCred := filepath.Join(state, "ldaps", "tls.key.cred")
+	edgeKey := sealedAt(t, filepath.Join(state, "edge", "tls-example.test.key.cred"))
+	if sealedAt(t, keyCred) != edgeKey {
+		t.Fatal("the LDAPS port's key isn't the edge's")
+	}
+	_, other := wildcard(t, "example.test")
+	restarts := h.Times("systemctl --no-block try-restart homerslab-ldaps.service")
+	if err := os.WriteFile(keyCred, []byte("sealed:"+base64.StdEncoding.EncodeToString([]byte(other))), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for deadline := time.Now().Add(5 * time.Second); sealedAt(t, keyCred) != edgeKey; time.Sleep(20 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatal("the LDAPS port's key, another certificate's, was never sealed again")
+		}
+	}
+	for deadline := time.Now().Add(5 * time.Second); h.Times("systemctl --no-block try-restart homerslab-ldaps.service") == restarts; time.Sleep(20 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatal("the LDAPS port never restarted to serve the pair sealed again")
+		}
+	}
+}

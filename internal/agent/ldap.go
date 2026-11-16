@@ -261,11 +261,27 @@ func (a *Agent) sealLDAPS(ctx context.Context, chain []byte, key mesh.Secret) er
 	return nil
 }
 
+// ldapsPaired says whether the LDAPS port's sealed copy is there and makes a pair, the domain's: a renewal sealing it
+// can fail between the certificate and the key, which would leave a new one next to an old one, and the port down at
+// its next start (#246's review).
+func (a *Agent) ldapsPaired(ctx context.Context, domain string) bool {
+	chain, err := a.unsealAt(ctx, filepath.Join(a.ldapsDir(), credLDAPSCert+".cred"), credLDAPSCert)
+	if err != nil {
+		return false
+	}
+	key, err := a.unsealAt(ctx, filepath.Join(a.ldapsDir(), credLDAPSKey+".cred"), credLDAPSKey)
+	if err != nil {
+		return false
+	}
+	_, err = certs.Parse(domain, chain, mesh.Secret(key))
+	return err == nil
+}
+
 // ldapsFollow puts the LDAPS port in place once an app on this node signs in over LDAP and the edge holds the sign-in's
-// certificate: the certificate sealed for its unit (from the edge's own, the first time and whenever the sign-in's name
-// moves), its drop-in, and its socket enabled; then, if any of it is new, the unit, if it runs, restarts, so it serves
-// the new one (it reads it only as it starts). Idempotent and cheap when nothing changed: it runs after every install,
-// every certificate and at every check. The caller holds a.mu.
+// certificate: the certificate sealed for its unit (from the edge's own, the first time, whenever the sign-in's name
+// moves, and whenever the copy isn't a pair), its drop-in, and its socket enabled; then, if any of it is new, the unit,
+// if it runs, restarts, so it serves the new one (it reads it only as it starts). Idempotent and cheap when nothing
+// changed (two unseals): it runs after every install, every certificate and at every check. The caller holds a.mu.
 func (a *Agent) ldapsFollow(ctx context.Context) error {
 	d, held := a.signInDomain()
 	if !a.ldapInUse() || !held {
@@ -275,7 +291,7 @@ func (a *Agent) ldapsFollow(ctx context.Context) error {
 	have, _ := os.ReadFile(filepath.Join(a.cfg.Root, a.ldapsDropIn()))
 	changed := !bytes.Equal(have, want)
 	renewed := false
-	if _, err := os.Stat(filepath.Join(a.ldapsDir(), credLDAPSKey+".cred")); err != nil || changed {
+	if changed || !a.ldapsPaired(ctx, d) {
 		chain, err := a.unsealAt(ctx, filepath.Join(a.edgeDir(), certID(d)+".cred"), certID(d))
 		if err != nil {
 			return fmt.Errorf("the sign-in's certificate: %w", err)

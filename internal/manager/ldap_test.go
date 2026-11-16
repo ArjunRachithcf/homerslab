@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -116,9 +117,57 @@ func TestEveryPassPutsEachLDAPAppsDirectoryBack(t *testing.T) {
 	if fs.outposts != outposts+1 {
 		t.Errorf("after a pass, the outpost asked for %d times, want %d: its token back with the agent", fs.outposts, outposts+1)
 	}
-	// The household account failing doesn't stop the pass.
+	// The household account failing doesn't stop the pass: the outpost's token still goes back to the agent, and the
+	// next pass, the account back, puts the directory back.
 	fs.ldapFails = errors.New("the household account is down")
+	outposts = fs.outposts
 	p.m.RunDue(context.Background())
+	if fs.outposts != outposts+1 {
+		t.Errorf("a pass with the household account failing asked for the outpost %d times, want %d", fs.outposts, outposts+1)
+	}
+	fs.mu.Lock()
+	fs.ldapFails = nil
+	fs.mu.Unlock()
+	before = len(ldaps(fs))
+	p.m.RunDue(context.Background())
+	if got := ldaps(fs); len(got) != before+1 || !reflect.DeepEqual(got[len(got)-1], want) {
+		t.Errorf("the pass after the household account came back: %+v, want one more, %+v", got, want)
+	}
+}
+
+// A pass tidies the outpost once, whatever the number of LDAP apps (#246's review): a tidy reads every provider, so one
+// per app would grow as the square of the apps, while the pass holds up every apply.
+func TestAPassTidiesTheOutpostOnceForAllItsLDAPApps(t *testing.T) {
+	testenv.Isolate(t)
+	cat := withCatalog(t, map[string]func([]byte) []byte{
+		"apps/bentopdf/app.yaml": func(b []byte) []byte {
+			return bytes.Replace(b, []byte("signIn:\n  - method: guard\n"), []byte("signIn:\n  - method: ldap\n"+
+				"    ldap: {url: LDAP_URL, baseDn: LDAP_BASE_DN, userDn: LDAP_USER_DN, adminGroup: LDAP_ADMIN_GROUP}\n"), 1)
+		},
+		"apps/mealie/app.yaml": func(b []byte) []byte {
+			out := regexp.MustCompile(`(?s)signIn:\n  - method: oidc\n.*?\n(\S)`).ReplaceAll(b, []byte("signIn:\n  - method: ldap\n"+
+				"    ldap: {url: LDAP_URL, baseDn: LDAP_BASE_DN, userDn: LDAP_USER_DN, adminGroup: LDAP_ADMIN_GROUP}\n$1"))
+			if bytes.Equal(out, b) {
+				t.Fatal("Mealie's manifest has no OIDC sign-in to replace")
+			}
+			return out
+		},
+	})
+	p, fs := installable(t, cat)
+	for _, app := range []string{"bentopdf", "mealie"} {
+		if r := p.control("POST", "/api/v1/plans/"+planFor(t, p, app).ID+"/apply", nil); r.Code != http.StatusAccepted {
+			t.Fatalf("applying %s: %d %s", app, r.Code, r.Body)
+		}
+	}
+	fs.mu.Lock()
+	tidies, before := fs.tidies, len(fs.ldaps)
+	fs.mu.Unlock()
+	p.m.RunDue(context.Background())
+	fs.mu.Lock()
+	defer fs.mu.Unlock()
+	if len(fs.ldaps) != before+2 || fs.tidies != tidies+1 {
+		t.Errorf("a pass with two LDAP apps: %d directories put back, %d tidies of the outpost; want 2 and 1", len(fs.ldaps)-before, fs.tidies-tidies)
+	}
 }
 
 // An LDAP app whose install fails after its directory was made leaves no directory behind (#204); a directory that

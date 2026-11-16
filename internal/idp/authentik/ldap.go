@@ -735,6 +735,34 @@ func gone(err error) error {
 // EnsureLDAP makes an app's LDAP provider and its application, which only the app's roles open. The provider joins the
 // outpost last, so nobody binds to it before its application is closed to everyone else.
 func (a *Authentik) EnsureLDAP(ctx context.Context, app idp.LDAPApp) (idp.LDAPCredentials, error) {
+	creds, err := a.ensureLDAP(ctx, app)
+	if err != nil {
+		return idp.LDAPCredentials{}, err
+	}
+	if _, err := a.ldapTidy(ctx, true); err != nil {
+		return idp.LDAPCredentials{}, err
+	}
+	return creds, nil
+}
+
+// EnsureLDAPApps brings each of these apps' LDAP providers in line, as EnsureLDAP does, and tidies the outpost once,
+// after them all: a tidy reads every provider, so one per app would cost the pass a number of calls that grows as the
+// square of the apps (#246's review). One app's failure keeps neither the others' nor the tidy from theirs.
+func (a *Authentik) EnsureLDAPApps(ctx context.Context, apps []idp.LDAPApp) error {
+	var errs []error
+	for _, app := range apps {
+		if _, err := a.ensureLDAP(ctx, app); err != nil {
+			errs = append(errs, fmt.Errorf("%s: %w", app.Slug, err))
+		}
+	}
+	if _, err := a.ldapTidy(ctx, true); err != nil {
+		errs = append(errs, err)
+	}
+	return errors.Join(errs...)
+}
+
+// ensureLDAP is EnsureLDAP without the outpost's tidy.
+func (a *Authentik) ensureLDAP(ctx context.Context, app idp.LDAPApp) (idp.LDAPCredentials, error) {
 	if err := validLDAPSlug(app.Slug); err != nil {
 		return idp.LDAPCredentials{}, err
 	}
@@ -757,9 +785,6 @@ func (a *Authentik) EnsureLDAP(ctx context.Context, app idp.LDAPApp) (idp.LDAPCr
 		return idp.LDAPCredentials{}, err
 	}
 	if _, err := a.ldapOutpost(ctx, provider); err != nil {
-		return idp.LDAPCredentials{}, err
-	}
-	if _, err := a.ldapTidy(ctx, true); err != nil {
 		return idp.LDAPCredentials{}, err
 	}
 	return idp.LDAPCredentials{BaseDN: LDAPBaseDN(app.Slug), UserDN: LDAPUserDN(app.Slug), Created: created}, nil

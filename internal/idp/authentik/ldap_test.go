@@ -234,6 +234,135 @@ func ldapDrift(w *world, a *authentik.Authentik) func(*testing.T) {
 		if r, err := a.Report(ctx); err != nil || !r.PasskeyOnlySignIn {
 			t.Errorf("after Prepare, a fifth time: %+v %v", r, err)
 		}
+		t.Run("a session stage left refusing by a failure halfway is put back by the next pass", func(t *testing.T) { ldapHalfDone(t, w, a, app) })
+		t.Run("one app's bind flow that can't be put back keeps Prepare from nothing else, the first part's bind flow going among it", func(t *testing.T) { ldapOneStuck(t, w, a) })
+	}
+}
+
+// ldapHalfDone leaves an app's session stage as a failure (a 503, a restart) between the two halves of making its
+// binding leaves it (#246's review): the binding there, at the session's order, holding the stage that refuses. The
+// app binds nobody then; the next pass takes that binding up, and the app binds again.
+func ldapHalfDone(t *testing.T, w *world, a *authentik.Authentik, app idp.LDAPApp) {
+	ctx := context.Background()
+	type pks struct {
+		Results []struct {
+			PK string `json:"pk"`
+		}
+	}
+	var deny, login pks
+	w.raw(t, w.own, "GET", "/api/v3/stages/deny/?name=homerslab-passkey-only", nil, &deny)
+	w.raw(t, w.own, "GET", "/api/v3/stages/user_login/?name=homerslab-ldap-session", nil, &login)
+	if len(deny.Results) != 1 || len(login.Results) != 1 {
+		t.Fatalf("the stage that refuses %+v, the session's %+v", deny.Results, login.Results)
+	}
+	var bs struct {
+		Results []struct {
+			PK    string `json:"pk"`
+			Stage string `json:"stage"`
+		}
+	}
+	w.raw(t, w.own, "GET", "/api/v3/flows/bindings/?target="+flowPK(t, w, authentik.LDAPBindFlow(app.Slug)), nil, &bs)
+	left := false
+	for _, b := range bs.Results {
+		if b.Stage == login.Results[0].PK {
+			w.raw(t, w.own, "PATCH", "/api/v3/flows/bindings/"+b.PK+"/", map[string]any{"stage": deny.Results[0].PK}, nil)
+			left = true
+		}
+	}
+	if !left {
+		t.Fatalf("the bind flow has no session stage: %+v", bs.Results)
+	}
+	if r, err := a.Report(ctx); err != nil || r.PasskeyOnlySignIn {
+		t.Errorf("a bind flow left halfway: %+v %v, want not passkey-only", r, err)
+	}
+	// The hourly pass's way (EnsureLDAP's own, with the outpost's tidy once for every app).
+	if err := a.EnsureLDAPApps(ctx, []idp.LDAPApp{app}); err != nil {
+		t.Fatalf("EnsureLDAPApps after a binding left halfway: %v", err)
+	}
+	if r, err := a.Report(ctx); err != nil || !r.PasskeyOnlySignIn {
+		t.Errorf("after EnsureLDAP: %+v %v", r, err)
+	}
+	pw := appPassword(t, a, app.Slug, "lena")
+	for deadline := time.Now().Add(90 * time.Second); ; time.Sleep(3 * time.Second) {
+		err := w.Bind(t, fmt.Sprintf(authentik.LDAPUserDN(app.Slug), "lena"), pw)
+		if err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("lena, with her app password, after the bind flow was put back: %v", err)
+		}
+	}
+}
+
+// ldapOneStuck makes one app's bind flow impossible to put back (the name of its app-password policy taken by another
+// policy, from the console) and changes the sign-in's brand: Prepare says the one app failed, and still puts the brand
+// back, as everything after the bind flows (#246's review). The first part's one bind flow goes, before any of it, and no
+// provider is left on it.
+func ldapOneStuck(t *testing.T, w *world, a *authentik.Authentik) {
+	ctx := context.Background()
+	var flow, policy struct {
+		PK string `json:"pk"`
+	}
+	w.raw(t, w.own, "POST", "/api/v3/flows/instances/", map[string]any{"name": "Stuck", "slug": "homerslab-stuck-ldap-bind", "title": "Stuck",
+		"designation": "authentication"}, &flow)
+	defer func() {
+		if w.status(t, w.own, "/api/v3/flows/instances/homerslab-stuck-ldap-bind/") == http.StatusOK {
+			w.raw(t, w.own, "DELETE", "/api/v3/flows/instances/homerslab-stuck-ldap-bind/", nil, nil)
+		}
+	}()
+	w.raw(t, w.own, "POST", "/api/v3/policies/dummy/", map[string]any{"name": "homerslab-stuck-ldap-app-password", "result": false}, &policy)
+	defer w.raw(t, w.own, "DELETE", "/api/v3/policies/dummy/"+policy.PK+"/", nil, nil)
+	type brand struct {
+		UUID   string `json:"brand_uuid"`
+		Domain string `json:"domain"`
+		Title  string `json:"branding_title"`
+	}
+	signInBrand := func() brand {
+		var bs struct{ Results []brand }
+		w.raw(t, w.own, "GET", "/api/v3/core/brands/?domain="+household.SignIn(), nil, &bs)
+		for _, b := range bs.Results {
+			if b.Domain == household.SignIn() {
+				return b
+			}
+		}
+		t.Fatalf("no brand of the sign-in's: %+v", bs.Results)
+		return brand{}
+	}
+	w.raw(t, w.own, "PATCH", "/api/v3/core/brands/"+signInBrand().UUID+"/", map[string]any{"branding_title": "Drifted"}, nil)
+	// The one bind flow of LDAP's first part, which took any app's app password, with a provider of the console's on it.
+	var old, inval struct {
+		PK string `json:"pk"`
+	}
+	w.raw(t, w.own, "POST", "/api/v3/flows/instances/", map[string]any{"name": "Old", "slug": "homerslab-ldap-bind", "title": "LDAP",
+		"designation": "authentication"}, &old)
+	w.raw(t, w.own, "GET", "/api/v3/flows/instances/default-provider-invalidation-flow/", nil, &inval)
+	var prov struct {
+		PK int `json:"pk"`
+	}
+	w.raw(t, w.own, "POST", "/api/v3/providers/ldap/", map[string]any{"name": "part-one", "authorization_flow": old.PK,
+		"invalidation_flow": inval.PK, "base_dn": "dc=part-one,dc=homerslab"}, &prov)
+	defer func() {
+		if w.status(t, w.own, fmt.Sprintf("/api/v3/providers/ldap/%d/", prov.PK)) == http.StatusOK {
+			w.raw(t, w.own, "DELETE", fmt.Sprintf("/api/v3/providers/ldap/%d/", prov.PK), nil, nil)
+		}
+	}()
+	err := a.Prepare(ctx, household)
+	if err == nil || !strings.Contains(err.Error(), "homerslab-stuck-ldap") {
+		t.Errorf("Prepare with one app's bind flow stuck: %v, want that app's error", err)
+	}
+	if b := signInBrand(); b.Title != household.Name {
+		t.Errorf("the sign-in's brand after Prepare: %q, want %q: Prepare stopped at the stuck bind flow", b.Title, household.Name)
+	}
+	if code := w.status(t, w.own, "/api/v3/flows/instances/homerslab-ldap-bind/"); code != http.StatusNotFound {
+		t.Errorf("the first part's bind flow after Prepare: %d, want gone", code)
+	}
+	var p struct {
+		Flow *string `json:"authorization_flow"`
+	}
+	if code, b := w.do(t, w.own, "GET", fmt.Sprintf("/api/v3/providers/ldap/%d/", prov.PK), nil); code == http.StatusOK {
+		if err := json.Unmarshal(b, &p); err != nil || p.Flow != nil && *p.Flow == old.PK {
+			t.Errorf("a provider still on the first part's bind flow: %s %v", b, err)
+		}
 	}
 }
 
