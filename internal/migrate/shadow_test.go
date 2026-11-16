@@ -19,7 +19,7 @@ import (
 // The users step with the real shadow tools, on this machine's own /etc: as root, in CI's throwaway container only
 // (HOMEWARD_TEST_SHADOW=1), on users of the test's own. A renamed user keeps its uid, takes its new home, and stays in
 // its supplementary groups under its new name; a new user that sysusers made first with another uid goes, its group
-// with it, and the old one takes its name and keeps the fixed id. systemctl isn't there: it is stubbed.
+// with it, and the old one takes its name and keeps the fixed id. systemctl and systemd-tmpfiles aren't there: stubbed.
 func TestTheShadowToolsRenameUsersInPlace(t *testing.T) {
 	testenv.Isolate(t)
 	if os.Geteuid() != 0 || os.Getenv("HOMEWARD_TEST_SHADOW") != "1" {
@@ -47,7 +47,7 @@ func TestTheShadowToolsRenameUsersInPlace(t *testing.T) {
 		_ = os.Remove(filepath.Join("/", migrate.AgentState, migrate.Mark))
 	})
 	run := func(ctx context.Context, c host.Cmd) ([]byte, error) {
-		if c.Name == "systemctl" {
+		if c.Name == "systemctl" || c.Name == "systemd-tmpfiles" {
 			return nil, nil
 		}
 		return host.Exec(ctx, c)

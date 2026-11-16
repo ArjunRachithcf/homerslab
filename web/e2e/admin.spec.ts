@@ -8,7 +8,7 @@ test('Admin browses the catalog and opens an app’s install plan, the same plan
 
   await expect(page.getByRole('heading', { level: 1 })).toHaveText('Store');
   await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark'); // Admin is dark by default
-  await expect(page.getByText('The official catalog, from Homeward')).toBeVisible();
+  await expect(page.getByText('The official catalog, from HomersLab')).toBeVisible();
   await expect(page.getByRole('heading', { name: 'Photos and videos' })).toBeVisible();
   await expect(page.getByRole('heading', { name: 'Documents and files' })).toBeVisible();
 
