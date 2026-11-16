@@ -53,17 +53,6 @@ func (w *world) StartOutpost(t *testing.T, token idp.Secret) {
 	}
 }
 
-// ldapTestRefresh is the outpost's refresh_interval in the contract suite.
-const ldapTestRefresh = "seconds=5"
-
-// The outpost reads its providers again every minute of itself, outside the tests: a provider taken off it is gone
-// from it well within the time a closed application stays (ldapRetireAfter), even when Authentik's notice never came.
-func TestTheOutpostReadsItsProvidersEveryMinute(t *testing.T) {
-	if authentik.LDAPRefreshEvery != "minutes=1" {
-		t.Errorf("the outpost's refresh_interval: %s, want minutes=1", authentik.LDAPRefreshEvery)
-	}
-}
-
 // appPassword is a new app password of a person's for one LDAP app, made by the adapter as Home will make it.
 func appPassword(t *testing.T, a *authentik.Authentik, slug, username string) string {
 	t.Helper()
@@ -382,8 +371,8 @@ func ldapImpostors(w *world, a *authentik.Authentik) func(*testing.T) {
 			return cfg.Results[0].PK, cfg.Results[0].Providers
 		}
 		outpost()
-		if got := cfg.Results[0].Config["refresh_interval"]; got != ldapTestRefresh {
-			t.Errorf("the outpost's refresh_interval: %v, want %s", got, ldapTestRefresh)
+		if got := cfg.Results[0].Config["refresh_interval"]; got != "minutes=1" {
+			t.Errorf("the outpost's refresh_interval: %v, want minutes=1", got)
 		}
 		real := idp.LDAPApp{Slug: "homerslab-real", Name: "Real", Roles: []idp.Role{idp.Adult}}
 		creds, err := a.EnsureLDAP(ctx, real)

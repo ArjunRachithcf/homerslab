@@ -77,10 +77,6 @@ func TestTheIdentityProviderContractOnAuthentik(t *testing.T) {
 	if engine == "" {
 		t.Skip("set HOMERSLAB_TEST_DOCKER_HOST to the engine for the contract suite's containers")
 	}
-	// The outpost reads its providers again every few seconds here, not every minute: each LDAP drift case waits for
-	// it, and the cases would otherwise take most of the job's time. What it is outside the tests, a test of its own pins.
-	authentik.SetLDAPRefresh(ldapTestRefresh)
-	defer authentik.SetLDAPRefresh(authentik.LDAPRefreshEvery)
 	w := up(t, engine)
 	ctx := context.Background()
 
