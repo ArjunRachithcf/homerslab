@@ -47,13 +47,17 @@ const (
 	// ldapRetireAfter is how long a closed application and its provider stay after the provider left the outpost,
 	// before a later pass deletes them: long past the outpost's taking the change.
 	ldapRetireAfter = 5 * time.Minute
-	// ldapRefresh is how often the outpost reads its providers again of itself.
-	ldapRefresh     = "minutes=1"
-	outpostTokenFmt = "ak-outpost-%s-api"
+	// ldapRefreshEvery is how often the outpost reads its providers again of itself.
+	ldapRefreshEvery = "minutes=1"
+	outpostTokenFmt  = "ak-outpost-%s-api"
 )
 
 // ldapSlug is an LDAP app's slug: HomersLab's prefix, then the app's id; never the outpost's own.
 var ldapSlug = regexp.MustCompile(`^homerslab-[a-z0-9][a-z0-9-]{0,40}$`)
+
+// ldapRefresh is the outpost's refresh_interval: ldapRefreshEvery, except in the contract suite, whose drift cases each
+// wait for the outpost to read its providers again.
+var ldapRefresh = ldapRefreshEvery
 
 // ldapOldFlow is the one bind flow every app shared before each had its own; Prepare removes it.
 const ldapOldFlow = "homerslab-ldap-bind"

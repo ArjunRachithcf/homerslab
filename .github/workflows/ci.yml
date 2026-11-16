@@ -330,11 +330,24 @@ jobs:
         run: sh .github/scripts/stop-commands.sh go test -count=1 -v -run 'TestTheBackupTargetContract$' ./internal/backup/
 
   identity:
-    name: Identity provider contract (Authentik in containers, Chromium's virtual authenticator)
+    name: Identity provider contract${{ matrix.part == 'ldap' && ', LDAP' || '' }} (Authentik in containers, Chromium's virtual authenticator)
     runs-on: ubuntu-24.04
-    # 20 browser runs by hand take about ten minutes more than the one of a pull request; the LDAP app in its own
-    # container and the per-app bind flows (#204) about ten more.
-    timeout-minutes: 65
+    # The LDAP section (#204), whose drift cases each wait for the outpost, runs on its own runner, against an Authentik
+    # of its own (after the bootstrap, which every section needs); the rest, with the browser, on another.
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - part: main
+            run: TestTheIdentityProviderContractOnAuthentik
+            skip: TestTheIdentityProviderContractOnAuthentik/LDAP
+            browser: "1"
+          - part: ldap
+            run: TestTheIdentityProviderContractOnAuthentik/(bootstrap|LDAP)
+            skip: ""
+            browser: ""
+    # 20 browser runs by hand take about ten minutes more than the one of a pull request.
+    timeout-minutes: 50
     # Modules come only from the step that fetches them, as in the Go job.
     env:
       GOPROXY: "off"
@@ -355,6 +368,7 @@ jobs:
           GOPROXY: https://proxy.golang.org,direct
         run: sh .github/scripts/stop-commands.sh go mod download
       - name: The browser, for the passkeys in a real browser
+        if: matrix.browser != ''
         working-directory: web
         env:
           PLAYWRIGHT_BROWSERS_PATH: /home/runner/ms-playwright
@@ -378,20 +392,22 @@ jobs:
         env:
           CGO_ENABLED: "0"
           HOMERSLAB_TEST_DOCKER_HOST: unix:///var/run/docker.sock
-          HOMERSLAB_TEST_BROWSER: "1"
+          HOMERSLAB_TEST_BROWSER: ${{ matrix.browser }}
           HOMERSLAB_TEST_BROWSER_RUNS: ${{ inputs.browser_runs || '1' }}
           PLAYWRIGHT_BROWSERS_PATH: /home/runner/ms-playwright
           DOCKER_HOST: unix:///nonexistent
           CONTAINER_HOST: unix:///nonexistent
+          RUN: ${{ matrix.run }}
+          SKIP: ${{ matrix.skip }}
         # The containers' logs and the browser's output, which the suite prints, are third-party text too.
-        run: sh .github/scripts/stop-commands.sh go test -count=1 -v -timeout 60m -run TestTheIdentityProviderContractOnAuthentik ./internal/idp/authentik/
+        run: sh .github/scripts/stop-commands.sh go test -count=1 -v -timeout 45m -run "$RUN" -skip "$SKIP" ./internal/idp/authentik/
       # What Playwright kept of a failed browser run: its trace (the page's requests and answers, screenshots) and the
       # page as it was, one folder per run (web/test-results/passkey-<run>, native-sign-in).
       - name: The browser's traces, when it failed
         if: failure()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: identity-browser-traces
+          name: identity-browser-traces-${{ matrix.part }}
           path: web/test-results/
           retention-days: 14
           if-no-files-found: ignore
