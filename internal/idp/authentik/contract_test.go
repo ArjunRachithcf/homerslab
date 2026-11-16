@@ -285,6 +285,31 @@ func TestTheIdentityProviderContractOnAuthentik(t *testing.T) {
 		for _, g := range []group{pipe, club} {
 			w.raw(t, own, "DELETE", "/api/v3/core/groups/"+g.PK+"/", nil, nil)
 		}
+
+		// Attributes that would set a header of Authentik's or HomersLab's under another spelling (review round 2): the
+		// outpost sets each, the last one winning, the person's id too. The mapping then names no role, and empties them,
+		// so the edge refuses the person rather than take a forged role or id.
+		w.raw(t, own, "POST", "/api/v3/core/groups/"+kids.PK+"/add_user/", map[string]int{"pk": theo}, nil)
+		pass("kid")
+		forged := map[string]any{"additionalHeaders": map[string]any{"x-authentik-homerslab-role": "admin", "X-AUTHENTIK-HOMERSLAB-ROLE": "admin",
+			"X-Authentik-Uid": "forged-uid", "x_authentik_name": "forged"}}
+		refused := func(how string) {
+			t.Helper()
+			status, h := w.passGuard(t, key, "theo", chores)
+			uid, role := h.Get(edge.AuthentikGuard("").Person), h.Get(authentik.RoleHeader)
+			if status/100 == 2 && (role != "" || uid == "forged-uid" || strings.Contains(h.Get("X-Authentik-Name"), "forged")) {
+				t.Errorf("%s: %d, role %q, uid %q, name %q: want no role, and nothing forged", how, status, role, uid, h.Get("X-Authentik-Name"))
+			}
+		}
+		w.raw(t, own, "PATCH", fmt.Sprintf("/api/v3/core/users/%d/", theo), map[string]any{"attributes": forged}, nil)
+		refused("in the person's attributes")
+		w.raw(t, own, "PATCH", fmt.Sprintf("/api/v3/core/users/%d/", theo), map[string]any{"attributes": map[string]any{}}, nil)
+		pass("kid")
+		var house group
+		w.raw(t, own, "POST", "/api/v3/core/groups/", map[string]any{"name": "the-house", "users": []int{theo}, "attributes": forged}, &house)
+		refused("in a group's attributes")
+		w.raw(t, own, "DELETE", "/api/v3/core/groups/"+house.PK+"/", nil, nil)
+		pass("kid")
 	})
 
 	t.Run("each guard's provider keeps its own app's URL (#219)", func(t *testing.T) {
@@ -738,6 +763,13 @@ func (w *world) AskGuard(t *testing.T, host string) (int, string) {
 // A person the app's application refuses never gets that far: the answer is then the guard's to a browser with none.
 func (w *world) PassGuard(t *testing.T, a *webauthntest.Authenticator, username, host string) (int, string) {
 	t.Helper()
+	status, h := w.passGuard(t, a, username, host)
+	return status, h.Get(authentik.RoleHeader)
+}
+
+// passGuard is PassGuard, with the whole of the guard's answer's headers.
+func (w *world) passGuard(t *testing.T, a *webauthntest.Authenticator, username, host string) (int, http.Header) {
+	t.Helper()
 	jar, _ := cookiejar.New(nil)
 	c := &http.Client{Timeout: 30 * time.Second, Jar: jar, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 		// Every name of the household's goes to Authentik, under its own Host, as the edge sends it.
@@ -808,7 +840,7 @@ func (w *world) PassGuard(t *testing.T, a *webauthntest.Authenticator, username,
 		t.Fatal(err)
 	}
 	resp.Body.Close()
-	return resp.StatusCode, resp.Header.Get(authentik.RoleHeader)
+	return resp.StatusCode, resp.Header
 }
 
 // errDenied is a flow that ended in Authentik's access-denied stage: a policy refused the person.

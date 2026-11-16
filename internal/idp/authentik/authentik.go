@@ -1360,8 +1360,11 @@ const RoleHeader = "X-Authentik-Homerslab-Role"
 
 // roleMapping is the scope mapping every guard's provider carries, which computes RoleHeader: from the role groups the
 // person is in directly, by their exact names, one of them or none. A group below a role's group (which its audience
-// counts) gives no role. Its scope sorts after ak_proxy, Authentik's own proxy mapping, which merges the person's
-// attributes into the same additionalHeaders before it, so an attribute can't stand in for it.
+// counts) gives no role. Its scope sorts after ak_proxy, Authentik's own proxy mapping, which merges the person's and
+// their groups' attributes into the same additionalHeaders before it, so an attribute under RoleHeader's own name can't
+// stand in for it. An attribute under any other spelling of a header of Authentik's or HomersLab's (another case,
+// underscores) would: the outpost sets each, and the last one wins, even over X-Authentik-Uid (review round 2). So when
+// any is there, the mapping fails closed: it empties each of them and the role, and the edge refuses the person.
 const roleMapping = "HomersLab: the person's role at the edge"
 
 func roleExpression() string {
@@ -1369,11 +1372,19 @@ func roleExpression() string {
 	for _, r := range idp.Roles() {
 		roles = append(roles, fmt.Sprintf("%q: %q", idp.RoleGroup(r), string(r)))
 	}
-	return "# HomersLab (#236): the person's role at the edge, from the role groups they're in directly, by exact name.\n" +
-		"roles = {" + strings.Join(roles, ", ") + "}\n" +
-		"mine = set(user.groups.filter(name__in=list(roles)).values_list(\"name\", flat=True))\n" +
-		"role = roles[mine.pop()] if len(mine) == 1 else \"\"\n" +
-		"return {\"ak_proxy\": {\"user_attributes\": {\"additionalHeaders\": {" + fmt.Sprintf("%q", RoleHeader) + ": role}}}}\n"
+	return strings.Join([]string{
+		"# HomersLab (#236): the person's role at the edge, from the role groups they're in directly, by exact name.",
+		"# Attributes that would set a header of Authentik's or HomersLab's in another spelling: emptied, and no role.",
+		"roles = {" + strings.Join(roles, ", ") + "}",
+		`extra = request.user.group_attributes(request).get("additionalHeaders")`,
+		"extra = extra if isinstance(extra, dict) else {}",
+		`forged = [k for k in extra if str(k).lower().replace("_", "-").startswith(("x-authentik-", "x-homerslab-"))]`,
+		`mine = set(user.groups.filter(name__in=list(roles)).values_list("name", flat=True))`,
+		`role = roles[mine.pop()] if len(mine) == 1 and not forged else ""`,
+		`headers = {k: "" for k in forged}`,
+		fmt.Sprintf("headers[%q] = role", RoleHeader),
+		`return {"ak_proxy": {"user_attributes": {"additionalHeaders": headers}}}`,
+	}, "\n") + "\n"
 }
 
 // EnsureGuard makes an app's guard: a proxy provider of its own in forward_single mode, at the app's one URL, its

@@ -146,11 +146,25 @@ origin = "https://idm.example.test:8443"
 	if status := group("homerslab-adults"); status != 200 {
 		t.Fatalf("making homerslab-adults: %d", status)
 	}
+	rename := func(from, to string) int {
+		status, _, _ := call("PUT", "/v1/group/"+from+"/_attr/name", token, []string{to}, nil)
+		return status
+	}
+	// The control: a group renamed to a plain name; then back.
+	if group("household") != 200 || rename("household", "household-2") != 200 {
+		t.Fatal("making and renaming a household group")
+	}
 	for _, bad := range []string{"x,homerslab-admins", "homerslab-admins,x", ",homerslab-admins", "x, homerslab-admins"} {
 		if status := group(bad); status/100 == 2 {
 			t.Errorf("Kanidm made a group named %q: a person in it would read as an admin at the edge", bad)
 		} else {
 			t.Logf("%q: %d", bad, status)
+		}
+		// Nor renames one to it (review round 2).
+		if status := rename("household-2", bad); status/100 == 2 {
+			t.Errorf("Kanidm renamed a group to %q", bad)
+		} else {
+			t.Logf("renamed to %q: %d", bad, status)
 		}
 	}
 }

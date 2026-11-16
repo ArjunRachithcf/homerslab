@@ -430,7 +430,8 @@ Stories 120–121 are decided in #87.
       matches or authorises on the name;
     - the role is computed from exact group names, never by splitting a joined list of them: with Authentik, the guard's
       provider carries HomersLab's scope mapping, which names the role in its own header from the role groups the
-      person is in directly (a group below one gives none); with Kanidm, oauth2-proxy's comma-joined short names, since
+      person is in directly (a group below one gives none), and names none, emptying them, when the person's or a
+      group's attributes would set any header of Authentik's or HomersLab's in another spelling; with Kanidm, oauth2-proxy's comma-joined short names, since
       Kanidm refuses a comma in a name. oauth2-proxy never runs with `--skip-jwt-bearer-tokens`, which would let a bearer
       token stand in for the session;
     - a person without an id, without a name or username, in no role group or in more than one, is refused (403), never

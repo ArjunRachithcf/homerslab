@@ -390,7 +390,8 @@ func TestEveryGuardCarriesTheRoleMapping(t *testing.T) {
 		t.Errorf("its scope %q sorts before ak_proxy's", scope)
 	}
 	for _, want := range []string{`"homerslab-admins": "admin"`, `"homerslab-adults": "adult"`, `"homerslab-kids": "kid"`, "user.groups.filter(name__in=",
-		"if len(mine) == 1 else", `"` + RoleHeader + `": role`} {
+		"if len(mine) == 1 and not forged else", `headers["` + RoleHeader + `"] = role`,
+		`.lower().replace("_", "-").startswith(("x-authentik-", "x-homerslab-"))`, `headers = {k: "" for k in forged}`} {
 		if !strings.Contains(expr, want) {
 			t.Errorf("its expression lacks %s:\n%s", want, expr)
 		}
