@@ -117,6 +117,8 @@ type Host struct {
 	// Users are the users and groups a run renames: Users when nil (another list only in tests, which run the real
 	// shadow tools on users of their own).
 	Users []User
+	// UsersOnly renames the users and touches no folder and no unit: for tests on a real machine's /etc only.
+	UsersOnly bool
 	// fail, in tests, makes the named step fail before it changes anything: a crash at that point.
 	fail func(step string) error
 }
@@ -138,7 +140,8 @@ func (r Result) Did() bool {
 // start over one, since without it they'd start as a new node (with a new household, and first-time setup open).
 func Pending(root string) bool {
 	for _, d := range Dirs {
-		if _, err := os.Lstat(filepath.Join(root, d.Old)); err == nil {
+		// Fails closed: only a folder that isn't there has moved (EACCES or EIO count as there).
+		if _, err := os.Lstat(filepath.Join(root, d.Old)); !errors.Is(err, fs.ErrNotExist) {
 			return true
 		}
 	}
@@ -155,71 +158,129 @@ func Run(ctx context.Context, h Host) (Result, error) {
 		h.Log = slog.New(slog.DiscardHandler)
 	}
 	var r Result
-	// Every check first, so a conflict changes nothing.
-	for _, d := range Dirs {
-		if err := h.check(d); err != nil {
+	// Nothing at all, not even a stop, on a node with nothing of HomersLab's: another app of the maker's may have
+	// units named homerslab-* of its own.
+	seen, err := h.evidence()
+	if err != nil || !seen {
+		return r, err
+	}
+	if !h.UsersOnly {
+		// Every check first, so a conflict changes nothing.
+		for _, d := range Dirs {
+			if err := h.check(d); err != nil {
+				return r, err
+			}
+		}
+		if err := h.stop(ctx, &r); err != nil {
 			return r, err
 		}
-	}
-	if err := h.stop(ctx, &r); err != nil {
-		return r, err
 	}
 	if err := h.users(ctx, &r); err != nil {
 		return r, err
 	}
-	for _, d := range Dirs {
-		if err := h.move(d, &r); err != nil {
+	if !h.UsersOnly {
+		if err := h.files(&r); err != nil {
 			return r, err
 		}
 	}
-	for _, d := range Dropped {
-		if err := h.removeAll(d, &r); err != nil {
+	// Then, after any change and at every run until the agent has done its part (the mark is there): systemd reloads,
+	// and what tmpfiles and systemd made for a user sysusers made first, with another id (Home's projection, the
+	// sockets), is made again for the renamed one. Each is idempotent, and a socket that isn't running is left so: a
+	// run that stopped after the users' step is finished here by the next.
+	if _, err := os.Stat(h.at(path.Join(AgentState, Mark))); err != nil && !r.Did() {
+		return r, nil
+	}
+	for _, c := range FollowUps {
+		if err := h.step(c.String()); err != nil {
 			return r, err
+		}
+		if _, err := h.Run(ctx, c); err != nil {
+			return r, err
+		}
+	}
+	if r.Did() {
+		h.Log.Info("the node took Homeward's names", "stopped", r.Stopped, "users", r.Users, "moved", r.Moved, "removed", r.Removed)
+	}
+	return r, nil
+}
+
+// FollowUps end every run that changed something, or that finds the mark.
+var FollowUps = []host.Cmd{
+	{Name: "systemctl", Args: []string{"daemon-reload"}},
+	{Name: "systemd-tmpfiles", Args: []string{"--create", "homeward.conf"}},
+	{Name: "systemctl", Args: []string{"try-restart", "homeward-admin.socket", "homeward-home.socket"}},
+}
+
+// files moves the folders, drops what goes, leaves the mark, and removes the agent's derived files.
+func (h Host) files(r *Result) error {
+	for _, d := range Dirs {
+		if err := h.move(d, r); err != nil {
+			return err
+		}
+	}
+	for _, d := range Dropped {
+		if err := h.removeAll(d, r); err != nil {
+			return err
 		}
 	}
 	derived, err := h.derived()
 	if err != nil {
-		return r, err
+		return err
 	}
 	if len(derived) > 0 || r.Did() {
 		if err := h.mark(); err != nil {
-			return r, err
+			return err
 		}
 	}
 	for _, f := range Renamed {
-		if err := h.rename(f, &r); err != nil {
-			return r, err
+		if err := h.rename(f, r); err != nil {
+			return err
 		}
 	}
 	for _, p := range derived {
-		if err := h.removeAll(p, &r); err != nil {
-			return r, err
+		if err := h.removeAll(p, r); err != nil {
+			return err
 		}
 	}
-	if !r.Did() {
-		return r, nil
+	return nil
+}
+
+// evidence says whether anything of HomersLab's is on the node: an old user or group, folder, file the agent wrote or
+// link, or the mark of a run the agent hasn't followed yet. A path that can't be looked at counts.
+func (h Host) evidence() (bool, error) {
+	users, err := readIDs(h.at("etc/passwd"))
+	if err != nil {
+		return false, err
 	}
-	if err := h.step("daemon-reload"); err != nil {
-		return r, err
+	groups, err := readIDs(h.at("etc/group"))
+	if err != nil {
+		return false, err
 	}
-	if _, err := h.Run(ctx, host.Cmd{Name: "systemctl", Args: []string{"daemon-reload"}}); err != nil {
-		return r, err
+	list := h.Users
+	if list == nil {
+		list = Users
 	}
-	if len(r.Users) > 0 {
-		// A socket systemd made before the run, for a user sysusers made with another uid, is made again with the
-		// renamed user's. One that isn't running is left so.
-		// Likewise the folders tmpfiles made for them (Home's projection), and the sockets systemd made.
-		for _, c := range []host.Cmd{
-			{Name: "systemd-tmpfiles", Args: []string{"--create", "homeward.conf"}},
-			{Name: "systemctl", Args: []string{"try-restart", "homeward-admin.socket", "homeward-home.socket"}},
-		} {
-			if _, err := h.Run(ctx, c); err != nil {
-				return r, err
-			}
+	for _, u := range list {
+		_, user := users[u.Old]
+		_, group := groups[u.Old]
+		if user || group {
+			return true, nil
 		}
 	}
-	h.Log.Info("the node took Homeward's names", "stopped", r.Stopped, "users", r.Users, "moved", r.Moved, "removed", r.Removed)
-	return r, nil
+	if h.UsersOnly {
+		return false, nil
+	}
+	paths := append([]string{path.Join(AgentState, Mark)}, Dropped...)
+	for _, d := range append(slices.Clone(Dirs), Renamed...) {
+		paths = append(paths, d.Old)
+	}
+	for _, p := range paths {
+		if _, err := os.Lstat(h.at(p)); !errors.Is(err, fs.ErrNotExist) {
+			return true, nil
+		}
+	}
+	derived, err := h.derived()
+	return len(derived) > 0, err
 }
 
 func (h Host) at(p string) string { return filepath.Join(h.Root, p) }

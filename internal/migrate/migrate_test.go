@@ -323,6 +323,7 @@ func TestANodeWithNothingOfHomersLabsIsLeftAlone(t *testing.T) {
 		t.Fatal(err)
 	}
 	n.reboot()
+	n.units["homerslab-other.service"] = [2]string{"loaded", "active"} // another app of the maker's
 	before, ran := n.tree(), len(n.ran)
 	r, err := migrate.Run(context.Background(), n.host())
 	if err != nil || r.Did() {
@@ -330,6 +331,28 @@ func TestANodeWithNothingOfHomersLabsIsLeftAlone(t *testing.T) {
 	}
 	if !maps.Equal(n.tree(), before) || len(n.ran) != ran {
 		t.Errorf("a second run changed the node, or ran %q", n.ran[ran:])
+	}
+	if n.units["homerslab-other.service"][1] != "active" {
+		t.Error("a unit named homerslab-* was stopped on a node with nothing of HomersLab's")
+	}
+}
+
+// Pending fails closed: an old folder that can't be looked at (EACCES, EIO) counts as there, never as moved.
+func TestPendingCountsAFolderItCantLookAt(t *testing.T) {
+	testenv.Isolate(t)
+	if os.Geteuid() == 0 {
+		t.Skip("root looks at every folder")
+	}
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "var/lib"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(filepath.Join(root, "var/lib"), 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(filepath.Join(root, "var/lib"), 0o755) })
+	if !migrate.Pending(root) {
+		t.Error("a folder that can't be looked at reads as moved")
 	}
 }
 
@@ -363,9 +386,18 @@ func TestARunThatStopsAnywhereIsFinishedByTheNext(t *testing.T) {
 			t.Fatalf("stopped at %q: %v", at, err)
 		}
 		n.reboot() // a power cut: at the next boot the old package's units are gone
+		ran := len(n.ran)
 		if _, err := migrate.Run(context.Background(), n.host()); err != nil {
 			t.Errorf("after a stop at %q, the next run failed: %v", at, err)
 			continue
+		}
+		// The follow-ups too, whichever step it stopped at: the new users' folders and sockets are made again.
+		var follow []string
+		for _, c := range migrate.FollowUps {
+			follow = append(follow, c.String())
+		}
+		if next := n.ran[ran:]; len(next) < len(follow) || !slices.Equal(next[len(next)-len(follow):], follow) {
+			t.Errorf("after a stop at %q, the next run ran %q, want it to end with %q", at, next, follow)
 		}
 		got := n.tree()
 		for p := range mapsUnion(want, got) {

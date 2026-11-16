@@ -57,3 +57,6 @@ setup open, beside its own state. `homeward firewall restore` reads the old agen
 has moved.
 
 The migration, and the reading of the old folder, are kept for one release, then removed.
+
+The move is one way: a node isn't taken back to a HomersLab-named build, which would find no state of its own and
+start as a new node, with first-time setup open. Going back means restoring the node from its backup.

@@ -6,6 +6,10 @@
 [Unit]
 Description=Homeward sign-in listener, LDAPS
 Documentation=https://github.com/ArjunRachithcf/homeward
+# Runs as one of the package's users: on a node installed as HomersLab, only once the migration has renamed it
+# (#250), whether at boot or on an upgrade without one.
+Wants=homeward-migrate.service
+After=homeward-migrate.service
 Requires=homeward-ldaps.socket
 After=homeward-ldaps.socket homeward-agent.service
 ConditionPathExists=/etc/systemd/system/homeward-ldaps.service.d/50-homeward-certificates.conf

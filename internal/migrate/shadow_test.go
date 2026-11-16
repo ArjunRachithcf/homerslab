@@ -20,10 +20,14 @@ import (
 // (HOMEWARD_TEST_SHADOW=1), on users of the test's own. A renamed user keeps its uid, takes its new home, and stays in
 // its supplementary groups under its new name; a new user that sysusers made first with another uid goes, its group
 // with it, and the old one takes its name and keeps the fixed id. systemctl and systemd-tmpfiles aren't there: stubbed.
+// UsersOnly: no folder or unit of this machine's is touched.
 func TestTheShadowToolsRenameUsersInPlace(t *testing.T) {
 	testenv.Isolate(t)
 	if os.Geteuid() != 0 || os.Getenv("HOMEWARD_TEST_SHADOW") != "1" {
 		t.Skip("as root, in a throwaway container only (HOMEWARD_TEST_SHADOW=1)")
+	}
+	if !inContainer() {
+		t.Fatal("HOMEWARD_TEST_SHADOW=1 outside a container: this test changes /etc's users")
 	}
 	must := func(name string, args ...string) {
 		t.Helper()
@@ -53,7 +57,7 @@ func TestTheShadowToolsRenameUsersInPlace(t *testing.T) {
 		return host.Exec(ctx, c)
 	}
 	users := []migrate.User{{"hltest-old-a", "hltest-new-a", 61190, "/var/lib/hltest-new-a"}, {"hltest-old-b", "hltest-new-b", 61191, "/"}}
-	if _, err := migrate.Run(context.Background(), migrate.Host{Root: "/", Run: run, Users: users}); err != nil {
+	if _, err := migrate.Run(context.Background(), migrate.Host{Root: "/", Run: run, Users: users, UsersOnly: true}); err != nil {
 		t.Fatal(err)
 	}
 	for _, u := range users {
@@ -77,4 +81,14 @@ func TestTheShadowToolsRenameUsersInPlace(t *testing.T) {
 			t.Errorf("the renamed user left its supplementary group: %s", line)
 		}
 	}
+}
+
+// inContainer says whether the test runs in a container (Docker's, Podman's), never on a machine of its own.
+func inContainer() bool {
+	for _, p := range []string{"/.dockerenv", "/run/.containerenv"} {
+		if _, err := os.Stat(p); err == nil {
+			return true
+		}
+	}
+	return false
 }

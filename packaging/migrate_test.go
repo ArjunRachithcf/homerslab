@@ -30,6 +30,13 @@ func TestTheMigrationRunsBeforeTheUsersTheSocketsTheTableAndTheAgent(t *testing.
 	if one(t, s, "Type") != "oneshot" || one(t, s, "ExecStart") != "/usr/bin/homeward agent migrate" {
 		t.Errorf("the migration runs %v as %v", s["ExecStart"], s["Type"])
 	}
+	for _, name := range []string{"homeward-admin.socket", "homeward-home.socket", "homeward-home.service", "homeward-edge.service",
+		"homeward-ldaps.service", "homeward-manager.service"} {
+		u := section(t, name, "[Unit]")
+		if !slices.Contains(u["Wants"], "homeward-migrate.service") || !slices.Contains(strings.Fields(strings.Join(u["After"], " ")), "homeward-migrate.service") {
+			t.Errorf("%s, which runs as one of the package's users, doesn't wait for the migration", name)
+		}
+	}
 	a := section(t, "homeward-agent.service", "[Unit]")
 	if !slices.Contains(a["Requires"], "homeward-migrate.service") || !slices.Contains(strings.Fields(strings.Join(a["After"], " ")), "homeward-migrate.service") {
 		t.Errorf("the agent doesn't require the migration: Requires=%q After=%q", a["Requires"], a["After"])
