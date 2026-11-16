@@ -78,7 +78,8 @@ type SignIn struct {
 	// is reaches it only as X-HomersLab-Person, X-HomersLab-Name and X-HomersLab-Role, which the edge sets.
 	Identity string `json:"identity,omitempty"`
 	// Wired says HomersLab can set the app up with this method today: a guard always; an OIDC client when the app's
-	// manifest says how it takes one (#20); LDAP not yet (#49). A plan that isn't wired is shown, and not applied.
+	// manifest says how it takes one (#20); LDAP when it says how it takes its directory (#204). A plan that isn't wired
+	// is shown, and not applied.
 	Wired bool `json:"wired"`
 }
 

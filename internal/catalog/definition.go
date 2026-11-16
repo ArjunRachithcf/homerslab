@@ -114,6 +114,30 @@ type SignIn struct {
 	RefusePaths []string `yaml:"refusePaths" json:"refusePaths,omitempty"`
 	// LDAP: the attributes it reads.
 	Attributes []string `yaml:"attributes" json:"attributes,omitempty"`
+	// LDAP: how the app takes its directory (#204), as environment variables of its upstream's service, which the
+	// agent sets. None of it is secret: each person binds with their own app password. Without it, HomersLab can't
+	// hand the app its directory yet.
+	LDAP *LDAPEnv `yaml:"ldap" json:"ldap,omitempty"`
+}
+
+// LDAPEnv names the environment variables an app takes its directory from (#204); each is optional but the base DN,
+// the DN template a person binds with, and where the sign-in's LDAPS port is (its URL, or its host). None of them
+// carries a secret.
+type LDAPEnv struct {
+	// URL takes ldaps://auth.<main domain>:636; Host and Port its host and its port.
+	URL  string `yaml:"url" json:"url,omitempty"`
+	Host string `yaml:"host" json:"host,omitempty"`
+	Port string `yaml:"port" json:"port,omitempty"`
+	// BaseDN takes the app's base DN; UserDN the DN of a person, with %s for their username.
+	BaseDN string `yaml:"baseDn" json:"baseDn"`
+	UserDN string `yaml:"userDn" json:"userDn"`
+	// AdminGroup takes the DN of the admins' group, for an app that makes them its own admins.
+	AdminGroup string `yaml:"adminGroup" json:"adminGroup,omitempty"`
+}
+
+// Names are the variables' names, in a fixed order, those the manifest leaves out empty.
+func (e LDAPEnv) Names() []string {
+	return []string{e.URL, e.Host, e.Port, e.BaseDN, e.UserDN, e.AdminGroup}
 }
 
 // OIDCEnv names the environment variables an app takes its OIDC client from; each is optional but the client's id,

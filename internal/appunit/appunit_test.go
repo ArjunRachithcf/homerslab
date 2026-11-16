@@ -20,6 +20,37 @@ import (
 
 var update = flag.Bool("update", false, "write the golden renders anew")
 
+// An app that signs people in over LDAP takes its directory from its upstream's environment (#204): the LDAPS port's
+// URL, its own base DN, the DN template, none of them secret; no other service gets it, and the unit hands it no
+// secret.
+func TestAnLDAPAppTakesItsDirectoryFromItsEnvironment(t *testing.T) {
+	testenv.Isolate(t)
+	a := bentoPDF()
+	a.Project.Services = append(a.Project.Services, engine.Service{Name: "worker"})
+	a.LDAP = &appunit.LDAP{Env: map[string]string{"LDAP_URL": "ldaps://auth.ferreira.family:636", "LDAP_BASE_DN": "dc=bentopdf,dc=homerslab",
+		"LDAP_USER_DN": "cn=%s,ou=users,dc=bentopdf,dc=homerslab"}}
+	o := string(appunit.Override(a))
+	var doc struct {
+		Services map[string]struct {
+			Environment map[string]string `yaml:"environment"`
+			Secrets     []string          `yaml:"secrets"`
+		} `yaml:"services"`
+		Secrets map[string]any `yaml:"secrets"`
+	}
+	if err := yaml.Unmarshal([]byte(o), &doc); err != nil {
+		t.Fatalf("%v\n%s", err, o)
+	}
+	if web := doc.Services["web"]; !maps.Equal(web.Environment, a.LDAP.Env) || web.Secrets != nil {
+		t.Errorf("the upstream's service: environment %v, secrets %v", web.Environment, web.Secrets)
+	}
+	if w := doc.Services["worker"]; w.Environment != nil {
+		t.Errorf("another service got the directory: %+v", w)
+	}
+	if doc.Secrets != nil || len(a.Handed()) != 0 || strings.Contains(string(appunit.UnitFile(a)), "LoadCredential") {
+		t.Errorf("an LDAP app handed a secret:\n%s", o)
+	}
+}
+
 // bentoPDF is BentoPDF as the agent installs it on a machine with SELinux: one service, no secret.
 func bentoPDF() appunit.App {
 	return appunit.App{ID: "bentopdf", Product: "BentoPDF", Plan: "p-8c125cd2f9f38dfdd95c9c0ba3cd2663",

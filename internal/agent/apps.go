@@ -118,9 +118,10 @@ type AppRequest struct {
 	Service string `json:"service"`
 	Port    int    `json:"port"`
 	// Guard: people sign in to it at the edge (its sign-in method is the guard). OIDC: it signs them in itself, with
-	// this client (#20). One or the other.
+	// this client (#20). LDAP: it signs them in itself, over LDAP, at its own directory (#204). One of the three.
 	Guard   bool             `json:"guard"`
 	OIDC    *AppOIDC         `json:"oidc,omitempty"`
+	LDAP    *AppLDAP         `json:"ldap,omitempty"`
 	Secrets []appunit.Secret `json:"secrets"`
 	Health  []AppHealth      `json:"health"`
 	// Backups are the app's data its plan backs up, and nothing else (#22).
@@ -169,6 +170,7 @@ type appState struct {
 	Level    string           `json:"level"`
 	Guard    bool             `json:"guard"`
 	OIDC     *appunit.OIDC    `json:"oidc,omitempty"`    // its client's settings; never its secret
+	LDAP     *appunit.LDAP    `json:"ldap,omitempty"`    // its directory's settings (#204)
 	Refused  []string         `json:"refused,omitempty"` // its own other ways to sign in, which the edge refuses
 	Secrets  []appunit.Secret `json:"secrets"`
 	Health   []AppHealth      `json:"health"`
@@ -224,7 +226,7 @@ func (a *Agent) appDir(id string) string { return filepath.Join(a.cfg.StateDir, 
 
 func (a *Agent) appUnit(id string, s *appState) appunit.App {
 	return appunit.App{ID: id, Product: s.Product, Plan: s.Plan, Project: s.Project, Service: s.Service, Upstream: s.Upstream,
-		Subnet: s.Subnet, Level: s.Level, Slot: slot(s.Level), SELinux: a.selinux(), Secrets: s.Secrets, Mounts: s.Mounts, OIDC: s.OIDC,
+		Subnet: s.Subnet, Level: s.Level, Slot: slot(s.Level), SELinux: a.selinux(), Secrets: s.Secrets, Mounts: s.Mounts, OIDC: s.OIDC, LDAP: s.LDAP,
 		Dir: a.appDir(id), SignIn: a.signInName(), SignInAt: SignInListen}
 }
 
@@ -299,6 +301,18 @@ func under(u, origin string) bool {
 	return ok && urlPath.MatchString(rest)
 }
 
+// validRefused says each of an app's own ways to sign in, which the edge refuses, is a path the edge can match: one
+// below the root, with no way back up.
+func validRefused(paths []string) bool {
+	for _, r := range paths {
+		_, p, ok := catalog.SplitRefused(r)
+		if !ok || !urlPath.MatchString(p) || p == "/" || strings.HasPrefix(p, "//") || slices.Contains(strings.Split(p, "/"), "..") {
+			return false
+		}
+	}
+	return true
+}
+
 // oidcEnv is an app's client's settings, as its environment takes them: what the manifest names, from the client
 // the manager made and the sign-in and port this node serves, or the code that refuses the request. sites are this
 // node's, nil when it serves none. Only checking (before the manager has made the client), the client's issuer, id
@@ -314,12 +328,8 @@ func oidcEnv(r AppRequest, sites *EdgeSites, check bool) (*appunit.OIDC, string)
 	} else if o.ClientSecret == "" {
 		return nil, "no-client-secret"
 	}
-	for _, r := range o.RefusePaths {
-		_, p, ok := catalog.SplitRefused(r)
-		if !ok || !urlPath.MatchString(p) || p == "/" || strings.HasPrefix(p, "//") ||
-			slices.Contains(strings.Split(p, "/"), "..") {
-			return nil, "bad-sign-in"
-		}
+	if !validRefused(o.RefusePaths) {
+		return nil, "bad-sign-in"
 	}
 	if !under(o.Issuer, signIn) || !strings.HasSuffix(o.Issuer, "/") || !clientID.MatchString(o.ClientID) ||
 		o.AdminGroup != "" && !groupName.MatchString(o.AdminGroup) || o.SecretUID < 0 || o.SecretUID > 1<<31-2 ||
@@ -363,10 +373,12 @@ func validApp(id string, r AppRequest) string {
 		return "bad-app"
 	case !domainName.MatchString(r.Name) || r.Service == "" || r.Port <= 0 || r.Port > 65535 || r.Compose == "":
 		return "bad-app"
-	case r.Guard && r.OIDC != nil:
+	}
+	switch ways := len(slices.DeleteFunc([]bool{r.Guard, r.OIDC != nil, r.LDAP != nil}, func(b bool) bool { return !b })); {
+	case ways > 1:
 		return "bad-app" // one way to sign in
-	case !r.Guard && r.OIDC == nil:
-		return "sign-in-not-built" // LDAP comes with #49
+	case ways == 0:
+		return "sign-in-not-built"
 	}
 	seen := map[string]bool{}
 	for _, s := range r.Secrets {
@@ -486,7 +498,8 @@ func (a *Agent) putApp(w http.ResponseWriter, r *http.Request) {
 	}
 	check := r.URL.Query().Get("check") == "true"
 	var oidc *appunit.OIDC
-	if req.OIDC != nil {
+	var ldap *appunit.LDAP
+	if req.OIDC != nil || req.LDAP != nil {
 		a.mu.Lock()
 		var sites *EdgeSites
 		if a.state.Edge != nil {
@@ -495,8 +508,13 @@ func (a *Agent) putApp(w http.ResponseWriter, r *http.Request) {
 		}
 		a.mu.Unlock()
 		var code string
-		if oidc, code = oidcEnv(req, sites, check); code != "" {
-			a.log.Warn("refused an app's OIDC client", "app", id, "why", code)
+		if req.OIDC != nil {
+			oidc, code = oidcEnv(req, sites, check)
+		} else {
+			ldap, code = ldapEnv(id, req, sites, check)
+		}
+		if code != "" {
+			a.log.Warn("refused an app's sign-in", "app", id, "why", code)
 			fail(w, http.StatusBadRequest, code)
 			return
 		}
@@ -580,10 +598,13 @@ func (a *Agent) putApp(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusInsufficientStorage, "no-room")
 		return
 	}
-	next.Product, next.Plan, next.Name, next.Service, next.Guard, next.OIDC = req.Product, req.Plan, req.Name, req.Service, req.Guard, oidc
+	next.Product, next.Plan, next.Name, next.Service, next.Guard, next.OIDC, next.LDAP = req.Product, req.Plan, req.Name, req.Service, req.Guard, oidc, ldap
 	next.Refused = nil
-	if req.OIDC != nil {
+	switch {
+	case req.OIDC != nil:
 		next.Refused = slices.Clone(req.OIDC.RefusePaths)
+	case req.LDAP != nil:
+		next.Refused = slices.Clone(req.LDAP.RefusePaths)
 	}
 	next.Upstream = netip.AddrPortFrom(next.Subnet.Addr().Next().Next(), uint16(req.Port))
 	next.Secrets, next.Health, next.Backups, next.Project, next.Mounts = slices.Clone(req.Secrets), slices.Clone(req.Health), slices.Clone(req.Backups), p, mounts
@@ -639,6 +660,11 @@ func (a *Agent) putApp(w http.ResponseWriter, r *http.Request) {
 	// answer says so, so the household keeps the app it has.
 	st := a.appStatusLocked(id, next)
 	a.listen(ctx) // the first app: the sign-in listener's address, which the table opens to the apps
+	// An LDAP app: the LDAPS port, with the sign-in's certificate, before the table lets the app reach it.
+	if err := a.ldapsFollow(ctx); err != nil {
+		a.log.Error("the LDAPS port; the watch tries again", "app", id, "err", err)
+		st.Pending = append(st.Pending, "ldaps")
+	}
 	if err := a.reconcile(ctx, true); err != nil {
 		a.log.Error("letting the edge reach the app; the watch tries again", "app", id, "err", err)
 		st.Pending = append(st.Pending, "firewall")
@@ -1062,7 +1088,7 @@ func (a *Agent) edgeApps() []edge.App {
 		switch {
 		case s.Guard:
 			out = append(out, edge.App{Name: s.Name, Dial: s.Upstream.String(), Guard: edge.AuthentikGuard(a.upstream())})
-		case s.OIDC != nil:
+		case s.OIDC != nil, s.LDAP != nil:
 			out = append(out, edge.App{Name: s.Name, Dial: s.Upstream.String(), SignsIn: true, Refused: s.Refused})
 		}
 	}

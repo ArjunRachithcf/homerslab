@@ -188,13 +188,15 @@ func signIn(methods []catalog.SignIn, provides []catalog.SignInMethod) (catalog.
 }
 
 // wired says whether HomersLab can set an app up with a sign-in method today: a guard always; an OIDC client when the
-// manifest says how the app takes it (#20); LDAP not yet (#49).
+// manifest says how the app takes it (#20); LDAP when the manifest says how the app takes its directory (#204).
 func wired(m catalog.SignIn) bool {
 	switch m.Method {
 	case catalog.Guard:
 		return true
 	case catalog.OIDC:
 		return m.Env != nil && m.SecretUID != nil
+	case catalog.LDAP:
+		return m.LDAP != nil
 	}
 	return false
 }

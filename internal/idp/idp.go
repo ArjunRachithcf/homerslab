@@ -241,7 +241,14 @@ type LDAP interface {
 	// EnsureLDAP makes an app's LDAP provider, or brings it in line: only its roles bind. Its base DN never changes
 	// once it is made.
 	EnsureLDAP(ctx context.Context, app LDAPApp) (LDAPCredentials, error)
+	// EnsureLDAPApps brings each of these apps' providers in line, as EnsureLDAP does, at the cost of one EnsureLDAP's
+	// tidying of the outpost, not one per app. One app's failure keeps the others from nothing; the error names each.
+	EnsureLDAPApps(ctx context.Context, apps []LDAPApp) error
 	// DeleteLDAP deletes an app's LDAP provider: from the moment it returns, nobody binds there. One that isn't there
 	// is gone already.
 	DeleteLDAP(ctx context.Context, slug string) error
+	// AppPassword makes a person a new app password for one LDAP app, by the app's slug: it binds at that app's base
+	// DN and at no other app's, so an app that is handed it can't replay it elsewhere. It is shown only here. The app's
+	// directory must be there; whether the person is in its audience is the bind's to say, as for every other password.
+	AppPassword(ctx context.Context, slug, username string) (Secret, error)
 }

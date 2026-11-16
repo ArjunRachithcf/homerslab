@@ -23,7 +23,9 @@ import (
 // catalog, into the same household, which is what its id hashes), so a stale plan is refused rather than applied in
 // part. Then:
 //   - the identity provider gets the app's guard, for its name and its audience; or, for an app that signs people in
-//     itself, its OIDC client, for its audience and the plan's redirect addresses exactly;
+//     itself, its OIDC client, for its audience and the plan's redirect addresses exactly; or, for an app that signs
+//     people in over LDAP, its own directory at the LDAP outpost, for its audience (#204), and the agent the outpost's
+//     token;
 //   - the agent gets the app: the plan's name, upstream, secrets and health checks, the catalog's compose file whose
 //     digest the plan carries, and an OIDC client's settings and secret (which the agent seals; the manager keeps
 //     none of it);
@@ -32,8 +34,8 @@ import (
 // A risky plan (one with an extra, or a storage location the app writes to) needs the admin's passkey again from Admin
 // (step-up, stepup.go), bound to the plan; the terminal needs none. A plan with an extra isn't applied yet: the agent
 // runs extras with the next part of #25.
-// A plan whose sign-in isn't wired isn't applied either: LDAP apps come with #49, and an OIDC app applies once its
-// manifest says how it takes its client.
+// A plan whose sign-in isn't wired isn't applied either: an OIDC app applies once its manifest says how it takes its
+// client, an LDAP app once it says how it takes its directory.
 
 // The ways applying is refused.
 var (
@@ -194,12 +196,24 @@ func (m *Manager) apply(w http.ResponseWriter, r *http.Request, terminal bool) {
 		}
 		defer ap.release()
 	}
-	var native *catalog.SignIn // an app's own OIDC client: how it takes it
-	if p.SignIn.Method == catalog.OIDC {
+	var native, ldap *catalog.SignIn // an app's own OIDC client, or its own directory: how it takes it
+	switch p.SignIn.Method {
+	case catalog.OIDC:
 		native = &a.SignIn[slices.IndexFunc(a.SignIn, func(s catalog.SignIn) bool { return s.Method == catalog.OIDC })]
+	case catalog.LDAP:
+		ldap = &a.SignIn[slices.IndexFunc(a.SignIn, func(s catalog.SignIn) bool { return s.Method == catalog.LDAP })]
+	}
+	directory, _ := provider.(idp.LDAP)
+	if ldap != nil && directory == nil {
+		fail(w, http.StatusUnprocessableEntity, errNotBuilt.Error())
+		return
 	}
 	req := agent.AppRequest{Plan: p.ID, Product: p.App.Name, Compose: string(a.Compose), Name: p.Name.Host, Service: a.Names.Service,
-		Port: a.Names.Port, Guard: native == nil, Secrets: []appunit.Secret{}, Health: []agent.AppHealth{}, Backups: []agent.AppData{}}
+		Port: a.Names.Port, Guard: native == nil && ldap == nil, Secrets: []appunit.Secret{}, Health: []agent.AppHealth{}, Backups: []agent.AppData{}}
+	if ldap != nil {
+		// The app's base DN and DN template come once the identity provider has made its directory, below.
+		req.LDAP = &agent.AppLDAP{Env: *ldap.LDAP, RefusePaths: ldap.RefusePaths}
+	}
 	if native != nil {
 		// The client's issuer, id and secret come once the identity provider has made it, below.
 		req.OIDC = &agent.AppOIDC{Env: *native.Env, RedirectURIs: p.SignIn.RedirectURIs, AdminGroup: idp.RoleGroup(idp.Admin),
@@ -246,15 +260,36 @@ func (m *Manager) apply(w http.ResponseWriter, r *http.Request, terminal bool) {
 		return
 	}
 	slug := "homerslab-" + a.ID
-	newClient := false
-	if native == nil {
+	newClient, newLDAP := false, false
+	switch {
+	case ldap != nil:
+		// The outpost first, its token with the agent, so the directory has an outpost to serve it from.
+		token, err := directory.LDAPOutpost(ctx)
+		if err != nil {
+			m.log.Error("making the LDAP outpost", "app", a.ID, "err", err)
+			fail(w, http.StatusBadGateway, "ldap-failed")
+			return
+		}
+		if err := m.agent.ldapOutpost(ctx, token); err != nil {
+			agentFailed(err)
+			return
+		}
+		creds, err := directory.EnsureLDAP(ctx, idp.LDAPApp{Slug: slug, Name: p.App.Name, Roles: roles(p.Audience.Default)})
+		if err != nil {
+			m.log.Error("making an app's LDAP directory", "app", a.ID, "err", err)
+			fail(w, http.StatusBadGateway, "ldap-failed")
+			return
+		}
+		newLDAP = creds.Created // only a directory this apply made is this apply's to delete
+		req.LDAP.BaseDN, req.LDAP.UserDN = creds.BaseDN, creds.UserDN
+	case native == nil:
 		guard := idp.Guard{Slug: slug, Name: p.App.Name, URL: siteURL(ans, p.Name.Host), Roles: roles(p.Audience.Default)}
 		if err := provider.EnsureGuard(ctx, guard); err != nil {
 			m.log.Error("making an app's guard", "app", a.ID, "err", err)
 			fail(w, http.StatusBadGateway, "guard-failed")
 			return
 		}
-	} else {
+	default:
 		client := idp.Client{Slug: slug, Name: p.App.Name, RedirectURIs: p.SignIn.RedirectURIs, Roles: roles(p.Audience.Default)}
 		creds, err := provider.EnsureClient(ctx, client)
 		if err != nil {
@@ -274,6 +309,11 @@ func (m *Manager) apply(w http.ResponseWriter, r *http.Request, terminal bool) {
 		if e := (*agentError)(nil); newClient && errors.As(err, &e) {
 			if err := provider.DeleteClient(context.WithoutCancel(ctx), slug); err != nil {
 				m.log.Error("deleting the client of an app that didn't install", "app", a.ID, "err", err)
+			}
+		}
+		if e := (*agentError)(nil); newLDAP && errors.As(err, &e) {
+			if err := directory.DeleteLDAP(context.WithoutCancel(ctx), slug); err != nil {
+				m.log.Error("deleting the directory of an app that didn't install", "app", a.ID, "err", err)
 			}
 		}
 		agentFailed(err)

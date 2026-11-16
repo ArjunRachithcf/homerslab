@@ -330,8 +330,28 @@ jobs:
         run: sh .github/scripts/stop-commands.sh go test -count=1 -v -run 'TestTheBackupTargetContract$' ./internal/backup/
 
   identity:
-    name: Identity provider contract (Authentik in containers, Chromium's virtual authenticator)
+    name: Identity provider contract${{ matrix.label }} (Authentik in containers, Chromium's virtual authenticator)
     runs-on: ubuntu-24.04
+    # The LDAP section (#204) takes about as long as everything else, most of it in Prepare and the outpost's taking
+    # each change: it runs on two runners of its own, each against an Authentik of its own, after the bootstrap every
+    # section needs. The console's impostors (with the outpost and the first app's provider, which they need) on one,
+    # the rest of the section on the other; everything else, with the browser, on a third.
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: ""
+            run: TestTheIdentityProviderContractOnAuthentik
+            skip: TestTheIdentityProviderContractOnAuthentik/LDAP
+            browser: "1"
+          - label: ", LDAP"
+            run: TestTheIdentityProviderContractOnAuthentik/(bootstrap|LDAP)
+            skip: TestTheIdentityProviderContractOnAuthentik/LDAP/drift:_providers_of_the_console's
+            browser: ""
+          - label: ", LDAP impostors"
+            run: TestTheIdentityProviderContractOnAuthentik/(bootstrap|LDAP)/(the_LDAP_outpost|an_app's_LDAP_provider|drift:_providers_of_the_console's)
+            skip: ""
+            browser: ""
     # 20 browser runs by hand take about ten minutes more than the one of a pull request.
     timeout-minutes: 50
     # Modules come only from the step that fetches them, as in the Go job.
@@ -354,6 +374,7 @@ jobs:
           GOPROXY: https://proxy.golang.org,direct
         run: sh .github/scripts/stop-commands.sh go mod download
       - name: The browser, for the passkeys in a real browser
+        if: matrix.browser != ''
         working-directory: web
         env:
           PLAYWRIGHT_BROWSERS_PATH: /home/runner/ms-playwright
@@ -371,21 +392,25 @@ jobs:
             internal/idp/authentik/native_test.go catalogs/official/apps/mealie/compose.yaml
       # The harness, and only the harness, reaches the runner's Docker (HOMERSLAB_TEST_DOCKER_HOST), for compose project
       # hltest-17; the code under test points at nowhere. Images are pinned by digest in packaging/sign-in. The suite
-      # runs web/e2e/passkey.idp.spec.ts against the Authentik it set up (HOMERSLAB_TEST_BROWSER).
+      # runs web/e2e/passkey.idp.spec.ts against the Authentik it set up (HOMERSLAB_TEST_BROWSER). It copies its own
+      # test binary into a container, as the LDAP app's server and the LDAPS port (#204), so it is built static.
       - name: The contract suite
         env:
+          CGO_ENABLED: "0"
           HOMERSLAB_TEST_DOCKER_HOST: unix:///var/run/docker.sock
-          HOMERSLAB_TEST_BROWSER: "1"
+          HOMERSLAB_TEST_BROWSER: ${{ matrix.browser }}
           HOMERSLAB_TEST_BROWSER_RUNS: ${{ inputs.browser_runs || '1' }}
           PLAYWRIGHT_BROWSERS_PATH: /home/runner/ms-playwright
           DOCKER_HOST: unix:///nonexistent
           CONTAINER_HOST: unix:///nonexistent
+          RUN: ${{ matrix.run }}
+          SKIP: ${{ matrix.skip }}
         # The containers' logs and the browser's output, which the suite prints, are third-party text too.
-        run: sh .github/scripts/stop-commands.sh go test -count=1 -v -timeout 45m -run TestTheIdentityProviderContractOnAuthentik ./internal/idp/authentik/
+        run: sh .github/scripts/stop-commands.sh go test -count=1 -v -timeout 45m -run "$RUN" -skip "$SKIP" ./internal/idp/authentik/
       # What Playwright kept of a failed browser run: its trace (the page's requests and answers, screenshots) and the
       # page as it was, one folder per run (web/test-results/passkey-<run>, native-sign-in).
       - name: The browser's traces, when it failed
-        if: failure()
+        if: failure() && matrix.browser != ''
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: identity-browser-traces

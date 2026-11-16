@@ -248,6 +248,23 @@ func (a *Agent) putEdgeCertificate(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	// The sign-in's certificate renewed while an app signs in over LDAP: the LDAPS port's copy too, and its unit, if it
+	// runs, restarts to serve it, whatever the edge does next (#204). With no LDAP app, a copy from before is dropped: the
+	// next LDAP app's port starts from the edge's newest.
+	if d, _ := a.signInDomain(); d == domain {
+		if a.ldapInUse() {
+			if err := a.sealLDAPS(r.Context(), c.Chain, c.Key); err != nil {
+				a.log.Error("sealing the sign-in's certificate for the LDAPS port", "err", err)
+				fail(w, http.StatusInternalServerError, "seal-failed")
+				return
+			}
+			if err := a.run(r.Context(), "systemctl", "--no-block", "try-restart", LDAPSUnit); err != nil {
+				a.log.Error("restarting the LDAPS port for the renewed certificate", "err", err)
+			}
+		} else if err := os.RemoveAll(a.ldapsDir()); err != nil {
+			a.log.Error("dropping the LDAPS port's old certificate", "err", err)
+		}
+	}
 	next := edgeState{}
 	if a.state.Edge != nil {
 		next = *a.state.Edge
@@ -261,7 +278,8 @@ func (a *Agent) putEdgeCertificate(w http.ResponseWriter, r *http.Request) {
 }
 
 // saveEdge keeps the edge's new state, and puts it in place: with a new certificate, the unit's credentials and a
-// restart (systemd hands them over only as the unit starts), then the whole configuration. The caller holds a.mu.
+// restart (systemd hands them over only as the unit starts), then the whole configuration, and the LDAPS port's. The
+// caller holds a.mu.
 func (a *Agent) saveEdge(w http.ResponseWriter, r *http.Request, next edgeState, started *EdgeCertificate) {
 	prev := a.state.Edge
 	a.state.Edge = &next
@@ -305,6 +323,10 @@ func (a *Agent) saveEdge(w http.ResponseWriter, r *http.Request, next edgeState,
 		a.log.Error("loading the edge's configuration", "err", err)
 		fail(w, http.StatusBadGateway, "edge-unreachable")
 		return
+	}
+	// The LDAPS port follows the sign-in's name and its certificate.
+	if err := a.ldapsFollow(ctx); err != nil {
+		a.log.Error("the LDAPS port, after the edge's sites", "err", err)
 	}
 	// The sign-in listener's port is the household's: the table follows it now, not at the next check.
 	if err := a.reconcile(ctx, true); err != nil {

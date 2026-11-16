@@ -101,6 +101,14 @@ func TestTheLDAPOutpostIsAUnitOfItsOwn(t *testing.T) {
 	if s := one(t, unit(t, "homerslab-authentik.service"), "ExecStart"); strings.Contains(s, "--profile") || strings.Contains(s, "ldap") {
 		t.Errorf("the sign-in's ExecStart=%s: it would watch the outpost", s)
 	}
+	// One unit makes the sign-in's network, the sign-in's (#245): at boot the two start together, and two compose
+	// commands making one network at once fail. The outpost's waits for it first.
+	if s := one(t, u, "ExecStartPre"); s != "/bin/sh -c 'until /usr/bin/docker network inspect homerslab-authentik_sign-in >/dev/null 2>&1; do sleep 1; done'" {
+		t.Errorf("ExecStartPre=%s, want the outpost to wait for the sign-in's network", s)
+	}
+	if c, err := os.ReadFile("sign-in/authentik.compose.yaml"); err != nil || !strings.Contains(string(c), "name: homerslab-authentik\n\nnetworks:\n  sign-in:\n") {
+		t.Error("the sign-in's network isn't homerslab-authentik_sign-in")
+	}
 	b, err := os.ReadFile("sign-in/authentik.compose.yaml")
 	if err != nil {
 		t.Fatal(err)

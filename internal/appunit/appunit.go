@@ -54,6 +54,8 @@ type App struct {
 	Mounts []Mount
 	// OIDC is the OIDC client of an app that signs people in itself (#20), nil for any other.
 	OIDC *OIDC
+	// LDAP is the directory of an app that signs people in over LDAP (#204), nil for any other.
+	LDAP *LDAP
 	// Dir is where the agent keeps the app's compose files and sealed credentials.
 	Dir string
 }
@@ -64,6 +66,12 @@ type App struct {
 type OIDC struct {
 	Env       map[string]string `json:"env"`
 	SecretUID int               `json:"secretUid"`
+}
+
+// LDAP is how an app takes its directory at the sign-in (#204): its settings as environment variables of the upstream's
+// service. None of them is secret: each person binds with an app password of their own.
+type LDAP struct {
+	Env map[string]string `json:"env"`
 }
 
 // ClientSecret is the client's secret, as a secret of the app's (the name no manifest may give one of its own);
@@ -216,6 +224,9 @@ func Override(a App) []byte {
 	w("#   - its storage locations, each a bind of the location's folder, read-only unless the plan says otherwise; a")
 	w("#     service that writes to one can't make a device;")
 	w("#   - for an app that signs people in itself, its OIDC client's settings, and the client's secret as a file.")
+	if a.LDAP != nil {
+		w("#   - for an app that signs people in over LDAP, its directory's settings.")
+	}
 	w("name: %s", q(Project(a.ID)))
 	w("services:")
 	services := slices.Clone(a.Project.Services)
@@ -266,6 +277,11 @@ func Override(a App) []byte {
 			}
 			w("    secrets:")
 			w("      - %s", q(ClientSecret))
+		} else if a.LDAP != nil {
+			w("    environment:")
+			for _, k := range slices.Sorted(maps.Keys(a.LDAP.Env)) {
+				w("      %s: %s", q(k), q(a.LDAP.Env[k]))
+			}
 		}
 		w("    networks:")
 		if len(s.Networks) == 0 {

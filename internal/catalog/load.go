@@ -235,13 +235,53 @@ func checkSignIn(p *problems, methods []SignIn) {
 			p.add("signIn: %s twice", m.Method)
 		}
 		seen[m.Method] = true
-		if m.Method != OIDC {
+		if m.Method != LDAP && m.LDAP != nil {
+			p.add("signIn: %s takes no ldap", m.Method)
+		}
+		switch m.Method {
+		case OIDC:
+			checkOIDC(p, m)
+		case LDAP:
+			// An app that signs people in itself over LDAP may have routes of its own to refuse, as an OIDC app may.
+			if m.Env != nil || m.SecretUID != nil || len(m.RedirectURIs) > 0 {
+				p.add("signIn: ldap takes no redirectUris, env or secretUid")
+			}
+			checkRefused(p, m.RefusePaths)
+			checkLDAP(p, m.LDAP)
+		default:
 			if m.Env != nil || m.SecretUID != nil || len(m.RedirectURIs) > 0 || len(m.RefusePaths) > 0 {
 				p.add("signIn: %s takes no redirectUris, env, secretUid or refusePaths", m.Method)
 			}
+		}
+	}
+}
+
+// checkRefused checks the routes an app that signs people in itself has the edge refuse.
+func checkRefused(p *problems, refused []string) {
+	for _, r := range refused {
+		if method, path, ok := SplitRefused(r); !ok || !ownPath(path) || path == "/" || method == "" && strings.Contains(r, " ") {
+			p.add("signIn: refusePaths %q: a path on the app's own URL, not all of it, or a method and such a path", r)
+		}
+	}
+}
+
+// checkLDAP checks how an LDAP app takes its directory (#204), when the manifest says.
+func checkLDAP(p *problems, e *LDAPEnv) {
+	if e == nil {
+		return
+	}
+	names := map[string]bool{}
+	for _, n := range e.Names() {
+		if n == "" {
 			continue
 		}
-		checkOIDC(p, m)
+		if !EnvName.MatchString(n) || names[n] {
+			p.add("signIn: ldap %q: each a variable's name, once", n)
+		}
+		names[n] = true
+	}
+	if e.BaseDN == "" || e.UserDN == "" || e.URL == "" && e.Host == "" {
+		p.add("signIn: ldap names at least the base DN, the DN template, and the sign-in's URL or its host")
 	}
 }
 
@@ -300,11 +340,7 @@ func checkOIDC(p *problems, m SignIn) {
 			p.add("signIn: redirectUris %q: a path on the app's own URL, or its own app's address (a scheme with a dot)", u)
 		}
 	}
-	for _, r := range m.RefusePaths {
-		if method, path, ok := SplitRefused(r); !ok || !ownPath(path) || path == "/" || method == "" && strings.Contains(r, " ") {
-			p.add("signIn: refusePaths %q: a path on the app's own URL, not all of it, or a method and such a path", r)
-		}
-	}
+	checkRefused(p, m.RefusePaths)
 	e := m.Env
 	if e == nil {
 		return

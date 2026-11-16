@@ -214,8 +214,13 @@ func TestAnOIDCPlanNamesItsClientsRedirectAddressesOnTheAppsOwnURLAndWhetherItIs
 		t.Errorf("OIDC that HomersLab can't set up yet: %+v, want it shown, not wired", p.SignIn)
 	}
 	d.SignIn = []catalog.SignIn{{Method: catalog.LDAP}}
-	if p := make_(t, d, h); p.SignIn.Method != catalog.LDAP || p.SignIn.Wired {
-		t.Errorf("an LDAP plan: %+v, want not wired (#49)", p.SignIn)
+	if p := make_(t, d, h); p.SignIn.Method != catalog.LDAP || p.SignIn.Wired || p.SignIn.Creates != "ldap-access" {
+		t.Errorf("an LDAP plan whose manifest doesn't say how the app takes its directory: %+v, want not wired", p.SignIn)
+	}
+	// Once the manifest says how the app takes its directory, HomersLab sets it up (#204).
+	d.SignIn[0].LDAP = &catalog.LDAPEnv{URL: "LDAP_URL", BaseDN: "LDAP_BASE_DN", UserDN: "LDAP_USER_DN"}
+	if p := make_(t, d, h); p.SignIn.Method != catalog.LDAP || !p.SignIn.Wired || len(p.SignIn.RedirectURIs) > 0 || p.SignIn.Identity != "" {
+		t.Errorf("an LDAP plan: %+v, want wired, no redirect addresses, no identity contract", p.SignIn)
 	}
 	d.SignIn = []catalog.SignIn{{Method: catalog.Guard}}
 	if p := make_(t, d, h); p.SignIn.RedirectURIs != nil || !p.SignIn.Wired {

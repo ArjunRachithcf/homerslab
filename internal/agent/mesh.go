@@ -154,10 +154,12 @@ func (a *Agent) run(ctx context.Context, name string, args ...string) error {
 }
 
 // RootWrites are the folders, under the machine's root, where the agent writes: systemd drop-ins for the mesh clients,
-// the edge and the sign-in, and apps' units (UnitsDir), which systemd links from there. Its unit makes them writable
+// the edge, the sign-in, its LDAP outpost and its LDAPS port (#204), and apps' units (UnitsDir), which systemd links
+// from there. Its unit makes them writable
 // (ReadWritePaths, under ProtectSystem=strict) and tmpfiles.d makes them; writeAt refuses any other.
 var RootWrites = []string{filepath.Dir(netbird.DropInPath), filepath.Dir(tailscale.ControlSocket.DropInPath),
-	"etc/systemd/system/" + DefaultEdge.Unit + ".d", "etc/systemd/system/" + SignInUnit + ".d", UnitsDir}
+	"etc/systemd/system/" + DefaultEdge.Unit + ".d", "etc/systemd/system/" + SignInUnit + ".d", "etc/systemd/system/" + LDAPUnit + ".d",
+	"etc/systemd/system/" + LDAPSUnit + ".d", UnitsDir}
 
 // writeAt writes a file under the machine's root, in one of RootWrites.
 func (a *Agent) writeAt(rel string, b []byte) error {
@@ -375,6 +377,14 @@ func (a *Agent) unsealAt(ctx context.Context, path, name string) ([]byte, error)
 // sealAt seals a value under its name at path, with the TPM where the machine has one, and the host key always:
 // explicitly, never "auto" (ADR 0011).
 func (a *Agent) sealAt(ctx context.Context, path, name string, value []byte) error {
+	if err := a.sealNew(ctx, path, name, value); err != nil {
+		return err
+	}
+	return atomicfile.Commit(path + ".new")
+}
+
+// sealNew seals a value under its name at path+".new", for the caller to commit.
+func (a *Agent) sealNew(ctx context.Context, path, name string, value []byte) error {
 	key := "host"
 	if a.cfg.Sysroot != nil {
 		// TPM 2.0 only: systemd-creds can't seal to a TPM 1.2.
@@ -386,7 +396,7 @@ func (a *Agent) sealAt(ctx context.Context, path, name string, value []byte) err
 		Args: []string{"encrypt", "--with-key=" + key, "--name=" + name, "-", path + ".new"}, Stdin: value}); err != nil {
 		return err
 	}
-	return atomicfile.Commit(path + ".new")
+	return nil
 }
 
 // MeshStatus is the node's mesh client, as the agent finds it right now.

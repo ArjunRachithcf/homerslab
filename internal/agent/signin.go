@@ -67,6 +67,8 @@ type SignInStatus struct {
 type signInState struct {
 	Provider      string `json:"provider"`
 	Bootstrapping bool   `json:"bootstrapping"`
+	// LDAP: the LDAP outpost's unit has its token (#204).
+	LDAP bool `json:"ldap,omitempty"`
 }
 
 func (a *Agent) signInDir() string { return filepath.Join(a.cfg.StateDir, "sign-in") }

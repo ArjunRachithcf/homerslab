@@ -21,6 +21,10 @@ Type=exec
 RuntimeDirectory=homerslab-ldap
 RuntimeDirectoryMode=0700
 UMask=0077
+# The sign-in's unit alone makes the sign-in's network (#245): at boot both units start together (After= orders only
+# their start), and two compose commands making one network at once fail. Waiting counts toward the start's timeout,
+# after which systemd tries again. This line runs before the agent's drop-in's.
+ExecStartPre=/bin/sh -c 'until /usr/bin/docker network inspect homerslab-authentik_sign-in >/dev/null 2>&1; do sleep 1; done'
 ExecStart=/usr/bin/docker compose --project-name homerslab-authentik --file /usr/share/homerslab/sign-in/authentik.compose.yaml --profile ldap up --no-deps --no-log-prefix --quiet-pull --abort-on-container-exit ldap
 ExecStopPost=/usr/bin/docker compose --project-name homerslab-authentik --file /usr/share/homerslab/sign-in/authentik.compose.yaml --profile ldap stop ldap
 # Always: compose ends with the stopped container's own exit status, 0 included.
