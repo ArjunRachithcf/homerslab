@@ -141,12 +141,15 @@ func (r Result) Did() bool {
 func Pending(root string) bool {
 	for _, d := range Dirs {
 		// Fails closed: only a folder that isn't there has moved (EACCES or EIO count as there).
-		if _, err := os.Lstat(filepath.Join(root, d.Old)); !errors.Is(err, fs.ErrNotExist) {
+		if _, err := lstat(filepath.Join(root, d.Old)); !errors.Is(err, fs.ErrNotExist) {
 			return true
 		}
 	}
 	return false
 }
+
+// lstat is os.Lstat; tests give Pending the errors (EACCES, EIO) root never meets.
+var lstat = os.Lstat
 
 // ErrConflict is an old folder whose new one already holds something: the run stops before it changes the node's
 // files, and the node stays as it is until someone looks (the journal says which).
@@ -208,7 +211,9 @@ func Run(ctx context.Context, h Host) (Result, error) {
 var FollowUps = []host.Cmd{
 	{Name: "systemctl", Args: []string{"daemon-reload"}},
 	{Name: "systemd-tmpfiles", Args: []string{"--create", "homeward.conf"}},
-	{Name: "systemctl", Args: []string{"try-restart", "homeward-admin.socket", "homeward-home.socket"}},
+	// Queued, never waited for: the sockets are ordered after homeward-migrate.service, so a restart this run waited
+	// for would wait for the run itself, on an upgrade without a reboot.
+	{Name: "systemctl", Args: []string{"--no-block", "try-restart", "homeward-admin.socket", "homeward-home.socket"}},
 }
 
 // files moves the folders, drops what goes, leaves the mark, and removes the agent's derived files.

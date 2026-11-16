@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"syscall"
 	"testing"
 
 	"github.com/ArjunRachithcf/homeward/internal/host"
@@ -307,7 +308,7 @@ func TestANodeHomersLabInstalledTakesHomewardsNames(t *testing.T) {
 		t.Errorf("the old units weren't stopped before their users were renamed: %q", n.ran)
 	}
 	if last := n.ran[len(n.ran)-3:]; last[0] != "systemctl daemon-reload" || last[1] != "systemd-tmpfiles --create homeward.conf" ||
-		last[2] != "systemctl try-restart homeward-admin.socket homeward-home.socket" {
+		last[2] != "systemctl --no-block try-restart homeward-admin.socket homeward-home.socket" {
 		t.Errorf("the run ended with %q, want systemd reloaded, and the new users' folders and sockets made again", last)
 	}
 }
@@ -340,19 +341,16 @@ func TestANodeWithNothingOfHomersLabsIsLeftAlone(t *testing.T) {
 // Pending fails closed: an old folder that can't be looked at (EACCES, EIO) counts as there, never as moved.
 func TestPendingCountsAFolderItCantLookAt(t *testing.T) {
 	testenv.Isolate(t)
-	if os.Geteuid() == 0 {
-		t.Skip("root looks at every folder")
-	}
 	root := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(root, "var/lib"), 0o755); err != nil {
-		t.Fatal(err)
+	for _, e := range []error{syscall.EACCES, syscall.EIO} {
+		migrate.SetLstat(t, func(string) (fs.FileInfo, error) { return nil, e })
+		if !migrate.Pending(root) {
+			t.Errorf("a folder that can't be looked at (%v) reads as moved", e)
+		}
 	}
-	if err := os.Chmod(filepath.Join(root, "var/lib"), 0); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = os.Chmod(filepath.Join(root, "var/lib"), 0o755) })
-	if !migrate.Pending(root) {
-		t.Error("a folder that can't be looked at reads as moved")
+	migrate.SetLstat(t, func(string) (fs.FileInfo, error) { return nil, fs.ErrNotExist })
+	if migrate.Pending(root) {
+		t.Error("folders that aren't there read as pending")
 	}
 }
 
@@ -398,6 +396,10 @@ func TestARunThatStopsAnywhereIsFinishedByTheNext(t *testing.T) {
 		}
 		if next := n.ran[ran:]; len(next) < len(follow) || !slices.Equal(next[len(next)-len(follow):], follow) {
 			t.Errorf("after a stop at %q, the next run ran %q, want it to end with %q", at, next, follow)
+		}
+		// The sockets wait for the migration's unit: a restart it waited for would never end.
+		if last := follow[len(follow)-1]; last != "systemctl --no-block try-restart homeward-admin.socket homeward-home.socket" {
+			t.Errorf("the sockets are restarted with %q, want it queued", last)
 		}
 		got := n.tree()
 		for p := range mapsUnion(want, got) {
