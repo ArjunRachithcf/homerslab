@@ -10,9 +10,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ArjunRachithcf/homerslab/internal/engine"
-	"github.com/ArjunRachithcf/homerslab/internal/engine/compose"
-	"github.com/ArjunRachithcf/homerslab/internal/testenv"
+	"github.com/ArjunRachithcf/homeward/internal/engine"
+	"github.com/ArjunRachithcf/homeward/internal/engine/compose"
+	"github.com/ArjunRachithcf/homeward/internal/testenv"
 )
 
 const twoServices = `
@@ -137,8 +137,8 @@ volumes:
 	}
 }
 
-// Compose project names are HomersLab's own: Compose claims a container by its labels alone (ADR 0014).
-func TestOnlyHomersLabsProjectNamesAreRead(t *testing.T) {
+// Compose project names are Homeward's own: Compose claims a container by its labels alone (ADR 0014).
+func TestOnlyHomewardsProjectNamesAreRead(t *testing.T) {
 	testenv.Isolate(t)
 	for _, name := range []string{"homelab", "", "homerslab-", "homerslab-Photos", "homerslab-a/b", "other-homerslab-x"} {
 		if _, err := reader(t).Read(context.Background(), name, []byte(twoServices)); !errors.Is(err, compose.ErrNotOurs) {
@@ -168,12 +168,12 @@ func TestAProjectReadsNothingButItsOwnFile(t *testing.T) {
 		}
 	}
 
-	t.Setenv("HOMERSLAB_TEST_TAG", "from-the-agent")
-	p, err := reader(t).Read(context.Background(), "homerslab-example", []byte("services: {web: {image: 'example/web:${HOMERSLAB_TEST_TAG}'}}\n"))
+	t.Setenv("HOMEWARD_TEST_TAG", "from-the-agent")
+	p, err := reader(t).Read(context.Background(), "homerslab-example", []byte("services: {web: {image: 'example/web:${HOMEWARD_TEST_TAG}'}}\n"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := p.Services[0].Image; got != "example/web:${HOMERSLAB_TEST_TAG}" {
+	if got := p.Services[0].Image; got != "example/web:${HOMEWARD_TEST_TAG}" {
 		t.Errorf("the agent's environment reached the project: image %q", got)
 	}
 }
@@ -185,7 +185,7 @@ func TestAMalformedProjectSaysWhyWithoutTheAgentsPaths(t *testing.T) {
 		if err == nil {
 			t.Fatalf("a malformed file was read: %s", file)
 		}
-		if bytes.Contains([]byte(err.Error()), []byte("/tmp")) || bytes.Contains([]byte(err.Error()), []byte("homerslab-read")) {
+		if bytes.Contains([]byte(err.Error()), []byte("/tmp")) || bytes.Contains([]byte(err.Error()), []byte("homeward-read")) {
 			t.Errorf("the error names the agent's own folder: %v", err)
 		}
 	}

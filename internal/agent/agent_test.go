@@ -20,11 +20,11 @@ import (
 	"testing/fstest"
 	"time"
 
-	"github.com/ArjunRachithcf/homerslab/internal/agent"
-	"github.com/ArjunRachithcf/homerslab/internal/agent/agenttest"
-	"github.com/ArjunRachithcf/homerslab/internal/engine"
-	"github.com/ArjunRachithcf/homerslab/internal/node"
-	"github.com/ArjunRachithcf/homerslab/internal/testenv"
+	"github.com/ArjunRachithcf/homeward/internal/agent"
+	"github.com/ArjunRachithcf/homeward/internal/agent/agenttest"
+	"github.com/ArjunRachithcf/homeward/internal/engine"
+	"github.com/ArjunRachithcf/homeward/internal/node"
+	"github.com/ArjunRachithcf/homeward/internal/testenv"
 )
 
 func get(t *testing.T, sock, path string) (*http.Response, []byte) {
@@ -68,7 +68,7 @@ func TestAgentReportsTheNodesFacts(t *testing.T) {
 		},
 		TPM:   node.TPM{Present: true, Version: "2.0"},
 		GPUs:  []node.GPU{{Vendor: "NVIDIA", Model: "GeForce RTX 3060 Lite Hash Rate", PCIID: "10de:2504"}},
-		Space: &node.Space{Path: "/var/lib/homerslab", FreeBytes: 412e9, SizeBytes: 1e12},
+		Space: &node.Space{Path: "/var/lib/homeward", FreeBytes: 412e9, SizeBytes: 1e12},
 	}
 	if g, w := mustJSON(t, got), mustJSON(t, want); g != w {
 		t.Fatalf("facts:\n got %s\nwant %s", g, w)
@@ -143,8 +143,8 @@ func mustJSON(t *testing.T, v any) string {
 	return string(b)
 }
 
-// The space for apps' data is the free space of the filesystem that holds HomersLab's own folder, read from the
-// machine itself: the nearest folder that exists, when HomersLab's isn't there yet.
+// The space for apps' data is the free space of the filesystem that holds Homeward's own folder, read from the
+// machine itself: the nearest folder that exists, when Homeward's isn't there yet.
 func TestAgentReportsTheSpaceOfTheFilesystemForAppsData(t *testing.T) {
 	testenv.Isolate(t)
 	root := t.TempDir()
@@ -161,7 +161,7 @@ func TestAgentReportsTheSpaceOfTheFilesystemForAppsData(t *testing.T) {
 	if err := json.Unmarshal(body, &got); err != nil {
 		t.Fatal(err)
 	}
-	if got.Space == nil || got.Space.Path != "/var/lib/homerslab" || got.Space.SizeBytes == 0 || got.Space.FreeBytes > got.Space.SizeBytes {
+	if got.Space == nil || got.Space.Path != "/var/lib/homeward" || got.Space.SizeBytes == 0 || got.Space.FreeBytes > got.Space.SizeBytes {
 		t.Errorf("space = %+v", got.Space)
 	}
 }
@@ -253,7 +253,7 @@ func TestAHostileReadIsKilledAtItsDeadline(t *testing.T) {
 	}
 }
 
-// A read's child starts as the agent's own read user (homerslab-read, not the shared nobody) with no groups when the
+// A read's child starts as the agent's own read user (homeward-read, not the shared nobody) with no groups when the
 // agent is root, can't be dumped, runs under its own limits and is first in line for the OOM killer, all read back
 // from the kernel; a file shaped to make Compose work hard is refused quickly.
 func TestAReadRunsConfinedAndRefusesWorkFast(t *testing.T) {
@@ -309,7 +309,7 @@ func TestAReadRunsConfinedAndRefusesWorkFast(t *testing.T) {
 			t.Fatal(err)
 		}
 		if c.UID != int(uid) || c.GID != int(gid) || c.Groups != "" || uid == 65534 {
-			t.Errorf("the child ran as uid %d, gid %d, groups %q; want homerslab-read (%d:%d) and no groups", c.UID, c.GID, c.Groups, uid, gid)
+			t.Errorf("the child ran as uid %d, gid %d, groups %q; want homeward-read (%d:%d) and no groups", c.UID, c.GID, c.Groups, uid, gid)
 		}
 		// Not dumpable from the start, by the kernel's own rule: it runs a copy of the agent its user can't read
 		// (mode 0711), so no process of its user, one left behind by an earlier read even, can attach to it before
@@ -385,7 +385,7 @@ func TestAReadsEndingIsSaid(t *testing.T) {
 	}
 }
 
-// A name that isn't one of HomersLab's starts no child at all.
+// A name that isn't one of Homeward's starts no child at all.
 func TestANameThatIsntOursStartsNoChild(t *testing.T) {
 	testenv.Isolate(t)
 	marker := filepath.Join(t.TempDir(), "started")
@@ -493,7 +493,7 @@ func TestAReadsChildEndsWhenItsControlPipeCloses(t *testing.T) {
 func TestAReadsChildCantBeTraced(t *testing.T) {
 	testenv.Isolate(t)
 	peek := exec.Command(agenttest.Executable(t), "-test.run=^$")
-	peek.Env = append(os.Environ(), "HOMERSLAB_TEST_PEEK=1")
+	peek.Env = append(os.Environ(), "HOMEWARD_TEST_PEEK=1")
 	if os.Geteuid() == 0 { // as the agent's reads run
 		uid, gid, err := agent.ReadIDs()
 		if err != nil {
@@ -517,7 +517,7 @@ func TestAReadsChildCantBeTraced(t *testing.T) {
 	}
 }
 
-// When the agent is root, its reads run as homerslab-read, a user only they use, which the packages make: never as
+// When the agent is root, its reads run as homeward-read, a user only they use, which the packages make: never as
 // nobody, whom other processes share and so could signal or trace a read's child. Without that user, a root agent
 // refuses to read rather than fall back to another (#183).
 func TestReadsRunAsAUserOnlyTheyUse(t *testing.T) {
@@ -532,49 +532,49 @@ func TestReadsRunAsAUserOnlyTheyUse(t *testing.T) {
 	}
 	group := func(name, lines string) string {
 		p := filepath.Join(dir, name+".group")
-		if err := os.WriteFile(p, []byte("root:x:0:\nnogroup:x:65534:\nhomerslab:x:981:\n"+lines), 0o644); err != nil {
+		if err := os.WriteFile(p, []byte("root:x:0:\nnogroup:x:65534:\nhomeward:x:981:\n"+lines), 0o644); err != nil {
 			t.Fatal(err)
 		}
 		return p
 	}
-	goodGroup := group("good", "homerslab-read:x:60602:\n")
-	uid, gid, err := agent.ReadIDsFrom(passwd("good", "homerslab:x:981:981::/var/lib/homerslab:/usr/sbin/nologin\nhomerslab-read:x:60602:60602:HomersLab compose reads:/:/usr/sbin/nologin\n"), goodGroup)
+	goodGroup := group("good", "homeward-read:x:60602:\n")
+	uid, gid, err := agent.ReadIDsFrom(passwd("good", "homeward:x:981:981::/var/lib/homeward:/usr/sbin/nologin\nhomeward-read:x:60602:60602:Homeward compose reads:/:/usr/sbin/nologin\n"), goodGroup)
 	if err != nil || uid != 60602 || gid != 60602 {
-		t.Errorf("homerslab-read = %d:%d %v, want 60602:60602", uid, gid, err)
+		t.Errorf("homeward-read = %d:%d %v, want 60602:60602", uid, gid, err)
 	}
 	for name, lines := range map[string]string{
-		"missing":          "homerslab:x:981:981::/var/lib/homerslab:/usr/sbin/nologin\n",
-		"root's uid":       "homerslab-read:x:0:60602::/:/usr/sbin/nologin\n",
-		"root's group":     "homerslab-read:x:60602:0::/:/usr/sbin/nologin\n",
-		"nobody's uid":     "homerslab-read:x:65534:60602::/:/usr/sbin/nologin\n",
-		"a shared uid":     "homerslab-read:x:60602:60602::/:/usr/sbin/nologin\nother:x:60602:60602::/:/bin/sh\n",
-		"a broken entry":   "homerslab-read:x:nine:60602::/:/usr/sbin/nologin\n",
-		"a prefix of ours": "homerslab-reader:x:60602:60602::/:/usr/sbin/nologin\n",
-		"another's group":  "homerslab-read:x:60602:981::/:/usr/sbin/nologin\n",
-		"nogroup":          "homerslab-read:x:60602:65534::/:/usr/sbin/nologin\n",
+		"missing":          "homeward:x:981:981::/var/lib/homeward:/usr/sbin/nologin\n",
+		"root's uid":       "homeward-read:x:0:60602::/:/usr/sbin/nologin\n",
+		"root's group":     "homeward-read:x:60602:0::/:/usr/sbin/nologin\n",
+		"nobody's uid":     "homeward-read:x:65534:60602::/:/usr/sbin/nologin\n",
+		"a shared uid":     "homeward-read:x:60602:60602::/:/usr/sbin/nologin\nother:x:60602:60602::/:/bin/sh\n",
+		"a broken entry":   "homeward-read:x:nine:60602::/:/usr/sbin/nologin\n",
+		"a prefix of ours": "homeward-reader:x:60602:60602::/:/usr/sbin/nologin\n",
+		"another's group":  "homeward-read:x:60602:981::/:/usr/sbin/nologin\n",
+		"nogroup":          "homeward-read:x:60602:65534::/:/usr/sbin/nologin\n",
 		// The group is the reads' alone: no other user has it as its primary group, as none may as a member (#190).
-		"another's primary group is its": "homerslab-read:x:60602:60602::/:/usr/sbin/nologin\nother:x:990:60602::/:/bin/sh\n",
-		"the same, written 060602":       "homerslab-read:x:60602:60602::/:/usr/sbin/nologin\nother:x:990:060602::/:/bin/sh\n",
+		"another's primary group is its": "homeward-read:x:60602:60602::/:/usr/sbin/nologin\nother:x:990:60602::/:/bin/sh\n",
+		"the same, written 060602":       "homeward-read:x:60602:60602::/:/usr/sbin/nologin\nother:x:990:060602::/:/bin/sh\n",
 	} {
 		if uid, gid, err := agent.ReadIDsFrom(passwd(name, lines), goodGroup); err == nil {
-			t.Errorf("%s: homerslab-read = %d:%d, want it refused", name, uid, gid)
+			t.Errorf("%s: homeward-read = %d:%d, want it refused", name, uid, gid)
 		}
 	}
 	// Only the packages' fixed ids (#190): sysusers keeps the ids it handed out before, and those may be an app image's.
-	if uid, gid, err := agent.ReadIDsFrom(passwd("old", "homerslab-read:x:980:979::/:/usr/sbin/nologin\n"), group("old", "homerslab-read:x:979:\n")); err == nil {
-		t.Errorf("ids from before #190: homerslab-read = %d:%d, want it refused", uid, gid)
+	if uid, gid, err := agent.ReadIDsFrom(passwd("old", "homeward-read:x:980:979::/:/usr/sbin/nologin\n"), group("old", "homeward-read:x:979:\n")); err == nil {
+		t.Errorf("ids from before #190: homeward-read = %d:%d, want it refused", uid, gid)
 	}
 	// Its group is its own too: named for it, and no other group has its gid (docker's, say, would open the engine).
-	good := passwd("good", "homerslab-read:x:60602:60602::/:/usr/sbin/nologin\n")
+	good := passwd("good", "homeward-read:x:60602:60602::/:/usr/sbin/nologin\n")
 	for name, lines := range map[string]string{
 		"no group":       "",
 		"another name":   "docker:x:60602:\n",
-		"a shared gid":   "homerslab-read:x:60602:\ndocker:x:60602:\n",
-		"members":        "homerslab-read:x:60602:arjun\n",
-		"a broken group": "homerslab-read:x:nine:\n",
+		"a shared gid":   "homeward-read:x:60602:\ndocker:x:60602:\n",
+		"members":        "homeward-read:x:60602:arjun\n",
+		"a broken group": "homeward-read:x:nine:\n",
 	} {
 		if uid, gid, err := agent.ReadIDsFrom(good, group(name, lines)); err == nil {
-			t.Errorf("%s: homerslab-read = %d:%d, want it refused", name, uid, gid)
+			t.Errorf("%s: homeward-read = %d:%d, want it refused", name, uid, gid)
 		}
 	}
 	if _, _, err := agent.ReadIDsFrom(filepath.Join(dir, "none"), goodGroup); err == nil {
@@ -589,7 +589,7 @@ func TestReadsRunAsAUserOnlyTheyUse(t *testing.T) {
 		t.Log("not root: the agent's reads run as its own user, so the rest needs root (CI runs it so)")
 		return
 	}
-	marker, err := os.MkdirTemp("", "homerslab-marker-")
+	marker, err := os.MkdirTemp("", "homeward-marker-")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -598,12 +598,12 @@ func TestReadsRunAsAUserOnlyTheyUse(t *testing.T) {
 		t.Fatal(err)
 	}
 	agent.ShellReads(t, 5*time.Second, "cat >/dev/null; id -u >"+filepath.Join(marker, "started"))
-	agent.ReadUsersFrom(t, passwd("without", "homerslab:x:981:981::/var/lib/homerslab:/usr/sbin/nologin\n"))
+	agent.ReadUsersFrom(t, passwd("without", "homeward:x:981:981::/var/lib/homeward:/usr/sbin/nologin\n"))
 	sock := agenttest.Start(t, agenttest.Primary())
 	resp, out := post(t, sock, "/v1/projects/read", map[string]string{"project": "homerslab-web", "compose": "services: {web: {image: x}}\n"})
 	started, _ := os.ReadFile(filepath.Join(marker, "started"))
 	if resp.StatusCode != http.StatusInternalServerError || !strings.Contains(string(out), "no-reader") || len(started) != 0 {
-		t.Errorf("a root agent without homerslab-read: %d %s, a child started as %q; want 500 no-reader and none", resp.StatusCode, out, started)
+		t.Errorf("a root agent without homeward-read: %d %s, a child started as %q; want 500 no-reader and none", resp.StatusCode, out, started)
 	}
 }
 
@@ -710,7 +710,7 @@ func TestARootAgentRefusesToReadWhereItsChildWouldBeDumpable(t *testing.T) {
 	if os.Geteuid() != 0 {
 		t.Skip("not root: the agent's reads run as its own user (CI runs it as root)")
 	}
-	marker, err := os.MkdirTemp("", "homerslab-marker-")
+	marker, err := os.MkdirTemp("", "homeward-marker-")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -878,13 +878,13 @@ func stoppedChildren(t *testing.T) map[int]bool {
 	return out
 }
 
-// A read's child dies with the agent, also when the agent is root and the child starts as homerslab-read: its control pipe
+// A read's child dies with the agent, also when the agent is root and the child starts as homeward-read: its control pipe
 // closes with the agent. (The parent-death signal, which the IDs set in the fork before it don't clear, needs CAP_KILL,
 // which the agent's unit doesn't have.)
 func TestAReadsChildDiesWithTheAgent(t *testing.T) {
 	testenv.Isolate(t)
 	helper := exec.Command(os.Args[0], "-test.run=^$")
-	helper.Env = append(os.Environ(), "HOMERSLAB_TEST_PARENT=1", "HOMERSLAB_TEST_EXE="+agenttest.Executable(t))
+	helper.Env = append(os.Environ(), "HOMEWARD_TEST_PARENT=1", "HOMEWARD_TEST_EXE="+agenttest.Executable(t))
 	// The child's standard input stays open after its parent dies, so only its control pipe (or the parent-death
 	// signal, with CAP_KILL) can end it.
 	in, keep, err := os.Pipe()

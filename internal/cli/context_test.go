@@ -15,8 +15,8 @@ import (
 
 	"golang.org/x/sys/unix"
 
-	"github.com/ArjunRachithcf/homerslab/internal/cli"
-	"github.com/ArjunRachithcf/homerslab/internal/testenv"
+	"github.com/ArjunRachithcf/homeward/internal/cli"
+	"github.com/ArjunRachithcf/homeward/internal/testenv"
 )
 
 // at is setup as the control socket shows it, with the step waiting for secret, at revision 17, answered from the LAN.

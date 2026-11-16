@@ -11,10 +11,10 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/ArjunRachithcf/homerslab/internal/catalog"
-	"github.com/ArjunRachithcf/homerslab/internal/engine"
-	"github.com/ArjunRachithcf/homerslab/internal/manager/plan"
-	"github.com/ArjunRachithcf/homerslab/internal/manager/store"
+	"github.com/ArjunRachithcf/homeward/internal/catalog"
+	"github.com/ArjunRachithcf/homeward/internal/engine"
+	"github.com/ArjunRachithcf/homeward/internal/manager/plan"
+	"github.com/ArjunRachithcf/homeward/internal/manager/store"
 )
 
 // catalogInfo is a catalog as the Store names it.

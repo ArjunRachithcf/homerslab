@@ -3,6 +3,9 @@ status: accepted
 date: 2026-11-09
 ---
 
+> Written when the product was called HomersLab. It is **Homeward** now, and HomersLab the maker's name
+> ([ADR 0022](0022-homeward-the-product-homerslab-the-maker.md)); the text below is as it was decided.
+
 # NetBird, Tailscale and Headscale behind one contract; TLS always ends at home
 
 **Meshes.** HomersLab supports three meshes, all implementations of one mesh contract:

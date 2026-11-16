@@ -9,9 +9,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ArjunRachithcf/homerslab/internal/agent/agenttest"
-	"github.com/ArjunRachithcf/homerslab/internal/backup"
-	"github.com/ArjunRachithcf/homerslab/internal/testenv"
+	"github.com/ArjunRachithcf/homeward/internal/agent/agenttest"
+	"github.com/ArjunRachithcf/homeward/internal/backup"
+	"github.com/ArjunRachithcf/homeward/internal/testenv"
 )
 
 // bentoWithData is BentoPDF with data of its own: a folder, a dump, and a folder its definition leaves out.

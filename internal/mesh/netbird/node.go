@@ -9,30 +9,30 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/ArjunRachithcf/homerslab/internal/host"
-	"github.com/ArjunRachithcf/homerslab/internal/mesh"
+	"github.com/ArjunRachithcf/homeward/internal/host"
+	"github.com/ArjunRachithcf/homeward/internal/mesh"
 )
 
-// The node side: NetBird's client on a HomersLab node, as the agent runs it.
+// The node side: NetBird's client on a Homeward node, as the agent runs it.
 const (
 	// Interface is the client's WireGuard interface, the node's mesh interface in the firewall table.
 	Interface = "wt0"
 	// WireGuardPort is the client's UDP port, which the firewall table lets in so peers connect directly.
 	WireGuardPort = 51820
 	// DropInPath is where the agent puts the client service's environment.
-	DropInPath = "etc/systemd/system/netbird.service.d/10-homerslab.conf"
+	DropInPath = "etc/systemd/system/netbird.service.d/10-homeward.conf"
 )
 
 // ServiceEnv is the environment of NetBird's daemon on every node. NB_DISABLE_NAT_MAPPER: since v0.68 the client asks
-// the router for a port through UPnP, NAT-PMP or PCP, and this is the only switch (the API has none); HomersLab never
+// the router for a port through UPnP, NAT-PMP or PCP, and this is the only switch (the API has none); Homeward never
 // opens a router port (ADR 0005).
 var ServiceEnv = []string{"NB_DISABLE_NAT_MAPPER=true"}
 
 // DropIn is the systemd drop-in that gives NetBird's service ServiceEnv.
 func DropIn() []byte {
 	var b strings.Builder
-	b.WriteString("# Written by HomersLab's agent, which puts it back if changed. NetBird's client never asks the router\n")
-	b.WriteString("# for a port (UPnP, NAT-PMP, PCP): HomersLab opens no router port, ever.\n[Service]\n")
+	b.WriteString("# Written by Homeward's agent, which puts it back if changed. NetBird's client never asks the router\n")
+	b.WriteString("# for a port (UPnP, NAT-PMP, PCP): Homeward opens no router port, ever.\n[Service]\n")
 	for _, e := range ServiceEnv {
 		b.WriteString("Environment=" + e + "\n")
 	}
@@ -47,8 +47,8 @@ func DropIn() []byte {
 // --enable-json-socket, and NB_JSON_SOCKET without it stops the daemon from starting, so the drop-in leaves it be.
 var ControlSocket = mesh.ControlSocket{
 	Unit:       "netbird.service",
-	DropInPath: "etc/systemd/system/netbird.service.d/11-homerslab-socket.conf",
-	DropIn: []byte(`# Written by HomersLab's agent, which puts it back if changed. NetBird's control socket is root's only: it controls
+	DropInPath: "etc/systemd/system/netbird.service.d/11-homeward-socket.conf",
+	DropIn: []byte(`# Written by Homeward's agent, which puts it back if changed. NetBird's control socket is root's only: it controls
 # the node's mesh connection, and the daemon makes it open to every user (0666). It lives in a folder only root may
 # enter, and the CLI's default path links to it, so ` + "`netbird`" + ` as root works as before.
 [Service]

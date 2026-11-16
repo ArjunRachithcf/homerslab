@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ArjunRachithcf/homerslab/internal/testenv"
+	"github.com/ArjunRachithcf/homeward/internal/testenv"
 )
 
 // #110: a duplicated tab holds the same session, so a stale tab could overwrite what a newer one answered. A step is

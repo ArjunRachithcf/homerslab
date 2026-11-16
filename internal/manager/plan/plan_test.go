@@ -7,11 +7,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ArjunRachithcf/homerslab/internal/catalog"
-	"github.com/ArjunRachithcf/homerslab/internal/engine"
-	"github.com/ArjunRachithcf/homerslab/internal/manager/plan"
-	"github.com/ArjunRachithcf/homerslab/internal/node"
-	"github.com/ArjunRachithcf/homerslab/internal/testenv"
+	"github.com/ArjunRachithcf/homeward/internal/catalog"
+	"github.com/ArjunRachithcf/homeward/internal/engine"
+	"github.com/ArjunRachithcf/homeward/internal/manager/plan"
+	"github.com/ArjunRachithcf/homeward/internal/node"
+	"github.com/ArjunRachithcf/homeward/internal/testenv"
 )
 
 const gib = 1 << 30
@@ -20,7 +20,7 @@ var (
 	digestA  = "sha256:" + strings.Repeat("a", 64)
 	digestB  = "sha256:" + strings.Repeat("b", 64)
 	made     = time.Date(2026, 11, 11, 9, 30, 0, 0, time.UTC)
-	official = plan.From{ID: "official", Publisher: "HomersLab"}
+	official = plan.From{ID: "official", Publisher: "Homeward"}
 )
 
 // definition is a small app in two services, with what the planner reads of it.
@@ -72,7 +72,7 @@ func household() plan.Household {
 		Primary: plan.Node{Engine: catalog.Docker, Facts: node.Facts{
 			Hostname: "study-pc", Architecture: "x86_64", MemoryBytes: 32 * gib, MemoryAvailableBytes: 20 * gib, TPM: node.TPM{Present: true, Version: "2.0"},
 			GPUs:  []node.GPU{{Vendor: "NVIDIA", Model: "GeForce RTX 3060", PCIID: "10de:2504"}},
-			Space: &node.Space{Path: "/var/lib/homerslab", FreeBytes: 400e9, SizeBytes: 1e12},
+			Space: &node.Space{Path: "/var/lib/homeward", FreeBytes: 400e9, SizeBytes: 1e12},
 		}},
 	}
 }
@@ -103,7 +103,7 @@ func TestAPlanSaysWhatInstallingDoes(t *testing.T) {
 			t.Errorf("%s:\n got %+v\nwant %+v", what, got, want)
 		}
 	}
-	check("app", p.App, plan.App{ID: "pictures", Name: "Pictures", Purpose: "Photos", Version: "v2.0.1", Tier: catalog.Verified, Catalog: "official", Publisher: "HomersLab", Definition: "sha256:" + strings.Repeat("d", 64)})
+	check("app", p.App, plan.App{ID: "pictures", Name: "Pictures", Purpose: "Photos", Version: "v2.0.1", Tier: catalog.Verified, Catalog: "official", Publisher: "Homeward", Definition: "sha256:" + strings.Repeat("d", 64)})
 	check("name", p.Name, plan.Name{Host: "pictures.ferreira.family", Meshes: []string{"NetBird"}, Exposure: "mesh", PublicAllowed: true})
 	check("audience", p.Audience, plan.Audience{Default: "adults", People: []plan.Person{{Name: "Inês Ferreira", Role: "admin"}, {Name: "Rui Ferreira", Role: "adult"}}})
 	check("sign-in", p.SignIn, plan.SignIn{Method: catalog.OIDC, Provider: authentik(), Creates: "oidc-client"}) // no env: not wired
@@ -186,7 +186,7 @@ func TestThePlanUsesTheFirstSignInMethodTheProviderProvides(t *testing.T) {
 
 // The plan names the OIDC client installing creates: its redirect addresses are exactly the app's callbacks on its one
 // canonical URL, the household's port included (ADR 0021, #92), or its own apps' addresses, and follow the name the
-// app actually gets (#20, adversarial review round 2). It says whether HomersLab can set the method up today (wired).
+// app actually gets (#20, adversarial review round 2). It says whether Homeward can set the method up today (wired).
 func TestAnOIDCPlanNamesItsClientsRedirectAddressesOnTheAppsOwnURLAndWhetherItIsWired(t *testing.T) {
 	testenv.Isolate(t)
 	d, h := definition(), household()
@@ -211,13 +211,13 @@ func TestAnOIDCPlanNamesItsClientsRedirectAddressesOnTheAppsOwnURLAndWhetherItIs
 
 	d.SignIn[0].Env = nil // the manifest doesn't say how the app takes its client: still the app's first choice
 	if p := make_(t, d, h); p.SignIn.Method != catalog.OIDC || p.SignIn.Wired {
-		t.Errorf("OIDC that HomersLab can't set up yet: %+v, want it shown, not wired", p.SignIn)
+		t.Errorf("OIDC that Homeward can't set up yet: %+v, want it shown, not wired", p.SignIn)
 	}
 	d.SignIn = []catalog.SignIn{{Method: catalog.LDAP}}
 	if p := make_(t, d, h); p.SignIn.Method != catalog.LDAP || p.SignIn.Wired || p.SignIn.Creates != "ldap-access" {
 		t.Errorf("an LDAP plan whose manifest doesn't say how the app takes its directory: %+v, want not wired", p.SignIn)
 	}
-	// Once the manifest says how the app takes its directory, HomersLab sets it up (#204).
+	// Once the manifest says how the app takes its directory, Homeward sets it up (#204).
 	d.SignIn[0].LDAP = &catalog.LDAPEnv{URL: "LDAP_URL", BaseDN: "LDAP_BASE_DN", UserDN: "LDAP_USER_DN"}
 	if p := make_(t, d, h); p.SignIn.Method != catalog.LDAP || !p.SignIn.Wired || len(p.SignIn.RedirectURIs) > 0 || p.SignIn.Identity != "" {
 		t.Errorf("an LDAP plan: %+v, want wired, no redirect addresses, no identity contract", p.SignIn)

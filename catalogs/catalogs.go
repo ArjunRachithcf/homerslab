@@ -1,4 +1,4 @@
-// Package catalogs carries the catalogs HomersLab ships into its binary: the official catalog, in official/.
+// Package catalogs carries the catalogs Homeward ships into its binary: the official catalog, in official/.
 package catalogs
 
 import (

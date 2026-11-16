@@ -11,30 +11,30 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/ArjunRachithcf/homerslab/internal/home"
-	"github.com/ArjunRachithcf/homerslab/internal/surfaces"
+	"github.com/ArjunRachithcf/homeward/internal/home"
+	"github.com/ArjunRachithcf/homeward/internal/surfaces"
 )
 
 // homeSecret is Home's client secret, as systemd hands it to Home's unit: a credential in its credentials directory.
 const homeSecret = "manager-home-client-secret"
 
-// runHome is Home's process (#21): unprivileged, from homerslab-home.service, answering the edge on Home's socket.
+// runHome is Home's process (#21): unprivileged, from homeward-home.service, answering the edge on Home's socket.
 func runHome(ctx context.Context, args []string, env Env) error {
 	fs := flags("home", env)
 	projection := fs.String("projection", DefaultProjection, "the projection the manager keeps for Home")
 	secret := fs.String("client-secret", filepath.Join(os.Getenv("CREDENTIALS_DIRECTORY"), homeSecret),
 		"the file of Home's client secret at the sign-in (its unit's credential)")
-	socket := fs.String("socket", "", "Home's socket for the edge, when systemd doesn't hand it over (homerslab-home.socket)")
+	socket := fs.String("socket", "", "Home's socket for the edge, when systemd doesn't hand it over (homeward-home.socket)")
 	if err := parse(fs, args); err != nil {
 		return err
 	}
 	if env.Euid() == 0 {
-		return errors.New("Home runs unprivileged, as the homerslab-home user; it reads only the projection")
+		return errors.New("Home runs unprivileged, as the homeward-home user; it reads only the projection")
 	}
 	ln, err := activated("home")
 	if err == nil && ln == nil {
 		if *socket == "" {
-			return errors.New("no socket: systemd hands Home its socket (homerslab-home.socket), or --socket names one")
+			return errors.New("no socket: systemd hands Home its socket (homeward-home.socket), or --socket names one")
 		}
 		if err := os.Remove(*socket); err != nil && !errors.Is(err, os.ErrNotExist) {
 			return err

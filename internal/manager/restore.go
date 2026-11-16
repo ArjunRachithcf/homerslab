@@ -7,9 +7,9 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/ArjunRachithcf/homerslab/internal/agent"
-	"github.com/ArjunRachithcf/homerslab/internal/manager/plan"
-	"github.com/ArjunRachithcf/homerslab/internal/manager/store"
+	"github.com/ArjunRachithcf/homeward/internal/agent"
+	"github.com/ArjunRachithcf/homeward/internal/manager/plan"
+	"github.com/ArjunRachithcf/homeward/internal/manager/store"
 )
 
 // An app's backups, and restoring it to an earlier point (#22; spec: Updates, removal, eject). Admin lists each app's

@@ -6,7 +6,7 @@ import (
 	"encoding/json"
 )
 
-// Built are the steps this version of HomersLab can take. The rest come with the tickets that build them.
+// Built are the steps this version of Homeward can take. The rest come with the tickets that build them.
 var Built = map[string]Handler{
 	"welcome":   welcome,
 	"you":       you,

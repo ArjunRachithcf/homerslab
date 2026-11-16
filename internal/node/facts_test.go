@@ -5,8 +5,8 @@ import (
 	"testing"
 	"testing/fstest"
 
-	"github.com/ArjunRachithcf/homerslab/internal/node"
-	"github.com/ArjunRachithcf/homerslab/internal/testenv"
+	"github.com/ArjunRachithcf/homeward/internal/node"
+	"github.com/ArjunRachithcf/homeward/internal/testenv"
 )
 
 type failingStatfs struct{ fstest.MapFS }

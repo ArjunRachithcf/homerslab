@@ -17,9 +17,9 @@ import (
 
 	"golang.org/x/sys/unix"
 
-	"github.com/ArjunRachithcf/homerslab/internal/cli"
-	"github.com/ArjunRachithcf/homerslab/internal/firewall"
-	"github.com/ArjunRachithcf/homerslab/internal/testenv"
+	"github.com/ArjunRachithcf/homeward/internal/cli"
+	"github.com/ArjunRachithcf/homeward/internal/firewall"
+	"github.com/ArjunRachithcf/homeward/internal/testenv"
 )
 
 const token = "nbp_FROMTHETERMINAL000000000000000000000"

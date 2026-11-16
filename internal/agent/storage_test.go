@@ -15,10 +15,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/ArjunRachithcf/homerslab/internal/agent"
-	"github.com/ArjunRachithcf/homerslab/internal/agent/agenttest"
-	"github.com/ArjunRachithcf/homerslab/internal/storage"
-	"github.com/ArjunRachithcf/homerslab/internal/testenv"
+	"github.com/ArjunRachithcf/homeward/internal/agent"
+	"github.com/ArjunRachithcf/homeward/internal/agent/agenttest"
+	"github.com/ArjunRachithcf/homeward/internal/storage"
+	"github.com/ArjunRachithcf/homeward/internal/testenv"
 )
 
 // sharePassword is a share's password in the tests: it must reach the sealed credential, and nothing else.
@@ -29,7 +29,7 @@ func smbShare() agent.StorageRequest {
 }
 
 // A local folder is a storage location where the agent's checks pass (#28): a folder of its own, reached without a
-// symlink, holding nothing of the machine's or HomersLab's.
+// symlink, holding nothing of the machine's or Homeward's.
 func TestAFolderIsAStorageLocationWhereItsChecksPass(t *testing.T) {
 	testenv.Isolate(t)
 	sock, h, _ := joined(t, agent.Config{})
@@ -211,7 +211,7 @@ func TestAShareIsMountedOverTheMeshOnly(t *testing.T) {
 			t.Errorf("%s: %d %s, want %s", name, code, body, c.want)
 		}
 	}
-	if h.Ran("systemctl enable /"+agent.UnitsDir+"/homerslab-storage-films.service") >= 0 {
+	if h.Ran("systemctl enable /"+agent.UnitsDir+"/homeward-storage-films.service") >= 0 {
 		t.Fatal("a refused share was mounted")
 	}
 
@@ -219,13 +219,13 @@ func TestAShareIsMountedOverTheMeshOnly(t *testing.T) {
 	if code != http.StatusOK {
 		t.Fatalf("a share on the mesh: %d %s", code, body)
 	}
-	unit, err := os.ReadFile(filepath.Join(h.Root, agent.UnitsDir, "homerslab-storage-films.service"))
+	unit, err := os.ReadFile(filepath.Join(h.Root, agent.UnitsDir, "homeward-storage-films.service"))
 	want := storage.ShareUnit(storage.Share{ID: "films", Protocol: storage.SMB, Server: netip.MustParseAddr("100.64.1.2"), Share: "media",
 		Credential: filepath.Join(state, "storage", "films.cred"), SELinux: true})
 	if err != nil || !bytes.Equal(unit, want) {
 		t.Errorf("the share's unit: %v\n%s\nwant\n%s", err, unit, want)
 	}
-	enable, restart := h.Ran("systemctl enable /"+agent.UnitsDir+"/homerslab-storage-films.service"), h.Ran("systemctl restart homerslab-storage-films.service")
+	enable, restart := h.Ran("systemctl enable /"+agent.UnitsDir+"/homeward-storage-films.service"), h.Ran("systemctl restart homeward-storage-films.service")
 	if enable < 0 || restart < enable {
 		t.Errorf("systemd: enabled at %d, mounted at %d", enable, restart)
 	}
@@ -261,9 +261,9 @@ func TestAShareIsMountedOverTheMeshOnly(t *testing.T) {
 	}
 
 	// The same share again changes nothing: no new credential, no remount of a share apps may be using.
-	seals, mounts := h.Times("systemctl restart homerslab-storage-films.service"), len(h.Cmds())
+	seals, mounts := h.Times("systemctl restart homeward-storage-films.service"), len(h.Cmds())
 	if code, _ := call(t, sock, "PUT", "/v1/storage/films", smbShare()); code != http.StatusOK || len(h.Cmds()) != mounts ||
-		h.Times("systemctl restart homerslab-storage-films.service") != seals {
+		h.Times("systemctl restart homeward-storage-films.service") != seals {
 		t.Errorf("the same share again: %d, and %d commands", code, len(h.Cmds())-mounts)
 	}
 	// An NFS export takes no credentials; a share that doesn't mount leaves nothing behind.
@@ -275,13 +275,13 @@ func TestAShareIsMountedOverTheMeshOnly(t *testing.T) {
 	if code, _ := call(t, sock, "PUT", "/v1/storage/music2", nfs); code != http.StatusBadRequest {
 		t.Errorf("an NFS export with a password: %d", code)
 	}
-	h.Fail("systemctl restart homerslab-storage-photos.service")
+	h.Fail("systemctl restart homeward-storage-photos.service")
 	r := smbShare()
 	r.Server = "100.64.1.4"
 	if code, body := call(t, sock, "PUT", "/v1/storage/photos", r); code != http.StatusBadGateway || !strings.Contains(string(body), "mount-failed") {
 		t.Errorf("a share that doesn't mount: %d %s", code, body)
 	}
-	for _, f := range []string{filepath.Join(h.Root, agent.UnitsDir, "homerslab-storage-photos.service"), filepath.Join(state, "storage", "photos.cred")} {
+	for _, f := range []string{filepath.Join(h.Root, agent.UnitsDir, "homeward-storage-photos.service"), filepath.Join(state, "storage", "photos.cred")} {
 		if _, err := os.Stat(f); err == nil {
 			t.Errorf("%s left behind", f)
 		}
@@ -319,7 +319,7 @@ func TestAnAppGetsTheStorageLocationsItsPlanNames(t *testing.T) {
 	r := withSecrets()
 	r.Storage = []agent.AppStorage{{Location: "films", Service: "web", Path: "/media", ReadOnly: true}, {Location: "uploads", Service: "db", Path: "/uploads"}}
 	install(t, sock, "ledger", r)
-	o, _ := os.ReadFile(filepath.Join(state, "apps", "ledger", "homerslab.yaml"))
+	o, _ := os.ReadFile(filepath.Join(state, "apps", "ledger", "homeward.yaml"))
 	for _, want := range []string{"        source: \"/srv/media\"\n        target: \"/media\"\n        read_only: true\n",
 		"        source: \"/srv/uploads\"\n        target: \"/uploads\"\n        read_only: false\n"} {
 		if !strings.Contains(string(o), want) {
@@ -405,12 +405,12 @@ func TestAnAppGivenAShareStartsOnlyOnceItIsMounted(t *testing.T) {
 	r := withSecrets()
 	r.Storage = []agent.AppStorage{{Location: "uploads", Service: "web", Path: "/uploads"}}
 	install(t, sock, "ledger", r)
-	o, _ := os.ReadFile(filepath.Join(state, "apps", "ledger", "homerslab.yaml"))
-	if !strings.Contains(string(o), "        source: \"/var/lib/homerslab-storage/uploads\"\n        target: \"/uploads\"\n        read_only: false\n") {
+	o, _ := os.ReadFile(filepath.Join(state, "apps", "ledger", "homeward.yaml"))
+	if !strings.Contains(string(o), "        source: \"/var/lib/homeward-storage/uploads\"\n        target: \"/uploads\"\n        read_only: false\n") {
 		t.Errorf("the app's compose file:\n%s", o)
 	}
-	u, _ := os.ReadFile(filepath.Join(h.Root, agent.UnitsDir, "homerslab-app-ledger.service"))
-	for _, want := range []string{"\nWants=network-online.target homerslab-storage-uploads.service\n", "\nExecStartPre=/usr/bin/mountpoint -q /var/lib/homerslab-storage/uploads\n"} {
+	u, _ := os.ReadFile(filepath.Join(h.Root, agent.UnitsDir, "homeward-app-ledger.service"))
+	for _, want := range []string{"\nWants=network-online.target homeward-storage-uploads.service\n", "\nExecStartPre=/usr/bin/mountpoint -q /var/lib/homeward-storage/uploads\n"} {
 		if !strings.Contains(string(u), want) {
 			t.Errorf("the app's unit lacks %q:\n%s", want, u)
 		}

@@ -9,9 +9,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/ArjunRachithcf/homerslab/internal/firewall"
-	"github.com/ArjunRachithcf/homerslab/internal/host"
-	"github.com/ArjunRachithcf/homerslab/internal/testenv"
+	"github.com/ArjunRachithcf/homeward/internal/firewall"
+	"github.com/ArjunRachithcf/homeward/internal/host"
+	"github.com/ArjunRachithcf/homeward/internal/testenv"
 )
 
 func TestTheTableIsReplacedInOneTransactionAndChangesNoOtherTable(t *testing.T) {
@@ -102,10 +102,10 @@ func TestASavedTableThatCantBeUsedBootsClosed(t *testing.T) {
 		"cut short in a chain":                                 table[:len(table)/2],
 		"cut short at a chain's end":                           table[:strings.LastIndex(table, "\t}\n")+3],
 		"cut short by its last newline":                        strings.TrimSuffix(table, "\n"),
-		"not HomersLab's table":                                "flush ruleset\n",
-		"HomersLab's table after something else":               "flush ruleset\n" + table,
-		"HomersLab's table and another after it":               table + "}\n" + "table inet other {\n}\n",
-		"HomersLab's table and a stray brace":                  table + "}\n",
+		"not Homeward's table":                                 "flush ruleset\n",
+		"Homeward's table after something else":                "flush ruleset\n" + table,
+		"Homeward's table and another after it":                table + "}\n" + "table inet other {\n}\n",
+		"Homeward's table and a stray brace":                   table + "}\n",
 	} {
 		path := filepath.Join(dir, "firewall.nft")
 		if err := os.WriteFile(path, []byte(content), 0o600); err != nil {

@@ -2,7 +2,7 @@ package authentik_test
 
 // An LDAP-only app in its own container (#204, part 2b): it reaches the sign-in only as an LDAP app on a node does,
 // at auth.<main domain>:636, which inside its container resolves to the sign-in listener's LDAPS port (the real one,
-// `homerslab edge ldaps`, this suite's own binary in a container beside it, with the household's certificate from a
+// `homeward edge ldaps`, this suite's own binary in a container beside it, with the household's certificate from a
 // test CA), and the port leads to the real outpost. The app's network is internal: the outpost itself, and anything
 // else, it can't reach.
 //
@@ -27,14 +27,14 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ArjunRachithcf/homerslab/internal/idp"
-	"github.com/ArjunRachithcf/homerslab/internal/idp/authentik"
-	"github.com/ArjunRachithcf/homerslab/internal/ldaps"
-	"github.com/ArjunRachithcf/homerslab/internal/ldaps/ldaptest"
+	"github.com/ArjunRachithcf/homeward/internal/idp"
+	"github.com/ArjunRachithcf/homeward/internal/idp/authentik"
+	"github.com/ArjunRachithcf/homeward/internal/ldaps"
+	"github.com/ArjunRachithcf/homeward/internal/ldaps/ldaptest"
 )
 
 // ldapHelper is the variable that makes this suite's binary a role in a container: the listener, or the app.
-const ldapHelper = "HOMERSLAB_TEST_LDAP_HELPER"
+const ldapHelper = "HOMEWARD_TEST_LDAP_HELPER"
 
 func TestMain(m *testing.M) {
 	if mode := os.Getenv(ldapHelper); mode != "" {
@@ -101,8 +101,8 @@ func ldapAppInItsContainer(w *world, a *authentik.Authentik) func(*testing.T) {
 		if f, err := elf.Open(self); err != nil || slices.ContainsFunc(f.Progs, func(p *elf.Prog) bool { return p.Type == elf.PT_INTERP }) {
 			t.Fatalf("the suite's binary runs in a container only if it is static: build it with CGO_ENABLED=0 (%v)", err)
 		}
-		app := idp.LDAPApp{Slug: "homerslab-shelf", Name: "Shelf", Roles: []idp.Role{idp.Adult}}
-		other := idp.LDAPApp{Slug: "homerslab-shelf-other", Name: "Other", Roles: []idp.Role{idp.Adult}}
+		app := idp.LDAPApp{Slug: "homerslab-philobiblos", Name: "Philobiblos", Roles: []idp.Role{idp.Adult}}
+		other := idp.LDAPApp{Slug: "homerslab-philobiblos-other", Name: "Other", Roles: []idp.Role{idp.Adult}}
 		creds, err := a.EnsureLDAP(ctx, app)
 		if err != nil {
 			t.Fatal(err)

@@ -1,4 +1,4 @@
-// Package storage is what HomersLab takes of a storage location (#28; story 48; ADR 0003): a local folder, or a network
+// Package storage is what Homeward takes of a storage location (#28; story 48; ADR 0003): a local folder, or a network
 // share reached over the mesh, which apps may use, read-only by default for media. No free text of an admin's or a
 // catalog's reaches a file the agent writes: a location's id, a folder's path, a share's server, name and export, and an
 // app's path in its container are each checked against a pattern first.
@@ -19,7 +19,7 @@ import (
 	"strings"
 	"syscall"
 
-	"github.com/ArjunRachithcf/homerslab/internal/text"
+	"github.com/ArjunRachithcf/homeward/internal/text"
 )
 
 // ID is a storage location's id, as a unit, a credential and a folder are named after it.
@@ -51,14 +51,14 @@ func plainName(n string) bool {
 		!strings.ContainsAny(n, "$\\\"`%:,")
 }
 
-// forbidden are the machine's own folders, and those of its services and HomersLab's (all under /var/lib, the engine's
+// forbidden are the machine's own folders, and those of its services and Homeward's (all under /var/lib, the engine's
 // socket under /run): a location is none of them, inside none, and holds none. /home is the household's people's own,
 // and the agent's unit can't see it (ProtectHome).
 var forbidden = []string{"/etc", "/proc", "/sys", "/dev", "/run", "/var/run", "/boot", "/efi", "/root", "/home", "/tmp", "/var/tmp",
 	"/usr", "/bin", "/sbin", "/lib", "/lib32", "/lib64", "/snap", "/var/lib", "/var/log", "/var/spool", "/var/cache", "/var/mail"}
 
 // CheckFolder says whether p, under the machine's root directory root ("/" on a real machine), may be a storage
-// location: an absolute, clean path of plain names, outside the machine's and HomersLab's folders (and also's: the
+// location: an absolute, clean path of plain names, outside the machine's and Homeward's folders (and also's: the
 // agent's own state, the engine's data, wherever they are), holding none of them, that is a folder reached without a
 // symlink, through folders only owner (root, on a real machine) can change.
 //
@@ -102,7 +102,7 @@ func CheckFolder(root string, owner int, p string, also ...string) error {
 }
 
 // Allowed says whether p may name a storage location's folder, by its path alone: absolute, clean, plain names,
-// outside the machine's and HomersLab's folders, holding none of them.
+// outside the machine's and Homeward's folders, holding none of them.
 func Allowed(p string) error {
 	if !strings.HasPrefix(p, "/") || path.Clean(p) != p || len(p) > 512 || !text.OneLine(p) {
 		return ErrPath
@@ -210,9 +210,9 @@ func (s Share) Valid() bool {
 
 // Unit is a share's unit's name; Credential its credential's name; MountPoint where it is mounted, which apps' compose
 // files bind.
-func Unit(id string) string       { return "homerslab-storage-" + id + ".service" }
+func Unit(id string) string       { return "homeward-storage-" + id + ".service" }
 func Credential(id string) string { return "storage-" + id }
-func MountPoint(id string) string { return "/var/lib/homerslab-storage/" + id }
+func MountPoint(id string) string { return "/var/lib/homeward-storage/" + id }
 
 // CredentialFile is the SMB credential file's body, as mount.cifs reads it.
 func CredentialFile(user, password string) []byte {
@@ -242,16 +242,16 @@ func ShareUnit(s Share) []byte {
 		opts += ",context=system_u:object_r:container_file_t:s0"
 	}
 	// No free text: the location's id, the server's address, and the share's name or export, each checked.
-	w("# Written by HomersLab's agent. Never edit by hand.")
+	w("# Written by Homeward's agent. Never edit by hand.")
 	w("# Storage location %s: a network share on the mesh, mounted by the standard mount command (ADR 0014). The firewall", id)
 	w("# table lets this machine reach its server through the mesh only, never the LAN.")
 	if s.Protocol == SMB {
 		w("# Its credentials are a systemd credential the agent sealed (ADR 0011), decrypted for the mount alone.")
 	}
 	w("[Unit]")
-	w("Description=HomersLab storage location %s", id)
-	w("Documentation=https://github.com/ArjunRachithcf/homerslab")
-	w("After=network-online.target netbird.service homerslab-agent.service")
+	w("Description=Homeward storage location %s", id)
+	w("Documentation=https://github.com/ArjunRachithcf/homeward")
+	w("After=network-online.target netbird.service homeward-agent.service")
 	w("Wants=network-online.target")
 	w("")
 	w("[Service]")

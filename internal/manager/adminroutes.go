@@ -60,7 +60,7 @@ func (m *Manager) servePage(w http.ResponseWriter, name string) {
 	if err != nil {
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		w.WriteHeader(http.StatusServiceUnavailable)
-		_, _ = w.Write([]byte("This HomersLab was built without its web pages.\n"))
+		_, _ = w.Write([]byte("This Homeward was built without its web pages.\n"))
 		return
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")

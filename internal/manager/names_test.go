@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/ArjunRachithcf/homerslab/internal/testenv"
+	"github.com/ArjunRachithcf/homeward/internal/testenv"
 )
 
 // Names and mail addresses (#69). A name goes through PRECIS's Nickname profile (RFC 8266), with a short exception set

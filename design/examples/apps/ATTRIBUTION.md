@@ -1,6 +1,6 @@
 # App icons in the design system's examples
 
-The icons in this folder show what an app tile looks like with a real app's own icon. In HomersLab each app
+The icons in this folder show what an app tile looks like with a real app's own icon. In Homeward each app
 definition ships its icons; these stand in for them in the gallery only.
 
 - **Source:** selfh.st/icons, <https://github.com/selfhst/icons> (as copied into classic's `site/apps/`).

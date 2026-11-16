@@ -11,9 +11,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/ArjunRachithcf/homerslab/internal/agent"
-	"github.com/ArjunRachithcf/homerslab/internal/home"
-	"github.com/ArjunRachithcf/homerslab/internal/manager/plan"
+	"github.com/ArjunRachithcf/homeward/internal/agent"
+	"github.com/ArjunRachithcf/homeward/internal/home"
+	"github.com/ArjunRachithcf/homeward/internal/manager/plan"
 )
 
 // Home's projection (#21, ADR 0013): Home is a process of its own, unprivileged, which reads only what the manager

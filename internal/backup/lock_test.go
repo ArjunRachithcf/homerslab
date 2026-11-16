@@ -18,8 +18,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ArjunRachithcf/homerslab/internal/backup"
-	"github.com/ArjunRachithcf/homerslab/internal/testenv"
+	"github.com/ArjunRachithcf/homeward/internal/backup"
+	"github.com/ArjunRachithcf/homeward/internal/testenv"
 )
 
 const (
@@ -143,7 +143,7 @@ func repository() []fakeObject {
 var s3Creds = backup.Credentials{AccessKeyID: "HLACCESSKEY", SecretAccessKey: "s3-secret-value/42"}
 
 // A target is immutable only where nobody holding its credentials can delete what it wrote: an S3 or B2 bucket locked in
-// compliance mode by default, versioned, and every object of the node's repository locked by HomersLab's lock run.
+// compliance mode by default, versioned, and every object of the node's repository locked by Homeward's lock run.
 // Everything else says plainly why it isn't.
 func TestATargetIsImmutableOnlyWhereItsCredentialsCantDelete(t *testing.T) {
 	testenv.Isolate(t)

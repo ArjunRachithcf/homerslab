@@ -12,7 +12,7 @@ function setupAt(domain: 'todo' | 'waiting' | 'checking' | 'done', answers: Reco
   const steps: Step[] = ids.map((id, i): Step => {
     const step: Step = { id, half: i < 8 ? 'lan' : 'mesh', state: i < 5 ? 'done' : 'todo' };
     if (id !== 'domain') return step;
-    if (domain === 'waiting' || domain === 'checking') return { ...step, state: domain, secret: 'dns', command: 'sudo homerslab setup secret dns' };
+    if (domain === 'waiting' || domain === 'checking') return { ...step, state: domain, secret: 'dns', command: 'sudo homeward setup secret dns' };
     return { ...step, state: domain };
   });
   return {
@@ -46,8 +46,8 @@ test('the domain comes from the mail address, the token goes in the terminal, an
   await expect(page.locator('input[type=password]')).toHaveCount(0);
   await page.getByRole('button', { name: 'Continue' }).click();
 
-  await expect(page.getByRole('heading', { level: 1 })).toContainText('Now give HomersLab the DNS token, on this machine');
-  await expect(page.getByText('sudo homerslab setup secret dns')).toBeVisible();
+  await expect(page.getByRole('heading', { level: 1 })).toContainText('Now give Homeward the DNS token, on this machine');
+  await expect(page.getByText('sudo homeward setup secret dns')).toBeVisible();
   await expect(page.getByRole('status')).toContainText('Waiting for the token and the certificate');
   await expect(page.getByRole('button', { name: 'Continue' })).toBeDisabled();
   await expect(page.locator('input')).toHaveCount(0);
@@ -78,6 +78,6 @@ test('a DNS server of the household’s own needs its address and its key’s na
   await page.getByLabel('The TSIG key’s name').fill('homerslab');
   await expect(page.locator('input[type=password]')).toHaveCount(0);
   await next.click();
-  await expect(page.getByText('sudo homerslab setup secret dns')).toBeVisible();
+  await expect(page.getByText('sudo homeward setup secret dns')).toBeVisible();
   expect(sent).toEqual([{ domain: 'home.ferreira.family', provider: 'rfc2136', server: '203.0.113.53:53', keyName: 'homerslab' }]);
 });

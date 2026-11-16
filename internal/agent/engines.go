@@ -10,7 +10,7 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/ArjunRachithcf/homerslab/internal/host"
+	"github.com/ArjunRachithcf/homeward/internal/host"
 )
 
 // Engines that list bridges.

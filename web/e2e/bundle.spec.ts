@@ -18,7 +18,7 @@ for (const surface of ['setup', 'Admin'] as const) test(`${surface}’s page loa
   const bodies = await loads(page, async () => {
     if (surface === 'setup') {
       await page.goto((await primary.newLink()).localUrl);
-      await expect(page.getByRole('heading', { level: 1 })).toContainText('Let’s set up HomersLab');
+      await expect(page.getByRole('heading', { level: 1 })).toContainText('Let’s set up Homeward');
     } else {
       primary.withDomain();
       await page.goto(await primary.adminURL());

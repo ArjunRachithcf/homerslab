@@ -10,8 +10,8 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/ArjunRachithcf/homerslab/internal/edge"
-	"github.com/ArjunRachithcf/homerslab/internal/testenv"
+	"github.com/ArjunRachithcf/homeward/internal/edge"
+	"github.com/ArjunRachithcf/homeward/internal/testenv"
 )
 
 // fakeAdmin answers like Caddy's admin API: /load takes a configuration, /config/ gives it back re-marshalled.

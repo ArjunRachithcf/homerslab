@@ -1,4 +1,4 @@
-// HomersLab prototypes: the floating prototype bar. Not part of the design being judged (its look is in proto.css).
+// Homeward prototypes: the floating prototype bar. Not part of the design being judged (its look is in proto.css).
 // - Variants: a screen with an open design question registers its variants; the arrows (and the left/right keys)
 //   cycle them, and the choice lives in the URL, so it is shareable and survives a reload. Round 1 settled the
 //   install plan (a page) and the kid's Home (its own layout), so those variants are gone.

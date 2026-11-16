@@ -10,13 +10,13 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/ArjunRachithcf/homerslab/internal/agent"
-	"github.com/ArjunRachithcf/homerslab/internal/agent/agenttest"
-	"github.com/ArjunRachithcf/homerslab/internal/testenv"
+	"github.com/ArjunRachithcf/homeward/internal/agent"
+	"github.com/ArjunRachithcf/homeward/internal/agent/agenttest"
+	"github.com/ArjunRachithcf/homeward/internal/testenv"
 )
 
 // The manager's setup port is its own (its --listen): it gives it to the agent, which keeps it for the next boot's
-// closed firewall table (homerslab firewall restore), so a primary rebooted before its first join still lets the LAN
+// closed firewall table (homeward firewall restore), so a primary rebooted before its first join still lets the LAN
 // reach first-time setup. An agent not up yet is asked again at the next run.
 func TestTheManagerGivesTheAgentItsSetupPort(t *testing.T) {
 	testenv.Isolate(t)

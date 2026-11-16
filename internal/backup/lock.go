@@ -26,7 +26,7 @@ import (
 // wrote, and why, in a word (#22, part 3; spec: Adapter contracts → Backup target, "immutable where the target supports
 // it"):
 //   - "compliance": an S3 or B2 bucket with Object Lock in compliance mode by default, versioning on, and every object of
-//     the node's repository locked until LockedUntil by HomersLab's own lock run (Lock). A bucket's default retention
+//     the node's repository locked until LockedUntil by Homeward's own lock run (Lock). A bucket's default retention
 //     locks each object version only for Days after it was written, and restic writes its config, its keys and most
 //     packs once, so without that run the oldest, most needed objects come free first. Nobody can delete or overwrite a
 //     locked version, whatever the key; what prune or a thief deletes is only hidden, and is restored by hand by reading
@@ -207,11 +207,11 @@ type LockRequest struct {
 	Was    Immutability `json:"was"`
 }
 
-// LockMain is `homerslab agent backup-lock`, which the agent runs in restic's unit (never by hand): it reads a
+// LockMain is `homeward agent backup-lock`, which the agent runs in restic's unit (never by hand): it reads a
 // LockRequest on in and the target's keys and CA from the unit's credentials folder (dir: $CREDENTIALS_DIRECTORY), runs
 // Lock, and writes the result as JSON on out. What it says names no secret.
 func LockMain(args []string, dir string, in io.Reader, out, errOut io.Writer) int {
-	fs := flag.NewFlagSet("homerslab agent backup-lock", flag.ContinueOnError)
+	fs := flag.NewFlagSet("homeward agent backup-lock", flag.ContinueOnError)
 	fs.SetOutput(errOut)
 	if fs.Parse(args) != nil || fs.NArg() != 0 {
 		return 2

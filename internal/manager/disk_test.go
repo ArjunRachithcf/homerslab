@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ArjunRachithcf/homerslab/internal/testenv"
+	"github.com/ArjunRachithcf/homeward/internal/testenv"
 )
 
 // A full disk under the manager's database is said as such: reading setup goes on, and a write answers 507 disk-full

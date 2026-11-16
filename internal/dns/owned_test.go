@@ -14,8 +14,8 @@ import (
 	"github.com/libdns/libdns"
 	"golang.org/x/net/idna"
 
-	"github.com/ArjunRachithcf/homerslab/internal/dns"
-	"github.com/ArjunRachithcf/homerslab/internal/testenv"
+	"github.com/ArjunRachithcf/homeward/internal/dns"
+	"github.com/ArjunRachithcf/homeward/internal/testenv"
 )
 
 // provider is a DNS provider's zone, in memory, through libdns.
@@ -81,7 +81,7 @@ func (p *provider) has(name, typ string) []string {
 	return out
 }
 
-// book is the manager's database's list of HomersLab's records, in memory.
+// book is the manager's database's list of Homeward's records, in memory.
 type book struct {
 	mu   sync.Mutex
 	recs map[string][]dns.Record
@@ -120,9 +120,9 @@ func household() *provider {
 	}}
 }
 
-// HomersLab touches only the records it created, which the manager's database lists, and one inventory TXT record;
+// Homeward touches only the records it created, which the manager's database lists, and one inventory TXT record;
 // nothing is ever written beside a CNAME (#79).
-func TestOnlyHomersLabsOwnRecordsAreChanged(t *testing.T) {
+func TestOnlyHomewardsOwnRecordsAreChanged(t *testing.T) {
 	testenv.Isolate(t)
 	p, b := household(), &book{}
 	o := &dns.Owned{Provider: p, Zone: "example.test.", Domain: "example.test", Book: b}
@@ -157,7 +157,7 @@ func TestOnlyHomersLabsOwnRecordsAreChanged(t *testing.T) {
 		}
 	}
 	if err := o.Create(ctx, dns.Record{Name: "photos", Type: "TXT", Value: "beside our own CNAME"}); !errors.Is(err, dns.ErrTaken) {
-		t.Errorf("a TXT beside HomersLab's own CNAME: %v, want ErrTaken", err)
+		t.Errorf("a TXT beside Homeward's own CNAME: %v, want ErrTaken", err)
 	}
 
 	for _, r := range []dns.Record{
@@ -213,7 +213,7 @@ func TestRecordsOfADomainUnderItsZone(t *testing.T) {
 
 func TestTheProvidersSettingsHoldNoSecret(t *testing.T) {
 	testenv.Isolate(t)
-	s, err := dns.Settings{Provider: "RFC2136", Server: "192.0.2.53", KeyName: "HomersLab.", KeyAlgorithm: ""}.Check()
+	s, err := dns.Settings{Provider: "RFC2136", Server: "192.0.2.53", KeyName: "Homeward.", KeyAlgorithm: ""}.Check()
 	if err != nil || s.Server != "192.0.2.53:53" || s.KeyName != "homerslab." || s.KeyAlgorithm != "hmac-sha256" {
 		t.Errorf("tidied: %+v %v", s, err)
 	}
@@ -245,7 +245,7 @@ func TestADeleteNeverOrphansARecord(t *testing.T) {
 	if err := o.Create(ctx, dns.Record{Name: "_acme-challenge", Type: "TXT", Value: "digest", TTL: time.Minute}); err != nil {
 		t.Fatal(err)
 	}
-	// The provider keeps its own TTL: 300 seconds where HomersLab asked for 60 (Infomaniak's minimum, say).
+	// The provider keeps its own TTL: 300 seconds where Homeward asked for 60 (Infomaniak's minimum, say).
 	p.mu.Lock()
 	for i := range p.records {
 		p.records[i].TTL = 5 * time.Minute
@@ -270,7 +270,7 @@ func TestADeleteNeverOrphansARecord(t *testing.T) {
 		t.Error("another client's challenge record is gone")
 	}
 
-	// Someone deleted HomersLab's record at the provider by hand: the lookup finds it gone, so the book drops it, and
+	// Someone deleted Homeward's record at the provider by hand: the lookup finds it gone, so the book drops it, and
 	// the drift report says so.
 	var notes []dns.Drift
 	o.Drift = func(d dns.Drift) { notes = append(notes, d) }
@@ -377,7 +377,7 @@ func (u *unreachable) GetRecords(ctx context.Context, zone string) ([]libdns.Rec
 	return u.provider.GetRecords(ctx, zone)
 }
 
-// A record of HomersLab's that someone replaced by hand (deleted it, and added another value at the same name and
+// A record of Homeward's that someone replaced by hand (deleted it, and added another value at the same name and
 // type) leaves the book with a note once a delete removes nothing and the lookup shows its value gone. The other value
 // is never deleted or changed, on any retry (#153).
 func TestARecordReplacedByHandLeavesTheBook(t *testing.T) {
@@ -515,7 +515,7 @@ func TestAProviderThatRewritesValuesNeverMakesALiveRecordLookGone(t *testing.T) 
 }
 
 // listedAs is a provider that lists names in a form of its own (in Unicode, in punycode, in capitals, with a
-// trailing dot), and whose deletes do nothing: a record of HomersLab's is still there.
+// trailing dot), and whose deletes do nothing: a record of Homeward's is still there.
 type listedAs struct {
 	*provider
 	form func(string) string
@@ -544,7 +544,7 @@ func unicode(name string) string {
 }
 
 // Names are compared in one form, ASCII (A-labels), wherever the domain is stored in Unicode or punycode and however
-// the provider lists them: a live record of HomersLab's is still recognised as its own (#153).
+// the provider lists them: a live record of Homeward's is still recognised as its own (#153).
 func TestNamesAreComparedInTheirASCIIForm(t *testing.T) {
 	testenv.Isolate(t)
 	ctx := context.Background()
@@ -577,7 +577,7 @@ func TestNamesAreComparedInTheirASCIIForm(t *testing.T) {
 			if got := p.has(tc.ascii, "TXT"); !slices.Contains(got, "digest") {
 				t.Errorf("%s holds %v at the provider", tc.ascii, got)
 			}
-			// Created again, by its name in another form: it is already there, and HomersLab's.
+			// Created again, by its name in another form: it is already there, and Homeward's.
 			for _, again := range []string{tc.form(tc.ascii), strings.ToUpper(tc.ascii) + ".", unicode(tc.ascii)} {
 				if err := o.Create(ctx, dns.Record{Name: again, Type: "TXT", Value: "digest"}); err != nil {
 					t.Errorf("creating %q again: %v", again, err)
@@ -639,8 +639,8 @@ func TestANameThatIsntValidIDNAIsRefused(t *testing.T) {
 				t.Errorf("written: %v", p.writes)
 			}
 
-			// A name the provider lists that isn't valid is never at one of HomersLab's names, which are, and is never
-			// touched; it doesn't stop HomersLab's own records.
+			// A name the provider lists that isn't valid is never at one of Homeward's names, which are, and is never
+			// touched; it doesn't stop Homeward's own records.
 			p.mu.Lock()
 			p.records = append(p.records, libdns.RR{Name: bad, Type: "TXT", Data: "someone else's"})
 			p.mu.Unlock()
@@ -658,7 +658,7 @@ func TestANameThatIsntValidIDNAIsRefused(t *testing.T) {
 	}
 }
 
-// A record the book kept in another form (in capitals, with a trailing dot) is still HomersLab's, and is forgotten in
+// A record the book kept in another form (in capitals, with a trailing dot) is still Homeward's, and is forgotten in
 // the form the book keeps it.
 func TestTheBooksNamesAreReadInTheirASCIIForm(t *testing.T) {
 	testenv.Isolate(t)
@@ -759,7 +759,7 @@ func TestADeleteNamesTheRecordAsTheProviderListsIt(t *testing.T) {
 	}
 }
 
-// At the challenge's name, which other ACME clients share, their tokens beside HomersLab's don't make a token deleted
+// At the challenge's name, which other ACME clients share, their tokens beside Homeward's don't make a token deleted
 // by hand look replaced; the note says deleted, and their tokens stay.
 func TestAChallengeDeletedByHandBesideAnotherClientsIsDeletedNotReplaced(t *testing.T) {
 	testenv.Isolate(t)
@@ -786,7 +786,7 @@ func TestAChallengeDeletedByHandBesideAnotherClientsIsDeletedNotReplaced(t *test
 	}
 }
 
-// A name or a CNAME target that IDNA's mapping would fold into one of HomersLab's (a fullwidth letter, an ideographic
+// A name or a CNAME target that IDNA's mapping would fold into one of Homeward's (a fullwidth letter, an ideographic
 // full stop, a soft hyphen) is someone else's, at a provider that keeps names as they are typed: it is never taken for
 // ours, and never deleted, on any retry (#164's review).
 func TestALookAlikeIsNeverOurs(t *testing.T) {
@@ -896,7 +896,7 @@ func (f *flaky) DeleteRecords(ctx context.Context, zone string, recs []libdns.Re
 
 // An entry leaves the book as deleted by hand only when a listing that holds the zone's other records shows it gone:
 // a listing that comes back empty for a moment (a transient answer, an eventual-consistency read), or fails, proves
-// nothing, so no record of HomersLab's is left at the provider untracked, and a later create of the same name isn't
+// nothing, so no record of Homeward's is left at the provider untracked, and a later create of the same name isn't
 // taken for someone else's (#166).
 func TestAListingThatLooksEmptyNeverDropsTheBooksEntries(t *testing.T) {
 	testenv.Isolate(t)
@@ -955,7 +955,7 @@ func TestAListingThatLooksEmptyNeverDropsTheBooksEntries(t *testing.T) {
 			if got := len(f.has("photos", "CNAME")) > 0; got != tc.atProvider {
 				t.Errorf("photos at the provider: %v, want %v", got, tc.atProvider)
 			}
-			// No record HomersLab wrote is left at the provider without its entry in the book.
+			// No record Homeward wrote is left at the provider without its entry in the book.
 			f.provider.mu.Lock()
 			left := slices.Clone(f.provider.records)
 			f.provider.mu.Unlock()
@@ -980,7 +980,7 @@ func TestAListingThatLooksEmptyNeverDropsTheBooksEntries(t *testing.T) {
 				t.Errorf("the drift notes: %v, want %v", got, want)
 			}
 
-			// Once the listing is back, the name is HomersLab's: a record still in the book is deleted (a CNAME is never
+			// Once the listing is back, the name is Homeward's: a record still in the book is deleted (a CNAME is never
 			// created twice), and the name is created again.
 			if tc.inBook {
 				if err := o.Delete(ctx, photos); err != nil || len(f.has("photos", "CNAME")) > 0 {
@@ -1007,7 +1007,7 @@ func (e *emptyOnce) GetRecords(ctx context.Context, zone string) ([]libdns.Recor
 	return e.Provider.GetRecords(ctx, zone)
 }
 
-// After an empty listing, the delete goes out in HomersLab's own form, which a provider that keeps another form doesn't
+// After an empty listing, the delete goes out in Homeward's own form, which a provider that keeps another form doesn't
 // match; once the next listing shows the record, the delete is sent again as the provider lists it, so a moment's empty
 // listing doesn't fail the delete, or a create whose inventory record changes (#166's review).
 func TestADeleteAfterAnEmptyListingIsSentAgainInTheProvidersForm(t *testing.T) {
@@ -1052,7 +1052,7 @@ func TestADeleteAfterAnEmptyListingIsSentAgainInTheProvidersForm(t *testing.T) {
 // which both providers list (RFC 2136's zone transfer, Infomaniak's API), so such a listing is a moment's answer, an
 // eventual-consistency read, and the name may hold someone else's record. Create writes nothing, says so in the drift
 // report, and fails with an error the caller tries again later; Free says it can't tell. That holds whether or not the
-// zone has held a record of HomersLab's (#171).
+// zone has held a record of Homeward's (#171).
 func TestAnEmptyListingNeverProvesANameFree(t *testing.T) {
 	testenv.Isolate(t)
 	ctx := context.Background()
@@ -1061,12 +1061,12 @@ func TestAnEmptyListingNeverProvesANameFree(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
 		r      dns.Record
-		before []dns.Record // what HomersLab created first
+		before []dns.Record // what Homeward created first
 		taken  bool         // once the listing is back
 	}{
-		{name: "a CNAME beside someone else's A, in a zone HomersLab never wrote to",
+		{name: "a CNAME beside someone else's A, in a zone Homeward never wrote to",
 			r: dns.Record{Name: "photos", Type: "CNAME", Value: "proxy.cluster.test."}, taken: true},
-		{name: "a CNAME beside someone else's A, in a zone that holds HomersLab's records",
+		{name: "a CNAME beside someone else's A, in a zone that holds Homeward's records",
 			r: dns.Record{Name: "photos", Type: "CNAME", Value: "proxy.cluster.test."}, before: []dns.Record{ours}, taken: true},
 		{name: "a TXT beside someone else's CNAME", r: dns.Record{Name: "www", Type: "TXT", Value: "beside a CNAME"}, taken: true},
 		{name: "a TXT beside someone else's TXT", r: dns.Record{Name: "_dmarc", Type: "TXT", Value: "v=DMARC1; p=none"}, taken: true},
@@ -1121,9 +1121,9 @@ func TestAnEmptyListingNeverProvesANameFree(t *testing.T) {
 	}
 }
 
-// Creating a record HomersLab already has there (its name, type and value) writes nothing and succeeds, a CNAME
+// Creating a record Homeward already has there (its name, type and value) writes nothing and succeeds, a CNAME
 // included: the check for "already ours" comes before the one that a CNAME stands alone (#171). Another value of
-// HomersLab's at a CNAME's name is still refused, and so is someone else's record of the same name, type and value:
+// Homeward's at a CNAME's name is still refused, and so is someone else's record of the same name, type and value:
 // "ours" is what the book lists, never what the zone happens to hold.
 func TestCreatingARecordThatIsAlreadyOursIsANoOp(t *testing.T) {
 	testenv.Isolate(t)
@@ -1172,11 +1172,11 @@ func TestCreatingARecordThatIsAlreadyOursIsANoOp(t *testing.T) {
 				other := r
 				other.Value = "other.cluster.test."
 				if err := o.Create(ctx, other); !errors.Is(err, dns.ErrTaken) {
-					t.Errorf("another CNAME of HomersLab's at %s: %v, want ErrTaken", r.Name, err)
+					t.Errorf("another CNAME of Homeward's at %s: %v, want ErrTaken", r.Name, err)
 				}
 				txt := dns.Record{Name: r.Name, Type: "TXT", Value: "beside our CNAME"}
 				if err := o.Create(ctx, txt); !errors.Is(err, dns.ErrTaken) {
-					t.Errorf("a TXT beside HomersLab's CNAME: %v, want ErrTaken", err)
+					t.Errorf("a TXT beside Homeward's CNAME: %v, want ErrTaken", err)
 				}
 			}
 		})
@@ -1333,7 +1333,7 @@ func TestTheNextCreateAfterAFailedInventoryPutsItRight(t *testing.T) {
 
 // blind is a provider as RFC 2136 is (internal/certs's contract suite, against BIND): every delete is reported done,
 // whatever it matched, and its listing joins a TXT record's strings into one value. A record that someone else's tool
-// stored in its other form, two strings ("a" "b" here), lists as HomersLab's value, and a delete in that value matches
+// stored in its other form, two strings ("a" "b" here), lists as Homeward's value, and a delete in that value matches
 // nothing (#179). listFails and empty are for the listing after the delete; with unicode, it keeps names in Unicode.
 type blind struct {
 	*provider
@@ -1373,7 +1373,7 @@ func (b *blind) DeleteRecords(ctx context.Context, zone string, recs []libdns.Re
 	return recs, err
 }
 
-// split stores HomersLab's TXT record at the provider in its other form, two strings, as another tool may.
+// split stores Homeward's TXT record at the provider in its other form, two strings, as another tool may.
 func (b *blind) split(r dns.Record) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -1492,7 +1492,7 @@ func TestADeleteReportedDoneWithoutAListingStaysInTheBook(t *testing.T) {
 	}
 }
 
-// Only the inventory record, the book's TXT record at the inventory's name, says a record was HomersLab's and deleted
+// Only the inventory record, the book's TXT record at the inventory's name, says a record was Homeward's and deleted
 // (#176): a TXT record of the book's at another name, or a record of another type at the inventory's name, that reads
 // like an inventory says nothing, and a delete of a record the book doesn't hold stays refused (#179).
 func TestOnlyTheInventoryRecordSaysARecordWasDeletedByUs(t *testing.T) {
@@ -1517,7 +1517,7 @@ func TestOnlyTheInventoryRecordSaysARecordWasDeletedByUs(t *testing.T) {
 	}
 }
 
-// A record of HomersLab's at the inventory's name, of a type other than TXT, is a record like any other: trying its
+// A record of Homeward's at the inventory's name, of a type other than TXT, is a record like any other: trying its
 // delete again after the inventory failed is a success that puts the inventory right (#176, #179).
 func TestADeleteAtTheInventorysNameTriedAgainSucceeds(t *testing.T) {
 	testenv.Isolate(t)

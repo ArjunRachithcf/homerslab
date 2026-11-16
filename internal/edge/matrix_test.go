@@ -2,7 +2,7 @@ package edge_test
 
 // The edge's request matrix: who asks what, through which listener, and which answer they get, against a real Caddy
 // in containers (testdata/compose.yaml, compose project hltest-16-edge). It needs Docker: it runs when
-// HOMERSLAB_TEST_DOCKER_HOST names the engine to use, and is skipped otherwise. The code under test never sees that
+// HOMEWARD_TEST_DOCKER_HOST names the engine to use, and is skipped otherwise. The code under test never sees that
 // engine (testenv points DOCKER_HOST at nowhere); only this harness does, explicitly.
 //
 // The harness copies this test binary into the world's machines and runs it there in a helper's role (TestMain): the
@@ -42,17 +42,17 @@ import (
 	"testing/fstest"
 	"time"
 
-	"github.com/ArjunRachithcf/homerslab/internal/edge"
-	"github.com/ArjunRachithcf/homerslab/internal/firewall"
-	"github.com/ArjunRachithcf/homerslab/internal/home"
-	"github.com/ArjunRachithcf/homerslab/internal/ldaps"
-	"github.com/ArjunRachithcf/homerslab/internal/ldaps/ldaptest"
-	"github.com/ArjunRachithcf/homerslab/internal/testenv"
+	"github.com/ArjunRachithcf/homeward/internal/edge"
+	"github.com/ArjunRachithcf/homeward/internal/firewall"
+	"github.com/ArjunRachithcf/homeward/internal/home"
+	"github.com/ArjunRachithcf/homeward/internal/ldaps"
+	"github.com/ArjunRachithcf/homeward/internal/ldaps/ldaptest"
+	"github.com/ArjunRachithcf/homeward/internal/testenv"
 )
 
-// project is the compose project; HOMERSLAB_TEST_EDGE_PROJECT names another (hltest-<ticket>) for a ticket's local
+// project is the compose project; HOMEWARD_TEST_EDGE_PROJECT names another (hltest-<ticket>) for a ticket's local
 // run.
-var project = cmp.Or(os.Getenv("HOMERSLAB_TEST_EDGE_PROJECT"), "hltest-16-edge")
+var project = cmp.Or(os.Getenv("HOMEWARD_TEST_EDGE_PROJECT"), "hltest-16-edge")
 
 // The world (testdata/compose.yaml): the edge on the mesh and the LAN, the edge's user and group, Admin's stub.
 const (
@@ -60,9 +60,9 @@ const (
 	edgeLAN    = "10.216.2.10"
 	edgeUID    = "4100"
 	otherUID   = "4242"
-	adminSock  = "/run/homerslab-admin/admin.sock"
-	adminFile  = "/run/homerslab-edge/admin.sock"
-	credDir    = "/run/credentials/homerslab-edge.service"
+	adminSock  = "/run/homeward-admin/admin.sock"
+	adminFile  = "/run/homeward-edge/admin.sock"
+	credDir    = "/run/credentials/homeward-edge.service"
 	helperBin  = "/hl.test"
 	signInStub = "10.216.3.10:9000"
 	appStub    = "10.216.4.10:8080"
@@ -74,14 +74,14 @@ const (
 	// The sign-in listener's LDAPS port (#204): its process's user, the stand-in outpost on the sign-in network, an LDAP
 	// app's network, and a person who binds there.
 	ldapsUID    = "4400"
-	ldapsCreds  = "/run/credentials/homerslab-ldaps.service"
+	ldapsCreds  = "/run/credentials/homeward-ldaps.service"
 	outpostStub = "10.216.3.10:3389"
 	edgeLDAP    = "10.216.5.20"
 	ldapDN      = "cn=lena,ou=users,dc=jellyfin,dc=homerslab"
 	ldapPW      = "lena's app password"
-	homeSock    = "/run/homerslab-home/home.sock"
-	controlSock = "/run/homerslab/manager.sock"
-	managerDB   = "/var/lib/homerslab/manager.db"
+	homeSock    = "/run/homeward-home/home.sock"
+	controlSock = "/run/homeward/manager.sock"
+	managerDB   = "/var/lib/homeward/manager.db"
 )
 
 func TestMain(m *testing.M) {
@@ -221,7 +221,7 @@ func helper(mode, arg string) int {
 		}
 		_, _ = os.Stdout.Write(b)
 	case "keys": // any file under the edge's directories that holds a private key
-		for _, dir := range []string{"/var/lib/homerslab-edge", "/run/homerslab-edge"} {
+		for _, dir := range []string{"/var/lib/homeward-edge", "/run/homeward-edge"} {
 			_ = filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
 				if err != nil {
 					fmt.Println("unreadable:", p, err)
@@ -287,7 +287,7 @@ func guard(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-Authentik-Name", who.name)
 		w.Header().Set("X-Authentik-Email", who.username+"@example.test")
 		w.Header().Set("X-Authentik-Groups", strings.Join(who.groups, "|"))
-		// HomersLab's role mapping (authentik.RoleHeader): the one role group they're in, by its exact name, or none.
+		// Homeward's role mapping (authentik.RoleHeader): the one role group they're in, by its exact name, or none.
 		var roles []string
 		for _, g := range who.groups {
 			if r, ok := map[string]string{"homerslab-admins": "admin", "homerslab-adults": "adult", "homerslab-kids": "kid"}[g]; ok {
@@ -323,7 +323,7 @@ func kanidmGuard(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusUnauthorized)
 }
 
-// ours are a request's headers whose names say HomersLab in any case or spelling, as " [name=value …]": a site that
+// ours are a request's headers whose names say Homeward in any case or spelling, as " [name=value …]": a site that
 // isn't an app's shows them, so a row can see none reached it.
 func ours(r *http.Request) string {
 	var named []string
@@ -446,14 +446,14 @@ func (q request) do(ctx context.Context) string {
 
 func TestTheEdgesRequestMatrix(t *testing.T) {
 	testenv.Isolate(t)
-	engine := os.Getenv("HOMERSLAB_TEST_DOCKER_HOST")
+	engine := os.Getenv("HOMEWARD_TEST_DOCKER_HOST")
 	if engine == "" {
-		t.Skip("set HOMERSLAB_TEST_DOCKER_HOST to the engine for the matrix's containers")
+		t.Skip("set HOMEWARD_TEST_DOCKER_HOST to the engine for the matrix's containers")
 	}
 	ca, chain, key := testCA(t)
 	w := up(t, engine, chain, key)
 
-	cfg := edge.Config{AdminSocket: adminFile, Storage: "/var/lib/homerslab-edge", Listen: []netip.Addr{netip.MustParseAddr(edgeMesh)},
+	cfg := edge.Config{AdminSocket: adminFile, Storage: "/var/lib/homeward-edge", Listen: []netip.Addr{netip.MustParseAddr(edgeMesh)},
 		Port: 443, Certificates: []edge.Certificate{{Domain: "example.test", CertFile: credDir + "/tls-example.test.crt", KeyFile: credDir + "/tls-example.test.key"}},
 		Admin: &edge.Site{Name: "admin.example.test", Upstream: adminSock}, SignIn: &edge.Site{Name: "auth.example.test", Dial: signInStub},
 		Home: &edge.Site{Name: "home.example.test", Upstream: homeSock},
@@ -568,8 +568,8 @@ func TestTheEdgesRequestMatrix(t *testing.T) {
 		{name: "port 80 from the LAN, at the mesh address routed through the edge's machine: the firewall table drops it", from: "laptop-on-the-lan",
 			q: request{Addr: edgeMesh + ":80", Host: "admin.example.test", Plain: true}, want: "error: ", notWants: "Location"},
 
-		// HSTS on every HomersLab name, a year, without includeSubDomains or preload: the household's domain may carry
-		// sites that aren't HomersLab's. Admin's own HSTS is replaced, not passed on.
+		// HSTS on every Homeward name, a year, without includeSubDomains or preload: the household's domain may carry
+		// sites that aren't Homeward's. Admin's own HSTS is replaced, not passed on.
 		{name: "Admin over HTTPS: HSTS for a year, for its name only", from: "phone",
 			q: request{Addr: edgeMesh + ":443", SNI: "admin.example.test", Host: "admin.example.test"}, want: "200 Admin",
 			wants: []string{"\nStrict-Transport-Security: max-age=31536000\n"}, notWants: "includeSubDomains"},
@@ -697,7 +697,7 @@ func TestTheEdgesRequestMatrix(t *testing.T) {
 				}
 			})
 		}
-		// Every spelling of a forged identity, HomersLab's and every provider's: names in any case, with underscores or
+		// Every spelling of a forged identity, Homeward's and every provider's: names in any case, with underscores or
 		// dots for dashes (an app behind CGI, WSGI or PHP reads X_HomersLab_Role as X-HomersLab-Role), and a name twice.
 		// Caddy itself already drops a name with an underscore or a dot before the upstream, so these rows hold without
 		// the edge's deletes of those spellings; TestEverySiteDeletesHomersLabsOwnHeaders pins that second layer.
@@ -1108,7 +1108,7 @@ func (w *world) firewall(t *testing.T) {
 func testCA(t *testing.T) (ca, chain, key string) {
 	t.Helper()
 	rk, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	root := &x509.Certificate{SerialNumber: big.NewInt(1), Subject: pkix.Name{CommonName: "HomersLab test CA"}, IsCA: true,
+	root := &x509.Certificate{SerialNumber: big.NewInt(1), Subject: pkix.Name{CommonName: "Homeward test CA"}, IsCA: true,
 		BasicConstraintsValid: true, KeyUsage: x509.KeyUsageCertSign, NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(24 * time.Hour)}
 	rd, err := x509.CreateCertificate(rand.Reader, root, root, &rk.PublicKey, rk)
 	if err != nil {
@@ -1162,7 +1162,7 @@ func up(t *testing.T, engine, chain, key string) *world {
 	// The edge's files as the packages and systemd leave them: the boot configuration, and the credentials that only
 	// the edge's user reads.
 	w.copy(t, "edge", []file{
-		{path: "usr/share/homerslab/edge-boot.json", body: boot, mode: 0o644},
+		{path: "usr/share/homeward/edge-boot.json", body: boot, mode: 0o644},
 		{path: strings.TrimPrefix(credDir, "/") + "/tls-example.test.crt", body: []byte(chain), mode: 0o400, uid: 4100},
 		{path: strings.TrimPrefix(credDir, "/") + "/tls-example.test.key", body: []byte(key), mode: 0o400, uid: 4100},
 		{path: strings.TrimPrefix(helperBin, "/"), body: bin, mode: 0o755},
@@ -1183,13 +1183,13 @@ func up(t *testing.T, engine, chain, key string) *world {
 		"ip link set $dev master br-apps && ip address add "+edgeApps+"/24 dev br-apps && ip link set br-apps up && "+
 		"ip link add br-ldap type bridge && dev=$(ip -o -4 address show | awk '$4 == \""+edgeLDAP+"/24\" {print $2}') && "+
 		"ip address del "+edgeLDAP+"/24 dev $dev && ip link set $dev master br-ldap && ip address add "+edgeLDAP+"/24 dev br-ldap && ip link set br-ldap up")
-	w.docker(t, nil, "exec", "-u", "0", container("admin"), "sh", "-c", "chown 4200:4100 /run/homerslab-admin && chmod 0750 /run/homerslab-admin")
+	w.docker(t, nil, "exec", "-u", "0", container("admin"), "sh", "-c", "chown 4200:4100 /run/homeward-admin && chmod 0750 /run/homeward-admin")
 	w.docker(t, nil, "exec", "-d", "-u", "4200:4100", "-e", helperMode+"=admin", container("admin"), helperBin, "-")
 	// The manager's folders, as its unit makes them: its own, 0700; Home's socket's folder, for Home and the edge (setgid:
 	// its socket is the edge's group's, as SocketGroup makes it).
 	w.docker(t, nil, "exec", "-u", "0", container("admin"), "sh", "-c",
-		"chown 4200:4200 /run/homerslab /var/lib/homerslab && chmod 0700 /run/homerslab /var/lib/homerslab")
-	w.docker(t, nil, "exec", "-u", "0", container("home"), "sh", "-c", "chown 4300:4100 /run/homerslab-home && chmod 2750 /run/homerslab-home")
+		"chown 4200:4200 /run/homeward /var/lib/homeward && chmod 0700 /run/homeward /var/lib/homeward")
+	w.docker(t, nil, "exec", "-u", "0", container("home"), "sh", "-c", "chown 4300:4100 /run/homeward-home && chmod 2750 /run/homeward-home")
 	w.docker(t, nil, "exec", "-d", "-u", "4200:4200", "-e", helperMode+"=manager", container("admin"), helperBin, "-")
 	w.docker(t, nil, "exec", "-d", "-u", homeUID+":"+homeUID, "-e", helperMode+"=home", container("home"), helperBin, "-")
 	w.docker(t, nil, "exec", "-d", "-e", helperMode+"=authentik", container("authentik"), helperBin, "-")

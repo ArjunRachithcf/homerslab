@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/ArjunRachithcf/homerslab/internal/testenv"
+	"github.com/ArjunRachithcf/homeward/internal/testenv"
 )
 
 // CI runs the agent's tests with the agent unit's capabilities, which .github/scripts/as-unit.sh reads from the unit
@@ -16,7 +16,7 @@ import (
 // a User=, Group= or DynamicUser=, or AmbientCapabilities= (#183). It checks the unit before it asks for root.
 func TestAsUnitRefusesAUnitItWouldMisread(t *testing.T) {
 	testenv.Isolate(t)
-	real, err := os.ReadFile("systemd/homerslab-agent.service")
+	real, err := os.ReadFile("systemd/homeward-agent.service")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -37,7 +37,7 @@ func TestAsUnitRefusesAUnitItWouldMisread(t *testing.T) {
 	}
 	unit := func(t *testing.T, body string) string {
 		t.Helper()
-		p := filepath.Join(t.TempDir(), "homerslab-agent.service")
+		p := filepath.Join(t.TempDir(), "homeward-agent.service")
 		if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
 			t.Fatal(err)
 		}
@@ -52,14 +52,14 @@ func TestAsUnitRefusesAUnitItWouldMisread(t *testing.T) {
 	for name, c := range map[string]struct{ body, dropIn, says string }{
 		"an indented line":    {strings.Replace(string(real), "\nNoNewPrivileges=yes\n", "\n  NoNewPrivileges=no\nNoNewPrivileges=yes\n", 1), "", "indented lines in"},
 		"a continued line":    {strings.Replace(string(real), "\nCapabilityBoundingSet=CAP_CHOWN ", "\nCapabilityBoundingSet=CAP_CHOWN \\\nCAP_KILL ", 1), "", "continued lines in"},
-		"User=":               {strings.Replace(string(real), "\n[Service]\n", "\n[Service]\nUser=homerslab\n", 1), "", ":User=homerslab\n"},
-		"Group=":              {strings.Replace(string(real), "\n[Service]\n", "\n[Service]\nGroup=homerslab\n", 1), "", ":Group=homerslab\n"},
+		"User=":               {strings.Replace(string(real), "\n[Service]\n", "\n[Service]\nUser=homeward\n", 1), "", ":User=homeward\n"},
+		"Group=":              {strings.Replace(string(real), "\n[Service]\n", "\n[Service]\nGroup=homeward\n", 1), "", ":Group=homeward\n"},
 		"DynamicUser=":        {strings.Replace(string(real), "\n[Service]\n", "\n[Service]\nDynamicUser=yes\n", 1), "", ":DynamicUser=yes\n"},
 		"AmbientCapabilities": {strings.Replace(string(real), "\n[Service]\n", "\n[Service]\nAmbientCapabilities=CAP_KILL\n", 1), "", ":AmbientCapabilities=CAP_KILL\n"},
-		"User = x":            {strings.Replace(string(real), "\n[Service]\n", "\n[Service]\nUser = homerslab\n", 1), "", "spaced"},
+		"User = x":            {strings.Replace(string(real), "\n[Service]\n", "\n[Service]\nUser = homeward\n", 1), "", "spaced"},
 		"a spaced set":        {strings.Replace(string(real), "\nCapabilityBoundingSet=", "\nCapabilityBoundingSet =CAP_KILL\nCapabilityBoundingSet=", 1), "", "spaced"},
-		"its drop-in":         {string(real), "homerslab-agent.service.d", "drop-in folder"},
-		"a prefix's drop-in":  {string(real), "homerslab-.service.d", "drop-in folder"},
+		"its drop-in":         {string(real), "homeward-agent.service.d", "drop-in folder"},
+		"a prefix's drop-in":  {string(real), "homeward-.service.d", "drop-in folder"},
 		"every service's":     {string(real), "service.d", "drop-in folder"},
 	} {
 		t.Run(name, func(t *testing.T) {

@@ -1,4 +1,4 @@
-# Known vulnerabilities in what HomersLab ships (#98): govulncheck for the Go module, npm audit for the web app.
+# Known vulnerabilities in what Homeward ships (#98): govulncheck for the Go module, npm audit for the web app.
 # The rule for both: a finding in code we call, or in a package that ships in the binary, fails the job. A finding
 # only in the module graph, or only in a development tool, is listed in the log and doesn't fail.
 # Runs on every PR, and nightly on main and integration (a schedule runs from main's copy of this file).

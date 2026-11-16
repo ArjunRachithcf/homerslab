@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ArjunRachithcf/homerslab/internal/idp"
-	"github.com/ArjunRachithcf/homerslab/internal/testenv"
+	"github.com/ArjunRachithcf/homeward/internal/idp"
+	"github.com/ArjunRachithcf/homeward/internal/testenv"
 )
 
 // Authentik is ready for Prepare once its default and system blueprints have applied, and every default flow is

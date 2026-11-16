@@ -11,9 +11,9 @@ import (
 
 	"github.com/libdns/libdns"
 
-	"github.com/ArjunRachithcf/homerslab/internal/dns"
-	"github.com/ArjunRachithcf/homerslab/internal/manager"
-	"github.com/ArjunRachithcf/homerslab/internal/testenv"
+	"github.com/ArjunRachithcf/homeward/internal/dns"
+	"github.com/ArjunRachithcf/homeward/internal/manager"
+	"github.com/ArjunRachithcf/homeward/internal/testenv"
 )
 
 // The value the drift notes' records carry: the drift report says a record's name and type, never its value.
@@ -154,7 +154,7 @@ func TestAnEmptyListingFirstStillLeavesTheTokensWarning(t *testing.T) {
 	p.clock.Add(time.Hour)
 	p.m.RunDue(ctx)
 	ws := p.warnings(t)
-	if len(ws) != 1 || !strings.Contains(ws[0].What, "sudo homerslab dns token") {
+	if len(ws) != 1 || !strings.Contains(ws[0].What, "sudo homeward dns token") {
 		t.Fatalf("after an empty listing, then a refused token: %+v", ws)
 	}
 	p.clock.Add(time.Hour)
@@ -178,7 +178,7 @@ func (z *emptyZone) DeleteRecords(_ context.Context, _ string, recs []libdns.Rec
 	return nil, nil
 }
 
-// noBook is a book that lists no records of HomersLab's.
+// noBook is a book that lists no records of Homeward's.
 type noBook struct{}
 
 func (noBook) Records(context.Context, string) ([]dns.Record, error) { return nil, nil }

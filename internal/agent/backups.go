@@ -18,11 +18,11 @@ import (
 
 	"golang.org/x/sys/unix"
 
-	"github.com/ArjunRachithcf/homerslab/internal/appunit"
-	"github.com/ArjunRachithcf/homerslab/internal/backup"
-	"github.com/ArjunRachithcf/homerslab/internal/engine"
-	"github.com/ArjunRachithcf/homerslab/internal/host"
-	"github.com/ArjunRachithcf/homerslab/internal/node"
+	"github.com/ArjunRachithcf/homeward/internal/appunit"
+	"github.com/ArjunRachithcf/homeward/internal/backup"
+	"github.com/ArjunRachithcf/homeward/internal/engine"
+	"github.com/ArjunRachithcf/homeward/internal/host"
+	"github.com/ArjunRachithcf/homeward/internal/node"
 )
 
 // Backups on this node (#22; ADR 0010, amended for #90). The manager hands the agent the household's target, this
@@ -125,7 +125,7 @@ func validData(data []AppData) bool {
 }
 
 // The sign-in's database, as the package's compose file runs it.
-var signInDump = []string{"/usr/bin/docker", "compose", "--project-name", "homerslab-authentik", "--file", "/usr/share/homerslab/sign-in/authentik.compose.yaml",
+var signInDump = []string{"/usr/bin/docker", "compose", "--project-name", "homerslab-authentik", "--file", "/usr/share/homeward/sign-in/authentik.compose.yaml",
 	"exec", "-T", "postgresql", "pg_dump", "--username=authentik", "--clean", "--if-exists", "authentik"}
 
 // backupCache is restic's cache, a state folder of the unit's on the app-data disk, counted in that disk's use.
@@ -160,7 +160,7 @@ func (a *Agent) repoWriting(st backupState, dir string, w writes) backup.Repo {
 	if restic == "" {
 		restic = backup.Restic
 	}
-	unit := fmt.Sprintf("homerslab-backup-%d-%d", a.cfg.Now().UnixNano(), a.backupRuns.Add(1))
+	unit := fmt.Sprintf("homeward-backup-%d-%d", a.cfg.Now().UnixNano(), a.backupRuns.Add(1))
 	r := backup.Repo{Restic: restic, Target: st.Target, Node: st.Node, Dir: "/run/credentials/" + unit + ".service", Cache: backupCache}
 	ran := false
 	r.Run = func(ctx context.Context, argv, env []string, stdin []byte) ([]byte, error) {
@@ -308,8 +308,8 @@ func (a *Agent) putBackups(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, TargetSet{Repository: loc, Immutability: st.Immutability})
 }
 
-// Self is the agent's own program, which a lock run is (`homerslab agent backup-lock`), in restic's unit.
-const Self = "/usr/bin/homerslab"
+// Self is the agent's own program, which a lock run is (`homeward agent backup-lock`), in restic's unit.
+const Self = "/usr/bin/homeward"
 
 // lockRun reads whether the target keeps the node's backups from whoever holds its credentials and, on a bucket locked
 // in compliance mode, locks every object of the node's repository again when it is due (backup.Lock): in a unit of its

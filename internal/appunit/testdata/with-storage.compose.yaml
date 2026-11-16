@@ -1,5 +1,5 @@
-# Written by HomersLab's agent, from install plan p-0123456789abcdef0123456789abcdef. Never edit by hand.
-# What HomersLab adds to app everything's own compose file, as the second file of the standard compose command (ADR 0014):
+# Written by Homeward's agent, from install plan p-0123456789abcdef0123456789abcdef. Never edit by hand.
+# What Homeward adds to app everything's own compose file, as the second file of the standard compose command (ADR 0014):
 #   - every service: no restart policy, the engine's nor swarm's (the app's unit restarts the app), at the app's own
 #     SELinux level;
 #   - the app's one upstream, a fixed address on a network of its own, which only the edge and the agent may open;
@@ -50,7 +50,7 @@ services:
       - "auth.example.test=172.31.255.241"
     volumes:
       - type: "bind"
-        source: "/var/lib/homerslab-storage/uploads"
+        source: "/var/lib/homeward-storage/uploads"
         target: "/uploads"
         read_only: false
         bind:
@@ -77,6 +77,6 @@ networks:
           gateway: "172.31.240.17"
 secrets:
   "db-password":
-    file: "/run/homerslab-app-everything/db-password"
+    file: "/run/homeward-app-everything/db-password"
   "secret-key":
-    file: "/run/homerslab-app-everything/secret-key"
+    file: "/run/homeward-app-everything/secret-key"

@@ -1,4 +1,4 @@
-// HomersLab prototypes: the household's operations data, beside data.js. PROTOTYPE, throwaway, invented.
+// Homeward prototypes: the household's operations data, beside data.js. PROTOTYPE, throwaway, invented.
 // Incidents and uptime (ADR 0018), alerts, the maintenance window, domains and their DNS records (ADR 0016), and what
 // the disk analyzer finds on the disks (ADR 0017). Uptime is computed from the incidents, so the two always agree.
 (() => {
@@ -18,9 +18,9 @@
     { id: 'in-pi', title: 'Kitchen Pi offline', level: 'warning', start: '2026-10-22T07:10', end: '2026-10-22T07:24', hits: ['kitchen-pi', 'donetick', 'actual', 'karakeep'],
       what: 'Kitchen Pi stopped answering over the mesh; Attic NAS noticed after 5 minutes.', fix: 'It had been unplugged while cleaning. Back when plugged in.', alerts: ['07:15 Kitchen Pi is offline', '07:24 Resolved'] },
     { id: 'in-jf', title: 'Jellyfin’s update rolled back', level: 'warning', start: '2026-10-14T03:02', end: '2026-10-14T03:06', hits: ['jellyfin'], planned: true,
-      what: 'The update to 10.11.1 didn’t answer its health check within 4 minutes, in the maintenance window.', fix: 'HomersLab returned Jellyfin to its snapshot from 03:00. The next tested version, a week later, went through.', alerts: ['03:06 Jellyfin’s update was rolled back (in the morning digest)'] },
+      what: 'The update to 10.11.1 didn’t answer its health check within 4 minutes, in the maintenance window.', fix: 'Homeward returned Jellyfin to its snapshot from 03:00. The next tested version, a week later, went through.', alerts: ['03:06 Jellyfin’s update was rolled back (in the morning digest)'] },
     { id: 'in-cert', title: 'A certificate renewal failed once', level: 'warning', start: '2026-11-01T04:00', end: '2026-11-01T10:02', hits: [], noDowntime: true,
-      what: 'Infomaniak’s API timed out when HomersLab asked for the challenge record. The certificate still had 30 days.', fix: 'The retry six hours later worked. No alert: it was renewed long before the 14-day warning.', alerts: [] },
+      what: 'Infomaniak’s API timed out when Homeward asked for the challenge record. The certificate still had 30 days.', fix: 'The retry six hours later worked. No alert: it was renewed long before the 14-day warning.', alerts: [] },
     { id: 'in-restore', title: 'Paperless-ngx’s restore test failed', level: 'warning', start: '2026-11-08T04:12', end: null, hits: [], noDowntime: true,
       what: 'The restored copy did not pass its health check within 10 minutes: Paperless was still moving its database to a new layout. The app itself kept working.', fix: 'Open: run the test again from its page.', alerts: ['04:13 Paperless-ngx’s restore test failed (mail and ntfy)'] },
   ];
@@ -77,7 +77,7 @@
     digest: { at: '07:00', items: ['Jellyfin updated to 10.11.3 at 02:14; healthy', 'The scrub of Attic NAS’s app data repaired 2 blocks from the other disk', 'Bay 1’s disk reports 24 reallocated sectors, up from 0 a month ago', 'Media pool is 91% full: about 63 days left at this rate', 'Nobody signed in from a new place'] },
   };
 
-  // ---------- domains: only HomersLab's own records, every domain equal, one sign-in domain ----------
+  // ---------- domains: only Homeward's own records, every domain equal, one sign-in domain ----------
   const OWN = (id) => `homerslab owner=ferreira id=${id}`;
   const domains = [
     { name: 'ferreira.family', main: true, dns: 'Infomaniak', token: 'Held on Study PC since 2 Mar', cert: { name: '*.ferreira.family', issuer: 'Let’s Encrypt', until: '7 Jan 2027', renewed: '8 Nov' }, added: '2 Mar',
@@ -95,7 +95,7 @@
       records: [
         { name: '_acme-challenge', type: 'TXT', value: 'Written for each renewal, removed after', owner: 'homerslab', marker: OWN('c2') },
         { name: '*', type: 'CNAME', value: 'eu1.proxy.netbird.io', owner: 'homerslab', marker: OWN('p3'), why: 'Paperless-ngx is public through NetBird’s proxy' },
-        { name: 'documents', type: 'A', value: '93.184.216.34', owner: 'other', blocks: 'documents.ferreira.pt', refused: 'This name already points somewhere else, in a record HomersLab didn’t create, so Paperless-ngx can’t answer at documents.ferreira.pt. Remove the record at Cloudflare if it’s no longer used; HomersLab will never change it.' },
+        { name: 'documents', type: 'A', value: '93.184.216.34', owner: 'other', blocks: 'documents.ferreira.pt', refused: 'This name already points somewhere else, in a record Homeward didn’t create, so Paperless-ngx can’t answer at documents.ferreira.pt. Remove the record at Cloudflare if it’s no longer used; Homeward will never change it.' },
         { name: '@', type: 'MX', value: 'route1.mx.cloudflare.net (12)', owner: 'other' },
         { name: '@', type: 'TXT', value: 'v=spf1 include:_spf.mx.cloudflare.net ~all', owner: 'other' },
       ] },
@@ -114,14 +114,14 @@
       F('Scanner inbox', 6.4, { owner: 'st:scans', type: 'Documents', age: 'Today' }),
       F('Jellyfin’s transcode cache', 182, { owner: 'jellyfin', type: 'Cache', age: 'Today', inApp: true, cleanup: 'Clear Jellyfin’s transcode cache' }),
       F('Old move copy: Navidrome (kept until 12 Nov)', 0.6, { owner: 'leftover', type: 'Move copy', age: '5 days', leftover: 'The copy kept for 7 days after Navidrome moved to App data' }),
-      F('Btrfs snapshots before updates', 129, { owner: 'leftover', type: 'Snapshots', age: 'Up to 30 days', leftover: 'Restore points HomersLab took before updates', kids: [F('Older than 14 days (6)', 92, { type: 'Snapshots', age: '15–30 days', old: true }), F('Last 14 days (4)', 37, { type: 'Snapshots', age: 'Under 14 days' })] }),
+      F('Btrfs snapshots before updates', 129, { owner: 'leftover', type: 'Snapshots', age: 'Up to 30 days', leftover: 'Restore points Homeward took before updates', kids: [F('Older than 14 days (6)', 92, { type: 'Snapshots', age: '15–30 days', old: true }), F('Last 14 days (4)', 37, { type: 'Snapshots', age: 'Under 14 days' })] }),
     ] }),
     'an-apps': F('App data', 46, { kids: [
       F('Jellyfin', 2.1, { owner: 'jellyfin', type: 'App data', inApp: true, cleanup: 'Jellyfin’s own cleanup: old images and the metadata cache' }),
       F('Navidrome', 0.6, { owner: 'navidrome', type: 'App data', inApp: true, cleanup: 'Navidrome’s own cleanup: the artwork cache' }),
       F('Kavita', 0.9, { owner: 'kavita', type: 'App data', inApp: true, cleanup: 'Kavita’s own cleanup: covers and the bookmark cache' }),
       F('Logs', 1.4, { owner: 'leftover', type: 'Logs', age: '60 days', leftover: 'Logs older than 14 days', old: true }),
-      F('Snapshots', 41, { owner: 'system', type: 'Snapshots', age: 'Hourly', note: 'The hourly snapshots backups are made from; HomersLab ages them out itself' }),
+      F('Snapshots', 41, { owner: 'system', type: 'Snapshots', age: 'Hourly', note: 'The hourly snapshots backups are made from; Homeward ages them out itself' }),
     ] }),
     'sp-data': F('Data disk', 31, { kids: [
       F('Paperless-ngx', 18.4, { owner: 'paperless', type: 'App data', inApp: true, cleanup: 'Paperless’s own cleanup: empty the trash (34 documents, 210 MB)', perPerson: { ines: 6.2, tomas: 5.9, lucia: 4.1, family: 2.2 } }),

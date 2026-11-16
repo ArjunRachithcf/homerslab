@@ -103,8 +103,8 @@ type SignIn struct {
 	RedirectURIs []string `yaml:"redirectUris" json:"redirectUris,omitempty"`
 	Scopes       []string `yaml:"scopes" json:"scopes,omitempty"`
 	// OIDC: how the app takes its client, as environment variables of its upstream's service (Names.Service), which the
-	// agent sets; and the container user that reads the client's secret, a file HomersLab hands it (ClientSecretFile:
-	// never the secret itself in the environment). Without Env, HomersLab can't hand the app its client yet.
+	// agent sets; and the container user that reads the client's secret, a file Homeward hands it (ClientSecretFile:
+	// never the secret itself in the environment). Without Env, Homeward can't hand the app its client yet.
 	Env       *OIDCEnv `yaml:"env" json:"env,omitempty"`
 	SecretUID *int     `yaml:"secretUid" json:"secretUid,omitempty"`
 	// RefusePaths are routes of the app's own that sign people in some other way (a password the app made itself, a
@@ -115,7 +115,7 @@ type SignIn struct {
 	// LDAP: the attributes it reads.
 	Attributes []string `yaml:"attributes" json:"attributes,omitempty"`
 	// LDAP: how the app takes its directory (#204), as environment variables of its upstream's service, which the
-	// agent sets. None of it is secret: each person binds with their own app password. Without it, HomersLab can't
+	// agent sets. None of it is secret: each person binds with their own app password. Without it, Homeward can't
 	// hand the app its directory yet.
 	LDAP *LDAPEnv `yaml:"ldap" json:"ldap,omitempty"`
 }
@@ -160,7 +160,7 @@ func (e OIDCEnv) Names() []string {
 	return []string{e.Issuer, e.Discovery, e.ClientID, e.ClientSecretFile, e.RedirectURI, e.URL, e.AdminGroup}
 }
 
-// ClientSecret is the secret HomersLab hands an OIDC app, its client's: no secret of the manifest's may take its name.
+// ClientSecret is the secret Homeward hands an OIDC app, its client's: no secret of the manifest's may take its name.
 const ClientSecret = "oidc-client-secret"
 
 // SignInMethod is one of the three every identity provider provides (spec: Adapter contracts).
@@ -235,7 +235,7 @@ type Dump struct {
 	Restore []string `yaml:"restore" json:"restore"`
 }
 
-// Secret is one secret HomersLab generates for the app, and the UID that reads it.
+// Secret is one secret Homeward generates for the app, and the UID that reads it.
 type Secret struct {
 	Name string `yaml:"name" json:"name"`
 	What string `yaml:"what" json:"what"`

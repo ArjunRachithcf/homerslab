@@ -18,10 +18,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ArjunRachithcf/homerslab/internal/agent"
-	"github.com/ArjunRachithcf/homerslab/internal/agent/agenttest"
-	"github.com/ArjunRachithcf/homerslab/internal/edge"
-	"github.com/ArjunRachithcf/homerslab/internal/testenv"
+	"github.com/ArjunRachithcf/homeward/internal/agent"
+	"github.com/ArjunRachithcf/homeward/internal/agent/agenttest"
+	"github.com/ArjunRachithcf/homeward/internal/edge"
+	"github.com/ArjunRachithcf/homeward/internal/testenv"
 )
 
 // wildcard is a certificate for *.<domain> and its key, PEM.
@@ -93,7 +93,7 @@ func TestTheEdgeGetsItsCertificateAsSealedFilesNeverInline(t *testing.T) {
 	if code, body := call(t, sock, "PUT", "/v1/edge", agent.EdgeSites{Port: 9443, Admin: "admin.example.test"}); code != http.StatusOK {
 		t.Fatalf("the sites: %d %s", code, body)
 	}
-	before := h.Ran("systemctl restart homerslab-edge.service")
+	before := h.Ran("systemctl restart homeward-edge.service")
 	code, body := call(t, sock, "PUT", "/v1/edge/certificates/example.test", map[string]string{"chain": chain, "key": key})
 	if code != http.StatusOK {
 		t.Fatalf("the certificate: %d %s", code, body)
@@ -115,7 +115,7 @@ func TestTheEdgeGetsItsCertificateAsSealedFilesNeverInline(t *testing.T) {
 			t.Errorf("the key was on a command line: %s", c)
 		}
 	}
-	dropIn, err := os.ReadFile(filepath.Join(h.Root, "etc/systemd/system/homerslab-edge.service.d/50-homerslab-certificates.conf"))
+	dropIn, err := os.ReadFile(filepath.Join(h.Root, "etc/systemd/system/homeward-edge.service.d/50-homeward-certificates.conf"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -125,16 +125,16 @@ func TestTheEdgeGetsItsCertificateAsSealedFilesNeverInline(t *testing.T) {
 		}
 	}
 	// The unit gets its credentials only as it starts: written, reloaded, then restarted.
-	reload, restart := h.Ran("systemctl daemon-reload"), h.Ran("systemctl restart homerslab-edge.service")
+	reload, restart := h.Ran("systemctl daemon-reload"), h.Ran("systemctl restart homeward-edge.service")
 	if before >= 0 || restart < 0 || reload > restart {
 		t.Errorf("the edge restarted at %d (before the certificate: %d), systemd reloaded at %d", restart, before, reload)
 	}
 
-	want, err := edge.Render(edge.Config{AdminSocket: agent.DefaultEdge.AdminSocket, Storage: "/var/lib/homerslab-edge",
+	want, err := edge.Render(edge.Config{AdminSocket: agent.DefaultEdge.AdminSocket, Storage: "/var/lib/homeward-edge",
 		Listen: []netip.Addr{netip.MustParseAddr("100.88.7.186")}, Port: 9443,
-		Certificates: []edge.Certificate{{Domain: "example.test", CertFile: "/run/credentials/homerslab-edge.service/tls-example.test.crt",
-			KeyFile: "/run/credentials/homerslab-edge.service/tls-example.test.key"}},
-		Admin: &edge.Site{Name: "admin.example.test", Upstream: "/run/homerslab-admin.sock"}})
+		Certificates: []edge.Certificate{{Domain: "example.test", CertFile: "/run/credentials/homeward-edge.service/tls-example.test.crt",
+			KeyFile: "/run/credentials/homeward-edge.service/tls-example.test.key"}},
+		Admin: &edge.Site{Name: "admin.example.test", Upstream: "/run/homeward-admin.sock"}})
 	if err != nil {
 		t.Fatal(err)
 	}

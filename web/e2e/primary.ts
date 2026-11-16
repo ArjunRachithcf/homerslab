@@ -47,7 +47,7 @@ export class Primary {
   private constructor(readonly dir: string, private readonly env: NodeJS.ProcessEnv, private readonly tls: EdgeTLS) {}
 
   static async start(tls: EdgeTLS): Promise<Primary> {
-    const dir = await mkdtemp(path.join(tmpdir(), 'homerslab-flow-'));
+    const dir = await mkdtemp(path.join(tmpdir(), 'homeward-flow-'));
     const env = { PATH: process.env.PATH, HOME: dir, DOCKER_HOST: 'unix:///nonexistent', CONTAINER_HOST: 'unix:///nonexistent' };
     const p = new Primary(dir, env, tls);
     p.agent = p.spawn('agent', '--socket', p.at('agent.sock'), '--socket-group', String(process.getgid?.() ?? 0), '--sysroot', sysroot,

@@ -18,11 +18,11 @@ import (
 	"testing"
 	"testing/fstest"
 
-	"github.com/ArjunRachithcf/homerslab/catalogs"
-	"github.com/ArjunRachithcf/homerslab/internal/agent"
-	"github.com/ArjunRachithcf/homerslab/internal/engine"
-	"github.com/ArjunRachithcf/homerslab/internal/idp"
-	"github.com/ArjunRachithcf/homerslab/internal/testenv"
+	"github.com/ArjunRachithcf/homeward/catalogs"
+	"github.com/ArjunRachithcf/homeward/internal/agent"
+	"github.com/ArjunRachithcf/homeward/internal/engine"
+	"github.com/ArjunRachithcf/homeward/internal/idp"
+	"github.com/ArjunRachithcf/homeward/internal/testenv"
 )
 
 // installable is a primary whose household account is set up (setup's second half has begun: `setup join`), where an
@@ -196,7 +196,7 @@ func TestApplyingANativePlanMakesItsClientAndHandsTheAppItsSecret(t *testing.T) 
 		t.Fatalf("the agent runs %+v", s.Apps)
 	}
 	agentDir := filepath.Dir(p.host.Root)
-	override, err := os.ReadFile(filepath.Join(agentDir, "state", "apps", "mealie", "homerslab.yaml"))
+	override, err := os.ReadFile(filepath.Join(agentDir, "state", "apps", "mealie", "homeward.yaml"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -272,7 +272,7 @@ func TestARetryThatFailsKeepsTheClientAnEarlierApplyMade(t *testing.T) {
 
 // A plan with an extra is a risky change, which needs the admin's passkey (#25); the agent doesn't run extras yet, so
 // it isn't applied, even from the terminal, rather than installed without them. An app with native sign-in that can't
-// take its client from HomersLab yet (Immich: no settings in its manifest) isn't applied either.
+// take its client from Homeward yet (Immich: no settings in its manifest) isn't applied either.
 func TestOnlyPlansThatCanBeWiredWithoutExtrasApplySoFar(t *testing.T) {
 	testenv.Isolate(t)
 	cat := withCatalog(t, map[string]func([]byte) []byte{"apps/bentopdf/app.yaml": func(b []byte) []byte {
@@ -292,9 +292,9 @@ func TestOnlyPlansThatCanBeWiredWithoutExtrasApplySoFar(t *testing.T) {
 	}
 }
 
-// Compose project names belong to HomersLab: a project of the app's name that the engine already runs, which HomersLab
+// Compose project names belong to Homeward: a project of the app's name that the engine already runs, which Homeward
 // didn't create, refuses the install.
-func TestAPlanIsNotAppliedOverAProjectHomersLabDidntCreate(t *testing.T) {
+func TestAPlanIsNotAppliedOverAProjectHomewardDidntCreate(t *testing.T) {
 	testenv.Isolate(t)
 	p, fs := installable(t, nil)
 	p.host.Project(engine.State{Name: "homerslab-bentopdf", Containers: []engine.Container{{Service: "web", Name: "homerslab-bentopdf-web-1", State: "running"}}})

@@ -22,11 +22,11 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/ArjunRachithcf/homerslab/internal/idp"
+	"github.com/ArjunRachithcf/homeward/internal/idp"
 )
 
 // HSTS is the Strict-Transport-Security every name the edge serves answers with (#64): a year, without
-// includeSubDomains or preload, because a household's domain may also carry sites that aren't HomersLab's. It replaces
+// includeSubDomains or preload, because a household's domain may also carry sites that aren't Homeward's. It replaces
 // whatever an upstream sent.
 const HSTS = "max-age=31536000"
 
@@ -115,7 +115,7 @@ type Guard struct {
 
 // AuthentikGuard is Authentik's embedded outpost, on its server, as the guard of an app with its own proxy provider in
 // forward_single mode (#83: never one for the whole domain). X-Authentik-Uid is the person's uid, a hash of their
-// primary key that a rename doesn't change. The role is HomersLab's own header, which the guard's provider computes
+// primary key that a rename doesn't change. The role is Homeward's own header, which the guard's provider computes
 // (authentik.RoleHeader): X-Authentik-Groups joins names with |, which a group's own name may hold.
 func AuthentikGuard(dial string) *Guard {
 	return &Guard{Dial: dial, AuthURI: "/outpost.goauthentik.io/auth/caddy", Paths: []string{"/outpost.goauthentik.io/*"},
@@ -140,7 +140,7 @@ func KanidmGuard(dial string) *Guard {
 // provider the household runs. NameHeader is their name, or their username when the provider has none. RoleHeader is
 // admin, adult or kid, from the one role group the person is in; a person in none of them, or in more than one, or
 // without an id or any name, is refused, never taken for an adult. Every site deletes every
-// header a client sends under HomersLab's prefix, in any case or spelling (OwnHeaders), so only the edge's reach an app.
+// header a client sends under Homeward's prefix, in any case or spelling (OwnHeaders), so only the edge's reach an app.
 // An app's manifest declares that it relies on it (identity.edge).
 const (
 	Contract     = "homerslab-v1"
@@ -149,7 +149,7 @@ const (
 	RoleHeader   = "X-HomersLab-Role"
 )
 
-// OwnHeaders are the request headers under HomersLab's prefix, which only the edge sets.
+// OwnHeaders are the request headers under Homeward's prefix, which only the edge sets.
 var OwnHeaders = []string{"X-HomersLab-*"}
 
 // IdentityHeaders are the request headers that name a person to an app, the providers' and those other providers and
@@ -289,7 +289,7 @@ func Render(c Config) ([]byte, error) {
 		}
 		sites = append(sites, served{app.Name, h})
 	}
-	// Each name the edge serves: HomersLab's own headers deleted from the request, whatever the site (#236); HSTS and
+	// Each name the edge serves: Homeward's own headers deleted from the request, whatever the site (#236); HSTS and
 	// Secure cookies on whatever it answers, set as the answer is written so they replace the upstream's, then what
 	// answers it. On port 80, a redirect to HTTPS on the same name, and nothing else.
 	var cookies []obj

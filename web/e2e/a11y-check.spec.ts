@@ -61,12 +61,12 @@ test('a rule’s paragraph ends with its error', () => {
 
 test('accessible() fails the test, naming the screen and the rule', async () => {
   test.setTimeout(180_000); // a Playwright inside a Playwright, with 37 planted tests
-  const out = await mkdtemp(path.join(tmpdir(), 'homerslab-planted-'));
+  const out = await mkdtemp(path.join(tmpdir(), 'homeward-planted-'));
   try {
     // this worker's own Playwright variables stay out of the child's environment; three workers for 37 tests
     const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => !/^(TEST_|PW_)/.test(k)));
     const child = await playwright(['test', 'e2e/planted.a11y.spec.ts', '--project', test.info().project.name,
-      '--reporter', 'json', '--output', out, '--retries', '0', '--workers', '3'], { ...env, HOMERSLAB_PLANTED: '1' },
+      '--reporter', 'json', '--output', out, '--retries', '0', '--workers', '3'], { ...env, HOMEWARD_PLANTED: '1' },
     test.info().timeout - 15_000); // it fails, as it should
     let report: Suite & { suites: Suite[] };
     try {

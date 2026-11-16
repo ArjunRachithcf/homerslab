@@ -14,9 +14,9 @@ import (
 	"github.com/mholt/acmez/v3/acme"
 	mdns "github.com/miekg/dns"
 
-	"github.com/ArjunRachithcf/homerslab/internal/certs"
-	"github.com/ArjunRachithcf/homerslab/internal/dns"
-	"github.com/ArjunRachithcf/homerslab/internal/testenv"
+	"github.com/ArjunRachithcf/homeward/internal/certs"
+	"github.com/ArjunRachithcf/homeward/internal/dns"
+	"github.com/ArjunRachithcf/homeward/internal/testenv"
 )
 
 // zone is a DNS provider's zone in memory, through libdns, that keeps every name as it is written. Its listing holds

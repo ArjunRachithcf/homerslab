@@ -8,8 +8,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/ArjunRachithcf/homerslab/internal/mesh"
-	"github.com/ArjunRachithcf/homerslab/internal/testenv"
+	"github.com/ArjunRachithcf/homeward/internal/mesh"
+	"github.com/ArjunRachithcf/homeward/internal/testenv"
 )
 
 func TestAControlPlaneIsReachedOverHTTPSOnly(t *testing.T) {

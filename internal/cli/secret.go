@@ -16,10 +16,10 @@ import (
 
 	"golang.org/x/sys/unix"
 
-	"github.com/ArjunRachithcf/homerslab/internal/dns"
+	"github.com/ArjunRachithcf/homeward/internal/dns"
 )
 
-// setupSecret is `homerslab setup secret <name>`: first-time setup's secrets never cross the LAN page's plain HTTP
+// setupSecret is `homeward setup secret <name>`: first-time setup's secrets never cross the LAN page's plain HTTP
 // (#64), so they come from this machine's terminal, over the control socket. The secret is read from stdin without
 // echo, sent once, and never printed, logged or kept by the CLI.
 //
@@ -31,7 +31,7 @@ func setupSecret(ctx context.Context, args []string, env Env) error {
 	fs := flags("setup secret", env)
 	socket := fs.String("control-socket", DefaultControlSocket, "the manager's control socket")
 	fs.Usage = func() {
-		fmt.Fprint(fs.Output(), "Usage: sudo homerslab setup secret mesh|dns|mail\n\nShows where the secret goes, then reads it from stdin, without showing it, and gives it to first-time setup.\n")
+		fmt.Fprint(fs.Output(), "Usage: sudo homeward setup secret mesh|dns|mail\n\nShows where the secret goes, then reads it from stdin, without showing it, and gives it to first-time setup.\n")
 		fs.PrintDefaults()
 	}
 	var name string
@@ -150,16 +150,16 @@ func context64(name string, st setupState) string {
 			who += " at " + at.Local().Format("15:04 MST on 2 January 2006")
 		}
 	}
-	return fmt.Sprintf("%s for %s, %s.\nIf that isn't your setup, press Ctrl-C, and make a new link with sudo homerslab setup link.", where, a["household"], who)
+	return fmt.Sprintf("%s for %s, %s.\nIf that isn't your setup, press Ctrl-C, and make a new link with sudo homeward setup link.", where, a["household"], who)
 }
 
-// dnsToken is `homerslab dns token`: the console's way to replace the DNS token outside first-time setup, for when an
+// dnsToken is `homeward dns token`: the console's way to replace the DNS token outside first-time setup, for when an
 // expired certificate keeps everyone out of Admin (#80). It reads the token as `setup secret` does.
 func dnsToken(ctx context.Context, args []string, env Env) error {
 	fs := flags("dns token", env)
 	socket := fs.String("control-socket", DefaultControlSocket, "the manager's control socket")
 	fs.Usage = func() {
-		fmt.Fprint(fs.Output(), "Usage: sudo homerslab dns token\n\nReplaces the DNS provider's token, read from stdin without showing it, and renews the certificate if it is due.\n")
+		fmt.Fprint(fs.Output(), "Usage: sudo homeward dns token\n\nReplaces the DNS provider's token, read from stdin without showing it, and renews the certificate if it is due.\n")
 		fs.PrintDefaults()
 	}
 	if err := parse(fs, args); err != nil {
@@ -234,9 +234,9 @@ var secretPrompts = map[string]string{
 }
 
 var secretDone = map[string]string{
-	"mesh": "Checked. HomersLab made its own token with it, and this machine is on the mesh. Continue on the setup page.",
+	"mesh": "Checked. Homeward made its own token with it, and this machine is on the mesh. Continue on the setup page.",
 	"dns":  "Checked. The certificate for *.%s is issued, and Admin answers at %s over the mesh. Continue on the setup page.",
-	"mail": "Checked. HomersLab sent a test mail with it. Continue on the setup page.",
+	"mail": "Checked. Homeward sent a test mail with it. Continue on the setup page.",
 }
 
 // refusal is what to do about a refused secret, by the secret and the manager's code.
@@ -257,15 +257,15 @@ var secretRefusals = map[string]string{
 	"secret-refused":        "the mesh refused this token: check it, then run the command again",
 	"dns:secret-refused":    "the DNS provider refused this token: check that it may edit the domain's records, then run the command again",
 	"mesh-unreachable":      "the mesh's control plane didn't answer: check the address on the setup page and this machine's internet",
-	"join-failed":           "the token works, but this machine didn't join the mesh: see journalctl -u homerslab-agent",
+	"join-failed":           "the token works, but this machine didn't join the mesh: see journalctl -u homeward-agent",
 	"no-value":              "nothing was read: paste the secret, then press Enter",
 	"dns:no-zone":           "no public DNS zone holds the domain: check its name on the setup page",
 	"dns:caa-forbids":       "the domain's CAA records don't let the certificate authority issue for it: add a CAA record for letsencrypt.org at your DNS provider, then run the command again",
-	"dns:issuance-failed":   "the token works, but the certificate wasn't issued: see journalctl -u homerslab-manager, then run the command again",
+	"dns:issuance-failed":   "the token works, but the certificate wasn't issued: see journalctl -u homeward-manager, then run the command again",
 	"dns:dns-listing-empty": "the DNS provider listed nothing in the zone, which can be a moment's answer, so no DNS record was written and the certificate wasn't issued: run the command again in a few minutes",
-	"dns:edge-failed":       "the certificate is issued, but the edge didn't take it: see journalctl -u homerslab-agent -u homerslab-edge",
-	"dns:names-failed":      "the certificate is issued, but the mesh's names weren't made: see journalctl -u homerslab-manager",
-	"dns:no-domain":         "first-time setup hasn't got to the domain yet: give it on the setup page, then use sudo homerslab setup secret dns",
+	"dns:edge-failed":       "the certificate is issued, but the edge didn't take it: see journalctl -u homeward-agent -u homeward-edge",
+	"dns:names-failed":      "the certificate is issued, but the mesh's names weren't made: see journalctl -u homeward-manager",
+	"dns:no-domain":         "first-time setup hasn't got to the domain yet: give it on the setup page, then use sudo homeward setup secret dns",
 	"dns:mesh-unreachable":  "the mesh's control plane didn't answer, so the names weren't made: check this machine's internet",
 }
 

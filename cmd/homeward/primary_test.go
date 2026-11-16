@@ -17,7 +17,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ArjunRachithcf/homerslab/internal/testenv"
+	"github.com/ArjunRachithcf/homeward/internal/testenv"
 )
 
 const nobody = 65534
@@ -36,7 +36,7 @@ func TestThePrimaryRunsTheManagerUnprivilegedAndTheAgentAsRoot(t *testing.T) {
 	}
 	t.Cleanup(func() { os.RemoveAll(dir) })
 	must(t, os.Chmod(dir, 0o755))
-	bin := filepath.Join(dir, "homerslab")
+	bin := filepath.Join(dir, "homeward")
 	build := exec.Command("go", "build", "-o", bin, ".")
 	build.Stderr = os.Stderr
 	must(t, build.Run())
@@ -69,7 +69,7 @@ func TestThePrimaryRunsTheManagerUnprivilegedAndTheAgentAsRoot(t *testing.T) {
 	// The installer's step: the CLI, as root, asks the manager for a link.
 	out, err := exec.Command(bin, "setup", "link", "--control-socket", controlSock).CombinedOutput()
 	if err != nil {
-		t.Fatalf("homerslab setup link: %v\n%s", err, out)
+		t.Fatalf("homeward setup link: %v\n%s", err, out)
 	}
 	m := regexp.MustCompile(`http://127\.0\.0\.1:(\d+)/setup#k=([A-Za-z0-9_-]+)`).FindStringSubmatch(string(out))
 	if m == nil {

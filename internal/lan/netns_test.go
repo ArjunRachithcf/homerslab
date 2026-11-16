@@ -16,11 +16,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ArjunRachithcf/homerslab/internal/lan"
-	"github.com/ArjunRachithcf/homerslab/internal/testenv"
+	"github.com/ArjunRachithcf/homeward/internal/lan"
+	"github.com/ArjunRachithcf/homeward/internal/testenv"
 )
 
-const insideNamespace = "HOMERSLAB_LAN_NETNS"
+const insideNamespace = "HOMEWARD_LAN_NETNS"
 
 // The machine in the namespace:
 //   - eth0, the home network: 192.168.1.20/24 and the default route through 192.168.1.1; a ULA and a global /64
@@ -475,7 +475,7 @@ func reexecInNamespace(t *testing.T, run string) {
 	t.Helper()
 	for _, tool := range []string{"unshare", "ip"} {
 		if _, err := exec.LookPath(tool); err != nil {
-			if os.Getenv("HOMERSLAB_REQUIRE_NETNS") == "1" {
+			if os.Getenv("HOMEWARD_REQUIRE_NETNS") == "1" {
 				t.Fatalf("%s isn't installed", tool)
 			}
 			t.Skipf("%s isn't installed: the LAN isn't tested in a namespace", tool)
@@ -489,7 +489,7 @@ func reexecInNamespace(t *testing.T, run string) {
 	cmd.Env = append(os.Environ(), insideNamespace+"=1")
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		if bytes.Contains(out, []byte("unshare failed")) && os.Getenv("HOMERSLAB_REQUIRE_NETNS") != "1" {
+		if bytes.Contains(out, []byte("unshare failed")) && os.Getenv("HOMEWARD_REQUIRE_NETNS") != "1" {
 			t.Skipf("no user namespaces here: %s", bytes.TrimSpace(out))
 		}
 		t.Fatalf("in a namespace: %v\n%s", err, out)

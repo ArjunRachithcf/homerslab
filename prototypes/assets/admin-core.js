@@ -1,4 +1,4 @@
-// HomersLab Admin prototype: state, router, shell, the planner and shared renderers. PROTOTYPE, throwaway.
+// Homeward Admin prototype: state, router, shell, the planner and shared renderers. PROTOTYPE, throwaway.
 // One static app, hash routes, state in memory only. The install plan is its own page, #/plans/<plan id>: any change
 // makes a new plan with a new id, and one passkey at Install approves the whole plan (decisions of round 1).
 (() => {
@@ -150,7 +150,7 @@
     const settings = /^#\/settings/.test(h);
     const updates = S.installed.filter((a) => a.update).length, asks = STORE.open().length;
     document.querySelector('#side').innerHTML = `
-      <a class="brand" href="#/apps" aria-label="HomersLab Admin">${LOCKUP}</a>
+      <a class="brand" href="#/apps" aria-label="Homeward Admin">${LOCKUP}</a>
       <div class="sidebar-scope"><b>${esc(D.household.name)}</b><span>Admin · on the mesh</span></div>
       <nav class="nav" aria-label="Admin">${NAV.map((n) => `<a class="nav-item" href="${n.href}" ${n === cur ? 'aria-current="page"' : ''}>${I(n.icon)}<span>${n.label}</span>${n.label === 'Store' && updates + asks ? `<span class="nav-count" aria-label="${updates} ${updates === 1 ? 'update' : 'updates'} ready, ${asks} ${asks === 1 ? 'request' : 'requests'} waiting">${updates + asks}</span>` : ''}</a>`).join('')}</nav>
       <div class="sidebar-foot">
@@ -161,7 +161,7 @@
     document.querySelector('#tabs').innerHTML = NAV.map((n) => `<a class="tab" href="${n.href}" ${n === cur ? 'aria-current="page"' : ''}>${I(n.icon)}<span>${n.label}</span></a>`).join('');
     HL.lens(document.querySelector('#tabs'));
     document.querySelector('#bar').innerHTML = `
-      ${back ? `<a class="topbar-back" href="${back.href}">${I('chevronBack')}<span>${esc(back.label)}</span></a>` : `<a class="brand a-phone-brand" href="#/apps" aria-label="HomersLab Admin, apps">${MARK}</a>`}
+      ${back ? `<a class="topbar-back" href="${back.href}">${I('chevronBack')}<span>${esc(back.label)}</span></a>` : `<a class="brand a-phone-brand" href="#/apps" aria-label="Homeward Admin, apps">${MARK}</a>`}
       <span class="topbar-title" aria-hidden="true"></span>
       <div class="topbar-end">
         <div class="a-search a-wide" role="search">${I('search')}<label class="sr-only" for="search">Search apps, the Store, people and nodes</label><input id="search" type="search" role="combobox" aria-autocomplete="list" placeholder="Search" autocomplete="off" aria-controls="results" aria-expanded="false"><kbd aria-hidden="true">/</kbd></div>
@@ -226,7 +226,7 @@
     r.after?.(m, q);
     const h1 = main.querySelector('h1');
     document.querySelector('#bar .topbar-title').textContent = h1?.textContent.trim() || '';
-    document.title = `${h1?.textContent.trim() || 'Admin'} · HomersLab Admin`;
+    document.title = `${h1?.textContent.trim() || 'Admin'} · Homeward Admin`;
     UI.paint(main);
     UI.bars(document.querySelector('#top'), h1);
     if (!firstRender) { window.scrollTo(0, 0); h1?.setAttribute('tabindex', '-1'); h1?.focus({ preventScroll: true }); }

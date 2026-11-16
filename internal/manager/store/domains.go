@@ -6,10 +6,10 @@ import (
 	"errors"
 	"time"
 
-	"github.com/ArjunRachithcf/homerslab/internal/dns"
+	"github.com/ArjunRachithcf/homeward/internal/dns"
 )
 
-// Book is the list of DNS records HomersLab created, as the DNS adapter keeps it.
+// Book is the list of DNS records Homeward created, as the DNS adapter keeps it.
 func (s *Store) Book() dns.Book { return book{s} }
 
 type book struct{ s *Store }

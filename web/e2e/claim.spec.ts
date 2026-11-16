@@ -5,7 +5,7 @@ import type { Page, Request, Route } from '@playwright/test';
 import { expect, test } from './primary';
 
 const CLAIM = '**/api/v1/setup/claim';
-const welcome = 'Let’s set up HomersLab';
+const welcome = 'Let’s set up Homeward';
 
 /** The address of a link whose claim is still out: its key, and the tab's nonce. */
 const stillOut = (localUrl: string) => new RegExp(`^${localUrl.replace(/[.*+?^$|()[\]{}\\/]/g, '\\$&')}&n=[A-Za-z0-9_-]{43}$`);
@@ -55,7 +55,7 @@ test('a claim that keeps getting no answer says so, and "Try again" claims the s
   let tries = 0;
   await page.route(CLAIM, (route) => { tries++; return route.abort('connectionrefused'); });
   await page.goto(link.localUrl);
-  await expect(page.getByRole('heading', { level: 1 })).toContainText('Setup can’t reach HomersLab', { timeout: 15_000 });
+  await expect(page.getByRole('heading', { level: 1 })).toContainText('Setup can’t reach Homeward', { timeout: 15_000 });
   expect(tries).toBe(4);
   await expect(page).toHaveURL(stillOut(link.localUrl)); // the link still works, so it stays
 
@@ -211,9 +211,9 @@ test('a claim the manager refuses from here says so, and keeps the link', async 
   await page.route(CLAIM, (route) =>
     route.fulfill({ status: 403, contentType: 'application/json', body: '{"error":"not-from-lan"}' }));
   await page.goto(link.localUrl);
-  await expect(page.getByText('HomersLab takes setup only from this machine or your home network')).toBeVisible();
+  await expect(page.getByText('Homeward takes setup only from this machine or your home network')).toBeVisible();
   await expect(page.getByText('didn’t answer')).toHaveCount(0); // it did answer
-  await expect(page.getByRole('heading', { level: 1 })).toHaveText('Setup didn’t open'); // not "can’t reach HomersLab"
+  await expect(page.getByRole('heading', { level: 1 })).toHaveText('Setup didn’t open'); // not "can’t reach Homeward"
   await expect(page).toHaveTitle(/Setup didn’t open/);
   await expect(page).toHaveURL(stillOut(link.localUrl));
 });
@@ -226,8 +226,8 @@ test('a claim the manager answers 500 says setup didn’t open, not that the man
     route.fulfill({ status: 500, contentType: 'application/json', body: '{"error":"internal"}' }));
   await page.goto(link.localUrl);
   await expect(page.getByRole('heading', { level: 1 })).toHaveText('Setup didn’t open');
-  await expect(page.getByText('HomersLab couldn’t open setup. Try again in a moment.')).toBeVisible();
-  await expect(page.getByText('Setup can’t reach HomersLab')).toHaveCount(0);
+  await expect(page.getByText('Homeward couldn’t open setup. Try again in a moment.')).toBeVisible();
+  await expect(page.getByText('Setup can’t reach Homeward')).toHaveCount(0);
   await expect(page.getByText('didn’t answer')).toHaveCount(0);
   await expect(page).toHaveURL(stillOut(link.localUrl)); // the link still works, so it stays
 
@@ -302,7 +302,7 @@ test('a claim the manager answers "disk full" says so, keeps the key, and "Try a
     route.fulfill({ status: 507, contentType: 'application/json', body: '{"error":"disk-full"}' }));
   await page.goto(link.localUrl);
   await expect(page.getByRole('heading', { level: 1 })).toContainText('This machine’s disk is full');
-  await expect(page.getByText('Setup can’t reach HomersLab')).toHaveCount(0);
+  await expect(page.getByText('Setup can’t reach Homeward')).toHaveCount(0);
   await expect(page).toHaveURL(stillOut(link.localUrl)); // the link still works, so it stays
 
   await page.unroute(CLAIM);

@@ -11,9 +11,9 @@ import (
 
 	"github.com/libdns/libdns"
 
-	"github.com/ArjunRachithcf/homerslab/internal/dns"
-	"github.com/ArjunRachithcf/homerslab/internal/manager"
-	"github.com/ArjunRachithcf/homerslab/internal/testenv"
+	"github.com/ArjunRachithcf/homeward/internal/dns"
+	"github.com/ArjunRachithcf/homeward/internal/manager"
+	"github.com/ArjunRachithcf/homeward/internal/testenv"
 )
 
 // The scheduler puts the zone's inventory record right at every run, beside the certificate's renewal, so an inventory

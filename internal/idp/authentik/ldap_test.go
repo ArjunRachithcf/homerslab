@@ -15,9 +15,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ArjunRachithcf/homerslab/internal/idp"
-	"github.com/ArjunRachithcf/homerslab/internal/idp/authentik"
-	"github.com/ArjunRachithcf/homerslab/internal/ldaps/ldaptest"
+	"github.com/ArjunRachithcf/homeward/internal/idp"
+	"github.com/ArjunRachithcf/homeward/internal/idp/authentik"
+	"github.com/ArjunRachithcf/homeward/internal/ldaps/ldaptest"
 )
 
 // The LDAP outpost of the packaged compose file (service ldap, profile ldap), at its address in the test's range.
@@ -103,7 +103,7 @@ func ldapFlowOnlyAtTheOutpost(t *testing.T, flow string) {
 	}
 }
 
-// ldapDrift opens an app's bind flow to passwords, or to another app's app passwords, behind HomersLab's back, as an
+// ldapDrift opens an app's bind flow to passwords, or to another app's app passwords, behind Homeward's back, as an
 // admin in Authentik's console could: the report says the sign-in is no longer passkey-only, and Prepare puts the flow
 // back.
 func ldapDrift(w *world, a *authentik.Authentik) func(*testing.T) {
@@ -398,7 +398,7 @@ func ldapBesideTheAppsOwn(w *world, a *authentik.Authentik) func(*testing.T) {
 	}
 }
 
-// ldapOrphan deletes an app's LDAP application behind HomersLab's back, as an admin in Authentik's console could, while
+// ldapOrphan deletes an app's LDAP application behind Homeward's back, as an admin in Authentik's console could, while
 // the outpost serves its provider: the report says so, and Prepare closes it to nobody at once and takes the provider
 // off the outpost (orphaned providers are removed). A later pass deletes them.
 func ldapOrphan(w *world, a *authentik.Authentik) func(*testing.T) {
@@ -478,7 +478,7 @@ func ldapOrphan(w *world, a *authentik.Authentik) func(*testing.T) {
 	}
 }
 
-// ldapImpostors puts providers at the outpost behind HomersLab's back, as an admin in Authentik's console could, named
+// ldapImpostors puts providers at the outpost behind Homeward's back, as an admin in Authentik's console could, named
 // as an app's and with an application of their own that has no binding: one with a copy of a real app's base DN, one
 // with a base DN of its own. The report says so; Prepare takes them off the outpost, and nobody binds through them.
 // The outpost asks for its providers every minute, not only when told.
@@ -739,7 +739,7 @@ func unitCommand(t *testing.T, w *world, name string) (*exec.Cmd, *strings.Build
 		switch args[i] {
 		case "homerslab-authentik":
 			args[i] = project
-		case "/usr/share/homerslab/sign-in/authentik.compose.yaml":
+		case "/usr/share/homeward/sign-in/authentik.compose.yaml":
 			args[i] = filepath.Join(w.dir, "compose.yaml")
 		}
 	}
@@ -764,8 +764,8 @@ func ldapOwnUnit(w *world) func(*testing.T) {
 			go func() { *err = c.Wait(); close(ended) }()
 			return ended
 		}
-		signIn, signInOut := unitCommand(t, w, "homerslab-authentik.service")
-		outpost, outpostOut := unitCommand(t, w, "homerslab-ldap.service")
+		signIn, signInOut := unitCommand(t, w, "homeward-authentik.service")
+		outpost, outpostOut := unitCommand(t, w, "homeward-ldap.service")
 		var signInErr, outpostErr error
 		signInEnded, outpostEnded := started(signIn, &signInErr), started(outpost, &outpostErr)
 		defer func() {

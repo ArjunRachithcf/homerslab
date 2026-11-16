@@ -31,15 +31,15 @@ import (
 
 	"golang.org/x/sys/unix"
 
-	"github.com/ArjunRachithcf/homerslab/internal/firewall"
-	"github.com/ArjunRachithcf/homerslab/internal/host"
-	"github.com/ArjunRachithcf/homerslab/internal/lan"
-	"github.com/ArjunRachithcf/homerslab/internal/testenv"
+	"github.com/ArjunRachithcf/homeward/internal/firewall"
+	"github.com/ArjunRachithcf/homeward/internal/host"
+	"github.com/ArjunRachithcf/homeward/internal/lan"
+	"github.com/ArjunRachithcf/homeward/internal/testenv"
 )
 
 const (
-	insideNamespaces = "HOMERSLAB_FIREWALL_NETNS"
-	helper           = "HOMERSLAB_FIREWALL_HELPER" // listen or dial, in a child namespace
+	insideNamespaces = "HOMEWARD_FIREWALL_NETNS"
+	helper           = "HOMEWARD_FIREWALL_HELPER" // listen or dial, in a child namespace
 )
 
 func TestMain(m *testing.M) {
@@ -252,7 +252,7 @@ func TestTheFirewallTableInNetworkNamespaces(t *testing.T) {
 	n.want(t, "nor the box's listeners", "ctr", "172.30.0.1:8022", false)
 	n.ping(t, "the LAN still reaches the machine itself", "192.168.77.1", true)
 
-	// The first boot's table, which homerslab-firewall-restore loads before the agent ever applied one.
+	// The first boot's table, which homeward-firewall-restore loads before the agent ever applied one.
 	if _, err := host.Exec(ctx, host.Cmd{Name: "nft", Args: []string{"-f", "-"}, Stdin: []byte(firewall.Closed(7020))}); err != nil {
 		t.Fatal(err)
 	}
@@ -343,7 +343,7 @@ var sharedSelf string
 
 func shareSelf(t *testing.T) {
 	t.Helper()
-	dir, err := os.MkdirTemp("", "homerslab-fw-")
+	dir, err := os.MkdirTemp("", "homeward-fw-")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -362,7 +362,7 @@ func shareSelf(t *testing.T) {
 // canSetUID says whether this process may start a child as another user: root in a namespace that maps more than one.
 func canSetUID() bool {
 	b, err := os.ReadFile("/proc/self/uid_map")
-	return err == nil && strings.Count(strings.TrimSpace(string(b)), "\n") > 0 || os.Getenv("HOMERSLAB_REQUIRE_NETNS") == "1"
+	return err == nil && strings.Count(strings.TrimSpace(string(b)), "\n") > 0 || os.Getenv("HOMEWARD_REQUIRE_NETNS") == "1"
 }
 
 // helperAs is helper, as uid: this test's binary, from a copy every user may run (the test's own may sit in a home only
@@ -744,7 +744,7 @@ func reexec(t *testing.T, run string) {
 	t.Helper()
 	for _, tool := range []string{"unshare", "nsenter", "ip", "nft", "ping"} {
 		if _, err := exec.LookPath(tool); err != nil {
-			if os.Getenv("HOMERSLAB_REQUIRE_NETNS") == "1" {
+			if os.Getenv("HOMEWARD_REQUIRE_NETNS") == "1" {
 				t.Fatalf("%s isn't installed", tool)
 			}
 			t.Skipf("%s isn't installed: the firewall table isn't tested in namespaces", tool)
@@ -760,7 +760,7 @@ func reexec(t *testing.T, run string) {
 	cmd.Env = append(os.Environ(), insideNamespaces+"=1")
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		if bytes.Contains(out, []byte("unshare failed")) && os.Getenv("HOMERSLAB_REQUIRE_NETNS") != "1" {
+		if bytes.Contains(out, []byte("unshare failed")) && os.Getenv("HOMEWARD_REQUIRE_NETNS") != "1" {
 			t.Skipf("no user namespaces here: %s", bytes.TrimSpace(out))
 		}
 		t.Fatalf("in namespaces: %v\n%s", err, out)

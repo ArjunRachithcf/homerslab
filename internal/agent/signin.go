@@ -15,23 +15,23 @@ import (
 	"strings"
 	"time"
 
-	"github.com/ArjunRachithcf/homerslab/internal/host"
+	"github.com/ArjunRachithcf/homeward/internal/host"
 )
 
 // The sign-in on the primary: the household account's identity provider, Authentik, as one systemd unit the package
-// ships (homerslab-authentik.service), which runs the standard compose command on the package's compose file
+// ships (homeward-authentik.service), which runs the standard compose command on the package's compose file
 // (packaging/sign-in). The agent makes Authentik's own secrets, seals them for that unit (ADR 0011), and writes the
 // unit's drop-in that loads them; the manager never sees them. The manager gives only the bootstrap token, which it
 // uses once and then has the agent forget.
 const (
-	SignInUnit = "homerslab-authentik.service"
+	SignInUnit = "homeward-authentik.service"
 	// SignInUpstream is the server's fixed address on the sign-in network, as the package's compose file pins it:
 	// where the edge, and the manager, reach it.
 	SignInUpstream = "172.31.250.10:9000"
 	// signInLevel is the sign-in's own SELinux MCS level, which its containers run at (the compose file).
 	signInLevel = "s0:c1000,c1001"
 	// signInRun is where the unit puts the files its containers mount: the unit's RuntimeDirectory, 0700.
-	signInRun = "/run/homerslab-authentik"
+	signInRun = "/run/homeward-authentik"
 	// The container users that read the secrets: Authentik's image runs as 1000, PostgreSQL's (alpine) as 70.
 	authentikUID = "1000"
 	postgresUID  = "70"
@@ -76,7 +76,7 @@ func (a *Agent) signInDir() string { return filepath.Join(a.cfg.StateDir, "sign-
 func (a *Agent) signInCred(id string) string { return filepath.Join(a.signInDir(), id+".cred") }
 
 func (a *Agent) signInDropIn() string {
-	return filepath.Join("etc/systemd/system", SignInUnit+".d", "50-homerslab-credentials.conf")
+	return filepath.Join("etc/systemd/system", SignInUnit+".d", "50-homeward-credentials.conf")
 }
 
 func (a *Agent) upstream() string {
@@ -101,7 +101,7 @@ func (a *Agent) selinux() bool {
 // no bootstrap token the file the server reads it from is empty.
 func (a *Agent) signInCredentials(bootstrapping bool) []byte {
 	var b strings.Builder
-	b.WriteString("# Written by HomersLab's agent: the sign-in's secrets, sealed by the agent (ADR 0011). Never edit by hand.\n[Service]\n")
+	b.WriteString("# Written by Homeward's agent: the sign-in's secrets, sealed by the agent (ADR 0011). Never edit by hand.\n[Service]\n")
 	ids := []string{credSecretKey, credPGPass}
 	if bootstrapping {
 		ids = append(ids, credBootstrap)

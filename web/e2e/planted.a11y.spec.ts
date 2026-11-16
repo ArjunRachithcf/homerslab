@@ -4,7 +4,7 @@
 import { accessible, wear, type Look } from './a11y';
 import { expect, test } from './primary';
 
-test.skip(!process.env.HOMERSLAB_PLANTED, 'run by a11y-check.spec.ts');
+test.skip(!process.env.HOMEWARD_PLANTED, 'run by a11y-check.spec.ts');
 
 // css: [selector, property, value], set through the CSSOM (the page's CSP refuses inline style sheets)
 // cut: the viewport made short enough that its bottom edge runs through the middle of the lead. (A lead whose top is
@@ -155,7 +155,7 @@ for (const plant of plants) {
   test(`planted: ${plant.name}`, async ({ page, primary }) => {
     await wear(page, plant.look);
     await page.goto((await primary.newLink()).localUrl);
-    await expect(page.getByRole('heading', { level: 1 })).toContainText('Let’s set up HomersLab');
+    await expect(page.getByRole('heading', { level: 1 })).toContainText('Let’s set up Homeward');
     const html = plant.html;
     if (html) await page.locator(plant.after ?? '.as-lead').evaluate((el, h) => el.insertAdjacentHTML('afterend', h), html);
     for (const [sel, prop, value] of plant.css ?? []) {

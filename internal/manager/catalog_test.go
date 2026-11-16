@@ -15,8 +15,8 @@ import (
 	"testing/fstest"
 	"time"
 
-	"github.com/ArjunRachithcf/homerslab/catalogs"
-	"github.com/ArjunRachithcf/homerslab/internal/testenv"
+	"github.com/ArjunRachithcf/homeward/catalogs"
+	"github.com/ArjunRachithcf/homeward/internal/testenv"
 )
 
 var rewrite = flag.Bool("rewrite-golden", false, "write the golden plans from what the manager makes")

@@ -9,8 +9,8 @@ import (
 	"rsc.io/qr"
 	"rsc.io/qr/coding"
 
-	"github.com/ArjunRachithcf/homerslab/internal/cli/qrterm/qrtermtest"
-	"github.com/ArjunRachithcf/homerslab/internal/testenv"
+	"github.com/ArjunRachithcf/homeward/internal/cli/qrterm/qrtermtest"
+	"github.com/ArjunRachithcf/homeward/internal/testenv"
 )
 
 // zxingPenalty scores a code by ISO/IEC 18004's four mask penalty rules, as ZXing's encoder does.

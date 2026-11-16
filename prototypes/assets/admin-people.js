@@ -1,4 +1,4 @@
-// HomersLab Admin prototype: people, their devices, and invites. PROTOTYPE, throwaway.
+// Homeward Admin prototype: people, their devices, and invites. PROTOTYPE, throwaway.
 // Risky (the passkey): roles, sign-in settings (sign-up, a passkey reset), removing a person, inviting an admin.
 // Not risky: revoking a device, inviting an adult or a kid.
 (() => {
@@ -43,7 +43,7 @@
   });
   act('signup', async (t) => {
     const to = t.value, from = S.signup;
-    const ok = await stepUp({ plan: { id: UI.planId({ k: 'signup', to }), summary: 'change who can sign up' }, title: 'Change sign-up', action: 'Change it', sub: 'Sign-up is a sign-in setting, so HomersLab asks for your passkey.', what: [{ icon: 'people', text: to === 'invite' ? 'Only invited people can join' : to === 'domains' ? `Anyone with an address at ${esc(D.household.signupDomains.join(', '))} can join, as an adult` : 'Nobody can join, invites included' }] });
+    const ok = await stepUp({ plan: { id: UI.planId({ k: 'signup', to }), summary: 'change who can sign up' }, title: 'Change sign-up', action: 'Change it', sub: 'Sign-up is a sign-in setting, so Homeward asks for your passkey.', what: [{ icon: 'people', text: to === 'invite' ? 'Only invited people can join' : to === 'domains' ? `Anyone with an address at ${esc(D.household.signupDomains.join(', '))} can join, as an adult` : 'Nobody can join, invites included' }] });
     if (!ok) { S.signup = from; render(); return; }
     S.approvals.push(ok); S.signup = to; log(`sign-up: ${to}`); toast('Sign-up changed. Approved with your passkey.', 'key'); render();
   });
@@ -80,7 +80,7 @@
   act('device-invite', (t) => { const p = person(t.dataset.id); toast(`${p.short} gets a one-time way onto the mesh for the new device${p.mail ? ', by mail' : ''}.`, 'mail'); });
   act('reset-passkey', async (t) => {
     const p = person(t.dataset.id);
-    const ok = await stepUp({ plan: { id: UI.planId({ k: 'reset', p: p.id }), summary: `reset ${UI.poss(p.short)} passkeys` }, title: `Reset ${esc(UI.poss(p.short))} passkeys`, action: 'Reset them', sub: 'A passkey reset is a sign-in setting, so HomersLab asks for your passkey.', what: [{ icon: 'key', text: `${esc(UI.poss(p.short))} ${p.passkeys.length} ${p.passkeys.length === 1 ? 'passkey stops' : 'passkeys stop'} working` }, { icon: 'mail', text: p.mail ? `A one-time link goes to ${esc(p.mail)} to make a new one` : 'You get a one-time code to hand over in person' }] });
+    const ok = await stepUp({ plan: { id: UI.planId({ k: 'reset', p: p.id }), summary: `reset ${UI.poss(p.short)} passkeys` }, title: `Reset ${esc(UI.poss(p.short))} passkeys`, action: 'Reset them', sub: 'A passkey reset is a sign-in setting, so Homeward asks for your passkey.', what: [{ icon: 'key', text: `${esc(UI.poss(p.short))} ${p.passkeys.length} ${p.passkeys.length === 1 ? 'passkey stops' : 'passkeys stop'} working` }, { icon: 'mail', text: p.mail ? `A one-time link goes to ${esc(p.mail)} to make a new one` : 'You get a one-time code to hand over in person' }] });
     if (!ok) return; S.approvals.push(ok); log(`passkeys reset for ${p.id}`); toast(`${UI.poss(p.short)} passkeys are reset.`, 'key'); render();
   });
   act('role', async (t) => {
@@ -88,13 +88,13 @@
     const what = [{ icon: 'people', text: `${esc(p.name)}: ${ROLE[from]} → <b>${ROLE[to]}</b>` }];
     if (to === 'admin') what.push({ icon: 'shield', text: 'They can open Admin, install apps, add nodes and people, and restore backups' });
     if (to === 'kid') what.push({ icon: 'eye', text: 'They see only apps for kids, in their kid views' });
-    const ok = await stepUp({ plan: { id: UI.planId({ k: 'role', p: p.id, to }), summary: `change ${UI.poss(p.short)} role` }, title: 'Change a role', action: 'Change it', sub: 'A role is a risky change, so HomersLab asks for your passkey.', what });
+    const ok = await stepUp({ plan: { id: UI.planId({ k: 'role', p: p.id, to }), summary: `change ${UI.poss(p.short)} role` }, title: 'Change a role', action: 'Change it', sub: 'A role is a risky change, so Homeward asks for your passkey.', what });
     if (!ok) { render(); return; }
     S.approvals.push(ok); p.role = to; log(`${p.id} role ${to}`); toast(`${p.short} is now ${to === 'admin' ? 'an admin' : to === 'adult' ? 'an adult' : 'a kid'}.`, 'key'); render();
   });
   act('remove-person', async (t) => {
     const p = person(t.dataset.id), ds = devicesOf(p.id);
-    const ok = await stepUp({ plan: { id: UI.planId({ k: 'rmperson', p: p.id }), summary: `remove ${p.short} from the household` }, title: `Remove ${esc(p.name)}`, action: 'Remove them', sub: 'Removing someone takes away their role and their sign-in, so HomersLab asks for your passkey.', what: [{ icon: 'x', text: 'Their household account is revoked' }, { icon: 'x', text: `${ds.length} ${ds.length === 1 ? 'device leaves' : 'devices leave'} the mesh` }] });
+    const ok = await stepUp({ plan: { id: UI.planId({ k: 'rmperson', p: p.id }), summary: `remove ${p.short} from the household` }, title: `Remove ${esc(p.name)}`, action: 'Remove them', sub: 'Removing someone takes away their role and their sign-in, so Homeward asks for your passkey.', what: [{ icon: 'x', text: 'Their household account is revoked' }, { icon: 'x', text: `${ds.length} ${ds.length === 1 ? 'device leaves' : 'devices leave'} the mesh` }] });
     if (!ok) return; S.approvals.push(ok); S.people = S.people.filter((x) => x !== p); S.devices = S.devices.filter((d) => d.person !== p.id); log(`removed person ${p.id}`); toast(`${p.name} is no longer in the household.`); go('#/people');
   });
 
@@ -129,7 +129,7 @@
     if (!inv.name.trim()) { toast('Give them a name first.', 'info'); document.getElementById('inv-name')?.focus(); return; }
     if (inv.how === 'mail' && !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(inv.mail)) { toast('That mail address doesn’t look right.', 'info'); document.getElementById('inv-mail')?.focus(); return; }
     if (inv.role === 'admin') {
-      const ok = await stepUp({ plan: { id: UI.planId({ k: 'invite', ...inv }), summary: `invite ${inv.name} as an admin` }, title: 'Invite an admin', action: 'Send it', sub: 'The admin role is a risky change, so HomersLab asks for your passkey.', what: [{ icon: 'shield', text: `${esc(inv.name)} gets the admin role: Admin, apps, nodes, people and backups` }] });
+      const ok = await stepUp({ plan: { id: UI.planId({ k: 'invite', ...inv }), summary: `invite ${inv.name} as an admin` }, title: 'Invite an admin', action: 'Send it', sub: 'The admin role is a risky change, so Homeward asks for your passkey.', what: [{ icon: 'shield', text: `${esc(inv.name)} gets the admin role: Admin, apps, nodes, people and backups` }] });
       if (!ok) return; S.approvals.push(ok);
     }
     const v = { id: 'inv-' + Date.now(), name: inv.name.trim(), mail: inv.mail || '(by link)', role: inv.role, sent: UI.dayMonth(now()), expires: UI.dayMonth(new Date(now().getTime() + 7 * 864e5)), by: 'ines', how: inv.how };

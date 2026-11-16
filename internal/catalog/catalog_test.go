@@ -9,9 +9,9 @@ import (
 	"testing"
 	"testing/fstest"
 
-	"github.com/ArjunRachithcf/homerslab/internal/catalog"
-	"github.com/ArjunRachithcf/homerslab/internal/edge"
-	"github.com/ArjunRachithcf/homerslab/internal/testenv"
+	"github.com/ArjunRachithcf/homeward/internal/catalog"
+	"github.com/ArjunRachithcf/homeward/internal/edge"
+	"github.com/ArjunRachithcf/homeward/internal/testenv"
 )
 
 func no() *bool { b := false; return &b }
@@ -27,7 +27,7 @@ func TestTheLoaderReadsEveryFieldOfTheManifest(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if c.ID != "test" || c.Name != "The test catalog" || c.Publisher != "HomersLab's tests" || len(c.Categories) != 2 {
+	if c.ID != "test" || c.Name != "The test catalog" || c.Publisher != "Homeward's tests" || len(c.Categories) != 2 {
 		t.Errorf("the catalog: %+v", c)
 	}
 	got, ok := c.App("everything")

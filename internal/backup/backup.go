@@ -29,7 +29,7 @@ import (
 // package installs it as Restic (#48); the contract suite runs restic's own image of the same version.
 const (
 	ResticVersion = "0.19.1"
-	Restic        = "/usr/libexec/homerslab/restic"
+	Restic        = "/usr/libexec/homeward/restic"
 )
 
 // ResticSHA256 are the release's compressed binaries' digests (restic_<version>_linux_<arch>.bz2), by architecture as

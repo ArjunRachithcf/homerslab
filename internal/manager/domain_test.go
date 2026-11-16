@@ -23,12 +23,12 @@ import (
 	"testing/fstest"
 	"time"
 
-	"github.com/ArjunRachithcf/homerslab/internal/agent"
-	"github.com/ArjunRachithcf/homerslab/internal/certs"
-	"github.com/ArjunRachithcf/homerslab/internal/dns"
-	"github.com/ArjunRachithcf/homerslab/internal/manager"
-	"github.com/ArjunRachithcf/homerslab/internal/mesh"
-	"github.com/ArjunRachithcf/homerslab/internal/testenv"
+	"github.com/ArjunRachithcf/homeward/internal/agent"
+	"github.com/ArjunRachithcf/homeward/internal/certs"
+	"github.com/ArjunRachithcf/homeward/internal/dns"
+	"github.com/ArjunRachithcf/homeward/internal/manager"
+	"github.com/ArjunRachithcf/homeward/internal/mesh"
+	"github.com/ArjunRachithcf/homeward/internal/testenv"
 )
 
 // The DNS tokens in these tests: the one the provider takes, and others.
@@ -188,7 +188,7 @@ func TestTheLANPageRefusesTheDNSTokenAndPointsToTheCommand(t *testing.T) {
 		r := b.answer("domain", body)
 		var e struct{ Error, Command string }
 		r.json(t, &e)
-		if r.Code != http.StatusBadRequest || e.Error != "secret-over-http" || e.Command != "sudo homerslab setup secret dns" {
+		if r.Code != http.StatusBadRequest || e.Error != "secret-over-http" || e.Command != "sudo homeward setup secret dns" {
 			t.Errorf("PUT domain %v: %d %s, want 400 secret-over-http with the command", body, r.Code, r.Body)
 		}
 	}
@@ -219,7 +219,7 @@ func TestTheDomainIsGivenOnceAndItsCertificateEndsTheFirstHalf(t *testing.T) {
 	if stepState(s, "domain") != "waiting" || s.Half != "lan" {
 		t.Fatalf("after the domain: domain %s, half %s", stepState(s, "domain"), s.Half)
 	}
-	if r := b.do("GET", "/api/v1/setup", nil); !strings.Contains(string(r.Body), `"command":"sudo homerslab setup secret dns"`) {
+	if r := b.do("GET", "/api/v1/setup", nil); !strings.Contains(string(r.Body), `"command":"sudo homeward setup secret dns"`) {
 		t.Errorf("the page isn't told the command: %s", r.Body)
 	}
 	if r := b.answer("mail", nil); r.Code != http.StatusConflict {
@@ -332,7 +332,7 @@ func (p *primary) warnings(t *testing.T) []struct {
 }
 
 // The scheduler renews the certificate once a third of its lifetime is left. The first renewal that fails raises a
-// warning, long before the certificate expires; `homerslab dns token` replaces the token from the console, and the
+// warning, long before the certificate expires; `homeward dns token` replaces the token from the console, and the
 // renewal runs right away (#80).
 func TestRenewalAtAThirdAndAWarningOnTheFirstFailure(t *testing.T) {
 	testenv.Isolate(t)
@@ -352,7 +352,7 @@ func TestRenewalAtAThirdAndAWarningOnTheFirstFailure(t *testing.T) {
 		t.Fatalf("at a third of the lifetime left: issued %d, the edge's serial %s", fd.count(), p.edge(t).Certificates[0].Serial)
 	}
 
-	// The provider makes everyone rotate their tokens: HomersLab's stops working.
+	// The provider makes everyone rotate their tokens: Homeward's stops working.
 	fd.mu.Lock()
 	fd.token = otherToken
 	fd.mu.Unlock()
@@ -360,7 +360,7 @@ func TestRenewalAtAThirdAndAWarningOnTheFirstFailure(t *testing.T) {
 	p.m.RunDue(ctx)
 	ws := p.warnings(t)
 	if len(ws) != 1 || ws[0].Source != "certificate:example.test" || !ws[0].Resolved.IsZero() ||
-		!strings.Contains(ws[0].What, "sudo homerslab dns token") || !strings.Contains(ws[0].What, "*.example.test") {
+		!strings.Contains(ws[0].What, "sudo homeward dns token") || !strings.Contains(ws[0].What, "*.example.test") {
 		t.Fatalf("after the first failed renewal: %+v", ws)
 	}
 	p.clock.Add(time.Hour)
@@ -540,7 +540,7 @@ func TestARenewalThatDidntReachTheEdgeIsPutThereAgain(t *testing.T) {
 	ctx := context.Background()
 	old := p.edge(t).Certificates[0].Serial
 	p.clock.Add(61 * 24 * time.Hour)
-	p.host.Fail("systemctl restart homerslab-edge.service")
+	p.host.Fail("systemctl restart homeward-edge.service")
 	p.m.RunDue(ctx)
 	if fd.count() != 2 || p.edge(t).Certificates[0].Serial != old {
 		t.Fatalf("issued %d; the edge holds %s", fd.count(), p.edge(t).Certificates[0].Serial)

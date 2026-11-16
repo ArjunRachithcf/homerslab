@@ -1,4 +1,4 @@
-// Command homerslab is HomersLab's one binary. On the primary it runs twice: as the manager, unprivileged, and as the
+// Command homeward is Homeward's one binary. On the primary it runs twice: as the manager, unprivileged, and as the
 // agent, as root (packaging/systemd). It is also the CLI.
 package main
 
@@ -8,7 +8,7 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/ArjunRachithcf/homerslab/internal/cli"
+	"github.com/ArjunRachithcf/homeward/internal/cli"
 )
 
 func main() {

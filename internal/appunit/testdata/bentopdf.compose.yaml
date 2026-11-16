@@ -1,5 +1,5 @@
-# Written by HomersLab's agent, from install plan p-8c125cd2f9f38dfdd95c9c0ba3cd2663. Never edit by hand.
-# What HomersLab adds to app bentopdf's own compose file, as the second file of the standard compose command (ADR 0014):
+# Written by Homeward's agent, from install plan p-8c125cd2f9f38dfdd95c9c0ba3cd2663. Never edit by hand.
+# What Homeward adds to app bentopdf's own compose file, as the second file of the standard compose command (ADR 0014):
 #   - every service: no restart policy, the engine's nor swarm's (the app's unit restarts the app), at the app's own
 #     SELinux level;
 #   - the app's one upstream, a fixed address on a network of its own, which only the edge and the agent may open;

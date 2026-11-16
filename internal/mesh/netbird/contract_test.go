@@ -1,7 +1,7 @@
 package netbird_test
 
 // The mesh contract suite against a real, self-hosted NetBird v0.82.0 in containers (testdata/compose.yaml, compose
-// project hltest-15). It needs Docker: it runs when HOMERSLAB_TEST_DOCKER_HOST names the engine to use, and is
+// project hltest-15). It needs Docker: it runs when HOMEWARD_TEST_DOCKER_HOST names the engine to use, and is
 // skipped otherwise. The code under test never sees that engine (testenv points DOCKER_HOST at nowhere); only this
 // harness does, explicitly.
 
@@ -24,16 +24,16 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ArjunRachithcf/homerslab/internal/host"
-	"github.com/ArjunRachithcf/homerslab/internal/mesh"
-	"github.com/ArjunRachithcf/homerslab/internal/mesh/meshtest"
-	"github.com/ArjunRachithcf/homerslab/internal/mesh/netbird"
-	"github.com/ArjunRachithcf/homerslab/internal/testenv"
+	"github.com/ArjunRachithcf/homeward/internal/host"
+	"github.com/ArjunRachithcf/homeward/internal/mesh"
+	"github.com/ArjunRachithcf/homeward/internal/mesh/meshtest"
+	"github.com/ArjunRachithcf/homeward/internal/mesh/netbird"
+	"github.com/ArjunRachithcf/homeward/internal/testenv"
 )
 
-// project is the compose project: hltest-15, or HOMERSLAB_TEST_PROJECT.
+// project is the compose project: hltest-15, or HOMEWARD_TEST_PROJECT.
 var project = func() string {
-	if p := os.Getenv("HOMERSLAB_TEST_PROJECT"); p != "" {
+	if p := os.Getenv("HOMEWARD_TEST_PROJECT"); p != "" {
 		return p
 	}
 	return "hltest-15"
@@ -44,9 +44,9 @@ const managementURL = "http://nb.hltest15.test:80"
 
 func TestTheMeshContractOnSelfHostedNetBird(t *testing.T) {
 	testenv.Isolate(t)
-	engine := os.Getenv("HOMERSLAB_TEST_DOCKER_HOST")
+	engine := os.Getenv("HOMEWARD_TEST_DOCKER_HOST")
 	if engine == "" {
-		t.Skip("set HOMERSLAB_TEST_DOCKER_HOST to the engine for the contract suite's containers")
+		t.Skip("set HOMEWARD_TEST_DOCKER_HOST to the engine for the contract suite's containers")
 	}
 	w := up(t, engine)
 	ctx := context.Background()
@@ -71,7 +71,7 @@ func TestTheMeshContractOnSelfHostedNetBird(t *testing.T) {
 			t.Errorf("a new service user has older tokens: %v", a.Stale)
 		}
 		if life := time.Until(own.ExpiresAt); life > mesh.MaxTokenLife || life < mesh.MaxTokenLife-48*time.Hour {
-			t.Errorf("HomersLab's token lives %v, want 365 days", life)
+			t.Errorf("Homeward's token lives %v, want 365 days", life)
 		}
 		users := w.raw(t, own.Value, "GET", "/api/users", nil)
 		var list []struct {
@@ -89,9 +89,9 @@ func TestTheMeshContractOnSelfHostedNetBird(t *testing.T) {
 			}
 		}
 		if !owner || !svc {
-			t.Fatalf("users: owner %v, HomersLab's admin service user with the token %v", owner, svc)
+			t.Fatalf("users: owner %v, Homeward's admin service user with the token %v", owner, svc)
 		}
-		// The setup token works until HomersLab's own one has taken over and revokes it: a setup that stopped
+		// The setup token works until Homeward's own one has taken over and revokes it: a setup that stopped
 		// half-way resumes from it.
 		setup, _ := netbird.Open(w.api, mesh.Token{Value: st.Value})
 		if _, err := setup.Report(ctx); err != nil {
@@ -111,7 +111,7 @@ func TestTheMeshContractOnSelfHostedNetBird(t *testing.T) {
 		t.Fatal("no token: nothing else can be checked")
 	}
 
-	t.Run("the admin's token is given once; HomersLab makes its own", func(t *testing.T) {
+	t.Run("the admin's token is given once; Homeward makes its own", func(t *testing.T) {
 		// What the admin brings from the dashboard (the cloud's guided step): a token of a service user they made.
 		given := w.adminToken(t, own.Value)
 		a, err := netbird.Adopt(ctx, w.api, given)
@@ -123,19 +123,19 @@ func TestTheMeshContractOnSelfHostedNetBird(t *testing.T) {
 			t.Errorf("adopting again: user %s token %s, want the same service user %s with a new token", next.UserID, next.ID, own.UserID)
 		}
 		if len(a.Stale) != 1 || a.Stale[0].ID != own.ID {
-			t.Fatalf("the older tokens: %+v, want HomersLab's earlier one", a.Stale)
+			t.Fatalf("the older tokens: %+v, want Homeward's earlier one", a.Stale)
 		}
 		// The older token works until the caller has kept the new one and revokes it.
 		old, _ := netbird.Open(w.api, own)
 		if _, err := old.Report(ctx); err != nil {
-			t.Errorf("HomersLab's earlier token before the caller revokes it: %v", err)
+			t.Errorf("Homeward's earlier token before the caller revokes it: %v", err)
 		}
 		nm, _ := netbird.Open(w.api, next)
 		if err := nm.Revoke(ctx, a.Stale[0]); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := old.Report(ctx); !errors.Is(err, mesh.ErrTokenRefused) {
-			t.Errorf("HomersLab's earlier token after its revocation: %v, want it refused", err)
+			t.Errorf("Homeward's earlier token after its revocation: %v, want it refused", err)
 		}
 		if _, err := netbird.Adopt(ctx, w.api, "nbp_not-a-real-token-at-all-000000000000"); !errors.Is(err, mesh.ErrTokenRefused) {
 			t.Errorf("a wrong token: %v, want ErrTokenRefused", err)
@@ -270,7 +270,7 @@ func TestTheMeshContractOnSelfHostedNetBird(t *testing.T) {
 				rule := map[string]any{"name": p.Name, "enabled": true, "action": "accept", "bidirectional": false, "protocol": "tcp",
 					"ports": []string{"80", "443"}, "port_ranges": []map[string]int{{"start": 1, "end": 65535}},
 					"sources": []string{ids[mesh.RoleGroup(mesh.Adult)]}, "destinations": []string{ids[mesh.NodesGroup]}}
-				// The ports as they were and a range beside them, where only the range tells the rule from HomersLab's.
+				// The ports as they were and a range beside them, where only the range tells the rule from Homeward's.
 				// NetBird 0.82 refuses a rule with both ("specify either individual ports or port ranges, not both"),
 				// so a range always shows in the ports too: then the range replaces the ports.
 				switch code, body := w.do(t, tok, "PUT", "/api/policies/"+p.ID, map[string]any{"name": p.Name, "enabled": true,

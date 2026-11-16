@@ -1,8 +1,8 @@
-// Package engine is what HomersLab reads of an app's compose project, in its own words. Only the container-engine
+// Package engine is what Homeward reads of an app's compose project, in its own words. Only the container-engine
 // adapter (engine/compose) imports the Compose SDK; everything else reads these types.
 package engine
 
-// ProjectPrefix starts every compose project name HomersLab uses, homerslab-<app>: the namespace it reserves, because
+// ProjectPrefix starts every compose project name Homeward uses, homerslab-<app>: the namespace it reserves, because
 // Compose claims a container by its labels alone (ADR 0014).
 const ProjectPrefix = "homerslab-"
 

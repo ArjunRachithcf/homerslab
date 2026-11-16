@@ -10,8 +10,8 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/ArjunRachithcf/homerslab/internal/idp"
-	"github.com/ArjunRachithcf/homerslab/internal/testenv"
+	"github.com/ArjunRachithcf/homeward/internal/idp"
+	"github.com/ArjunRachithcf/homeward/internal/testenv"
 )
 
 // fakeAuthentik is an Authentik that ignores every filter a list is asked with but a binding's target, as the real one ignores a filter its
@@ -270,7 +270,7 @@ func TestFindKeepsOnlyTheExactMatch(t *testing.T) {
 		Name string `json:"name"`
 	}
 	ctx := context.Background()
-	results = []map[string]any{{"pk": 1, "name": "homerslab-bentopdf"}, {"pk": 2, "name": "HomersLab-Chores"}, {"pk": 3, "name": "homerslab-chores"}, {"pk": 4}}
+	results = []map[string]any{{"pk": 1, "name": "homerslab-bentopdf"}, {"pk": 2, "name": "Homeward-Chores"}, {"pk": 3, "name": "homerslab-chores"}, {"pk": 4}}
 	if o, err := find[obj](ctx, a, "/providers/proxy/?name__iexact=homerslab-chores", "name", "homerslab-chores"); err != nil || o == nil || o.PK != 3 {
 		t.Errorf("found %+v, %v: want pk 3", o, err)
 	}
@@ -385,7 +385,7 @@ func TestBindingsOfAnotherTargetAreNeverTouched(t *testing.T) {
 	}
 }
 
-// Every guard's provider carries HomersLab's one role mapping (#236): it names the role in its own header from the role
+// Every guard's provider carries Homeward's one role mapping (#236): it names the role in its own header from the role
 // groups' exact names, so the edge never reads a group's name; its scope sorts after Authentik's own proxy mapping,
 // whose attributes it would otherwise lose to. Made once, whatever the number of guards.
 func TestEveryGuardCarriesTheRoleMapping(t *testing.T) {

@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/ArjunRachithcf/homerslab/internal/cli/qrterm"
+	"github.com/ArjunRachithcf/homeward/internal/cli/qrterm"
 )
 
 // handOver is the manager's answer to setup join and setup passkey: credentials for this terminal only.
@@ -21,14 +21,14 @@ type handOver struct {
 	Username           string    `json:"username"`
 }
 
-// setupJoin is `sudo homerslab setup join`: first-time setup's second half begins in this machine's terminal. It shows
+// setupJoin is `sudo homeward setup join`: first-time setup's second half begins in this machine's terminal. It shows
 // a one-off key for the admin's device and the one-time link to their first passkey, as QR codes. They are
 // credentials, so they are never shown on the LAN page, which travels over plain HTTP (#64).
 func setupJoin(ctx context.Context, args []string, env Env) error {
 	return handOverCmd(ctx, "setup join", "/api/v1/setup/join", args, env)
 }
 
-// setupPasskey is `sudo homerslab setup passkey`: another one-time link, for the admin's second passkey.
+// setupPasskey is `sudo homeward setup passkey`: another one-time link, for the admin's second passkey.
 func setupPasskey(ctx context.Context, args []string, env Env) error {
 	return handOverCmd(ctx, "setup passkey", "/api/v1/setup/passkey", args, env)
 }
@@ -51,11 +51,11 @@ func handOverCmd(ctx context.Context, name, path string, args []string, env Env)
 		case "lan-half-open":
 			return errors.New("first-time setup's first half isn't done yet: finish it on the setup page first")
 		case "setup-done":
-			return errors.New("first-time setup is done; to add a passkey for an admin who lost theirs: sudo homerslab admin recover <person>")
+			return errors.New("first-time setup is done; to add a passkey for an admin who lost theirs: sudo homeward admin recover <person>")
 		case "no-first-passkey":
-			return errors.New("the first passkey comes first: sudo homerslab setup join")
+			return errors.New("the first passkey comes first: sudo homeward setup join")
 		case "sign-in-failed", "mesh-unreachable":
-			return fmt.Errorf("the household account couldn't be set up (%s): sudo journalctl -u homerslab-manager -u homerslab-authentik", ae.Code)
+			return fmt.Errorf("the household account couldn't be set up (%s): sudo journalctl -u homeward-manager -u homeward-authentik", ae.Code)
 		}
 	}
 	if err != nil {

@@ -13,11 +13,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ArjunRachithcf/homerslab/internal/agent"
-	"github.com/ArjunRachithcf/homerslab/internal/agent/agenttest"
-	"github.com/ArjunRachithcf/homerslab/internal/backup"
-	"github.com/ArjunRachithcf/homerslab/internal/engine"
-	"github.com/ArjunRachithcf/homerslab/internal/testenv"
+	"github.com/ArjunRachithcf/homeward/internal/agent"
+	"github.com/ArjunRachithcf/homeward/internal/agent/agenttest"
+	"github.com/ArjunRachithcf/homeward/internal/backup"
+	"github.com/ArjunRachithcf/homeward/internal/engine"
+	"github.com/ArjunRachithcf/homeward/internal/testenv"
 )
 
 const (
@@ -161,7 +161,7 @@ func TestARunBacksUpExactlyWhatThePlanSaid(t *testing.T) {
 			backups = append(backups, b)
 		}
 		if u := strings.Join(r.Unit, " "); !strings.Contains(u, "CapabilityBoundingSet=CAP_DAC_READ_SEARCH") ||
-			!strings.Contains(u, "LoadCredentialEncrypted=backup-key:"+filepath.Join(state, "backup", "backup-key.cred")) || !slices.Contains(r.Argv, "/var/lib/homerslab/backup-cache") {
+			!strings.Contains(u, "LoadCredentialEncrypted=backup-key:"+filepath.Join(state, "backup", "backup-key.cred")) || !slices.Contains(r.Argv, "/var/lib/homeward/backup-cache") {
 			t.Errorf("restic's unit: %q %q", r.Unit, r.Argv)
 		}
 	}
@@ -170,9 +170,9 @@ func TestARunBacksUpExactlyWhatThePlanSaid(t *testing.T) {
 		{"backup", "--host", "primary", "--tag", "app=ledger", "--tag", "data=web:/data/library", "--", "/var/lib/docker/volumes/homerslab-ledger_library/_data"},
 		{"backup", "--host", "primary", "--tag", "app=ledger", "--tag", "data=db:ledger.sql", "--stdin-from-command", "--stdin-filename", "ledger.sql", "--",
 			"/usr/bin/docker", "compose", "--project-name", "homerslab-ledger", "--project-directory", dir, "--file", filepath.Join(dir, "compose.yaml"),
-			"--file", filepath.Join(dir, "homerslab.yaml"), "exec", "-T", "db", "pg_dump", "--username=postgres", "ledger"},
+			"--file", filepath.Join(dir, "homeward.yaml"), "exec", "-T", "db", "pg_dump", "--username=postgres", "ledger"},
 		{"backup", "--host", "primary", "--tag", "platform=sign-in", "--tag", "data=postgresql:authentik.sql", "--stdin-from-command", "--stdin-filename", "authentik.sql", "--",
-			"/usr/bin/docker", "compose", "--project-name", "homerslab-authentik", "--file", "/usr/share/homerslab/sign-in/authentik.compose.yaml",
+			"/usr/bin/docker", "compose", "--project-name", "homerslab-authentik", "--file", "/usr/share/homeward/sign-in/authentik.compose.yaml",
 			"exec", "-T", "postgresql", "pg_dump", "--username=authentik", "--clean", "--if-exists", "authentik"},
 	}
 	if len(backups) != len(want) {

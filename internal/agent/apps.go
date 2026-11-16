@@ -21,17 +21,17 @@ import (
 	"sync"
 	"time"
 
-	"github.com/ArjunRachithcf/homerslab/internal/appunit"
-	"github.com/ArjunRachithcf/homerslab/internal/atomicfile"
-	"github.com/ArjunRachithcf/homerslab/internal/catalog"
-	"github.com/ArjunRachithcf/homerslab/internal/edge"
-	"github.com/ArjunRachithcf/homerslab/internal/engine"
-	"github.com/ArjunRachithcf/homerslab/internal/engine/compose"
-	"github.com/ArjunRachithcf/homerslab/internal/firewall"
-	"github.com/ArjunRachithcf/homerslab/internal/host"
-	"github.com/ArjunRachithcf/homerslab/internal/ldaps"
-	"github.com/ArjunRachithcf/homerslab/internal/storage"
-	"github.com/ArjunRachithcf/homerslab/internal/text"
+	"github.com/ArjunRachithcf/homeward/internal/appunit"
+	"github.com/ArjunRachithcf/homeward/internal/atomicfile"
+	"github.com/ArjunRachithcf/homeward/internal/catalog"
+	"github.com/ArjunRachithcf/homeward/internal/edge"
+	"github.com/ArjunRachithcf/homeward/internal/engine"
+	"github.com/ArjunRachithcf/homeward/internal/engine/compose"
+	"github.com/ArjunRachithcf/homeward/internal/firewall"
+	"github.com/ArjunRachithcf/homeward/internal/host"
+	"github.com/ArjunRachithcf/homeward/internal/ldaps"
+	"github.com/ArjunRachithcf/homeward/internal/storage"
+	"github.com/ArjunRachithcf/homeward/internal/text"
 )
 
 // Apps on this node (#19). The manager applies an install plan by handing the agent what the plan says and the catalog's
@@ -51,7 +51,7 @@ import (
 
 // AppEngine is what the agent reads of the container engine's apps: compose.Engine on a real machine.
 type AppEngine interface {
-	// States are every project of HomersLab's that the engine has a container of.
+	// States are every project of Homeward's that the engine has a container of.
 	States(ctx context.Context) (map[string]engine.State, error)
 	// Logs are a project's last lines.
 	Logs(ctx context.Context, project string, tail int) ([]compose.LogLine, error)
@@ -62,7 +62,7 @@ type AppEngine interface {
 // UnitsDir is where the agent writes apps' units, under the machine's root: a folder of its own outside systemd's
 // search path, whose units it has systemd link (systemctl enable <path>), so that the agent writes nothing else under
 // /etc/systemd.
-const UnitsDir = "etc/homerslab/units"
+const UnitsDir = "etc/homeward/units"
 
 // Where apps' upstreams and levels come from. Each app gets a /28 of upstreamRange (the sign-in's network excepted),
 // and a pair of SELinux categories of its own from firstCategory up, which no other app and not the sign-in shares.
@@ -97,13 +97,13 @@ const (
 
 // Users of this machine the firewall table names.
 const (
-	edgeUser    = "homerslab-edge"
-	managerUser = "homerslab"
-	homeUser    = "homerslab-home"
-	ldapsUser   = "homerslab-ldaps"
+	edgeUser    = "homeward-edge"
+	managerUser = "homeward"
+	homeUser    = "homeward-home"
+	ldapsUser   = "homeward-ldaps"
 )
 
-// reservedApps are ids an app can't have: their units, projects and sign-in clients (homerslab-<id>) are HomersLab's own.
+// reservedApps are ids an app can't have: their units, projects and sign-in clients (homerslab-<id>) are Homeward's own.
 var reservedApps = map[string]bool{"authentik": true, "edge": true, "agent": true, "manager": true, "admin": true, "read": true, "firewall": true,
 	"home": true, "projection": true}
 
@@ -211,7 +211,7 @@ type CheckResult struct {
 // AppsStatus is every app on this node, and what runs without its unit.
 type AppsStatus struct {
 	Apps []AppStatus `json:"apps"`
-	// Drift: containers of a HomersLab project that run without the unit that owns them (stopped, or never installed).
+	// Drift: containers of a Homeward project that run without the unit that owns them (stopped, or never installed).
 	Drift []AppDrift `json:"drift"`
 }
 
@@ -524,7 +524,7 @@ func (a *Agent) putApp(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	project := appunit.Project(id)
 
-	// Compose project names belong to HomersLab: one the engine already runs that this agent didn't install is someone
+	// Compose project names belong to Homeward: one the engine already runs that this agent didn't install is someone
 	// else's, and an install would take its containers over.
 	asked, cancel := context.WithTimeout(ctx, engineWait)
 	states, err := a.cfg.Engine.States(asked)
@@ -542,7 +542,7 @@ func (a *Agent) putApp(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if _, there := states[project]; there && prev == nil {
-		a.log.Warn("refused to install over a compose project HomersLab didn't create", "project", project)
+		a.log.Warn("refused to install over a compose project Homeward didn't create", "project", project)
 		fail(w, http.StatusConflict, "not-ours")
 		return
 	}

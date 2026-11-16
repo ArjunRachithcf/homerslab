@@ -7,10 +7,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ArjunRachithcf/homerslab/internal/testenv"
+	"github.com/ArjunRachithcf/homeward/internal/testenv"
 )
 
-// controlState is setup as the control socket shows it to `homerslab setup secret`.
+// controlState is setup as the control socket shows it to `homeward setup secret`.
 type controlState struct {
 	Revision int64 `json:"revision"`
 	Steps    []struct {

@@ -22,7 +22,7 @@ dir=$(dirname "$unit")
 base=$(basename "$unit")
 type=${base##*.}
 name=${base%.*}
-# Its own drop-ins, each dash-prefix's (homerslab-.service.d) and every unit's of its type (service.d).
+# Its own drop-ins, each dash-prefix's (homeward-.service.d) and every unit's of its type (service.d).
 [ ! -e "$unit.d" ] || die "a drop-in folder $unit.d isn't handled"
 [ ! -e "$dir/$type.d" ] || die "a drop-in folder $dir/$type.d isn't handled"
 prefix=$name

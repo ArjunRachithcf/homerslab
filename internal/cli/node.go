@@ -6,7 +6,7 @@ import (
 	"math"
 	"strings"
 
-	"github.com/ArjunRachithcf/homerslab/internal/node"
+	"github.com/ArjunRachithcf/homeward/internal/node"
 )
 
 func showNode(ctx context.Context, args []string, env Env) error {

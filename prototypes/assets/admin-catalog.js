@@ -1,4 +1,4 @@
-// HomersLab Admin prototype: the Store (Discover, Updates, Requests), an app's page, the install plan and the install.
+// Homeward Admin prototype: the Store (Discover, Updates, Requests), an app's page, the install plan and the install.
 // PROTOTYPE, throwaway. "Store" is where apps are browsed and got; the catalog is the signed collection of app
 // definitions behind it. Get opens the install plan, a page of its own whose address carries its id (#/plans/p-…); one
 // passkey at Install approves the whole plan, extras included, and any change makes a new plan with a new address
@@ -14,7 +14,7 @@
     all: 'Every app here meets the floor, whichever catalog it comes from.',
     verified: 'Verified: native sign-in, restores and updates tested in CI, hardened.',
     community: 'Community: meets the floor. Converted from a template and reviewed; some keep a sign-in of their own.',
-    third: 'Third-party: from a catalog you trust by its publisher’s key. HomersLab checks the floor; nobody else vouches for it.',
+    third: 'Third-party: from a catalog you trust by its publisher’s key. Homeward checks the floor; nobody else vouches for it.',
   };
   const FLOOR = ['Publishes no ports', 'Is never privileged', 'Declares the machine’s network, devices and capabilities as extras', 'Pins every image by digest', 'Declares every folder that holds data, so it is backed up', 'Generates every secret, with no default values', 'Declares a sign-in method and a health check', 'Passes its install test in CI'];
 
@@ -143,7 +143,7 @@
     const v = await dialog({ title: 'Catalogs you trust', sub: 'The Store shows the apps of these catalogs. Each is a signed collection of app definitions, trusted by its publisher’s key.', wide: true,
       body: `<div class="group lead-sm">${D.catalogs.map((k) => `<div class="row is-top"><span class="row-lead">${I(k.id === 'official' ? 'shield' : 'key', 'icon icon-md')}</span><span class="row-main"><span class="row-title">${esc(k.name)} · ${k.apps} ${k.apps === 1 ? 'app' : 'apps'}</span><span class="row-sub wrap">${esc(k.url)}</span><span class="row-sub wrap">Signed by ${esc(k.publisher)}, key <span class="mono">${esc(k.key)}</span> · trusted: ${esc(k.trusted)}</span></span></div>`).join('')}</div>
         <p class="subhead">Every update to a catalog is checked against its publisher’s key. If the key changes, the catalog stops updating until you trust the new one, with your passkey.</p>
-        <div><p class="group-head">The floor every app meets</p><ul class="lines">${FLOOR.map((f) => `<li>${I('check')}<span>${esc(f)}</span></li>`).join('')}</ul><p class="subhead" style="margin-top:10px">HomersLab checks these itself, for every app from every catalog, and refuses an app that fails one.</p></div>`,
+        <div><p class="group-head">The floor every app meets</p><ul class="lines">${FLOOR.map((f) => `<li>${I('check')}<span>${esc(f)}</span></li>`).join('')}</ul><p class="subhead" style="margin-top:10px">Homeward checks these itself, for every app from every catalog, and refuses an app that fails one.</p></div>`,
       actions: [{ label: 'Close', value: 'close', kind: 'ghost' }, { label: 'Add a catalog', value: 'add', kind: 'primary', icon: 'plus' }] });
     if (v === 'add') A.actions['add-catalog']();
   });
@@ -153,7 +153,7 @@
         <div class="field"><label class="field-label" for="cat-key">Its publisher’s key</label><input id="cat-key" class="input input-secret" placeholder="ed25519 …" autocomplete="off" aria-describedby="cat-key-hint"><span class="hint" id="cat-key-hint">Get it from the publisher directly, not from the catalog itself.</span></div>`,
       actions: [{ label: 'Cancel', value: 'no', kind: 'ghost' }, { label: 'Trust this publisher', value: 'yes', kind: 'primary', icon: 'key' }] });
     if (v !== 'yes') return;
-    const ok = await stepUp({ plan: { id: UI.planId({ k: 'catalog', t: Date.now() }), summary: 'trust a new catalog' }, title: 'Trust a new catalog', action: 'Trust it', sub: 'Trusting a catalog is a risky change, so HomersLab asks for your passkey.', what: [{ icon: 'key', text: 'Apps signed by this publisher’s key can be installed in your household, once they meet the floor' }] });
+    const ok = await stepUp({ plan: { id: UI.planId({ k: 'catalog', t: Date.now() }), summary: 'trust a new catalog' }, title: 'Trust a new catalog', action: 'Trust it', sub: 'Trusting a catalog is a risky change, so Homeward asks for your passkey.', what: [{ icon: 'key', text: 'Apps signed by this publisher’s key can be installed in your household, once they meet the floor' }] });
     if (ok) { S.approvals.push(ok); toast('Prototype: the catalog would be fetched and checked now. Nothing is fetched here.', 'info'); }
   });
 
@@ -249,7 +249,7 @@
   act('install', async (t) => {
     const p = buildPlan(t.dataset.id);
     if (p.risky && !approvalFor(p.id)) {
-      const ok = await stepUp({ plan: p, title: `Install ${esc(p.def.name)}`, action: 'Install with my passkey', sub: `This plan gives ${esc(p.def.name)} ${p.chosen.length === 1 ? 'an extra' : 'extras'}, so HomersLab asks for your passkey: once, for the whole plan.`,
+      const ok = await stepUp({ plan: p, title: `Install ${esc(p.def.name)}`, action: 'Install with my passkey', sub: `This plan gives ${esc(p.def.name)} ${p.chosen.length === 1 ? 'an extra' : 'extras'}, so Homeward asks for your passkey: once, for the whole plan.`,
         what: [...p.chosen.map((x) => ({ icon: x.kind === 'network' ? 'globe' : 'gpu', text: `${esc(x.text)}<small>${esc(x.detailText)}</small>` })), { icon: 'check', text: `Install ${esc(p.def.name)} on ${esc(p.node.name)}, for ${esc(and(p.people.map((x) => x.short)))}` }] });
       if (!ok) return; S.approvals.push(ok);
     }
@@ -317,9 +317,9 @@
       <div class="split"><section class="card stack a-progress" aria-label="Progress" style="gap:12px">
         <div class="progress-row"><div class="progress-head"><b>${job.failed ? 'Undone' : done ? 'Done' : 'Installing'}</b><span>${Math.min(job.step, total)} of ${total}</span></div><div class="progress" role="progressbar" aria-label="Install progress" aria-valuemin="0" aria-valuemax="${total}" aria-valuenow="${job.step}"><span style="--value:${(job.step / total) * 100}%"></span></div></div>
         <ol class="steps" aria-live="polite">${job.steps.map((s, i) => { const st = job.failed && i === job.step ? 'fail' : i < job.step ? (job.failed ? 'undone' : 'done') : i === job.step && !job.done ? 'now' : 'todo'; const sub = st === 'fail' ? failText : st === 'undone' ? 'Taken away again' : s.s; return `<li class="step is-${st}${st === 'done' && i === job.step - 1 ? ' is-new' : ''}"><span class="step-mark">${st === 'done' ? I('check2') : st === 'fail' ? I('x') : st === 'undone' ? I('rollback') : st === 'now' ? '<span class="spinner"></span>' : ''}</span><span class="step-text"><span class="step-title">${esc(s.t)}</span>${sub ? `<span class="step-sub">${esc(sub)}</span>` : ''}<span class="sr-only">${st === 'done' ? 'Done' : st === 'fail' ? 'Failed' : st === 'undone' ? 'Undone' : st === 'now' ? 'In progress' : 'Not started'}</span></span><span class="step-time">${s.at || ''}</span></li>`; }).join('')}</ol></section>
-        <aside class="rail">${job.failed ? `<div class="card stack" style="gap:12px"><h2 class="card-title">HomersLab undid the install</h2><p class="muted">Its first health check failed, so everything the plan made was taken away again: the name, the sign-in client, the secrets and the containers. Nothing else in the household changed.</p><div class="btn-row"><a class="btn btn-primary" href="#/store/app/${d.id}">Back to ${esc(d.name)}</a><button class="btn" data-act="toast-logs">See its logs</button></div></div>`
+        <aside class="rail">${job.failed ? `<div class="card stack" style="gap:12px"><h2 class="card-title">Homeward undid the install</h2><p class="muted">Its first health check failed, so everything the plan made was taken away again: the name, the sign-in client, the secrets and the containers. Nothing else in the household changed.</p><div class="btn-row"><a class="btn btn-primary" href="#/store/app/${d.id}">Back to ${esc(d.name)}</a><button class="btn" data-act="toast-logs">See its logs</button></div></div>`
           : done ? `<div class="card stack" style="gap:12px"><h2 class="card-title">Next</h2><ul class="lines"><li>${I('home')}<span>${esc(and(job.plan.people))} see ${esc(d.name)} on Home now</span></li><li>${I('backups')}<span>First backup at 15:00, then every hour</span></li><li>${I('globe')}<span>To make it public, go to its page</span></li></ul></div>`
-          : `<div class="card stack" style="gap:12px"><h2 class="card-title">While it installs</h2><p class="muted">You can leave this page; the install carries on, and Apps shows it when it is done. If its first health check fails, HomersLab undoes everything the plan made.</p></div>`}</aside></div>`;
+          : `<div class="card stack" style="gap:12px"><h2 class="card-title">While it installs</h2><p class="muted">You can leave this page; the install carries on, and Apps shows it when it is done. If its first health check fails, Homeward undoes everything the plan made.</p></div>`}</aside></div>`;
   }, { back: (m) => { const job = S.installs[m[1]]; return job ? { href: `#/store/app/${job.appId}`, label: cat(job.appId).name } : { href: '#/store', label: 'Store' }; } });
   act('toast-logs', () => toast('Logs aren’t part of this prototype.', 'info'));
 })();

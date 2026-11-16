@@ -1,4 +1,4 @@
-// HomersLab Admin prototype: backups (every hour), restore tests (every Sunday), the weekly archive, and restoring
+// Homeward Admin prototype: backups (every hour), restore tests (every Sunday), the weekly archive, and restoring
 // one app. PROTOTYPE, throwaway. Restoring an app replaces its data, a risky change: the passkey.
 (() => {
   const { D, S, cat, inst, node, and, appIcon, chev, weeks, weeksAxis, weeksLegend, route, render, go, act, log } = A;
@@ -30,7 +30,7 @@
       <section class="a-block" aria-labelledby="h-rt"><div class="a-block-head"><div><h2 id="h-rt">Restore tests</h2><p>Every Sunday at 04:00 each app’s latest backup is restored beside it, started, health-checked and signed in to as a test person, then thrown away.</p></div></div>
         <div class="group"><table class="rtable has-lead" style="--lead:32px"><thead><tr><th>App</th><th>Last 12 Sundays</th><th class="n">Sunday 8 Nov</th><th class="n">Takes</th><th><span class="sr-only">Action</span></th></tr></thead><tbody>
           ${apps.map((a) => { const d = cat(a.id); return row(appIcon(d, 'app-icon-md'), d.name, `${d.purpose} · ${node(a.node).name}`, a.restore, a.restoreMin, `#/apps/${a.id}`, a.restore[11] === 'fail' ? `<a class="btn btn-sm" href="#/apps/${a.id}">See why</a>` : ''); }).join('')}
-          ${D.platform.map((p) => row(p.id === 'signin' ? `<img class="app-icon app-icon-md" src="icons/apps/authentik.svg" alt="">` : `<span class="app-icon app-icon-md is-mark" role="img" aria-label="HomersLab">${MARK_16}</span>`, p.name, p.detail, p.restore, p.restoreMin, null)).join('')}
+          ${D.platform.map((p) => row(p.id === 'signin' ? `<img class="app-icon app-icon-md" src="icons/apps/authentik.svg" alt="">` : `<span class="app-icon app-icon-md is-mark" role="img" aria-label="Homeward">${MARK_16}</span>`, p.name, p.detail, p.restore, p.restoreMin, null)).join('')}
         </tbody></table></div>
         <div class="group-foot cluster" style="gap:16px">${weeksLegend(['pass', 'fail'])}<span>A failure is mailed and pushed to Inês within a minute.</span></div></section>
       <section class="a-block" aria-labelledby="h-tg"><div class="a-block-head"><div><h2 id="h-tg">Where the backups go</h2><p>Deduplicated and encrypted with restic: ${gb(D.storedGB)} kept for ${gb(D.dataGB)} of data. Every hour, at the top of the hour.</p></div></div>
@@ -43,7 +43,7 @@
             <div class="btn-row"><button class="btn" data-act="by-hand">${I('terminal')}Restore by hand</button></div></div></div></section>`;
   });
   act('backup-now', () => { log('backup now'); toast('Backing up every app now; it takes a few minutes. You get a mail only if something fails.', 'backups'); });
-  act('by-hand', () => dialog({ title: 'Restore by hand, without HomersLab', sub: 'The recovery kit has the one-page how-to. Plain restic and age are all it takes.', wide: true,
+  act('by-hand', () => dialog({ title: 'Restore by hand, without Homeward', sub: 'The recovery kit has the one-page how-to. Plain restic and age are all it takes.', wide: true,
     body: `<p class="group-head">List an app’s backups on Attic NAS</p><div class="cmd"><code>restic -r sftp:attic-nas:/srv/backups snapshots --tag paperless</code></div>
       <p class="group-head">Restore the latest into a folder</p><div class="cmd"><code>restic -r sftp:attic-nas:/srv/backups restore latest --tag paperless --target ./paperless</code></div>
       <p class="group-head">Open the archive with the key from the kit</p><div class="cmd"><code>age -d -i recovery-key.txt archive-2026-11-08.tar.age | tar x</code></div>
@@ -86,7 +86,7 @@
   act('ra-go', async () => {
     const a = inst(R.app), d = cat(a.id), p = D.points[R.point];
     const plan = { id: UI.planId({ k: 'restore', a: a.id, p: R.point }), summary: `restore ${d.name} to ${pointLabel(p)}` };
-    const ok = await stepUp({ plan, title: `Restore ${esc(d.name)}`, action: 'Restore it', sub: 'Restoring replaces an app’s data, so HomersLab asks for your passkey.', what: [{ icon: 'rollback', text: `${esc(d.name)} goes back to ${esc(pointLabel(p))}` }, { icon: 'copy', text: 'Its data as it is now is backed up first' }] });
+    const ok = await stepUp({ plan, title: `Restore ${esc(d.name)}`, action: 'Restore it', sub: 'Restoring replaces an app’s data, so Homeward asks for your passkey.', what: [{ icon: 'rollback', text: `${esc(d.name)} goes back to ${esc(pointLabel(p))}` }, { icon: 'copy', text: 'Its data as it is now is backed up first' }] });
     if (!ok) return; S.approvals.push(ok);
     R.job = { step: 0, planId: ok.planId, at: ok.at, steps: [`Backed up ${d.name} as it is now`, `Stopped ${d.name}`, `Restored its data and database from ${pointLabel(p)}`, `Started ${d.name}`, 'Health check passed'] };
     log(`restore ${a.id} to point ${R.point} (${ok.planId})`); render();

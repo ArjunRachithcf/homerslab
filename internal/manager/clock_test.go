@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ArjunRachithcf/homerslab/internal/testenv"
+	"github.com/ArjunRachithcf/homeward/internal/testenv"
 )
 
 // Ages in the manager's process go by its monotonic clock: setting the wall clock back or forward (NTP stepping it, a

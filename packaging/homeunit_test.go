@@ -19,32 +19,32 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ArjunRachithcf/homerslab/internal/home"
-	"github.com/ArjunRachithcf/homerslab/internal/testenv"
+	"github.com/ArjunRachithcf/homeward/internal/home"
+	"github.com/ArjunRachithcf/homeward/internal/testenv"
 )
 
 // The stand-ins for the privileged sockets a machine holds where Home could look: in /run, as NetBird's
 // /run/netbird.sock or the system bus are, and under /var/lib; and an abstract one, which no folder holds. Each is
 // world-writable, as those are.
 const (
-	standInRun      = "/run/homerslab-test-stand-in.sock"
-	standInVarLib   = "/var/lib/homerslab-test-stand-in/stand-in.sock"
-	standInAbstract = "@homerslab-test-stand-in"
+	standInRun      = "/run/homeward-test-stand-in.sock"
+	standInVarLib   = "/var/lib/homeward-test-stand-in/stand-in.sock"
+	standInAbstract = "@homeward-test-stand-in"
 	// probeEnv carries the probe's targets into the sandboxed probe, and marks it as one.
-	probeEnv = "HOMERSLAB_TEST_HOME_PROBE"
+	probeEnv = "HOMEWARD_TEST_HOME_PROBE"
 	// probeSecret is the stand-in for Home's client secret: a placeholder, never a secret.
 	probeSecret = "placeholder-home-client-secret"
 )
 
-// Home's unit, as systemd runs it (#21, story 69): as root, on a machine with the packages' users and HomersLab at
-// /usr/bin/homerslab (CI's home-unit job), with HOMERSLAB_TEST_HOME_UNIT=1. Under the unit's own settings a probe
+// Home's unit, as systemd runs it (#21, story 69): as root, on a machine with the packages' users and Homeward at
+// /usr/bin/homeward (CI's home-unit job), with HOMEWARD_TEST_HOME_UNIT=1. Under the unit's own settings a probe
 // can't connect to a world-writable Unix socket in /run, under /var/lib or in the abstract namespace, and still reads
 // the projection and its credential; each of the two fences holds alone, and without both the probe connects. Home
 // itself, socket-activated under the same settings, answers on the socket systemd hands it.
 func TestHomesUnitReachesNoUnixSocket(t *testing.T) {
 	testenv.Isolate(t)
-	if os.Getenv("HOMERSLAB_TEST_HOME_UNIT") == "" {
-		t.Skip("runs as root under systemd, with HOMERSLAB_TEST_HOME_UNIT=1 (CI's home-unit job)")
+	if os.Getenv("HOMEWARD_TEST_HOME_UNIT") == "" {
+		t.Skip("runs as root under systemd, with HOMEWARD_TEST_HOME_UNIT=1 (CI's home-unit job)")
 	}
 	if os.Geteuid() != 0 {
 		t.Fatal("Home's unit runs only as root: it starts units of its own")
@@ -56,10 +56,10 @@ func TestHomesUnitReachesNoUnixSocket(t *testing.T) {
 	if !strings.HasPrefix(self, "/usr/") {
 		t.Fatalf("the probe is this test, at %s: install it under /usr, where Home's unit can see it", self)
 	}
-	if _, err := os.Stat("/usr/bin/homerslab"); err != nil {
-		t.Fatalf("Home's unit runs /usr/bin/homerslab: %v", err)
+	if _, err := os.Stat("/usr/bin/homeward"); err != nil {
+		t.Fatalf("Home's unit runs /usr/bin/homeward: %v", err)
 	}
-	group, err := user.LookupGroup("homerslab-home")
+	group, err := user.LookupGroup("homeward-home")
 	if err != nil {
 		t.Fatalf("Home's group, from the packages' sysusers.d: %v", err)
 	}
@@ -102,10 +102,10 @@ func TestHomesUnitReachesNoUnixSocket(t *testing.T) {
 	}
 	t.Cleanup(func() { os.Remove(filepath.Dir(standInVarLib)) })
 
-	// The projection, where the unit binds it in, Home's group's to read; on a machine with no HomersLab of its own.
-	const projections = "/run/homerslab-projection"
+	// The projection, where the unit binds it in, Home's group's to read; on a machine with no Homeward of its own.
+	const projections = "/run/homeward-projection"
 	if _, err := os.Lstat(projections); err == nil {
-		t.Fatalf("%s is there already: this machine has a HomersLab of its own", projections)
+		t.Fatalf("%s is there already: this machine has a Homeward of its own", projections)
 	}
 	if err := os.Mkdir(projections, 0o750); err != nil {
 		t.Fatal(err)
@@ -129,7 +129,7 @@ func TestHomesUnitReachesNoUnixSocket(t *testing.T) {
 		t.Fatalf("systemd-creds: %v %s", err, out)
 	}
 
-	service := unit(t, "homerslab-home.service")
+	service := unit(t, "homeward-home.service")
 	probe := func(t *testing.T, change func(map[string][]string)) map[string]string {
 		t.Helper()
 		u := cloned(service)
@@ -184,8 +184,8 @@ func TestHomesUnitReachesNoUnixSocket(t *testing.T) {
 		if got["credential"] != "read" {
 			t.Errorf("Home's unit can't read its credential: %s", got["credential"])
 		}
-		if got["user"] != "homerslab-home" {
-			t.Errorf("the probe ran as %s, want homerslab-home", got["user"])
+		if got["user"] != "homeward-home" {
+			t.Errorf("the probe ran as %s, want homeward-home", got["user"])
 		}
 	})
 	t.Run("its view alone hides the sockets in folders", func(t *testing.T) {
@@ -212,7 +212,7 @@ func TestHomesUnitReachesNoUnixSocket(t *testing.T) {
 
 	// Home itself, under its unit's settings, on a socket systemd hands it: no AF_UNIX of its own needed.
 	t.Run("Home answers on its activated socket", func(t *testing.T) {
-		const sock, name = "/run/homerslab-test-home.sock", "homerslab-test-home"
+		const sock, name = "/run/homeward-test-home.sock", "homeward-test-home"
 		u := cloned(service)
 		u["LoadCredentialEncrypted"] = []string{"manager-home-client-secret:" + cred}
 		args := []string{"--quiet", "--unit=" + name, "--socket-property=ListenStream=" + sock,
@@ -266,7 +266,7 @@ func TestHomesUnitProbe(t *testing.T) {
 			fmt.Fprintf(w, "probe %s\t%v\n", p, err)
 		}
 	}
-	if _, err := home.Read("/run/homerslab-projection/home.json"); err != nil {
+	if _, err := home.Read("/run/homeward-projection/home.json"); err != nil {
 		fmt.Fprintf(w, "probe projection\t%v\n", err)
 	} else {
 		fmt.Fprintf(w, "probe projection\tread\n")

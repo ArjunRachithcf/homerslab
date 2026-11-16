@@ -11,9 +11,9 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/ArjunRachithcf/homerslab/internal/mesh"
-	"github.com/ArjunRachithcf/homerslab/internal/mesh/netbird"
-	"github.com/ArjunRachithcf/homerslab/internal/testenv"
+	"github.com/ArjunRachithcf/homeward/internal/mesh"
+	"github.com/ArjunRachithcf/homeward/internal/mesh/netbird"
+	"github.com/ArjunRachithcf/homeward/internal/testenv"
 )
 
 // A token goes only to the address the admin gave: a redirect elsewhere is an answer, never followed.
@@ -48,7 +48,7 @@ func TestATokenIsNeverSentWhereARedirectPoints(t *testing.T) {
 	}
 }
 
-// A HomersLab policy that kept its ports but gained a port range beside them has drifted: the range alone widens it.
+// A Homeward policy that kept its ports but gained a port range beside them has drifted: the range alone widens it.
 // (NetBird 0.82 refuses both together, the contract suite shows; this holds should one take them.)
 func TestAPortRangeBesideThePortsIsDrift(t *testing.T) {
 	testenv.Isolate(t)

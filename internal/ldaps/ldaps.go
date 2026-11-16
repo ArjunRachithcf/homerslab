@@ -280,7 +280,7 @@ func Listener() (net.Listener, error) {
 	return net.FileListener(f)
 }
 
-// Main is `homerslab edge ldaps`: the unit's process. It serves the socket systemd passed, or --listen (for tests).
+// Main is `homeward edge ldaps`: the unit's process. It serves the socket systemd passed, or --listen (for tests).
 func Main(ctx context.Context, args []string, stderr io.Writer) int {
 	fs := flag.NewFlagSet("edge ldaps", flag.ContinueOnError)
 	fs.SetOutput(stderr)

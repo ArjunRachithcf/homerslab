@@ -3,7 +3,7 @@ package backup_test
 // The backup-target contract suite (spec: Testing Decisions → restic targets): a disk, an SFTP server, an
 // S3-compatible service, and an object-locked one that also stands in for B2's S3-compatible API, in containers
 // (testdata/compose.yaml, compose project hltest-22-targets, or HLTEST22_PROJECT's). It needs Docker: it
-// runs when HOMERSLAB_TEST_DOCKER_HOST names the engine to use, and is skipped otherwise. The code under test never
+// runs when HOMEWARD_TEST_DOCKER_HOST names the engine to use, and is skipped otherwise. The code under test never
 // sees that engine (testenv points DOCKER_HOST at nowhere); only this harness does, explicitly.
 //
 // The suite runs in the world's client, restic's own image at the pinned version: the harness copies this test binary
@@ -35,8 +35,8 @@ import (
 
 	"github.com/minio/minio-go/v7"
 
-	"github.com/ArjunRachithcf/homerslab/internal/backup"
-	"github.com/ArjunRachithcf/homerslab/internal/testenv"
+	"github.com/ArjunRachithcf/homeward/internal/backup"
+	"github.com/ArjunRachithcf/homeward/internal/testenv"
 )
 
 var project = cmp.Or(os.Getenv("HLTEST22_PROJECT"), "hltest-22-targets")
@@ -45,9 +45,9 @@ func container(s string) string { return project + "-" + s + "-1" }
 
 func TestTheBackupTargetContract(t *testing.T) {
 	testenv.Isolate(t)
-	engine := os.Getenv("HOMERSLAB_TEST_DOCKER_HOST")
+	engine := os.Getenv("HOMEWARD_TEST_DOCKER_HOST")
 	if engine == "" || os.Getenv("HLTEST22_INSIDE") == "1" {
-		t.Skip("set HOMERSLAB_TEST_DOCKER_HOST to the engine for the contract suite's containers")
+		t.Skip("set HOMEWARD_TEST_DOCKER_HOST to the engine for the contract suite's containers")
 	}
 	w := up(t, engine)
 	// The client's SSH key is made in the client; the server's one authorized key is its public half.

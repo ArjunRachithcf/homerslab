@@ -54,20 +54,20 @@ x-machine: &machine
 services:
   edge:
     image: caddy:2.11.9-alpine@sha256:0bbb055bda6793c999bde78b1b5ce3e89f829fb031af2cf50056ea1246559fee
-    command: ["caddy", "run", "--config", "/usr/share/homerslab/edge-boot.json"]
+    command: ["caddy", "run", "--config", "/usr/share/homeward/edge-boot.json"]
     user: "4100:4100"
     cap_drop: [ALL]
     cap_add: [NET_BIND_SERVICE]
     environment:
-      HOME: /var/lib/homerslab-edge
-      XDG_DATA_HOME: /var/lib/homerslab-edge
-      XDG_CONFIG_HOME: /var/lib/homerslab-edge
+      HOME: /var/lib/homeward-edge
+      XDG_DATA_HOME: /var/lib/homeward-edge
+      XDG_CONFIG_HOME: /var/lib/homeward-edge
     tmpfs:
-      - /run/homerslab-edge:uid=4100,gid=4100,mode=0750
-      - /var/lib/homerslab-edge:uid=4100,gid=4100,mode=0700
+      - /run/homeward-edge:uid=4100,gid=4100,mode=0750
+      - /var/lib/homeward-edge:uid=4100,gid=4100,mode=0700
     volumes:
-      - admin:/run/homerslab-admin
-      - home:/run/homerslab-home
+      - admin:/run/homeward-admin
+      - home:/run/homeward-home
     stop_grace_period: 2s
     networks:
       mesh:
@@ -80,7 +80,7 @@ services:
         ipv4_address: 10.216.4.20
       ldap-apps:
         ipv4_address: 10.216.5.20
-    # The LDAPS port's process binds 636 as its own user here; on a node, systemd binds it (homerslab-ldaps.socket).
+    # The LDAPS port's process binds 636 as its own user here; on a node, systemd binds it (homeward-ldaps.socket).
     sysctls:
       net.ipv4.ip_unprivileged_port_start: "600"
 
@@ -100,9 +100,9 @@ services:
     <<: *machine
     user: "4200:4100"
     volumes:
-      - admin:/run/homerslab-admin
-      - manager-run:/run/homerslab
-      - manager-state:/var/lib/homerslab
+      - admin:/run/homeward-admin
+      - manager-run:/run/homeward
+      - manager-state:/var/lib/homeward
     network_mode: none
 
   # Home (#21): the real Home on its socket, as its own user in no group but its own; the manager's socket and
@@ -111,10 +111,10 @@ services:
     <<: *machine
     user: "4300:4300"
     volumes:
-      - home:/run/homerslab-home
-      - admin:/run/homerslab-admin
-      - manager-run:/run/homerslab
-      - manager-state:/var/lib/homerslab
+      - home:/run/homeward-home
+      - admin:/run/homeward-admin
+      - manager-run:/run/homeward
+      - manager-state:/var/lib/homeward
     network_mode: none
 
   # The sign-in's server, as a stub on the sign-in network: it answers what reached it.

@@ -53,7 +53,7 @@ export class HomeWorld {
   private constructor(readonly dir: string) {}
 
   static async start(): Promise<HomeWorld> {
-    const w = new HomeWorld(await mkdtemp(path.join(tmpdir(), 'homerslab-home-')));
+    const w = new HomeWorld(await mkdtemp(path.join(tmpdir(), 'homeward-home-')));
     const tls = await edgeCertificate(domain);
     w.tls = tls;
     w.issuer = http.createServer((req, res) => w.serveIssuer(req, res));

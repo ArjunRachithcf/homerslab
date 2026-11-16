@@ -1,16 +1,16 @@
 # Admin's socket, on the primary: the manager serves Admin here, and only the edge may connect (its group), which
 # answers at admin.<main domain> over the mesh only.
 [Unit]
-Description=HomersLab Admin, for the edge
-Documentation=https://github.com/ArjunRachithcf/homerslab
+Description=Homeward Admin, for the edge
+Documentation=https://github.com/ArjunRachithcf/homeward
 
 [Socket]
-ListenStream=/run/homerslab-admin.sock
-SocketUser=homerslab
-SocketGroup=homerslab-edge
+ListenStream=/run/homeward-admin.sock
+SocketUser=homeward
+SocketGroup=homeward-edge
 SocketMode=0660
 FileDescriptorName=admin
-Service=homerslab-manager.service
+Service=homeward-manager.service
 
 [Install]
 WantedBy=sockets.target

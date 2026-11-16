@@ -17,8 +17,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ArjunRachithcf/homerslab/internal/oidc"
-	"github.com/ArjunRachithcf/homerslab/internal/testenv"
+	"github.com/ArjunRachithcf/homeward/internal/oidc"
+	"github.com/ArjunRachithcf/homeward/internal/testenv"
 )
 
 var now = time.Date(2026, 11, 11, 12, 0, 0, 0, time.UTC)

@@ -3,8 +3,8 @@ package bidi_test
 import (
 	"testing"
 
-	"github.com/ArjunRachithcf/homerslab/internal/bidi"
-	"github.com/ArjunRachithcf/homerslab/internal/testenv"
+	"github.com/ArjunRachithcf/homeward/internal/bidi"
+	"github.com/ArjunRachithcf/homeward/internal/testenv"
 )
 
 // A name shown in text is wrapped in a first-strong isolate (U+2068 ... U+2069, UAX #9), so its direction doesn't

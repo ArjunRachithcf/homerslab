@@ -8,7 +8,7 @@ test('Admin browses the catalog and opens an app’s install plan, the same plan
 
   await expect(page.getByRole('heading', { level: 1 })).toHaveText('Store');
   await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark'); // Admin is dark by default
-  await expect(page.getByText('The official catalog, from HomersLab')).toBeVisible();
+  await expect(page.getByText('The official catalog, from Homeward')).toBeVisible();
   await expect(page.getByRole('heading', { name: 'Photos and videos' })).toBeVisible();
   await expect(page.getByRole('heading', { name: 'Documents and files' })).toBeVisible();
 
@@ -68,13 +68,13 @@ test('a guarded app’s plan installs from its page; before the household accoun
   await expect(install).toBeEnabled(); // nothing changed: the same plan can be applied once the account is there
 });
 
-test('an app whose own sign-in HomersLab can’t set up yet can’t be installed, and says why', async ({ page, primary }) => {
+test('an app whose own sign-in Homeward can’t set up yet can’t be installed, and says why', async ({ page, primary }) => {
   await primary.setUp();
   await page.goto(await primary.adminURL());
   await page.getByRole('button', { name: 'Get Immich: see its install plan' }).click();
   await expect(page.getByRole('heading', { level: 1 })).toHaveText('Install Immich');
   await expect(page.getByRole('button', { name: 'Install', exact: true })).toBeDisabled();
-  await expect(page.getByText('HomersLab can’t set up Immich’s own sign-in yet: that comes with a later version.')).toBeVisible();
+  await expect(page.getByText('Homeward can’t set up Immich’s own sign-in yet: that comes with a later version.')).toBeVisible();
 });
 
 test('an app that signs people in itself: its plan names its client and where it sends people back, and it installs from its page (#20)', async ({ page, primary }) => {

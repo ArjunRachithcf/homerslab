@@ -1,4 +1,4 @@
-// HomersLab Admin prototype: the installed apps and an app's page. PROTOTYPE, throwaway.
+// Homeward Admin prototype: the installed apps and an app's page. PROTOTYPE, throwaway.
 // Apps go by their product names (Immich, Paperless-ngx) with what they are for beside them, as on Home.
 (() => {
   const { D, S, cat, inst, rem, node, host, mesh, and, audPeople, audWords, appIcon, avatar, tier, SIGNIN, ROLE, chev, weeks, weeksAxis, weeksLegend, reach, route, render, go, soon, act, log } = A;
@@ -7,11 +7,11 @@
   const lastResult = (a) => a.restore[11];
   const tested = () => S.installed.filter((a) => lastResult(a) !== null);
   // Memos is built from its feedstock; a security release whose patch doesn't apply yet installs guarded at the edge
-  Proto.option({ key: 'feedstock', label: 'Memos (a feedstock)', def: 'patched', values: [{ v: 'patched', name: 'Patched build' }, { v: 'guarded', name: 'Guarded fallback' }], note: 'Guarded: a security release went out before HomersLab’s sign-in patch was rebased.' });
+  Proto.option({ key: 'feedstock', label: 'Memos (a feedstock)', def: 'patched', values: [{ v: 'patched', name: 'Patched build' }, { v: 'guarded', name: 'Guarded fallback' }], note: 'Guarded: a security release went out before Homeward’s sign-in patch was rebased.' });
   const guardMemos = () => { const a = inst('memos'); if (a && !a.guarded) { a.history.unshift({ date: '9 Nov', from: a.version, to: '0.26.1', result: 'updated' }); a.version = '0.26.1'; a.update = null; a.guarded = true; } };
   if (Proto.get('feedstock', 'patched') === 'guarded') guardMemos();
   Proto.onChange((k) => { if (k === 'feedstock') { if (Proto.get('feedstock', 'patched') === 'guarded') guardMemos(); render(); } });
-  const guardNote = (d) => `<div class="notice notice-warn a-finding" role="status">${I('shield')}<span class="notice-body"><b>Security update installed; signed in at the edge until HomersLab’s patch is ready.</b>${esc(d.name)} 0.26.1 fixes a security bug, and HomersLab’s sign-in patch doesn’t apply to it yet, so it went out without it. The household account still signs people in, at the edge; ${esc(UI.poss(d.name))} own login may appear as well. The patch is being rebased; the next build drops the guard by itself.</span></div>`;
+  const guardNote = (d) => `<div class="notice notice-warn a-finding" role="status">${I('shield')}<span class="notice-body"><b>Security update installed; signed in at the edge until Homeward’s patch is ready.</b>${esc(d.name)} 0.26.1 fixes a security bug, and Homeward’s sign-in patch doesn’t apply to it yet, so it went out without it. The household account still signs people in, at the edge; ${esc(UI.poss(d.name))} own login may appear as well. The patch is being rebased; the next build drops the guard by itself.</span></div>`;
   const statusOf = (a) => {
     if (a.health.state !== 'working') return { pill: 'pill-red', text: 'Not working' };
     if (a.id === 'jellyfin' && A.inWindow?.()) return { pill: 'pill-orange', text: 'Updating until 03:00' };
@@ -113,15 +113,15 @@
       ${secDanger(a, d, n)}`;
   }, { back: (m) => (rem(m[1]) ? { href: '#/apps?tab=removed', label: 'Removed' } : { href: '#/apps', label: 'Apps' }) });
 
-  // ---------- how an app is built: a HomersLab build from its feedstock (shown here, never in the Store) ----------
+  // ---------- how an app is built: a Homeward build from its feedstock (shown here, never in the Store) ----------
   function secBuild(a, d) {
     const f = a.feedstock; if (!f) return '';
-    return sec('build', 'How it’s built', `${esc(d.name)} can’t reach Verified sign-in through its own settings, so HomersLab builds it from source with a small patch. Every patch is offered upstream, and dropped once merged.`,
-      `<div class="group"><div class="row is-top row-wrap"><span class="row-lead">${I('box', 'icon icon-md')}</span><span class="row-main"><span class="row-title">Built by HomersLab from ${esc(f.upstream)} ${esc(a.guarded ? '0.26.1' : f.version)}, ${a.guarded ? 'without its sign-in change for now' : `with ${f.changes} ${f.changes === 1 ? 'change' : 'changes'} for sign-in`}</span><span class="row-sub wrap">Signed keyless with Sigstore by <span class="mono">${esc(f.signer)}</span>; the catalog pins the digest and this signer, and the node refuses anything else · SBOM: ${esc(f.sbom)}</span></span><button class="btn btn-sm" data-act="feedstock" data-id="${a.id}">The patches</button></div></div>`);
+    return sec('build', 'How it’s built', `${esc(d.name)} can’t reach Verified sign-in through its own settings, so Homeward builds it from source with a small patch. Every patch is offered upstream, and dropped once merged.`,
+      `<div class="group"><div class="row is-top row-wrap"><span class="row-lead">${I('box', 'icon icon-md')}</span><span class="row-main"><span class="row-title">Built by Homeward from ${esc(f.upstream)} ${esc(a.guarded ? '0.26.1' : f.version)}, ${a.guarded ? 'without its sign-in change for now' : `with ${f.changes} ${f.changes === 1 ? 'change' : 'changes'} for sign-in`}</span><span class="row-sub wrap">Signed keyless with Sigstore by <span class="mono">${esc(f.signer)}</span>; the catalog pins the digest and this signer, and the node refuses anything else · SBOM: ${esc(f.sbom)}</span></span><button class="btn btn-sm" data-act="feedstock" data-id="${a.id}">The patches</button></div></div>`);
   }
   act('feedstock', (t) => {
     const a = inst(t.dataset.id), f = a.feedstock, d = cat(a.id);
-    dialog({ title: `${esc(UI.poss(d.name))} feedstock`, sub: `<span class="host">${esc(f.repo)}</span>: the recipe, the patches and their tests, in HomersLab’s public feedstocks repository.`, wide: true,
+    dialog({ title: `${esc(UI.poss(d.name))} feedstock`, sub: `<span class="host">${esc(f.repo)}</span>: the recipe, the patches and their tests, in Homeward’s public feedstocks repository.`, wide: true,
       body: `<div class="group lead-sm">${f.patches.map((x) => `<div class="row is-top row-wrap"><span class="row-lead">${I('copy', 'icon icon-md')}</span><span class="row-main"><span class="row-title mono">${esc(x.file)}</span><span class="row-sub wrap">${esc(x.what)}</span><span class="row-sub wrap">${esc(x.upstream)}</span></span></div>`).join('')}</div>
         <div class="group">${[['Upstream', `${f.upstream}, ${a.guarded ? '0.26.1 (security release)' : f.version}`], ['This build', a.guarded ? '0.26.1, unpatched, guarded at the edge' : f.build], ['Next', a.guarded ? 'The patch is being rebased for 0.26.1; the guard goes when the patched build is out' : `${f.next.version}: ${f.next.why}`], ['Licence', 'The patch carries Memos’s own licence (MIT); the tooling is Apache-2.0']].map(([k, v]) => `<div class="row is-top row-wrap"><span class="row-main"><span class="row-label">${esc(k)}</span><span class="row-sub wrap">${esc(v)}</span></span></div>`).join('')}</div>`,
       actions: [{ label: 'Close', value: 'ok', kind: 'primary' }] });
@@ -187,7 +187,7 @@
     const m = mesh(), pubName = m.pub === 'funnel' ? `${host(a.id).split('.')[0]}.${D.household.meshes[1].tailnet}` : host(a.id);
     if (to === 'public') {
       const plan = { id: UI.planId({ k: 'public', a: a.id, m: m.pub }), summary: `make ${d.name} public` };
-      const ok = await stepUp({ plan, title: `Make ${esc(d.name)} public`, action: 'Make it public', sub: 'Anything public is a risky change, so HomersLab asks for your passkey.', what: [
+      const ok = await stepUp({ plan, title: `Make ${esc(d.name)} public`, action: 'Make it public', sub: 'Anything public is a risky change, so Homeward asks for your passkey.', what: [
         { icon: 'globe', text: `<b>https://${esc(pubName)}</b> answers from the internet, ${m.pub === 'netbird' ? 'through NetBird’s public path' : 'through Tailscale Funnel'}` },
         { icon: 'lock', text: `Encrypted all the way: TLS ends on ${esc(n.name)}; ${m.pub === 'netbird' ? 'NetBird' : 'Tailscale'} can’t read the traffic` },
         { icon: 'user', text: `Strangers reach only the sign-in page: ${esc(d.name)} still needs the household account, with a passkey` },
@@ -230,7 +230,7 @@
   act('update', async (t) => {
     const a = inst(t.dataset.id), d = cat(a.id), n = node(a.node);
     const fs = a.feedstock && a.update.security && !a.feedstock.next.applies;
-    const guardUpd = !fs ? '' : `<div class="notice notice-warn">${I('shield')}<span class="notice-body"><b>It installs guarded at the edge.</b>HomersLab’s sign-in patch doesn’t apply to ${esc(a.update.to)} yet (${esc(a.feedstock.next.why.toLowerCase())}). Security releases never wait: the household account signs people in at the edge, and ${esc(UI.poss(d.name))} own login may appear as well, until the patched build is out.</span></div>`;
+    const guardUpd = !fs ? '' : `<div class="notice notice-warn">${I('shield')}<span class="notice-body"><b>It installs guarded at the edge.</b>Homeward’s sign-in patch doesn’t apply to ${esc(a.update.to)} yet (${esc(a.feedstock.next.why.toLowerCase())}). Security releases never wait: the household account signs people in at the edge, and ${esc(UI.poss(d.name))} own login may appear as well, until the patched build is out.</span></div>`;
     const v = await dialog({ title: `Update ${esc(d.name)} to ${esc(a.update.to)}`, sub: `Tested by the catalog on ${esc(a.update.tested)}. ${esc(a.update.notes)}`,
       body: `${guardUpd}${list([['copy', `A snapshot of ${esc(d.name)}: its data and database, on ${esc(n.name)}`, 'Kept for a rollback'], ['update', `${esc(a.version)} → ${esc(a.update.to)}, pinned by digest`], ['check', 'Its health check', `If it fails, ${esc(d.name)} returns to the snapshot by itself`]])}<p class="subhead">${esc(d.name)} is away for about two minutes. Updates aren’t risky, so no passkey.</p>`,
       actions: [{ label: 'Cancel', value: 'no', kind: 'ghost' }, { label: 'Update now', value: 'yes', kind: 'primary' }] });
@@ -250,7 +250,7 @@
       `<div class="group">
         <div class="row is-top row-wrap"><span class="row-main"><span class="row-title">Remove</span><span class="row-sub wrap">Stops ${esc(d.name)} and takes away its sign-in, its name and its place on Home. Its data (${gb(a.dataGB)}) and backups stay, so installing it again brings it back as it was. No passkey.</span></span><button class="btn btn-sm" data-act="remove" data-id="${a.id}">Remove…</button></div>
         <div class="row is-top row-wrap"><span class="row-main"><span class="row-title">Delete data</span><span class="row-sub wrap">Destroys its data and its backups. You type its name and confirm with your passkey.</span><span class="btn-why" id="why-del-${a.id}">Remove ${esc(d.name)} first.</span></span><button class="btn btn-sm btn-destructive" disabled aria-describedby="why-del-${a.id}">${I('trash')}Delete data</button></div>
-        <div class="row is-top row-wrap"><span class="row-main"><span class="row-title">Eject</span><span class="row-sub wrap">Writes ${esc(d.name)} out as a plain compose project with its data, settings and secrets, so it keeps running without HomersLab. Your passkey approves it.</span></span><button class="btn btn-sm" data-act="eject" data-id="${a.id}">${I('eject')}Eject…</button></div>
+        <div class="row is-top row-wrap"><span class="row-main"><span class="row-title">Eject</span><span class="row-sub wrap">Writes ${esc(d.name)} out as a plain compose project with its data, settings and secrets, so it keeps running without Homeward. Your passkey approves it.</span></span><button class="btn btn-sm" data-act="eject" data-id="${a.id}">${I('eject')}Eject…</button></div>
       </div>`);
   }
   act('remove', async (t) => {
@@ -266,16 +266,16 @@
   act('eject', async (t) => {
     const a = inst(t.dataset.id), d = cat(a.id), n = node(a.node), path = `/srv/ejected/${a.id}`;
     const plan = { id: UI.planId({ k: 'eject', a: a.id }), summary: `eject ${d.name} to ${path} on ${n.name}` };
-    const v = await dialog({ title: `Eject ${esc(d.name)}`, sub: 'Eject is the way out: it keeps running, without HomersLab.', wide: true,
-      body: `${list([['folder', `Writes <span class="host">${esc(path)}</span> on ${esc(n.name)}`, 'compose.yaml, its data, its settings, and its secrets in files only root can read'], ['check', `Its sign-in keeps working while the household keeps ${esc(D.household.idp.name)}`], ['x', 'HomersLab stops looking after it', 'No more updates, backups, restore tests or health checks; it leaves Home'], ['info', `Nobody can reach it until an edge is in front of it again`, `HomersLab’s edge stops serving ${esc(host(a.id))}; a ready edge snippet is written beside it`]])}
+    const v = await dialog({ title: `Eject ${esc(d.name)}`, sub: 'Eject is the way out: it keeps running, without Homeward.', wide: true,
+      body: `${list([['folder', `Writes <span class="host">${esc(path)}</span> on ${esc(n.name)}`, 'compose.yaml, its data, its settings, and its secrets in files only root can read'], ['check', `Its sign-in keeps working while the household keeps ${esc(D.household.idp.name)}`], ['x', 'Homeward stops looking after it', 'No more updates, backups, restore tests or health checks; it leaves Home'], ['info', `Nobody can reach it until an edge is in front of it again`, `Homeward’s edge stops serving ${esc(host(a.id))}; a ready edge snippet is written beside it`]])}
         <div class="notice">${I('key')}<span class="notice-body">Writing secrets out of their sealed store is a risky change: your passkey approves it.</span></div>`,
       actions: [{ label: 'Cancel', value: 'no', kind: 'ghost' }, { label: 'Continue', value: 'yes', kind: 'primary' }] });
     if (v !== 'yes') return;
-    const ok = await stepUp({ plan, title: `Eject ${esc(d.name)}`, action: 'Eject it', sub: 'Eject is a risky change: secrets leave their sealed store.', what: [{ icon: 'eject', text: `Write ${esc(d.name)} with its secrets to <span class="host">${esc(path)}</span> on ${esc(n.name)}` }, { icon: 'x', text: 'End HomersLab’s updates, backups and restore tests for it' }] });
+    const ok = await stepUp({ plan, title: `Eject ${esc(d.name)}`, action: 'Eject it', sub: 'Eject is a risky change: secrets leave their sealed store.', what: [{ icon: 'eject', text: `Write ${esc(d.name)} with its secrets to <span class="host">${esc(path)}</span> on ${esc(n.name)}` }, { icon: 'x', text: 'End Homeward’s updates, backups and restore tests for it' }] });
     if (!ok) return;
     S.approvals.push(ok); S.installed = S.installed.filter((x) => x !== a); S.ejected.push(a.id); log(`ejected ${a.id} (${ok.planId})`);
     await dialog({ title: `${esc(d.name)} is ejected`, sub: `Its files are on ${esc(n.name)}. From now on it is yours to look after.`,
-      body: `<div class="cmd"><code>cd ${esc(path)} && docker compose up -d</code><button class="btn btn-icon btn-sm" data-act="copy" aria-label="Copy the command">${I('copy')}</button></div><p class="subhead">Put an edge in front of it with the snippet beside it. Restoring from HomersLab’s older backups still works by hand: the recovery kit’s one-page how-to covers it.</p>`,
+      body: `<div class="cmd"><code>cd ${esc(path)} && docker compose up -d</code><button class="btn btn-icon btn-sm" data-act="copy" aria-label="Copy the command">${I('copy')}</button></div><p class="subhead">Put an edge in front of it with the snippet beside it. Restoring from Homeward’s older backups still works by hand: the recovery kit’s one-page how-to covers it.</p>`,
       actions: [{ label: 'Back to Apps', value: 'ok', kind: 'primary' }] });
     go('#/apps');
   });
@@ -290,7 +290,7 @@
       ${sec('kept', 'What is kept', `Nothing of ${esc(d.name)} runs, and nobody sees it. Installing it again brings it back as it was.`,
         `<div class="group"><div class="row"><span class="row-main"><span class="row-label">Its data</span></span><span class="row-value num">${gb(r.dataGB)} on ${esc(n.name)}</span></div><div class="row"><span class="row-main"><span class="row-label">Its last backup</span></span><span class="row-value">${esc(r.lastBackup)}</span></div><div class="row"><span class="row-main"><span class="row-label">Restore tests</span></span><span class="row-value">Stopped when it was removed</span></div></div>`)}
       ${sec('kb', 'Its backups', 'Nothing new is backed up while it is removed. Its last backup stays for as long as it is removed; older ones age out as usual.',
-        `<div class="group"><div class="row"><span class="row-main"><span class="row-label">Newest</span></span><span class="row-value">${esc(r.lastBackup)}</span></div><div class="row"><span class="row-main"><span class="row-label">Oldest</span></span><span class="row-value">Sunday 6 July</span></div><div class="row"><span class="row-main"><span class="row-label">Kept</span></span><span class="row-value num">74 backups of ${gb(r.dataGB)}</span></div><div class="row"><span class="row-main"><span class="row-label">Where</span></span><span class="row-value">Attic NAS, Backblaze B2, Proton Drive</span></div><div class="row"><span class="row-main"><span class="row-label wrap">Restorable by hand with plain restic and the recovery kit, even without HomersLab</span></span></div></div>`)}
+        `<div class="group"><div class="row"><span class="row-main"><span class="row-label">Newest</span></span><span class="row-value">${esc(r.lastBackup)}</span></div><div class="row"><span class="row-main"><span class="row-label">Oldest</span></span><span class="row-value">Sunday 6 July</span></div><div class="row"><span class="row-main"><span class="row-label">Kept</span></span><span class="row-value num">74 backups of ${gb(r.dataGB)}</span></div><div class="row"><span class="row-main"><span class="row-label">Where</span></span><span class="row-value">Attic NAS, Backblaze B2, Proton Drive</span></div><div class="row"><span class="row-main"><span class="row-label wrap">Restorable by hand with plain restic and the recovery kit, even without Homeward</span></span></div></div>`)}
       ${sec('del', 'Delete data', 'The only step that loses anything. You type its name and confirm with your passkey.',
         `<div class="group"><div class="row is-top row-wrap"><span class="row-main"><span class="row-title">Delete ${esc(UI.poss(d.name))} data for good</span><span class="row-sub wrap">Its data on ${esc(n.name)} and its backups. Backblaze B2 keeps its copies until they are 30 days old, as it does for everything.</span></span><button class="btn btn-sm btn-destructive" data-act="delete-data" data-id="${r.id}">${I('trash')}Delete data…</button></div></div>`)}`;
   }
@@ -304,7 +304,7 @@
       actions: [{ label: 'Cancel', value: 'no', kind: 'ghost' }, { label: 'Delete data', value: 'yes', kind: 'danger', icon: 'trash', disabled: true }] });
     dialog.onOpen = null;
     if (v !== 'yes') return;
-    const ok = await stepUp({ plan, title: `Delete ${esc(UI.poss(d.name))} data`, action: 'Delete it', sub: 'Deleting data is a risky change, so HomersLab asks for your passkey.', what: [{ icon: 'trash', text: `Destroy ${gb(r.dataGB)} of ${esc(UI.poss(d.name))} data on ${esc(n.name)}, and its backups` }] });
+    const ok = await stepUp({ plan, title: `Delete ${esc(UI.poss(d.name))} data`, action: 'Delete it', sub: 'Deleting data is a risky change, so Homeward asks for your passkey.', what: [{ icon: 'trash', text: `Destroy ${gb(r.dataGB)} of ${esc(UI.poss(d.name))} data on ${esc(n.name)}, and its backups` }] });
     if (!ok) return;
     S.approvals.push(ok); S.removed = S.removed.filter((x) => x !== r); log(`deleted data of ${r.id} (${ok.planId})`);
     toast(`${UI.poss(d.name)} data is deleted. Approved with your passkey at ${ok.at}.`, 'trash'); go('#/apps?tab=removed');

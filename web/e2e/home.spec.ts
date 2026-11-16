@@ -82,7 +82,7 @@ test('Home installs on a phone as a PWA, with the logo’s icons', async ({ page
     return { type: r.headers.get('Content-Type'), body: await r.json() as { name: string; short_name: string; display: string; start_url: string; icons: { src: string; sizes: string; purpose?: string }[] } };
   });
   expect(manifest.type).toBe('application/manifest+json');
-  expect(manifest.body).toMatchObject({ name: 'Home · HomersLab', short_name: 'Home', display: 'standalone', start_url: '/' });
+  expect(manifest.body).toMatchObject({ name: 'Home · Homeward', short_name: 'Home', display: 'standalone', start_url: '/' });
   expect(manifest.body.icons.map((i) => `${i.sizes}${i.purpose ? ` ${i.purpose}` : ''}`)).toEqual(['192x192', '512x512', '512x512 maskable', 'any']);
   for (const i of manifest.body.icons) {
     const got = await page.evaluate(async (src) => {

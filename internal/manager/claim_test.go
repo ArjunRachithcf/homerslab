@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ArjunRachithcf/homerslab/internal/testenv"
+	"github.com/ArjunRachithcf/homeward/internal/testenv"
 )
 
 // A claim whose answer the network lost (#101): the tab sends it again, with the same key and its own nonce, from the

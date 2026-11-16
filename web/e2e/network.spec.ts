@@ -14,8 +14,8 @@ function setupAt(network: At, answers: Record<string, string> = {}) {
   const steps: Step[] = ids.map((id, i): Step => {
     const step: Step = { id, half: i < 8 ? 'lan' : 'mesh', state: i < 4 ? 'done' : 'todo' };
     if (id !== 'network') return step;
-    if (network === 'waiting' || network === 'checking') return { ...step, state: network, secret: 'mesh', command: 'sudo homerslab setup secret mesh' };
-    if (network === 'refused') return { ...step, state: 'waiting', secret: 'mesh', command: 'sudo homerslab setup secret mesh', refused: 'secret-refused' };
+    if (network === 'waiting' || network === 'checking') return { ...step, state: network, secret: 'mesh', command: 'sudo homeward setup secret mesh' };
+    if (network === 'refused') return { ...step, state: 'waiting', secret: 'mesh', command: 'sudo homeward setup secret mesh', refused: 'secret-refused' };
     if (network === 'confirm') return { ...step, state: 'waiting', confirm: 'mesh-policies' };
     return { ...step, state: network };
   });
@@ -47,8 +47,8 @@ test('on NetBird’s cloud the page asks no token, shows the command for the ter
   await expect(page.locator('input[type=password]')).toHaveCount(0);
   await page.getByRole('button', { name: 'Continue' }).click();
 
-  await expect(page.getByRole('heading', { level: 1 })).toContainText('Now give HomersLab NetBird’s token, on this machine');
-  await expect(page.getByText('sudo homerslab setup secret mesh')).toBeVisible();
+  await expect(page.getByRole('heading', { level: 1 })).toContainText('Now give Homeward NetBird’s token, on this machine');
+  await expect(page.getByText('sudo homeward setup secret mesh')).toBeVisible();
   await expect(page.getByRole('status')).toContainText('Waiting for the token');
   await expect(page.getByRole('button', { name: 'Continue' })).toBeDisabled();
   await expect(page.locator('input')).toHaveCount(0);
@@ -67,7 +67,7 @@ test('on NetBird’s cloud the page asks no token, shows the command for the ter
   network = 'done';
   await expect(page.getByRole('status')).toContainText('Received and checked', { timeout: 10_000 });
   await expect(page.getByRole('status')).toContainText('this machine is on the mesh');
-  await expect(page.getByText('sudo homerslab setup secret mesh')).toHaveCount(0);
+  await expect(page.getByText('sudo homeward setup secret mesh')).toHaveCount(0);
   await accessible(page, 'the token, received and checked');
   await page.getByRole('button', { name: 'Continue' }).click();
   await expect(page.getByRole('heading', { level: 1 })).toContainText('Your domain');

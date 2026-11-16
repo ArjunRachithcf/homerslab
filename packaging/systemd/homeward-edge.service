@@ -4,23 +4,23 @@
 # systemd credentials the agent sealed, loaded as files through a drop-in the agent writes: no private key is ever in
 # its configuration, its admin API or its storage (#78).
 [Unit]
-Description=HomersLab edge
-Documentation=https://github.com/ArjunRachithcf/homerslab
+Description=Homeward edge
+Documentation=https://github.com/ArjunRachithcf/homeward
 Wants=network-online.target
-After=network-online.target homerslab-agent.service
+After=network-online.target homeward-agent.service
 
 [Service]
 Type=notify
-User=homerslab-edge
-Group=homerslab-edge
+User=homeward-edge
+Group=homeward-edge
 # Caddy 2.11.2 or later. --config, never --resume: the agent is the source of truth.
-ExecStart=/usr/bin/caddy run --config /usr/share/homerslab/edge-boot.json
-Environment=HOME=/var/lib/homerslab-edge XDG_DATA_HOME=/var/lib/homerslab-edge XDG_CONFIG_HOME=/var/lib/homerslab-edge
+ExecStart=/usr/bin/caddy run --config /usr/share/homeward/edge-boot.json
+Environment=HOME=/var/lib/homeward-edge XDG_DATA_HOME=/var/lib/homeward-edge XDG_CONFIG_HOME=/var/lib/homeward-edge
 # The admin socket's directory: the edge's user, and its group, which only the agent is in (SupplementaryGroups in
-# homerslab-agent.service). Nobody else can enter it.
-RuntimeDirectory=homerslab-edge
+# homeward-agent.service). Nobody else can enter it.
+RuntimeDirectory=homeward-edge
 RuntimeDirectoryMode=0750
-StateDirectory=homerslab-edge
+StateDirectory=homeward-edge
 StateDirectoryMode=0700
 UMask=0077
 Restart=on-failure

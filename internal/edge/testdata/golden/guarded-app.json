@@ -3,7 +3,7 @@
     "config": {
       "persist": false
     },
-    "listen": "unix//run/homerslab-edge/admin.sock|0660"
+    "listen": "unix//run/homeward-edge/admin.sock|0660"
   },
   "apps": {
     "http": {
@@ -62,7 +62,7 @@
                   "handler": "reverse_proxy",
                   "upstreams": [
                     {
-                      "dial": "unix//run/homerslab-admin.sock"
+                      "dial": "unix//run/homeward-admin.sock"
                     }
                   ]
                 }
@@ -932,8 +932,8 @@
       "certificates": {
         "load_files": [
           {
-            "certificate": "/run/credentials/homerslab-edge.service/tls-example.test.crt",
-            "key": "/run/credentials/homerslab-edge.service/tls-example.test.key",
+            "certificate": "/run/credentials/homeward-edge.service/tls-example.test.crt",
+            "key": "/run/credentials/homeward-edge.service/tls-example.test.key",
             "tags": [
               "example.test"
             ]
@@ -945,6 +945,6 @@
   },
   "storage": {
     "module": "file_system",
-    "root": "/var/lib/homerslab-edge"
+    "root": "/var/lib/homeward-edge"
   }
 }

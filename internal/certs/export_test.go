@@ -6,7 +6,7 @@ import (
 	"github.com/mholt/acmez/v3"
 	"github.com/mholt/acmez/v3/acme"
 
-	"github.com/ArjunRachithcf/homerslab/internal/dns"
+	"github.com/ArjunRachithcf/homeward/internal/dns"
 )
 
 // Solver is the DNS challenge's solver Issue gives the ACME client, with the wait for its record's propagation.

@@ -1,16 +1,16 @@
 # Home's socket, on the primary: Home answers here, and only the edge may connect (its group), which serves it at
 # home.<main domain> over the mesh.
 [Unit]
-Description=HomersLab Home, for the edge
-Documentation=https://github.com/ArjunRachithcf/homerslab
+Description=Homeward Home, for the edge
+Documentation=https://github.com/ArjunRachithcf/homeward
 
 [Socket]
-ListenStream=/run/homerslab-home.sock
-SocketUser=homerslab-home
-SocketGroup=homerslab-edge
+ListenStream=/run/homeward-home.sock
+SocketUser=homeward-home
+SocketGroup=homeward-edge
 SocketMode=0660
 FileDescriptorName=home
-Service=homerslab-home.service
+Service=homeward-home.service
 
 [Install]
 WantedBy=sockets.target

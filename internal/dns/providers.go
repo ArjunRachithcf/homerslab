@@ -11,7 +11,7 @@ import (
 	"github.com/libdns/rfc2136"
 	mdns "github.com/miekg/dns"
 
-	"github.com/ArjunRachithcf/homerslab/internal/mesh"
+	"github.com/ArjunRachithcf/homeward/internal/mesh"
 )
 
 // Settings say which DNS provider holds the household's zone, and how to reach it. None of it is secret: the token
@@ -24,7 +24,7 @@ type Settings struct {
 	KeyAlgorithm string `json:"keyAlgorithm,omitempty"`
 }
 
-// Providers are the DNS providers this version of HomersLab speaks, by name.
+// Providers are the DNS providers this version of Homeward speaks, by name.
 var Providers = map[string]string{
 	"infomaniak": "Infomaniak",
 	"rfc2136":    "RFC 2136 (BIND, Knot, PowerDNS)",

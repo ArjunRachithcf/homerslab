@@ -77,14 +77,14 @@ func (c *control) request(ctx context.Context, method, path string, wait time.Du
 		resp, err := c.http.Do(req)
 		if err != nil {
 			if errors.Is(err, fs.ErrPermission) || errors.Is(err, syscall.EACCES) {
-				return nil, fmt.Errorf("the manager's control socket %s is for root and the homerslab user: run it with sudo", c.socket)
+				return nil, fmt.Errorf("the manager's control socket %s is for root and the homeward user: run it with sudo", c.socket)
 			}
 			if time.Now().Before(deadline) && ctx.Err() == nil {
 				time.Sleep(200 * time.Millisecond)
 				continue
 			}
 			if errors.Is(err, os.ErrNotExist) || errors.Is(err, syscall.ECONNREFUSED) {
-				return nil, fmt.Errorf("the manager isn't running (no answer on %s): systemctl status homerslab-manager", c.socket)
+				return nil, fmt.Errorf("the manager isn't running (no answer on %s): systemctl status homeward-manager", c.socket)
 			}
 			return nil, fmt.Errorf("asking the manager: %w", err)
 		}

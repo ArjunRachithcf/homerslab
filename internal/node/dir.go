@@ -17,7 +17,7 @@ type dir struct {
 	root string
 }
 
-// Statfs reads the filesystem of the nearest folder of name that exists: HomersLab's own may not exist yet.
+// Statfs reads the filesystem of the nearest folder of name that exists: Homeward's own may not exist yet.
 func (d dir) Statfs(name string) (Space, error) {
 	p := filepath.Join(d.root, filepath.FromSlash(name))
 	for {

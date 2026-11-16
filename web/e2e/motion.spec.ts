@@ -27,7 +27,7 @@ test.describe('under prefers-reduced-motion', () => {
 
   test('"More options" opens at once', async ({ page, primary }) => {
     await page.goto((await primary.newLink()).localUrl);
-    await expect(page.getByRole('heading', { level: 1 })).toContainText('Let’s set up HomersLab');
+    await expect(page.getByRole('heading', { level: 1 })).toContainText('Let’s set up Homeward');
     const m = await openMore(page);
     expect(still(m.durations), `transition-duration of ::details-content: ${m.durations}`).toBe(true);
     expect(m.animations).toBe(0);
@@ -46,7 +46,7 @@ test.describe('under prefers-reduced-motion', () => {
 
 test('"More options" opens at once with the design system\'s own reduced motion', async ({ page, primary }) => {
   await page.goto((await primary.newLink()).localUrl);
-  await expect(page.getByRole('heading', { level: 1 })).toContainText('Let’s set up HomersLab');
+  await expect(page.getByRole('heading', { level: 1 })).toContainText('Let’s set up Homeward');
   await page.evaluate(() => document.documentElement.setAttribute('data-motion', 'reduce'));
   const m = await openMore(page);
   expect(still(m.durations), `transition-duration of ::details-content: ${m.durations}`).toBe(true);
@@ -56,7 +56,7 @@ test('"More options" opens at once with the design system\'s own reduced motion'
 
 test('"More options" still glides open with motion on', async ({ page, primary }) => {
   await page.goto((await primary.newLink()).localUrl);
-  await expect(page.getByRole('heading', { level: 1 })).toContainText('Let’s set up HomersLab');
+  await expect(page.getByRole('heading', { level: 1 })).toContainText('Let’s set up Homeward');
   const m = await openMore(page);
   expect(still(m.durations)).toBe(false); // the check above can tell the two apart
   expect(m.height).toBeLessThan(m.settled);

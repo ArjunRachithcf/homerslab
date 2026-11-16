@@ -1,6 +1,6 @@
 // The household account's passkeys in a real browser: Chromium's virtual authenticator (the CDP WebAuthn domain), on a
 // real Authentik that the identity provider contract suite set up (internal/idp/authentik, compose project hltest-17).
-// That suite runs this file and hands it, in HOMERSLAB_TEST_SIGNIN, a JSON file: the sign-in's address on this machine,
+// That suite runs this file and hands it, in HOMEWARD_TEST_SIGNIN, a JSON file: the sign-in's address on this machine,
 // a one-time enrolment link, and an authorize URL of Admin's client. Without it, there is nothing to run.
 //
 // What it checks, as a browser sees it (#83, #84):
@@ -28,10 +28,10 @@ type World = {
   outStepUp: string; // where this file writes what the step-up came back with
 };
 
-const file = process.env.HOMERSLAB_TEST_SIGNIN;
+const file = process.env.HOMEWARD_TEST_SIGNIN;
 const world: World | null = file ? (JSON.parse(readFileSync(file, 'utf8')) as World) : null;
 
-test.skip(!world, 'run by the identity provider contract suite (HOMERSLAB_TEST_SIGNIN)');
+test.skip(!world, 'run by the identity provider contract suite (HOMEWARD_TEST_SIGNIN)');
 test.describe.configure({ mode: 'serial', timeout: 180_000 });
 
 test.use({

@@ -49,9 +49,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/ArjunRachithcf/homerslab/internal/atomicfile"
-	"github.com/ArjunRachithcf/homerslab/internal/engine"
-	"github.com/ArjunRachithcf/homerslab/internal/host"
+	"github.com/ArjunRachithcf/homeward/internal/atomicfile"
+	"github.com/ArjunRachithcf/homeward/internal/engine"
+	"github.com/ArjunRachithcf/homeward/internal/host"
 )
 
 // Table is the table's family and name.
@@ -149,7 +149,7 @@ func valid(names []string) []string {
 func (s State) Equal(o State) bool { return Render(s) == Render(o) }
 
 // header opens every table Render writes: the table made (if missing), deleted and made again, in one transaction.
-const header = "# HomersLab's agent owns this table, and puts it back when it drifts.\n" +
+const header = "# Homeward's agent owns this table, and puts it back when it drifts.\n" +
 	"table " + Table + "\n" +
 	"delete table " + Table + "\n" +
 	"table " + Table + " {\n"
@@ -493,7 +493,7 @@ type Status struct {
 type Firewall struct {
 	Run host.Runner
 	Now func() time.Time
-	// SavePath is where the table, once applied, is written (0600, atomically) for homerslab-firewall-restore, which
+	// SavePath is where the table, once applied, is written (0600, atomically) for homeward-firewall-restore, which
 	// loads it at boot before the network comes up; "" for none.
 	SavePath string
 
@@ -559,7 +559,7 @@ func Save(path, script string) error { return atomicfile.Write(path, []byte(scri
 func Closed(setupPort int) string {
 	var b strings.Builder
 	w := func(f string, a ...any) { fmt.Fprintf(&b, f+"\n", a...) }
-	w("# HomersLab's first-boot table: closed until the agent applies its own.")
+	w("# Homeward's first-boot table: closed until the agent applies its own.")
 	w("table %s", Table)
 	w("delete table %s", Table)
 	w("table %s {", Table)
@@ -582,7 +582,7 @@ func Closed(setupPort int) string {
 	return b.String()
 }
 
-// RestoreScript is what homerslab-firewall-restore loads at boot: the table the agent last applied, or Closed when
+// RestoreScript is what homeward-firewall-restore loads at boot: the table the agent last applied, or Closed when
 // it never applied one. A saved file that can't be used (unreadable, cut short by a power cut, or not a table Render
 // wrote) is never loaded: Closed is, and unusable says why.
 func RestoreScript(savePath string, setupPort int) (script string, unusable error) {
@@ -593,7 +593,7 @@ func RestoreScript(savePath string, setupPort int) (script string, unusable erro
 	case err != nil:
 		return Closed(setupPort), err
 	case !whole(string(b)):
-		return Closed(setupPort), fmt.Errorf("%s isn't a whole HomersLab firewall table", savePath)
+		return Closed(setupPort), fmt.Errorf("%s isn't a whole Homeward firewall table", savePath)
 	}
 	return string(b), nil
 }

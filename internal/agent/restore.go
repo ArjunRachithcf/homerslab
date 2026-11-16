@@ -11,10 +11,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/ArjunRachithcf/homerslab/internal/appunit"
-	"github.com/ArjunRachithcf/homerslab/internal/backup"
-	"github.com/ArjunRachithcf/homerslab/internal/engine"
-	"github.com/ArjunRachithcf/homerslab/internal/host"
+	"github.com/ArjunRachithcf/homeward/internal/appunit"
+	"github.com/ArjunRachithcf/homeward/internal/backup"
+	"github.com/ArjunRachithcf/homeward/internal/engine"
+	"github.com/ArjunRachithcf/homeward/internal/host"
 )
 
 // Restoring an app to an earlier point (#22; spec: Updates, removal, eject). The manager hands the agent the snapshots
@@ -349,7 +349,7 @@ func (a *Agent) restoreDumps(ctx context.Context, st backupState, id string, u a
 			services = append(services, it.data.Service)
 		}
 	}
-	unit := fmt.Sprintf("homerslab-restore-%s-%d", id, a.backupRuns.Add(1))
+	unit := fmt.Sprintf("homeward-restore-%s-%d", id, a.backupRuns.Add(1))
 	if _, err := a.cfg.Run(ctx, host.Cmd{Name: "systemd-run", Args: u.ServicesRun(unit, services)}); err != nil {
 		a.log.Error("running an app's databases for its restore", "app", id, "err", err)
 		return "service-not-running"
@@ -386,7 +386,7 @@ func (a *Agent) restoreDump(ctx context.Context, st backupState, id string, u ap
 	// The dump is a copy of the app's database in the clear: removed whatever happens, by a unit that may (the agent's
 	// own can't write the app-data disk).
 	defer func() {
-		remove := fmt.Sprintf("homerslab-restore-%s-%d", id, a.backupRuns.Add(1))
+		remove := fmt.Sprintf("homeward-restore-%s-%d", id, a.backupRuns.Add(1))
 		if err := a.step(ctx, "systemd-run", "--unit="+remove, "--quiet", "--wait", "--collect", "--", "/usr/bin/rm", "-f", "--", file); err != nil {
 			a.log.Error("removing a restored dump's file", "file", file, "err", err)
 		}
@@ -407,7 +407,7 @@ func (a *Agent) restoreDump(ctx context.Context, st backupState, id string, u ap
 		}
 		// The app's own command reads the dump as its standard input, in a unit of its own: the agent never holds an
 		// app's database in memory, and the command is the install plan's, of plain arguments.
-		unit := fmt.Sprintf("homerslab-restore-%s-%d", id, a.backupRuns.Add(1))
+		unit := fmt.Sprintf("homeward-restore-%s-%d", id, a.backupRuns.Add(1))
 		args := []string{"--unit=" + unit, "--quiet", "--wait", "--collect", "--service-type=exec",
 			"-p", "StandardInput=file:" + file, "-p", "NoNewPrivileges=yes", "--"}
 		args = append(args, slices.Concat(u.Compose(), []string{"exec", "-T", it.data.Service}, it.data.Restore)...)

@@ -388,7 +388,7 @@ function useStep(id: string, setup: Setup, facts: Facts | null, next: () => void
         };
       }
       if (waiting || checked === id) {
-        return secretWait('step.network', 'sudo homerslab setup secret mesh', t('step.network.done'),
+        return secretWait('step.network', 'sudo homeward setup secret mesh', t('step.network.done'),
           ['step.network.help1', 'step.network.help2', 'step.network.help3']);
       }
       return {
@@ -420,7 +420,7 @@ function useStep(id: string, setup: Setup, facts: Facts | null, next: () => void
         const help: Key[] = provider === 'rfc2136'
           ? ['step.domain.helpRfc21361', 'step.domain.helpRfc21362']
           : ['step.domain.helpInfomaniak1', 'step.domain.helpInfomaniak2', 'step.domain.helpInfomaniak3'];
-        return secretWait('step.domain', 'sudo homerslab setup secret dns',
+        return secretWait('step.domain', 'sudo homeward setup secret dns',
           t('step.domain.done', { domain: a.domain ?? '', admin: `https://admin.${a.domain ?? ''}${port}` }), help);
       }
       const own = provider === 'rfc2136';

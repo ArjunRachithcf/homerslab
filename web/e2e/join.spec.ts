@@ -24,7 +24,7 @@ test('the second half shows the terminal command, and Admin once the admin has s
   await page.getByRole('button', { name: 'Continue where I stopped' }).click();
 
   await expect(page.getByRole('heading', { level: 1 })).toContainText('Put this device on the mesh');
-  await expect(page.getByText('sudo homerslab setup join')).toBeVisible();
+  await expect(page.getByText('sudo homeward setup join')).toBeVisible();
   await expect(page.getByRole('status')).toContainText('Waiting for your first sign-in');
   await expect(page.locator('input')).toHaveCount(0);
   await expect(page.locator('img, canvas, svg[aria-label*="QR" i]')).toHaveCount(0); // no code on the LAN page

@@ -15,10 +15,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/ArjunRachithcf/homerslab/internal/idp"
-	"github.com/ArjunRachithcf/homerslab/internal/manager/plan"
-	"github.com/ArjunRachithcf/homerslab/internal/manager/store"
-	"github.com/ArjunRachithcf/homerslab/internal/oidc"
+	"github.com/ArjunRachithcf/homeward/internal/idp"
+	"github.com/ArjunRachithcf/homeward/internal/manager/plan"
+	"github.com/ArjunRachithcf/homeward/internal/manager/store"
+	"github.com/ArjunRachithcf/homeward/internal/oidc"
 )
 
 // Step-up (#25; spec: Security, Adapter contracts; glossary: Step-up, Risky change): a risky change asks for the
@@ -64,7 +64,7 @@ const (
 	stepUpDone     = "done"
 	stepUpTooSoon  = "too-soon"      // the sign-in passed on a session it had from just before: try again in a moment
 	stepUpRefused  = "refused"       // a bad code or token, another person, or not an admin
-	stepUpNotKeyed = "passkeys-only" // the admin holds something besides passkeys (#84): homerslab admin recover
+	stepUpNotKeyed = "passkeys-only" // the admin holds something besides passkeys (#84): homeward admin recover
 )
 
 type stepUpAttempt struct {
@@ -381,11 +381,11 @@ func (m *Manager) stepUpCheck(r *http.Request, a stepUpAttempt, live bool) strin
 		return refuse("reading the admin's credentials", "err", err)
 	}
 	if !creds.PasskeysOnly() {
-		// A security event (ADR 0018): something besides passkeys is on an admin's account, which HomersLab never puts
-		// there. The way out is another admin, or homerslab admin recover on the primary (#87).
+		// A security event (ADR 0018): something besides passkeys is on an admin's account, which Homeward never puts
+		// there. The way out is another admin, or homeward admin recover on the primary (#87).
 		m.log.Error("refused a step-up: the admin holds more than passkeys", "username", a.user, "others", creds.Others, "passkeys", creds.Passkeys)
 		m.warnOnce(ctx, warnStepUp+a.user, "security: "+a.user+" holds more than passkeys ("+strings.Join(creds.Others, ", ")+
-			"), so their passkey approves no risky change. Another admin, or sudo homerslab admin recover on the primary, puts it right.")
+			"), so their passkey approves no risky change. Another admin, or sudo homeward admin recover on the primary, puts it right.")
 		return stepUpNotKeyed
 	}
 	// StepUpLife from the passkey's assertion, and never longer from now, whatever the issuer's clock says.

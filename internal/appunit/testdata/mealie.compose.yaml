@@ -1,5 +1,5 @@
-# Written by HomersLab's agent, from install plan p-3a5f8e0c1d2b4a6978c0e1f2a3b4c5d6. Never edit by hand.
-# What HomersLab adds to app mealie's own compose file, as the second file of the standard compose command (ADR 0014):
+# Written by Homeward's agent, from install plan p-3a5f8e0c1d2b4a6978c0e1f2a3b4c5d6. Never edit by hand.
+# What Homeward adds to app mealie's own compose file, as the second file of the standard compose command (ADR 0014):
 #   - every service: no restart policy, the engine's nor swarm's (the app's unit restarts the app), at the app's own
 #     SELinux level;
 #   - the app's one upstream, a fixed address on a network of its own, which only the edge and the agent may open;
@@ -44,4 +44,4 @@ networks:
           gateway: "172.31.240.33"
 secrets:
   "oidc-client-secret":
-    file: "/run/homerslab-app-mealie/oidc-client-secret"
+    file: "/run/homeward-app-mealie/oidc-client-secret"
