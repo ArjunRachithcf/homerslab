@@ -538,7 +538,7 @@ func unitCommand(t *testing.T, w *world, name string) (*exec.Cmd, *strings.Build
 
 // ldapOwnUnit runs the sign-in's unit's command and the outpost's, attached to the running containers, then stops the
 // outpost: its own command ends, so systemd would start it again, and the sign-in's goes on. Last of the LDAP checks:
-// the outpost stays stopped.
+// the outpost stays stopped, and the sign-in is started again after.
 func ldapOwnUnit(w *world) func(*testing.T) {
 	return func(t *testing.T) {
 		// started runs a command; its channel is closed when it ends, with its error in *err.
@@ -555,10 +555,14 @@ func ldapOwnUnit(w *world) func(*testing.T) {
 		var signInErr, outpostErr error
 		signInEnded, outpostEnded := started(signIn, &signInErr), started(outpost, &outpostErr)
 		defer func() {
-			_ = signIn.Process.Kill() // the client only: the containers go on, as after a crash of the command
+			// The commands stopped, and the sign-in up again for the checks after these: a compose client that goes
+			// away may stop its containers on the way.
+			_ = signIn.Process.Kill()
 			_ = outpost.Process.Kill()
 			<-signInEnded
 			<-outpostEnded
+			w.compose(t, "up", "-d", "--quiet-pull")
+			w.ready(t)
 		}()
 		time.Sleep(15 * time.Second) // attached
 		select {
