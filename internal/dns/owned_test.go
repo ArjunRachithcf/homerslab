@@ -214,10 +214,10 @@ func TestRecordsOfADomainUnderItsZone(t *testing.T) {
 func TestTheProvidersSettingsHoldNoSecret(t *testing.T) {
 	testenv.Isolate(t)
 	s, err := dns.Settings{Provider: "RFC2136", Server: "192.0.2.53", KeyName: "Homeward.", KeyAlgorithm: ""}.Check()
-	if err != nil || s.Server != "192.0.2.53:53" || s.KeyName != "homerslab." || s.KeyAlgorithm != "hmac-sha256" {
+	if err != nil || s.Server != "192.0.2.53:53" || s.KeyName != "homeward." || s.KeyAlgorithm != "hmac-sha256" {
 		t.Errorf("tidied: %+v %v", s, err)
 	}
-	if s.Where() != "the DNS server 192.0.2.53:53 (RFC 2136), as the key homerslab." {
+	if s.Where() != "the DNS server 192.0.2.53:53 (RFC 2136), as the key homeward." {
 		t.Errorf("where: %q", s.Where())
 	}
 	var inv *dns.Invalid

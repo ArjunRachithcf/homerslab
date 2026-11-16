@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/ArjunRachithcf/homeward/internal/appunit"
 	"github.com/ArjunRachithcf/homeward/internal/atomicfile"
@@ -85,6 +86,26 @@ func (a *Agent) renamed(ctx context.Context) error {
 	}
 	a.log.Info("the node runs under Homeward's names", "units", strings.Join(restart, " "))
 	return nil
+}
+
+// renameWait is how long writing the units under Homeward's names may take: three systemd reloads and every app's
+// unit, more than a check's hostWait on a small machine. It happens once per node.
+const renameWait = 2 * time.Minute
+
+// followRename is renamed, at each tick while the mark is there (a stat otherwise), with its own time. A failure is
+// said once, like the edge's.
+func (a *Agent) followRename(ctx context.Context) {
+	ctx, cancel := context.WithTimeout(ctx, renameWait)
+	defer cancel()
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	switch err := a.renamed(ctx); {
+	case err != nil && a.renameDown != err.Error():
+		a.log.Error("writing the node's units under Homeward's names; trying again at each check", "err", err)
+		a.renameDown = err.Error()
+	case err == nil:
+		a.renameDown = ""
+	}
 }
 
 // renamedMount is a share's mount as an agent before #250 saved it, under Homeward's names: its unit and mount point

@@ -534,6 +534,7 @@ func (a *Agent) Watch(ctx context.Context) {
 			if err := a.checkMeshSockets(ctx, false); err != nil {
 				a.log.Error("checking the mesh clients' control sockets", "err", err)
 			}
+			a.followRename(ctx)
 			a.check(ctx)
 		}
 	}
@@ -546,13 +547,6 @@ func (a *Agent) check(ctx context.Context) {
 	defer a.mu.Unlock()
 	if err := a.reconcile(ctx, false); err != nil {
 		a.log.Error("checking the firewall table", "err", err)
-	}
-	// A node that was HomersLab's: its units, under Homeward's names, once (#250). Said once, like the edge.
-	if err := a.renamed(ctx); err != nil && a.renameDown != err.Error() {
-		a.log.Error("writing the node's units under Homeward's names; trying again at each check", "err", err)
-		a.renameDown = err.Error()
-	} else if err == nil {
-		a.renameDown = ""
 	}
 	// An edge that is down is said once, and again when it comes back: not at every check.
 	err := a.reconcileEdge(ctx)

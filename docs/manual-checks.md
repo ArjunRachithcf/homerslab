@@ -71,3 +71,17 @@ limits.
 8. **CAA.** Add `CAA 0 issue "sectigo.com"` to the zone and give the token again: the terminal says the CAA records
    don't let the authority issue. Remove it.
 9. **Production, once.** With `--certificate-authority letsencrypt`, issue the household's real certificate.
+
+## A node installed as HomersLab, moved to Homeward's names (#250)
+
+On a test machine set up with the last HomersLab build (a household, an app on a share, the sign-in), replace
+HomersLab's package with Homeward's and reboot.
+
+1. **Before the agent.** `journalctl -b -u homeward-migrate` lists the units it stopped, the users it renamed and the
+   folders it moved, before `systemd-sysusers` ran. `getent passwd homeward homeward-edge homeward-read homeward-home
+   homeward-ldaps` shows uids 60600 to 60604, and no `homerslab*` user is left.
+2. **The same household.** Admin answers with the same household and people, and the app opens with its data.
+   `sudo nft list table inet homerslab` is the table the agent last applied, not the closed one.
+3. **The units under their new names.** `systemctl list-units 'homeward-*'` shows the edge, the sign-in, the app's and
+   the share's units active, and `/var/lib/homeward-agent/renamed-from-homerslab` is gone.
+4. **Once only.** After one more reboot, `journalctl -b -u homeward-migrate` logs nothing of the migration's own.

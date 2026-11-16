@@ -31,8 +31,8 @@ var ServiceEnv = []string{"NB_DISABLE_NAT_MAPPER=true"}
 // DropIn is the systemd drop-in that gives NetBird's service ServiceEnv.
 func DropIn() []byte {
 	var b strings.Builder
-	b.WriteString("# Written by Homeward's agent, which puts it back if changed. NetBird's client never asks the router\n")
-	b.WriteString("# for a port (UPnP, NAT-PMP, PCP): Homeward opens no router port, ever.\n[Service]\n")
+	b.WriteString("# Written by HomersLab's agent, which puts it back if changed. NetBird's client never asks the router\n")
+	b.WriteString("# for a port (UPnP, NAT-PMP, PCP): HomersLab opens no router port, ever.\n[Service]\n")
 	for _, e := range ServiceEnv {
 		b.WriteString("Environment=" + e + "\n")
 	}
@@ -48,7 +48,7 @@ func DropIn() []byte {
 var ControlSocket = mesh.ControlSocket{
 	Unit:       "netbird.service",
 	DropInPath: "etc/systemd/system/netbird.service.d/11-homeward-socket.conf",
-	DropIn: []byte(`# Written by Homeward's agent, which puts it back if changed. NetBird's control socket is root's only: it controls
+	DropIn: []byte(`# Written by HomersLab's agent, which puts it back if changed. NetBird's control socket is root's only: it controls
 # the node's mesh connection, and the daemon makes it open to every user (0666). It lives in a folder only root may
 # enter, and the CLI's default path links to it, so ` + "`netbird`" + ` as root works as before.
 [Service]

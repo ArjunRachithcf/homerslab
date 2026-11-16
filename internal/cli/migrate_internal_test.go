@@ -53,7 +53,7 @@ func TestTheFirewallTableIsReadFromTheOldFolderUntilItMoves(t *testing.T) {
 func TestTheMigrationNeedsRoot(t *testing.T) {
 	testenv.Isolate(t)
 	var stderr bytes.Buffer
-	code := Main(context.Background(), []string{"agent", "migrate", "--root", t.TempDir()}, Env{Stdout: &bytes.Buffer{}, Stderr: &stderr, Euid: func() int { return 1000 }})
+	code := Main(context.Background(), []string{"agent", "migrate"}, Env{Stdout: &bytes.Buffer{}, Stderr: &stderr, Euid: func() int { return 1000 }})
 	if code != 1 || !strings.Contains(stderr.String(), "needs root") {
 		t.Errorf("%d, %q", code, stderr.String())
 	}

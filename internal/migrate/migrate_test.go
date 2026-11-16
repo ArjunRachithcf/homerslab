@@ -306,8 +306,9 @@ func TestANodeHomersLabInstalledTakesHomewardsNames(t *testing.T) {
 	}); i < 0 || j < i {
 		t.Errorf("the old units weren't stopped before their users were renamed: %q", n.ran)
 	}
-	if last := n.ran[len(n.ran)-2:]; last[0] != "systemctl daemon-reload" || last[1] != "systemctl try-restart homeward-admin.socket homeward-home.socket" {
-		t.Errorf("the run ended with %q, want systemd reloaded and the new sockets made again", last)
+	if last := n.ran[len(n.ran)-3:]; last[0] != "systemctl daemon-reload" || last[1] != "systemd-tmpfiles --create homeward.conf" ||
+		last[2] != "systemctl try-restart homeward-admin.socket homeward-home.socket" {
+		t.Errorf("the run ended with %q, want systemd reloaded, and the new users' folders and sockets made again", last)
 	}
 }
 

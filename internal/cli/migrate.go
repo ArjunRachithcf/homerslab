@@ -13,7 +13,7 @@ import (
 
 // LegacyAgentState is the agent's state folder before #250, which `homeward firewall restore` reads (and never
 // writes) until homeward-migrate.service has moved it: for one release.
-const LegacyAgentState = "/var/lib/homerslab-agent"
+const LegacyAgentState = "/" + migrate.OldAgentState
 
 // errNotMigrated is a node installed as HomersLab whose folders haven't moved yet: the agent and the manager would
 // start without their state, as a new node, with first-time setup open.
@@ -24,14 +24,13 @@ var errNotMigrated = errors.New("this node was installed as HomersLab and hasn't
 // Homeward's names (#250), and does nothing on one that has none of HomersLab's left.
 func agentMigrate(ctx context.Context, args []string, env Env) error {
 	fs := flags("agent migrate", env)
-	root := fs.String("root", "/", "the machine's root")
 	if err := parse(fs, args); err != nil {
 		return err
 	}
 	if env.Euid() != 0 {
 		return errors.New("moving the node to Homeward's names needs root")
 	}
-	_, err := migrate.Run(ctx, migrate.Host{Root: *root, Run: host.Exec, Log: slog.New(slog.NewTextHandler(env.Stderr, nil))})
+	_, err := migrate.Run(ctx, migrate.Host{Root: "/", Run: host.Exec, Log: slog.New(slog.NewTextHandler(env.Stderr, nil))})
 	return err
 }
 

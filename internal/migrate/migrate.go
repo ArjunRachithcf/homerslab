@@ -58,7 +58,7 @@ type Dir struct{ Old, New string }
 // (its database), the edge's storage, the shares' mount points (unmounted: their units are stopped first) and the
 // folder of the apps' units.
 var Dirs = []Dir{
-	{"var/lib/homerslab-agent", "var/lib/homeward-agent"},
+	{OldAgentState, AgentState},
 	{"var/lib/homerslab", "var/lib/homeward"},
 	{"var/lib/homerslab-edge", "var/lib/homeward-edge"},
 	{"var/lib/homerslab-storage", "var/lib/homeward-storage"},
@@ -100,8 +100,12 @@ const keptRunning = "homerslab-firewall-restore.service"
 // it once they are all in place.
 const Mark = "renamed-from-homerslab"
 
-// AgentState is the agent's state folder, relative to the machine's root, where Mark goes.
-const AgentState = "var/lib/homeward-agent"
+// AgentState is the agent's state folder, relative to the machine's root, where Mark goes; OldAgentState its name
+// before #250.
+const (
+	AgentState    = "var/lib/homeward-agent"
+	OldAgentState = "var/lib/homerslab-agent"
+)
 
 // Host is the machine a run changes.
 type Host struct {
@@ -204,8 +208,14 @@ func Run(ctx context.Context, h Host) (Result, error) {
 	if len(r.Users) > 0 {
 		// A socket systemd made before the run, for a user sysusers made with another uid, is made again with the
 		// renamed user's. One that isn't running is left so.
-		if _, err := h.Run(ctx, host.Cmd{Name: "systemctl", Args: []string{"try-restart", "homeward-admin.socket", "homeward-home.socket"}}); err != nil {
-			return r, err
+		// Likewise the folders tmpfiles made for them (Home's projection), and the sockets systemd made.
+		for _, c := range []host.Cmd{
+			{Name: "systemd-tmpfiles", Args: []string{"--create", "homeward.conf"}},
+			{Name: "systemctl", Args: []string{"try-restart", "homeward-admin.socket", "homeward-home.socket"}},
+		} {
+			if _, err := h.Run(ctx, c); err != nil {
+				return r, err
+			}
 		}
 	}
 	h.Log.Info("the node took Homeward's names", "stopped", r.Stopped, "users", r.Users, "moved", r.Moved, "removed", r.Removed)

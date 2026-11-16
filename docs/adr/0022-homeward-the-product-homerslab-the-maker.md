@@ -33,7 +33,11 @@ ADRs 0001 to 0021 were written as HomersLab and are left as they were decided, w
 - the engine's: compose projects (`homerslab-<app>`, `homerslab-authentik`), and so their networks, volumes and
   containers. A Docker volume can't be renamed: a new project name would start every app on empty volumes;
 - the DNS inventory record `_homerslab.<domain>` and its `homerslab=1` value;
-- the firewall table, `inet homerslab`: two tables side by side during a hand-over would each have to accept a packet;
+- the text Homeward stores there and compares later: policy expressions, the names of flows and scope mappings,
+  descriptions (an LDAP app closed is marked `homerslab: closed …`), the mesh clients' drop-ins. A changed word would
+  read as drift, or as an object of someone else's;
+- the firewall table, `inet homerslab`, and its saved file's first line: two tables side by side during a hand-over
+  would each have to accept a packet, and a saved table must read as whole;
 - the browser's: cookies (`__Host-homerslab-*`) and first-time setup's `sessionStorage` key;
 - the official catalog's publisher, HomersLab, whose definitions' digests cover their files.
 

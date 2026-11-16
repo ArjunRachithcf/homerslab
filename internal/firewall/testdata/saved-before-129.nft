@@ -1,4 +1,4 @@
-# Homeward's agent owns this table, and puts it back when it drifts.
+# HomersLab's agent owns this table, and puts it back when it drifts.
 table inet homerslab
 delete table inet homerslab
 table inet homerslab {

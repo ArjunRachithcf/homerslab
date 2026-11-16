@@ -43,7 +43,7 @@ const (
 	appPasswords = "authentik.core.auth.TokenBackend"
 	// ldapClosed marks an app's LDAP application that Homeward closed to nobody on its way out, with the time it
 	// closed: a provider leaves the outpost before its application goes.
-	ldapClosed = "homeward: closed "
+	ldapClosed = "homerslab: closed "
 	// ldapRetireAfter is how long a closed application and its provider stay after the provider left the outpost,
 	// before a later pass deletes them: long past the outpost's taking the change.
 	ldapRetireAfter = 5 * time.Minute
@@ -89,7 +89,7 @@ func ldapPasswordOf(obj string) string { return obj + "_" }
 // provider's (ldapPasswordOf) gets a session there. The password stage puts the token it took in the plan; a policy
 // that fails, or can't be run, skips the session stage, and the outpost binds nobody without a session.
 func ldapPasswordOnly(obj string) string {
-	return "# Homeward (#204): only an app password made for this app binds here.\n" +
+	return "# HomersLab (#204): only an app password made for this app binds here.\n" +
 		"token = (context.get(\"auth_method_args\") or {}).get(\"token\") or {}\n" +
 		"return context.get(\"auth_method\") == \"token\" and str(token.get(\"name\", \"\")).startswith(\"" + ldapPasswordOf(obj) + "\")"
 }
@@ -142,7 +142,7 @@ func (a *Authentik) ldapBindFlow(ctx context.Context, obj string) (string, error
 	if err != nil {
 		return "", err
 	}
-	f, err := a.ensureFlow(ctx, ldapFlowOf(obj), map[string]any{"name": "Homeward: an app's LDAP bind (" + obj + ")", "title": "LDAP",
+	f, err := a.ensureFlow(ctx, ldapFlowOf(obj), map[string]any{"name": "HomersLab: an app's LDAP bind (" + obj + ")", "title": "LDAP",
 		"designation": "authentication", "authentication": "require_outpost", "denied_action": "message",
 		"policy_engine_mode": "all", "compatibility_mode": false, "layout": "stacked"})
 	if err != nil {
@@ -303,7 +303,7 @@ func (a *Authentik) AppPassword(ctx context.Context, slug, username string) (idp
 	_, _ = rand.Read(b)
 	id := ldapPasswordOf(ldapObj(slug)) + hex.EncodeToString(b)
 	if err := a.api.call(ctx, http.MethodPost, "/core/tokens/", map[string]any{"identifier": id, "intent": "app_password",
-		"user": u.PK, "expiring": false, "description": "Homeward: an app password for " + slug + " over LDAP"}, nil); err != nil {
+		"user": u.PK, "expiring": false, "description": "HomersLab: an app password for " + slug + " over LDAP"}, nil); err != nil {
 		return "", err
 	}
 	var k struct {
@@ -374,7 +374,7 @@ func (a *Authentik) ldapOutpost(ctx context.Context, add int) (*outpostObj, erro
 	if err != nil {
 		return nil, err
 	}
-	if err := a.ensureLDAPApp(ctx, ldapNone, "Homeward LDAP", "", none, nobody); err != nil {
+	if err := a.ensureLDAPApp(ctx, ldapNone, "HomersLab LDAP", "", none, nobody); err != nil {
 		return nil, err
 	}
 	o, err := find[outpostObj](ctx, a.api, "/outposts/instances/?name__iexact="+q(LDAPOutpostName), "name", LDAPOutpostName)
@@ -643,7 +643,7 @@ func (a *Authentik) ldapTidy(ctx context.Context, repair bool) (bool, error) {
 			if err != nil {
 				return false, err
 			}
-			if err := a.ensureLDAPApp(ctx, ldapNone, "Homeward LDAP", "", p.PK, nobody); err != nil {
+			if err := a.ensureLDAPApp(ctx, ldapNone, "HomersLab LDAP", "", p.PK, nobody); err != nil {
 				return false, err
 			}
 		case on && (!fine || closed):

@@ -162,7 +162,7 @@ func Bootstrap(ctx context.Context, base string, h idp.Household, bootstrap idp.
 	if err != nil {
 		return "", err
 	}
-	body := map[string]any{"username": ServiceUser, "name": "Homeward", "type": "service_account", "is_active": true,
+	body := map[string]any{"username": ServiceUser, "name": "HomersLab", "type": "service_account", "is_active": true,
 		"groups": []string{admins.PK}, "path": userPath}
 	if svc == nil {
 		svc = &user{}
@@ -175,7 +175,7 @@ func Bootstrap(ctx context.Context, base string, h idp.Household, bootstrap idp.
 	// A token left by a bootstrap that stopped half-way is replaced: its key was never kept.
 	_ = b.call(ctx, http.MethodDelete, "/core/tokens/"+tokenID+"/", nil, nil)
 	if err := b.call(ctx, http.MethodPost, "/core/tokens/", map[string]any{"identifier": tokenID, "intent": "api",
-		"user": svc.PK, "expiring": false, "description": "Homeward's manager: sealed on the primary"}, nil); err != nil {
+		"user": svc.PK, "expiring": false, "description": "HomersLab's manager: sealed on the primary"}, nil); err != nil {
 		return "", err
 	}
 	var key struct{ Key string }
@@ -316,7 +316,7 @@ func (a *Authentik) closeFirstAdmin(ctx context.Context) error {
 		return err
 	}
 	never, err := a.ensure(ctx, "/policies/expression/", policyNever, map[string]any{"name": policyNever,
-		"expression": "# Homeward: this flow applies to nobody.\nreturn False\n"})
+		"expression": "# HomersLab: this flow applies to nobody.\nreturn False\n"})
 	if err != nil {
 		return err
 	}
@@ -573,7 +573,7 @@ func (a *Authentik) ensureFlow(ctx context.Context, slug string, body map[string
 // enrolmentPerson is the policy that makes an enrolment link's person the flow's pending user: only from a valid,
 // unexpired invitation for Homeward's enrolment flow, for an active person of the household. Anything else refuses.
 // Authentik doesn't check an invitation's expiry when it is used, only when a cleanup task runs, so this does.
-const enrolmentPerson = `# Homeward: an enrolment link's person, from its invitation, and nothing else.
+const enrolmentPerson = `# HomersLab: an enrolment link's person, from its invitation, and nothing else.
 from django.utils import timezone
 from authentik.core.models import User
 plan = request.context.get("flow_plan")
@@ -598,7 +598,7 @@ return True
 `
 
 // householdPerson is the policy that knows the household's people: Homeward's users, and anyone in a role's group.
-var householdPerson = `# Homeward: a person of the household, who signs in with a passkey through Homeward's sign-in only.
+var householdPerson = `# HomersLab: a person of the household, who signs in with a passkey through HomersLab's sign-in only.
 user = request.user
 if not getattr(user, "pk", None):
     return False
@@ -667,7 +667,7 @@ func (a *Authentik) Prepare(ctx context.Context, h idp.Household) error {
 		return err
 	}
 	title := "Sign in to " + h.Name
-	signIn, err := a.ensureFlow(ctx, SignInFlow, map[string]any{"name": "Homeward: sign in with a passkey", "title": title,
+	signIn, err := a.ensureFlow(ctx, SignInFlow, map[string]any{"name": "HomersLab: sign in with a passkey", "title": title,
 		"designation": "authentication", "authentication": "none", "denied_action": "message", "policy_engine_mode": "all",
 		"compatibility_mode": false, "layout": "stacked"})
 	if err != nil {
@@ -676,7 +676,7 @@ func (a *Authentik) Prepare(ctx context.Context, h idp.Household) error {
 	if err := a.bindStages(ctx, signIn, []stageBinding{{Stage: pks[stageIdentify]}, {Stage: pks[stagePasskey]}, {Stage: pks[stageLogin]}}); err != nil {
 		return err
 	}
-	enrol, err := a.ensureFlow(ctx, EnrolmentFlow, map[string]any{"name": "Homeward: create a passkey from a link",
+	enrol, err := a.ensureFlow(ctx, EnrolmentFlow, map[string]any{"name": "HomersLab: create a passkey from a link",
 		"title": "Create your passkey for " + h.Name, "designation": "enrollment", "authentication": "none",
 		"denied_action": "message", "policy_engine_mode": "all", "compatibility_mode": false, "layout": "stacked"})
 	if err != nil {
@@ -1411,7 +1411,7 @@ const RoleHeader = "X-Authentik-Homerslab-Role"
 // stand in for it. An attribute under any other spelling of a header of Authentik's or Homeward's (another case,
 // underscores) would: the outpost sets each, and the last one wins, even over X-Authentik-Uid (review round 2). So when
 // any is there, the mapping fails closed: it empties each of them and the role, and the edge refuses the person.
-const roleMapping = "Homeward: the person's role at the edge"
+const roleMapping = "HomersLab: the person's role at the edge"
 
 func roleExpression() string {
 	var roles []string
@@ -1419,8 +1419,8 @@ func roleExpression() string {
 		roles = append(roles, fmt.Sprintf("%q: %q", idp.RoleGroup(r), string(r)))
 	}
 	return strings.Join([]string{
-		"# Homeward (#236): the person's role at the edge, from the role groups they're in directly, by exact name.",
-		"# Attributes that would set a header of Authentik's or Homeward's in another spelling: emptied, and no role.",
+		"# HomersLab (#236): the person's role at the edge, from the role groups they're in directly, by exact name.",
+		"# Attributes that would set a header of Authentik's or HomersLab's in another spelling: emptied, and no role.",
 		"roles = {" + strings.Join(roles, ", ") + "}",
 		`extra = request.user.group_attributes(request).get("additionalHeaders")`,
 		"extra = extra if isinstance(extra, dict) else {}",
@@ -1453,7 +1453,7 @@ func (a *Authentik) EnsureGuard(ctx context.Context, g idp.Guard) error {
 		return errors.New("authentik: its default provider flows are missing")
 	}
 	role, err := a.ensure(ctx, "/propertymappings/provider/scope/", roleMapping, map[string]any{"name": roleMapping,
-		"scope_name": "homerslab", "description": "Homeward: the role the edge passes to an app", "expression": roleExpression()})
+		"scope_name": "homerslab", "description": "HomersLab: the role the edge passes to an app", "expression": roleExpression()})
 	if err != nil {
 		return err
 	}
@@ -1535,7 +1535,7 @@ func (a *Authentik) ensureApp(ctx context.Context, slug, name string, provider i
 
 func (a *Authentik) neverPK(ctx context.Context) (string, error) {
 	return a.ensure(ctx, "/policies/expression/", policyNever, map[string]any{"name": policyNever,
-		"expression": "# Homeward: this flow applies to nobody.\nreturn False\n"})
+		"expression": "# HomersLab: this flow applies to nobody.\nreturn False\n"})
 }
 
 // Report says what Authentik can do, as Homeward finds it now.

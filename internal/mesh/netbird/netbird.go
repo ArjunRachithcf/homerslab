@@ -464,9 +464,9 @@ func desired(r mesh.Rule, ids map[string]string) policy {
 	for i, p := range r.Ports {
 		ports[i] = strconv.Itoa(p)
 	}
-	return policy{Name: r.Name, Description: "Made by Homeward; it puts it back if changed.", Enabled: true,
+	return policy{Name: r.Name, Description: "Made by HomersLab; it puts it back if changed.", Enabled: true,
 		SourcePostureChecks: []string{}, Rules: []policyRule{{
-			Name: r.Name, Description: "Made by Homeward.", Enabled: true, Action: "accept", Protocol: "tcp", Ports: ports,
+			Name: r.Name, Description: "Made by HomersLab.", Enabled: true, Action: "accept", Protocol: "tcp", Ports: ports,
 			Sources: groupRefs{ids[r.From]}, Destinations: groupRefs{ids[r.To]}, PortRanges: []json.RawMessage{},
 		}}}
 }

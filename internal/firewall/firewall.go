@@ -149,7 +149,7 @@ func valid(names []string) []string {
 func (s State) Equal(o State) bool { return Render(s) == Render(o) }
 
 // header opens every table Render writes: the table made (if missing), deleted and made again, in one transaction.
-const header = "# Homeward's agent owns this table, and puts it back when it drifts.\n" +
+const header = "# HomersLab's agent owns this table, and puts it back when it drifts.\n" +
 	"table " + Table + "\n" +
 	"delete table " + Table + "\n" +
 	"table " + Table + " {\n"
@@ -559,7 +559,7 @@ func Save(path, script string) error { return atomicfile.Write(path, []byte(scri
 func Closed(setupPort int) string {
 	var b strings.Builder
 	w := func(f string, a ...any) { fmt.Fprintf(&b, f+"\n", a...) }
-	w("# Homeward's first-boot table: closed until the agent applies its own.")
+	w("# HomersLab's first-boot table: closed until the agent applies its own.")
 	w("table %s", Table)
 	w("delete table %s", Table)
 	w("table %s {", Table)

@@ -11,7 +11,7 @@ import "github.com/ArjunRachithcf/homeward/internal/mesh"
 var ControlSocket = mesh.ControlSocket{
 	Unit:       "tailscaled.service",
 	DropInPath: "etc/systemd/system/tailscaled.service.d/10-homeward-socket.conf",
-	DropIn: []byte(`# Written by Homeward's agent, which puts it back if changed. tailscaled's control socket is root's only: it controls
+	DropIn: []byte(`# Written by HomersLab's agent, which puts it back if changed. tailscaled's control socket is root's only: it controls
 # the node's mesh connection, and tailscaled makes it open to every user (0666), so its folder is one only root may
 # enter.
 [Service]
