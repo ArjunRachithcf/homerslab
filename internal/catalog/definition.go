@@ -33,8 +33,10 @@ type App struct {
 	Icon        string       `yaml:"icon" json:"icon"` // a file in the app's folder
 	Screenshots []Screenshot `yaml:"screenshots" json:"screenshots"`
 
-	Versions    Versions     `yaml:"versions" json:"versions"`
-	SignIn      []SignIn     `yaml:"signIn" json:"signIn"` // in order of preference
+	Versions Versions `yaml:"versions" json:"versions"`
+	SignIn   []SignIn `yaml:"signIn" json:"signIn"` // in order of preference
+	// Identity is what the app relies on the edge for, to know who someone is; nil when nothing.
+	Identity    *Identity    `yaml:"identity" json:"identity,omitempty"`
 	Names       Names        `yaml:"names" json:"names"`
 	Audience    Audience     `yaml:"audience" json:"audience"`
 	Data        []Data       `yaml:"data" json:"data"`
@@ -145,6 +147,19 @@ const (
 	LDAP  SignInMethod = "ldap"
 	Guard SignInMethod = "guard" // the edge signs people in for the app
 )
+
+// Identity is the identity contract an app relies on (#236). Edge names it: homerslab-v1, which the edge keeps for
+// every guarded app. The app learns who someone is from X-HomersLab-Person (a stable id that a rename doesn't change, and
+// the only one to key people on), X-HomersLab-Name (text the person may change, never to split or authorise on) and
+// X-HomersLab-Role (admin, adult or kid), which only the edge sets: it deletes every X-HomersLab-*
+// header a client sends, on every name it serves, and refuses a person with no id or not exactly one role. No identity
+// provider's own headers reach the app, so it works the same with Authentik and with Kanidm.
+type Identity struct {
+	Edge string `yaml:"edge" json:"edge"`
+}
+
+// EdgeIdentity is the identity contract the edge keeps (edge.Contract).
+const EdgeIdentity = "homerslab-v1"
 
 // Names are the app's name on the household's domains, the service and port the edge sends it to, and its exposure.
 type Names struct {

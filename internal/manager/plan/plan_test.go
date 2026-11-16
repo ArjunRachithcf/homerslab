@@ -154,12 +154,29 @@ func TestThePlanUsesTheFirstSignInMethodTheProviderProvides(t *testing.T) {
 			d.SignIn = append(d.SignIn, catalog.SignIn{Method: m})
 		}
 		h.Provider.Provides = c.provides
-		if got := make_(t, d, h).SignIn; got.Method != c.want || got.Creates != c.creates {
+		got := make_(t, d, h).SignIn
+		if got.Method != c.want || got.Creates != c.creates {
 			t.Errorf("the app lists %v, the provider provides %v: %s (%s), want %s (%s)", c.app, c.provides, got.Method, got.Creates, c.want, c.creates)
+		}
+		// A guarded app gets the edge's identity contract, and the plan says so (#236); no other does.
+		if identity := map[bool]string{true: catalog.EdgeIdentity}[c.want == catalog.Guard]; got.Identity != identity {
+			t.Errorf("the app signs in by %s: identity %q, want %q", got.Method, got.Identity, identity)
 		}
 	}
 
+	// An app that relies on the edge's identity contract, planned with another method, isn't wired: it would get none.
 	d, h := definition(), household()
+	d.SignIn = []catalog.SignIn{{Method: catalog.LDAP}, {Method: catalog.Guard}}
+	d.Identity = &catalog.Identity{Edge: catalog.EdgeIdentity}
+	if got := make_(t, d, h).SignIn; got.Method != catalog.LDAP || got.Wired || got.Identity != "" {
+		t.Errorf("an app relying on the identity contract, by LDAP: %+v, want it not wired", got)
+	}
+	d.SignIn = []catalog.SignIn{{Method: catalog.Guard}}
+	if got := make_(t, d, h).SignIn; !got.Wired || got.Identity != catalog.EdgeIdentity {
+		t.Errorf("an app relying on the identity contract, guarded: %+v", got)
+	}
+
+	d, h = definition(), household()
 	d.SignIn = []catalog.SignIn{{Method: catalog.OIDC}}
 	h.Provider.Provides = []catalog.SignInMethod{catalog.Guard}
 	if _, err := plan.Make(d, official, project(), h, made); !errors.Is(err, plan.ErrNoSignInMethod) {

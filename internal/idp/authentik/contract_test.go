@@ -44,6 +44,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ArjunRachithcf/homerslab/internal/edge"
 	"github.com/ArjunRachithcf/homerslab/internal/idp"
 	"github.com/ArjunRachithcf/homerslab/internal/idp/authentik"
 	"github.com/ArjunRachithcf/homerslab/internal/idp/idptest"
@@ -232,6 +233,83 @@ func TestTheIdentityProviderContractOnAuthentik(t *testing.T) {
 		if len(let) > 1 {
 			t.Errorf("while its audience changed, the app let in someone of neither, or the check failed: %v", let[:len(let)-1])
 		}
+	})
+
+	t.Run("a group's name never gives a role: the guard names it from the role groups' own names (#236)", func(t *testing.T) {
+		if edge.AuthentikGuard("").Role != authentik.RoleHeader {
+			t.Fatalf("the edge reads the role from %s, the guard names it in %s", edge.AuthentikGuard("").Role, authentik.RoleHeader)
+		}
+		ctx, p := context.Background(), w.provider
+		if err := p.EnsurePerson(ctx, idp.Person{Username: "theo", Name: "Theo", Mail: "theo@ferreira.family", Role: idp.Kid}); err != nil {
+			t.Fatal(err)
+		}
+		link, err := p.EnrolmentLink(ctx, "theo")
+		if err != nil {
+			t.Fatal(err)
+		}
+		key := webauthntest.New(household.Origin())
+		if _, err := w.Browser(t, key).Enrol(t, link); err != nil {
+			t.Fatal(err)
+		}
+		chores := "chores." + household.Domain // the kids' guarded app, from the suite
+		pass := func(want string) {
+			t.Helper()
+			status, role := w.PassGuard(t, key, "theo", chores)
+			if status/100 == 2 && role != want || role == string(idp.Admin) {
+				t.Errorf("theo at %s: %d, role %q, want %q", chores, status, role, want)
+			}
+		}
+		pass("kid")
+		type group struct {
+			PK   string `json:"pk"`
+			Name string `json:"name"`
+		}
+		groupOf := func(name string) group {
+			var gs struct{ Results []group }
+			w.raw(t, own, "GET", "/api/v3/core/groups/?name="+url.QueryEscape(name), nil, &gs)
+			if len(gs.Results) != 1 {
+				t.Fatalf("no group %s", name)
+			}
+			return gs.Results[0]
+		}
+		theo, kids := w.userPK(t, "theo"), groupOf(idp.RoleGroup(idp.Kid))
+		// A household group whose name joins two others' with Authentik's own separator: still a kid.
+		var pipe, club group
+		w.raw(t, own, "POST", "/api/v3/core/groups/", map[string]any{"name": "x|" + idp.RoleGroup(idp.Admin), "users": []int{theo}}, &pipe)
+		pass("kid")
+		// Below the kids' group, which the kids' audience counts, and no longer in it: no role at all.
+		w.raw(t, own, "POST", "/api/v3/core/groups/", map[string]any{"name": "kids-club|" + idp.RoleGroup(idp.Admin), "parents": []string{kids.PK},
+			"users": []int{theo}}, &club)
+		w.raw(t, own, "POST", "/api/v3/core/groups/"+kids.PK+"/remove_user/", map[string]int{"pk": theo}, nil)
+		pass("")
+		for _, g := range []group{pipe, club} {
+			w.raw(t, own, "DELETE", "/api/v3/core/groups/"+g.PK+"/", nil, nil)
+		}
+
+		// Attributes that would set a header of Authentik's or HomersLab's under another spelling (review round 2): the
+		// outpost sets each, the last one winning, the person's id too. The mapping then names no role, and empties them,
+		// so the edge refuses the person rather than take a forged role or id.
+		w.raw(t, own, "POST", "/api/v3/core/groups/"+kids.PK+"/add_user/", map[string]int{"pk": theo}, nil)
+		pass("kid")
+		forged := map[string]any{"additionalHeaders": map[string]any{"x-authentik-homerslab-role": "admin", "X-AUTHENTIK-HOMERSLAB-ROLE": "admin",
+			"X-Authentik-Uid": "forged-uid", "x_authentik_name": "forged"}}
+		refused := func(how string) {
+			t.Helper()
+			status, h := w.passGuard(t, key, "theo", chores)
+			uid, role := h.Get(edge.AuthentikGuard("").Person), h.Get(authentik.RoleHeader)
+			if status/100 == 2 && (role != "" || uid == "forged-uid" || strings.Contains(h.Get("X-Authentik-Name"), "forged")) {
+				t.Errorf("%s: %d, role %q, uid %q, name %q: want no role, and nothing forged", how, status, role, uid, h.Get("X-Authentik-Name"))
+			}
+		}
+		w.raw(t, own, "PATCH", fmt.Sprintf("/api/v3/core/users/%d/", theo), map[string]any{"attributes": forged}, nil)
+		refused("in the person's attributes")
+		w.raw(t, own, "PATCH", fmt.Sprintf("/api/v3/core/users/%d/", theo), map[string]any{"attributes": map[string]any{}}, nil)
+		pass("kid")
+		var house group
+		w.raw(t, own, "POST", "/api/v3/core/groups/", map[string]any{"name": "the-house", "users": []int{theo}, "attributes": forged}, &house)
+		refused("in a group's attributes")
+		w.raw(t, own, "DELETE", "/api/v3/core/groups/"+house.PK+"/", nil, nil)
+		pass("kid")
 	})
 
 	t.Run("each guard's provider keeps its own app's URL (#219)", func(t *testing.T) {
@@ -683,7 +761,14 @@ func (w *world) AskGuard(t *testing.T, host string) (int, string) {
 // PassGuard goes to host in a browser holding a's passkeys, as username, the way the guard sends it: to the outpost's
 // start, the sign-in, back to the app's callback; then it asks the guard for host with the session it came back with.
 // A person the app's application refuses never gets that far: the answer is then the guard's to a browser with none.
-func (w *world) PassGuard(t *testing.T, a *webauthntest.Authenticator, username, host string) int {
+func (w *world) PassGuard(t *testing.T, a *webauthntest.Authenticator, username, host string) (int, string) {
+	t.Helper()
+	status, h := w.passGuard(t, a, username, host)
+	return status, h.Get(authentik.RoleHeader)
+}
+
+// passGuard is PassGuard, with the whole of the guard's answer's headers.
+func (w *world) passGuard(t *testing.T, a *webauthntest.Authenticator, username, host string) (int, http.Header) {
 	t.Helper()
 	jar, _ := cookiejar.New(nil)
 	c := &http.Client{Timeout: 30 * time.Second, Jar: jar, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
@@ -755,7 +840,7 @@ func (w *world) PassGuard(t *testing.T, a *webauthntest.Authenticator, username,
 		t.Fatal(err)
 	}
 	resp.Body.Close()
-	return resp.StatusCode
+	return resp.StatusCode, resp.Header
 }
 
 // errDenied is a flow that ended in Authentik's access-denied stage: a policy refused the person.

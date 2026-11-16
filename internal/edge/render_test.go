@@ -450,7 +450,28 @@ func TestAGuardedAppsSiteAsksTheGuardFirst(t *testing.T) {
 			t.Errorf("the site doesn't strip %s", h)
 		}
 	}
-	// An app without its guard, or a guard without its provider, isn't rendered.
+	// The provider's own headers set nothing for the app: only the identity contract's (#236). Authentik's role comes
+	// from its own role header, matched exactly; its groups' names are never read (review round 1).
+	if bytes.Contains(b, []byte(`"set":{"X-Authentik`)) || !strings.Contains(string(b), `"X-HomersLab-Role": [`) {
+		t.Error("the guard's answer reaches the app as the provider's own headers")
+	}
+	if site := string(siteOf(t, b, "pdf.example.test")); strings.Contains(site, "X-Authentik-Groups") || strings.Contains(site, "vars_regexp") ||
+		!strings.Contains(site, `"{http.reverse_proxy.header.X-Authentik-Homerslab-Role}": [`) {
+		t.Error("Authentik's guard reads the role from the groups' names, not its role header")
+	}
+	// An app without its guard, or a guard without its provider, or one whose answer says nobody's id, name, groups or
+	// how they're separated, isn't rendered.
+	for _, g := range []func(*edge.Guard){func(g *edge.Guard) { g.Person = "" }, func(g *edge.Guard) { g.Name = "" }, func(g *edge.Guard) { g.Username = "" },
+		func(g *edge.Guard) { g.Groups = "" }, func(g *edge.Guard) { g.GroupSep = "" }, func(g *edge.Guard) { g.GroupSep = ", " },
+		func(g *edge.Guard) { g.Role = "X-Role" }} { // a role both ways
+		guard := edge.KanidmGuard("172.31.250.10:9000")
+		g(guard)
+		c := withSignIn()
+		c.Apps = []edge.App{{Name: "pdf.example.test", Dial: "172.31.240.2:8080", Guard: guard}}
+		if _, err := edge.Render(c); err == nil {
+			t.Errorf("rendered the guard %+v", guard)
+		}
+	}
 	for _, bad := range []edge.App{{Name: "pdf.example.test", Dial: "172.31.240.2:8080"}, {Name: "pdf.example.test", Dial: "172.31.240.2:8080", Guard: &edge.Guard{}},
 		{Name: "pdf.example.test", Dial: "nowhere", Guard: edge.AuthentikGuard("172.31.250.10:9000")}, {Dial: "172.31.240.2:8080", Guard: edge.AuthentikGuard("172.31.250.10:9000")}} {
 		c := withSignIn()
@@ -657,6 +678,68 @@ func TestEveryCookieThroughTheEdgeIsSecure(t *testing.T) {
 	} {
 		if got := edge.SecureCookie(in); got != want {
 			t.Errorf("%q through the edge: %q, want %q", in, got, want)
+		}
+	}
+}
+
+// Every name the edge serves deletes every header under HomersLab's prefix a client sends (#236), before anything
+// answers it: Admin, Home, the sign-in (on the sign-in listener too) and every app. Caddy compares a name by its prefix
+// as Go's server spells it, and an app behind CGI, WSGI or PHP reads an underscore as a dash, so each spelling is there;
+// an app's site deletes every provider's identity headers in each spelling too.
+func TestEverySiteDeletesHomersLabsOwnHeaders(t *testing.T) {
+	testenv.Isolate(t)
+	every := withTheSignInListener()
+	every.Home = &edge.Site{Name: "home.example.test", Upstream: "/run/homerslab-home.sock"}
+	every.Apps = withBothApps().Apps
+	b, err := edge.Render(every)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var c struct {
+		Apps struct {
+			HTTP struct {
+				Servers map[string]struct {
+					Routes []struct {
+						Match  []struct{ Host []string }
+						Handle []struct {
+							Handler string
+							Request struct{ Delete []string }
+						}
+					}
+				}
+			}
+		}
+	}
+	if err := json.Unmarshal(b, &c); err != nil {
+		t.Fatal(err)
+	}
+	own := []string{"X-Homerslab-*", "X-Homerslab.*", "X-Homerslab_*", "X.homerslab-*", "X.homerslab.*", "X.homerslab_*", "X_homerslab-*",
+		"X_homerslab.*", "X_homerslab_*"}
+	sites := 0
+	for name, srv := range c.Apps.HTTP.Servers {
+		if name == "redirect" {
+			continue // proxies nothing
+		}
+		for _, r := range srv.Routes {
+			if len(r.Match) == 0 {
+				continue // 421
+			}
+			sites++
+			if first := r.Handle[0]; first.Handler != "headers" || !reflect.DeepEqual(first.Request.Delete, own) {
+				t.Errorf("%s on %s deletes %v first, want %v", r.Match[0].Host, name, first.Request.Delete, own)
+			}
+		}
+	}
+	if sites != 6 { // Admin, Home, the sign-in, two apps; the sign-in again on its listener
+		t.Errorf("%d sites", sites)
+	}
+	for _, app := range []string{"pdf.example.test", "recipes.example.test"} {
+		site := string(siteOf(t, b, app))
+		for _, h := range []string{"X-Authentik-*", "X_authentik_*", "X-Auth-Request-*", "X_auth_request_*", "X-Forwarded-User",
+			"X_forwarded_user", "X-Forwarded_user", "X_forwarded-User", "X.forwarded.user", "Remote-*", "Remote_*", "Remote.*"} {
+			if !strings.Contains(site, `"`+h+`"`) {
+				t.Errorf("%s doesn't delete %s", app, h)
+			}
 		}
 	}
 }

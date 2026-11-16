@@ -253,6 +253,7 @@
   "plan.signIn.oidc": "With their household account, straight into {app}.",
   "plan.signIn.oidc.sub": "Creates a sign-in client, “{app}”, in {provider}.",
   "plan.signIn.oidc.redirects": "It sends people back to {app} only at {addresses}.",
+  "plan.signIn.identity": "{app} learns who someone is from the edge alone: their name and whether they're an admin, an adult or a kid.",
   "plan.signIn.ldap": "With their household account, through LDAP.",
   "plan.signIn.ldap.sub": "Gives {app} LDAP access to {provider}.",
   "plan.signIn.guard": "The edge asks for the household account first.",

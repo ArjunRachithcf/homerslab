@@ -86,6 +86,11 @@ func MakeWith(d catalog.App, from From, p engine.Project, h Household, made time
 		pl.Name.Asked, pl.Name.Why = d.Names.Name, why
 	}
 	pl.SignIn.Wired = wired(method)
+	if method.Method == catalog.Guard {
+		pl.SignIn.Identity = catalog.EdgeIdentity
+	} else if d.Identity != nil {
+		pl.SignIn.Wired = false // the app relies on the edge's identity contract, which it keeps only behind the guard (#236)
+	}
 	if method.Method == catalog.OIDC {
 		pl.SignIn.RedirectURIs = redirects(d.SignIn, URL(pl.Name.Host, h.Port))
 	}

@@ -74,6 +74,9 @@ type SignIn struct {
 	// RedirectURIs are an OIDC client's redirect addresses, exactly: the app's callbacks on its one URL (ADR 0021), and
 	// its own apps' addresses. Never a wildcard, never another site (#20).
 	RedirectURIs []string `json:"redirectUris,omitempty"`
+	// Identity is the identity contract the edge keeps for the app (#236), homerslab-v1 for a guarded app: who someone
+	// is reaches it only as X-HomersLab-Person, X-HomersLab-Name and X-HomersLab-Role, which the edge sets.
+	Identity string `json:"identity,omitempty"`
 	// Wired says HomersLab can set the app up with this method today: a guard always; an OIDC client when the app's
 	// manifest says how it takes one (#20); LDAP not yet (#49). A plan that isn't wired is shown, and not applied.
 	Wired bool `json:"wired"`

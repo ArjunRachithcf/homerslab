@@ -10,6 +10,7 @@ import (
 	"testing/fstest"
 
 	"github.com/ArjunRachithcf/homerslab/internal/catalog"
+	"github.com/ArjunRachithcf/homerslab/internal/edge"
 	"github.com/ArjunRachithcf/homerslab/internal/testenv"
 )
 
@@ -48,6 +49,7 @@ func TestTheLoaderReadsEveryFieldOfTheManifest(t *testing.T) {
 			{Method: catalog.LDAP, Attributes: []string{"uid", "mail"}},
 			{Method: catalog.Guard},
 		},
+		Identity: &catalog.Identity{Edge: catalog.EdgeIdentity},
 		Names:    catalog.Names{Name: "everything", Service: "web", Port: 8080, Exposure: "mesh", Public: true},
 		Audience: catalog.Audience{Default: "adults", KidView: "Only the kids' albums"},
 		Data: []catalog.Data{
@@ -158,7 +160,11 @@ func TestTheLoaderRefusesADefinitionOutsideTheSchema(t *testing.T) {
 			m[everything].Data = []byte(s[:i] + "signIn: []\n" + s[j:])
 		}, "signIn"},
 		"an unknown sign-in method": {replace(everything, "method: ldap", "method: saml"), "signIn"},
-		"a sign-in method twice":    {replace(everything, "method: ldap", "method: oidc"), "signIn"},
+		// The identity contract an app relies on is one the edge keeps, for a guarded app (#236).
+		"an identity contract the edge doesn't keep": {replace(everything, "edge: homerslab-v1", "edge: homerslab-v2"), "identity.edge"},
+		"an empty identity contract":                 {replace(everything, "edge: homerslab-v1", "edge: \"\""), "identity.edge"},
+		"the identity contract without a guard":      {replace(everything, "  - method: guard\n", ""), "identity.edge"},
+		"a sign-in method twice":                     {replace(everything, "method: ldap", "method: oidc"), "signIn"},
 		// The OIDC client's redirect addresses are the app's own URL and its own callback paths, or its own apps'
 		// addresses (#20, adversarial review round 2): never a wildcard, never another site.
 		"a redirect address with a wildcard":    {replace(everything, "[/auth/callback,", "[/auth/*,"), "redirectUris"},
@@ -277,5 +283,13 @@ func TestADefinitionsDigestCoversEveryFileItIsMadeOf(t *testing.T) {
 		if d := digest(edit); d == first {
 			t.Errorf("a change to %s kept the digest", name)
 		}
+	}
+}
+
+// The identity contract a manifest may rely on is the one the edge keeps (#236).
+func TestTheIdentityContractIsTheEdges(t *testing.T) {
+	testenv.Isolate(t)
+	if catalog.EdgeIdentity != edge.Contract {
+		t.Errorf("a manifest relies on %q, the edge keeps %q", catalog.EdgeIdentity, edge.Contract)
 	}
 }

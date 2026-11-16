@@ -34,6 +34,8 @@ signIn:
   - method: ldap
     attributes: [uid, mail]
   - method: guard
+identity:
+  edge: homerslab-v1
 names:
   name: everything
   service: web
