@@ -46,3 +46,45 @@ func TestPuttingAFlowBackNeverLeavesAStageOut(t *testing.T) {
 		t.Errorf("the flow, put back: %v", got)
 	}
 }
+
+// A stage that runs only when its policies pass is never reachable without them, not even while its binding is being
+// made (#204, part 2b): an LDAP app's bind flow whose session stage ran without the app's own app-password policy would
+// sign a person in with an app password made for another app.
+func TestAStageIsNeverBoundWithoutItsPolicies(t *testing.T) {
+	testenv.Isolate(t)
+	f := newFake()
+	a := f.open(t)
+	f.objs["/stages/deny/"] = []map[string]any{{"pk": "stage-deny", "name": stageNotHere}}
+	// Drifted: the session stage's binding deleted from the console.
+	f.objs["/flows/bindings/"] = []map[string]any{
+		{"pk": "fsb-id", "policybindingmodel_ptr_id": "pbm-id", "target": "flow-ldap", "stage": "stage-id", "order": 10,
+			"evaluate_on_plan": false, "re_evaluate_policies": true, "invalid_response_action": "retry"},
+		{"pk": "fsb-pw", "policybindingmodel_ptr_id": "pbm-pw", "target": "flow-ldap", "stage": "stage-password", "order": 20,
+			"evaluate_on_plan": false, "re_evaluate_policies": true, "invalid_response_action": "retry"}}
+	f.after = func() {
+		for _, b := range f.objs["/flows/bindings/"] {
+			if b["stage"] != "stage-login" {
+				continue
+			}
+			bound := false
+			for _, p := range f.objs["/policies/bindings/"] {
+				bound = bound || p["target"] == b["policybindingmodel_ptr_id"] && p["policy"] == "policy-own"
+			}
+			if !bound {
+				t.Errorf("after %s: the session stage is bound without its policy", f.changes[len(f.changes)-1])
+			}
+		}
+	}
+	if err := a.bindStages(context.Background(), "flow-ldap", []stageBinding{{Stage: "stage-id"}, {Stage: "stage-password"},
+		{Stage: "stage-login", Policies: []binding{{Policy: "policy-own"}}}}); err != nil {
+		t.Fatal(err)
+	}
+	f.after = nil
+	var got []string
+	for _, b := range f.objs["/flows/bindings/"] {
+		got = append(got, fmt.Sprintf("%v@%v", b["stage"], b["order"]))
+	}
+	if fmt.Sprint(got) != "[stage-id@10 stage-password@20 stage-login@30]" {
+		t.Errorf("the flow, put back: %v", got)
+	}
+}

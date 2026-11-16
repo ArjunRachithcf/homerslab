@@ -13,6 +13,7 @@ import (
 
 	"github.com/ArjunRachithcf/homerslab/internal/agent"
 	"github.com/ArjunRachithcf/homerslab/internal/engine"
+	"github.com/ArjunRachithcf/homerslab/internal/idp"
 	"github.com/ArjunRachithcf/homerslab/internal/mesh"
 	"github.com/ArjunRachithcf/homerslab/internal/node"
 )
@@ -187,6 +188,14 @@ func (a *agentClient) signIn(ctx context.Context, req agent.SignInRequest) (agen
 	c := *a.http
 	c.Timeout = 60 * time.Second // systemd restarts the unit
 	return s, (&agentClient{http: &c}).call(ctx, http.MethodPut, "/v1/sign-in", req, &s)
+}
+
+// ldapOutpost hands the agent the LDAP outpost's token, inward only (#204): it seals it for the outpost's own unit,
+// which it starts, or keeps running as it is when the token is the one it has.
+func (a *agentClient) ldapOutpost(ctx context.Context, token idp.Secret) error {
+	c := *a.http
+	c.Timeout = 60 * time.Second // systemd restarts the unit
+	return (&agentClient{http: &c}).call(ctx, http.MethodPut, "/v1/sign-in/ldap", agent.LDAPRequest{Token: token.Reveal()}, nil)
 }
 
 func (a *agentClient) signInStatus(ctx context.Context) (agent.SignInStatus, error) {

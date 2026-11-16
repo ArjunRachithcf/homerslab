@@ -491,6 +491,18 @@ func (a *Authentik) bindStages(ctx context.Context, flowPK string, want []stageB
 			}
 			id = target{PBM: have[j].PBM, PK: have[j].PK}
 		default:
+			// A stage that has policies is never reachable without them (an LDAP app's session stage without its
+			// app-password policy would take another app's app password, #204): its new binding first holds the stage
+			// that refuses, and becomes the stage's only once its policies are bound.
+			if len(w.Policies) > 0 {
+				refuse, err := find[struct {
+					PK string `json:"pk"`
+				}](ctx, a.api, "/stages/deny/?name="+q(stageNotHere), "name", stageNotHere)
+				if err != nil || refuse == nil {
+					return fmt.Errorf("authentik: the stage that refuses, to bind a stage with policies: %v", err)
+				}
+				body["stage"] = refuse.PK
+			}
 			var out struct {
 				PK  string `json:"pk"`
 				PBM string `json:"policybindingmodel_ptr_id"`
@@ -505,6 +517,12 @@ func (a *Authentik) bindStages(ctx context.Context, flowPK string, want []stageB
 		}
 		if err := a.bindPolicies(ctx, id, w.Policies); err != nil {
 			return err
+		}
+		if j < 0 && len(w.Policies) > 0 {
+			body["stage"] = w.Stage
+			if err := a.api.call(ctx, http.MethodPatch, "/flows/bindings/"+id.PK+"/", body, nil); err != nil {
+				return err
+			}
 		}
 	}
 	for j, h := range have {
@@ -661,14 +679,22 @@ func (a *Authentik) Prepare(ctx context.Context, h idp.Household) error {
 	if err != nil {
 		return err
 	}
+	// The one bind flow of LDAP's first part, which took any app's app password, is no flow of HomersLab's now: it goes,
+	// before it could count as a login elsewhere (#204, part 2b).
+	if err := gone(a.api.call(ctx, http.MethodDelete, "/flows/instances/"+ldapOldFlow+"/", nil, nil)); err != nil {
+		return err
+	}
 	if err := a.refuseElsewhere(ctx, signIn, pks[stageNotHere], household); err != nil {
 		return err
 	}
-	// The LDAP bind flow, once an app has made it, back to app passwords only, at an outpost only (#204).
-	if f, err := a.flow(ctx, LDAPBindFlow); err != nil {
+	// The LDAP bind flows, once apps have made them, back to their own app's app passwords only, at an outpost only
+	// (#204).
+	objs, err := a.ldapFlows(ctx)
+	if err != nil {
 		return err
-	} else if f != nil {
-		if _, err := a.ldapBindFlow(ctx); err != nil {
+	}
+	for _, obj := range objs {
+		if _, err := a.ldapBindFlow(ctx, obj); err != nil {
 			return err
 		}
 	}
@@ -708,8 +734,9 @@ func (a *Authentik) loginsElsewhere(ctx context.Context, signIn string) (map[str
 	}
 	bindings, at := map[string][]flowBinding{}, map[string]int{}
 	for _, f := range flows {
-		// The LDAP bind flow takes an app password, for an app's LDAP bind, and runs only at an outpost (#204).
-		if f.PK == signIn || f.Slug == SignInFlow || f.Slug == EnrolmentFlow || f.Slug == LDAPBindFlow {
+		// The LDAP bind flows take an app password, for an app's LDAP bind, and run only at an outpost (#204); the
+		// report checks each.
+		if f.PK == signIn || f.Slug == SignInFlow || f.Slug == EnrolmentFlow || ldapFlowSlug.MatchString(f.Slug) {
 			continue
 		}
 		bs, err := where[flowBinding](ctx, a.api, "/flows/bindings/?target="+q(f.PK), "target", f.PK)
@@ -1556,9 +1583,18 @@ func (a *Authentik) Report(ctx context.Context) (idp.Report, error) {
 		if err != nil {
 			return idp.Report{}, err
 		}
-		ldap, err := a.ldapBindIntact(ctx)
+		// Every bind flow of HomersLab's as it should be: one that isn't would take another password than its own app's.
+		objs, err := a.ldapFlows(ctx)
 		if err != nil {
 			return idp.Report{}, err
+		}
+		ldap := true
+		for _, obj := range objs {
+			ok, _, err := a.ldapBindIntact(ctx, obj)
+			if err != nil {
+				return idp.Report{}, err
+			}
+			ldap = ldap && ok
 		}
 		// A provider the outpost serves without HomersLab's application for it would bind people that application
 		// never let in.

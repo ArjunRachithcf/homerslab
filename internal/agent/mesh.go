@@ -154,10 +154,12 @@ func (a *Agent) run(ctx context.Context, name string, args ...string) error {
 }
 
 // RootWrites are the folders, under the machine's root, where the agent writes: systemd drop-ins for the mesh clients,
-// the edge and the sign-in, and apps' units (UnitsDir), which systemd links from there. Its unit makes them writable
+// the edge, the sign-in, its LDAP outpost and its LDAPS port (#204), and apps' units (UnitsDir), which systemd links
+// from there. Its unit makes them writable
 // (ReadWritePaths, under ProtectSystem=strict) and tmpfiles.d makes them; writeAt refuses any other.
 var RootWrites = []string{filepath.Dir(netbird.DropInPath), filepath.Dir(tailscale.ControlSocket.DropInPath),
-	"etc/systemd/system/" + DefaultEdge.Unit + ".d", "etc/systemd/system/" + SignInUnit + ".d", UnitsDir}
+	"etc/systemd/system/" + DefaultEdge.Unit + ".d", "etc/systemd/system/" + SignInUnit + ".d", "etc/systemd/system/" + LDAPUnit + ".d",
+	"etc/systemd/system/" + LDAPSUnit + ".d", UnitsDir}
 
 // writeAt writes a file under the machine's root, in one of RootWrites.
 func (a *Agent) writeAt(rel string, b []byte) error {

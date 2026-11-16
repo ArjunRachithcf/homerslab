@@ -137,6 +137,7 @@ type Agent struct {
 	backupRuns                 atomic.Int64     // restic's runs so far, for their units' names
 	restoringApps              map[string]bool  // apps being restored, under mu: never installed meanwhile
 	edgeDown                   string           // the edge's last check's error, so a down edge is logged once
+	ldapsDown                  string           // the LDAPS port's likewise
 	network                    lan.Network      // the network's last reading, which the table keeps while the kernel can't be asked
 	networkErr                 bool             // the network can't be read, which is logged once
 	stateErr                   error            // why the saved state couldn't be read at start, if it couldn't
@@ -396,7 +397,7 @@ func (a *Agent) firewallState(context.Context) firewall.State {
 	n := a.network
 	s := firewall.State{Mesh: a.state.Mesh, WireGuard: a.state.WireGuard, LAN: n.LAN, LANPrefixes: n.Prefixes,
 		Uplinks4: n.Uplinks4, Uplinks6: n.Uplinks6, Virtual: n.Virtual, Bridges: a.bridges(), Resolvers: resolvers(a.cfg.Sysroot),
-		Upstreams: a.appsFirewall(), Shares: a.shareServers()}
+		Upstreams: a.appsFirewall(), Shares: a.shareServers(), LDAP: a.ldapNetworks()}
 	if a.listening() && a.listenerUp {
 		s.SignInListener = []netip.AddrPort{netip.AddrPortFrom(SignInListen, uint16(a.state.Edge.Port))}
 	}
@@ -484,6 +485,7 @@ func (a *Agent) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/mesh", a.getMesh)
 	mux.HandleFunc("PUT /v1/sign-in", a.putSignIn)
 	mux.HandleFunc("GET /v1/sign-in", a.getSignIn)
+	mux.HandleFunc("PUT /v1/sign-in/ldap", a.putSignInLDAP)
 	mux.HandleFunc("GET /v1/sign-in/logs", a.getSignInLogs)
 	mux.HandleFunc("DELETE /v1/sign-in/bootstrap-token", a.deleteBootstrapToken)
 	mux.HandleFunc("POST /v1/projects/read", a.readProject)
@@ -545,6 +547,16 @@ func (a *Agent) check(ctx context.Context) {
 	case err == nil && a.edgeDown != "":
 		a.log.Info("the edge answers again")
 		a.edgeDown = ""
+	}
+	// The LDAPS port, for an LDAP app whose install or certificate didn't put it in place: said once, like the edge.
+	err = a.ldapsFollow(ctx)
+	switch {
+	case err != nil && a.ldapsDown != err.Error():
+		a.log.Error("the LDAPS port; trying again at each check", "err", err)
+		a.ldapsDown = err.Error()
+	case err == nil && a.ldapsDown != "":
+		a.log.Info("the LDAPS port is in place again")
+		a.ldapsDown = ""
 	}
 }
 

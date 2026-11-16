@@ -20,8 +20,6 @@ type LDAPWorld interface {
 	LDAP() idp.LDAP
 	// StartOutpost runs the provider's LDAP outpost with its token, as the sign-in's unit does.
 	StartOutpost(t *testing.T, token idp.Secret)
-	// AppPassword gives a person an app password, the one secret they bind with, and returns it.
-	AppPassword(t *testing.T, username string) string
 	// Bind binds at the outpost as dn with password. It returns nil only when the outpost said yes.
 	Bind(t *testing.T, dn, password string) error
 	// Search binds at the outpost as dn with password, then searches base's whole subtree for every object.
@@ -29,7 +27,7 @@ type LDAPWorld interface {
 }
 
 // RunLDAP runs the LDAP contract: an app's provider opens to its roles only, a person sees nobody but themselves, and
-// nothing a person has but an app password binds them (#204). The sign-in is prepared already (Run).
+// nothing a person has but an app password made for that app binds them (#204). The sign-in is prepared already (Run).
 func RunLDAP(t *testing.T, w LDAPWorld) {
 	ctx := context.Background()
 	p, l := w.Provider(), w.LDAP()
@@ -87,7 +85,25 @@ func RunLDAP(t *testing.T, w LDAPWorld) {
 		t.Fatal("no provider: nothing else can be checked")
 	}
 	dn := func(c idp.LDAPCredentials, username string) string { return fmt.Sprintf(c.UserDN, username) }
-	lena, maria, kiko, olga := w.AppPassword(t, "lena"), w.AppPassword(t, "maria"), w.AppPassword(t, "kiko"), w.AppPassword(t, "olga")
+	// password is a new app password of a person's for one app, as Home will make one for them.
+	password := func(app idp.LDAPApp, username string) string {
+		t.Helper()
+		pw, err := l.AppPassword(ctx, app.Slug, username)
+		if err != nil || pw == "" {
+			t.Fatalf("an app password for %s at %s: %v", username, app.Slug, err)
+		}
+		return pw.Reveal()
+	}
+	lena, maria, kiko, olga := password(media, "lena"), password(media, "maria"), password(media, "kiko"), password(media, "olga")
+	if _, err := l.AppPassword(ctx, "jellyfin", "lena"); err == nil {
+		t.Error("an app password for something that isn't an app's slug")
+	}
+	if _, err := l.AppPassword(ctx, media.Slug, "nobody-of-ours"); err == nil {
+		t.Error("an app password for someone the household doesn't have")
+	}
+	if _, err := l.AppPassword(ctx, media.Slug+"-yet-to-come", "lena"); err == nil {
+		t.Error("an app password for an app with no directory, ahead of one of that slug")
+	}
 	// The outpost takes a new provider in a while: until it does, nobody binds there.
 	ready := func(c idp.LDAPCredentials, username, password string) error {
 		var err error
@@ -182,16 +198,43 @@ func RunLDAP(t *testing.T, w LDAPWorld) {
 		if other.BaseDN == creds.BaseDN {
 			t.Fatalf("two apps share a base DN: %s", other.BaseDN)
 		}
-		if err := ready(other, "kiko", kiko); err != nil {
+		if err := ready(other, "kiko", password(books, "kiko")); err != nil {
 			t.Errorf("a kid, in a kids' app: %v", err)
 		}
-		if err := w.Bind(t, dn(other, "lena"), lena); err == nil {
+		if err := w.Bind(t, dn(other, "lena"), password(books, "lena")); err == nil {
 			t.Error("an adult bound to a kids' app")
 		}
 		if err := w.Bind(t, dn(creds, "lena"), lena); err != nil {
 			t.Errorf("the adult, still, in the first app: %v", err)
 		}
 		if err := l.DeleteLDAP(ctx, books.Slug); err != nil {
+			t.Fatal(err)
+		}
+	})
+	t.Run("an app password binds at its own app alone: another app that is handed it can't replay it (#204)", func(t *testing.T) {
+		// A second adults' app, whose slug starts as the first's does.
+		notes := idp.LDAPApp{Slug: media.Slug + "-notes", Name: "Notes", Roles: []idp.Role{idp.Adult}}
+		other, err := l.EnsureLDAP(ctx, notes)
+		if err != nil {
+			t.Fatal(err)
+		}
+		own := password(notes, "lena")
+		if err := ready(other, "lena", own); err != nil {
+			t.Fatalf("an adult, in a second adults' app, with its own app password: %v", err)
+		}
+		for _, x := range []struct{ at, with, what string }{
+			{other.UserDN, lena, "the first app's app password, at the second"},
+			{creds.UserDN, own, "the second app's app password, at the first"},
+			{other.UserDN, maria, "another adult's, for the first app, at the second"},
+		} {
+			if err := w.Bind(t, fmt.Sprintf(x.at, "lena"), x.with); err == nil {
+				t.Errorf("bound with %s", x.what)
+			}
+		}
+		if err := w.Bind(t, dn(creds, "lena"), lena); err != nil {
+			t.Errorf("the adult, still, in the first app with its own: %v", err)
+		}
+		if err := l.DeleteLDAP(ctx, notes.Slug); err != nil {
 			t.Fatal(err)
 		}
 	})

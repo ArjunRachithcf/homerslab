@@ -8,6 +8,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math/big"
 	"net/http"
@@ -60,7 +61,11 @@ type fakeSignIn struct {
 	clientFails error
 	made        map[string]bool // the apps' clients the household account holds
 	// others are what people hold besides passkeys, as Credentials lists it (#25); credentials counts its calls.
-	others      map[string][]string
+	others map[string][]string
+	// outposts counts the outpost's tokens asked for; ldaps are the apps' LDAP directories made, in order (#204).
+	outposts    int
+	ldaps       []idp.LDAPApp
+	ldapFails   error
 	credentials int
 }
 
@@ -287,6 +292,47 @@ func (f *fakeSignIn) EnsureGuard(_ context.Context, g idp.Guard) error {
 	defer f.mu.Unlock()
 	f.guards = append(f.guards, g)
 	return nil
+}
+
+// The LDAP side (#204): the outpost's token, and the apps' directories, kept as asked; ldapFails, when set, is
+// EnsureLDAP's error.
+
+// outpostToken stands in for the LDAP outpost's token.
+const outpostToken = "OUTPOST-TOKEN-PLACEHOLDER-0123456789abcdefghijklmnop"
+
+func (f *fakeSignIn) LDAPOutpost(context.Context) (idp.Secret, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.outposts++
+	return outpostToken, nil
+}
+
+func (f *fakeSignIn) EnsureLDAP(_ context.Context, app idp.LDAPApp) (idp.LDAPCredentials, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.ldapFails != nil {
+		return idp.LDAPCredentials{}, f.ldapFails
+	}
+	f.ldaps = append(f.ldaps, app)
+	if f.made == nil {
+		f.made = map[string]bool{}
+	}
+	created := !f.made[app.Slug+"-ldap"]
+	f.made[app.Slug+"-ldap"] = true
+	base := "dc=" + strings.TrimPrefix(app.Slug, "homerslab-") + ",dc=homerslab"
+	return idp.LDAPCredentials{BaseDN: base, UserDN: "cn=%s,ou=users," + base, Created: created}, nil
+}
+
+func (f *fakeSignIn) DeleteLDAP(_ context.Context, slug string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.deleted = append(f.deleted, slug+"-ldap")
+	delete(f.made, slug+"-ldap")
+	return nil
+}
+
+func (f *fakeSignIn) AppPassword(context.Context, string, string) (idp.Secret, error) {
+	return "", errors.New("the manager makes no app password")
 }
 
 // atJoin is a primary whose first half is done: Authentik chosen, NetBird's cloud joined (household port 9443), the

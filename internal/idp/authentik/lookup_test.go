@@ -95,6 +95,9 @@ func (f *fakeAuthentik) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			body["pbm_uuid"] = fmt.Sprintf("app-%d", f.next)
 			body["pk"] = body["pbm_uuid"]
 		}
+		if coll == "/flows/bindings/" { // a stage binding is a target of policy bindings too
+			body["policybindingmodel_ptr_id"] = fmt.Sprintf("pbm-%d", f.next)
+		}
 		f.objs[coll] = append(f.objs[coll], body)
 		reply(body)
 	case at < 0:

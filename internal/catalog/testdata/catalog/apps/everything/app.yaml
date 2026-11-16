@@ -33,6 +33,14 @@ signIn:
     refusePaths: [/api/password-login, "PUT /api/users"]
   - method: ldap
     attributes: [uid, mail]
+    ldap:
+      url: LDAP_URL
+      host: LDAP_HOST
+      port: LDAP_PORT
+      baseDn: LDAP_BASE_DN
+      userDn: LDAP_USER_DN
+      adminGroup: LDAP_ADMIN_GROUP
+    refusePaths: [/api/local-login]
   - method: guard
 identity:
   edge: homerslab-v1

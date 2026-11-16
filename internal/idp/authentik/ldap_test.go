@@ -53,22 +53,14 @@ func (w *world) StartOutpost(t *testing.T, token idp.Secret) {
 	}
 }
 
-// AppPassword is an app password of the person's, made as Home will make one for them: never shown again after.
-func (w *world) AppPassword(t *testing.T, username string) string {
+// appPassword is a new app password of a person's for one LDAP app, made by the adapter as Home will make it.
+func appPassword(t *testing.T, a *authentik.Authentik, slug, username string) string {
 	t.Helper()
-	id := "hltest-app-password-" + username
-	if w.status(t, w.own, "/api/v3/core/tokens/"+id+"/") == http.StatusNotFound {
-		w.raw(t, w.own, "POST", "/api/v3/core/tokens/", map[string]any{"identifier": id, "intent": "app_password",
-			"user": w.userPK(t, username), "expiring": false}, nil)
+	pw, err := a.AppPassword(context.Background(), slug, username)
+	if err != nil || pw == "" {
+		t.Fatalf("an app password for %s at %s: %v", username, slug, err)
 	}
-	var k struct {
-		Key string `json:"key"`
-	}
-	w.raw(t, w.own, "GET", "/api/v3/core/tokens/"+id+"/view_key/", nil, &k)
-	if k.Key == "" {
-		t.Fatalf("no app password for %s", username)
-	}
-	return k.Key
+	return pw.Reveal()
 }
 
 func (w *world) Search(t *testing.T, dn, password, base string) ([]ldaptest.Entry, error) {
@@ -91,10 +83,10 @@ func (w *world) Bind(t *testing.T, dn, password string) error {
 	return ldaptest.Bind(c, dn, password)
 }
 
-// ldapFlowOnlyAtTheOutpost checks that a browser can't run the bind flow: an app password signs nobody in to the
+// ldapFlowOnlyAtTheOutpost checks that a browser can't run an app's bind flow: an app password signs nobody in to the
 // provider itself.
-func ldapFlowOnlyAtTheOutpost(t *testing.T) {
-	req, _ := http.NewRequest("GET", upstream+"/api/v3/flows/executor/"+authentik.LDAPBindFlow+"/?query=", nil)
+func ldapFlowOnlyAtTheOutpost(t *testing.T, flow string) {
+	req, _ := http.NewRequest("GET", upstream+"/api/v3/flows/executor/"+flow+"/?query=", nil)
 	req.Host = household.SignIn()
 	req.Header.Set("X-Forwarded-Proto", "https")
 	resp, err := (&http.Client{Timeout: 20 * time.Second}).Do(req)
@@ -111,11 +103,23 @@ func ldapFlowOnlyAtTheOutpost(t *testing.T) {
 	}
 }
 
-// ldapDrift opens the bind flow to passwords behind HomersLab's back, as an admin in Authentik's console could: the
-// report says the sign-in is no longer passkey-only, and Prepare puts the flow back.
+// ldapDrift opens an app's bind flow to passwords, or to another app's app passwords, behind HomersLab's back, as an
+// admin in Authentik's console could: the report says the sign-in is no longer passkey-only, and Prepare puts the flow
+// back.
 func ldapDrift(w *world, a *authentik.Authentik) func(*testing.T) {
 	return func(t *testing.T) {
 		ctx := context.Background()
+		app := idp.LDAPApp{Slug: "homerslab-drift", Name: "Drift", Roles: []idp.Role{idp.Adult}}
+		if _, err := a.EnsureLDAP(ctx, app); err != nil {
+			t.Fatal(err)
+		}
+		defer func() {
+			if err := a.DeleteLDAP(ctx, app.Slug); err != nil {
+				t.Error(err)
+			}
+		}()
+		flow := authentik.LDAPBindFlow(app.Slug)
+		t.Run("the bind flow runs only at the outpost, never in a browser", func(t *testing.T) { ldapFlowOnlyAtTheOutpost(t, flow) })
 		var st struct {
 			Results []struct {
 				PK string `json:"pk"`
@@ -130,14 +134,14 @@ func ldapDrift(w *world, a *authentik.Authentik) func(*testing.T) {
 		if r, err := a.Report(ctx); err != nil || r.PasskeyOnlySignIn {
 			t.Errorf("a bind flow that takes passwords: %+v %v, want not passkey-only", r, err)
 		}
-		w.raw(t, w.own, "PATCH", "/api/v3/flows/instances/"+authentik.LDAPBindFlow+"/", map[string]any{"authentication": "none"}, nil)
+		w.raw(t, w.own, "PATCH", "/api/v3/flows/instances/"+flow+"/", map[string]any{"authentication": "none"}, nil)
 		if err := a.Prepare(ctx, household); err != nil {
 			t.Fatal(err)
 		}
 		if r, err := a.Report(ctx); err != nil || !r.PasskeyOnlySignIn {
 			t.Errorf("after Prepare: %+v %v", r, err)
 		}
-		ldapFlowOnlyAtTheOutpost(t)
+		ldapFlowOnlyAtTheOutpost(t, flow)
 		// The app password's stage taken out of the flow: a username alone would bind.
 		var bs struct {
 			Results []struct {
@@ -145,7 +149,7 @@ func ldapDrift(w *world, a *authentik.Authentik) func(*testing.T) {
 				Stage string `json:"stage"`
 			}
 		}
-		w.raw(t, w.own, "GET", "/api/v3/flows/bindings/?target="+flowPK(t, w), nil, &bs)
+		w.raw(t, w.own, "GET", "/api/v3/flows/bindings/?target="+flowPK(t, w, flow), nil, &bs)
 		for _, b := range bs.Results {
 			if b.Stage == st.Results[0].PK {
 				w.raw(t, w.own, "DELETE", "/api/v3/flows/bindings/"+b.PK+"/", nil, nil)
@@ -173,7 +177,7 @@ func ldapDrift(w *world, a *authentik.Authentik) func(*testing.T) {
 				PBM   string `json:"policybindingmodel_ptr_id"`
 			}
 		}
-		w.raw(t, w.own, "GET", "/api/v3/flows/bindings/?target="+flowPK(t, w), nil, &fsb)
+		w.raw(t, w.own, "GET", "/api/v3/flows/bindings/?target="+flowPK(t, w, flow), nil, &fsb)
 		for _, b := range fsb.Results {
 			if b.Stage == st.Results[0].PK && len(never.Results) == 1 {
 				w.raw(t, w.own, "POST", "/api/v3/policies/bindings/", map[string]any{"target": b.PBM, "policy": never.Results[0].PK, "order": 0}, nil)
@@ -188,14 +192,56 @@ func ldapDrift(w *world, a *authentik.Authentik) func(*testing.T) {
 		if r, err := a.Report(ctx); err != nil || !r.PasskeyOnlySignIn {
 			t.Errorf("after Prepare, a third time: %+v %v", r, err)
 		}
+		// The app's own app-password policy taken off its session stage, or made to let every app password through:
+		// another app's app password would bind here.
+		var own struct {
+			Results []struct {
+				PK string `json:"pk"`
+			}
+		}
+		w.raw(t, w.own, "GET", "/api/v3/policies/expression/?name="+app.Slug+"-ldap-app-password", nil, &own)
+		if len(own.Results) != 1 {
+			t.Fatalf("the app's own app-password policy: %+v", own.Results)
+		}
+		var pbs struct {
+			Results []struct {
+				PK     string `json:"pk"`
+				Policy string `json:"policy"`
+			}
+		}
+		w.raw(t, w.own, "GET", "/api/v3/policies/bindings/?policy="+own.Results[0].PK, nil, &pbs)
+		for _, b := range pbs.Results {
+			if b.Policy == own.Results[0].PK {
+				w.raw(t, w.own, "DELETE", "/api/v3/policies/bindings/"+b.PK+"/", nil, nil)
+			}
+		}
+		if r, err := a.Report(ctx); err != nil || r.PasskeyOnlySignIn {
+			t.Errorf("a bind flow whose session stage takes any app password: %+v %v, want not passkey-only", r, err)
+		}
+		if err := a.Prepare(ctx, household); err != nil {
+			t.Fatal(err)
+		}
+		if r, err := a.Report(ctx); err != nil || !r.PasskeyOnlySignIn {
+			t.Errorf("after Prepare, a fourth time: %+v %v", r, err)
+		}
+		w.raw(t, w.own, "PATCH", "/api/v3/policies/expression/"+own.Results[0].PK+"/", map[string]any{"expression": "return True"}, nil)
+		if r, err := a.Report(ctx); err != nil || r.PasskeyOnlySignIn {
+			t.Errorf("a bind flow whose app-password policy lets everyone through: %+v %v, want not passkey-only", r, err)
+		}
+		if err := a.Prepare(ctx, household); err != nil {
+			t.Fatal(err)
+		}
+		if r, err := a.Report(ctx); err != nil || !r.PasskeyOnlySignIn {
+			t.Errorf("after Prepare, a fifth time: %+v %v", r, err)
+		}
 	}
 }
 
-func flowPK(t *testing.T, w *world) string {
+func flowPK(t *testing.T, w *world, slug string) string {
 	var f struct {
 		PK string `json:"pk"`
 	}
-	w.raw(t, w.own, "GET", "/api/v3/flows/instances/"+authentik.LDAPBindFlow+"/", nil, &f)
+	w.raw(t, w.own, "GET", "/api/v3/flows/instances/"+slug+"/", nil, &f)
 	return f.PK
 }
 
@@ -236,7 +282,7 @@ func ldapOrphan(w *world, a *authentik.Authentik) func(*testing.T) {
 		}
 		pw := map[string]string{}
 		for _, who := range []string{"lena", "kiko", "olga"} {
-			pw[who] = w.AppPassword(t, who)
+			pw[who] = appPassword(t, a, app.Slug, who)
 		}
 		bind := func(who string) error { return w.Bind(t, fmt.Sprintf(creds.UserDN, who), pw[who]) }
 		for deadline := time.Now().Add(90 * time.Second); bind("lena") != nil; time.Sleep(3 * time.Second) {
@@ -335,8 +381,15 @@ func ldapImpostors(w *world, a *authentik.Authentik) func(*testing.T) {
 		}
 		pw := map[string]string{}
 		for _, who := range []string{"lena", "kiko", "olga"} {
-			pw[who] = w.AppPassword(t, who)
+			pw[who] = appPassword(t, a, real.Slug, who)
 		}
+		// Another adults' app, whose app passwords open it alone.
+		other := idp.LDAPApp{Slug: "homerslab-other", Name: "Other", Roles: []idp.Role{idp.Adult}}
+		if _, err := a.EnsureLDAP(ctx, other); err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = a.DeleteLDAP(context.Background(), other.Slug) }()
+		lenaOther := appPassword(t, a, other.Slug, "lena")
 		bindAt := func(userDN, who string) error { return w.Bind(t, fmt.Sprintf(userDN, who), pw[who]) }
 		waitFor := func(userDN string) {
 			t.Helper()
@@ -379,7 +432,8 @@ func ldapImpostors(w *world, a *authentik.Authentik) func(*testing.T) {
 			var p struct {
 				PK int `json:"pk"`
 			}
-			w.raw(t, w.own, "POST", "/api/v3/providers/ldap/", map[string]any{"name": name, "authorization_flow": flowPK(t, w),
+			// The real app's own bind flow: the console's copy takes the real app's app passwords.
+			w.raw(t, w.own, "POST", "/api/v3/providers/ldap/", map[string]any{"name": name, "authorization_flow": flowPK(t, w, authentik.LDAPBindFlow(real.Slug)),
 				"invalidation_flow": inval.Results[0].PK, "base_dn": baseDN, "bind_mode": "direct", "search_mode": "direct"}, &p)
 			var app struct {
 				PBM string `json:"pbm_uuid"`
@@ -434,6 +488,11 @@ func ldapImpostors(w *world, a *authentik.Authentik) func(*testing.T) {
 				binding(t, map[string]any{"group": kids, "negate": true, "enabled": true, "timeout": 30})
 				return 0, ""
 			}, false},
+			{"the real app's provider on another app's bind flow, which takes that app's app passwords", func(t *testing.T) (int, string) {
+				w.raw(t, w.own, "PATCH", fmt.Sprintf("/api/v3/providers/ldap/%d/", realP.Results[0].PK),
+					map[string]any{"authorization_flow": flowPK(t, w, authentik.LDAPBindFlow(other.Slug))}, nil)
+				return 0, ""
+			}, false},
 		} {
 			t.Run(c.name, func(t *testing.T) {
 				pk, evil := c.drift(t)
@@ -459,6 +518,9 @@ func ldapImpostors(w *world, a *authentik.Authentik) func(*testing.T) {
 							t.Fatalf("%s bound, outside the audience, after Prepare", who)
 						}
 					}
+					if w.Bind(t, fmt.Sprintf(creds.UserDN, "lena"), lenaOther) == nil {
+						t.Fatal("lena bound at the real app with the other app's app password, after Prepare")
+					}
 				}
 				// The real app as it should be, with its next EnsureLDAP (Prepare closed it, if its own was changed).
 				if _, err := a.EnsureLDAP(ctx, real); err != nil {
@@ -470,6 +532,12 @@ func ldapImpostors(w *world, a *authentik.Authentik) func(*testing.T) {
 						t.Errorf("%s bound, outside the audience, with the real app back", who)
 					}
 				}
+				if w.Bind(t, fmt.Sprintf(creds.UserDN, "lena"), lenaOther) == nil {
+					t.Error("lena bound at the real app with the other app's app password, with the real app back")
+				}
+				// Authentik may be busy a moment on a loaded machine (a worker recycled answers 503): the report once
+				// it is ready again (#245).
+				w.ready(t)
 				if r, err := a.Report(ctx); err != nil || !r.PasskeyOnlySignIn {
 					t.Errorf("with the real app back: %+v %v", r, err)
 				}

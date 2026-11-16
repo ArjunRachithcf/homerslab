@@ -371,9 +371,11 @@ jobs:
             internal/idp/authentik/native_test.go catalogs/official/apps/mealie/compose.yaml
       # The harness, and only the harness, reaches the runner's Docker (HOMERSLAB_TEST_DOCKER_HOST), for compose project
       # hltest-17; the code under test points at nowhere. Images are pinned by digest in packaging/sign-in. The suite
-      # runs web/e2e/passkey.idp.spec.ts against the Authentik it set up (HOMERSLAB_TEST_BROWSER).
+      # runs web/e2e/passkey.idp.spec.ts against the Authentik it set up (HOMERSLAB_TEST_BROWSER). It copies its own
+      # test binary into a container, as the LDAP app's server and the LDAPS port (#204), so it is built static.
       - name: The contract suite
         env:
+          CGO_ENABLED: "0"
           HOMERSLAB_TEST_DOCKER_HOST: unix:///var/run/docker.sock
           HOMERSLAB_TEST_BROWSER: "1"
           HOMERSLAB_TEST_BROWSER_RUNS: ${{ inputs.browser_runs || '1' }}

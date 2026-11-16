@@ -271,8 +271,8 @@ func TestARetryThatFailsKeepsTheClientAnEarlierApplyMade(t *testing.T) {
 }
 
 // A plan with an extra is a risky change, which needs the admin's passkey (#25); the agent doesn't run extras yet, so
-// it isn't applied, even from the terminal, rather than installed without them. An app with native sign-in that can't take its client from HomersLab yet (Immich: no settings in its manifest), and
-// LDAP apps (#49), aren't applied either.
+// it isn't applied, even from the terminal, rather than installed without them. An app with native sign-in that can't
+// take its client from HomersLab yet (Immich: no settings in its manifest) isn't applied either.
 func TestOnlyPlansThatCanBeWiredWithoutExtrasApplySoFar(t *testing.T) {
 	testenv.Isolate(t)
 	cat := withCatalog(t, map[string]func([]byte) []byte{"apps/bentopdf/app.yaml": func(b []byte) []byte {
