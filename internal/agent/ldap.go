@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -13,6 +14,7 @@ import (
 	"strings"
 
 	"github.com/ArjunRachithcf/homerslab/internal/appunit"
+	"github.com/ArjunRachithcf/homerslab/internal/atomicfile"
 	"github.com/ArjunRachithcf/homerslab/internal/catalog"
 	"github.com/ArjunRachithcf/homerslab/internal/certs"
 	"github.com/ArjunRachithcf/homerslab/internal/firewall"
@@ -248,40 +250,70 @@ func (a *Agent) ldapsCertificates(name string) []byte {
 	return []byte(b.String())
 }
 
-// sealLDAPS seals the sign-in's certificate and key for the LDAPS port's unit.
+// sealLDAPS seals the sign-in's certificate and key for the LDAPS port's unit: both to new files first, then both
+// committed, so a failure leaves the old pair whole, never a new certificate beside an old key (#246's review). Until
+// it succeeds, the next ldapsFollow seals the edge's copy again; once it has, that one checks the pair, once. The caller
+// holds a.mu.
 func (a *Agent) sealLDAPS(ctx context.Context, chain []byte, key mesh.Secret) error {
+	a.ldapsReseal, a.ldapsVerify = true, false
 	if err := os.MkdirAll(a.ldapsDir(), 0o700); err != nil {
 		return err
 	}
-	for id, v := range map[string][]byte{credLDAPSCert: chain, credLDAPSKey: []byte(key.Reveal())} {
-		if err := a.sealAt(ctx, filepath.Join(a.ldapsDir(), id+".cred"), id, v); err != nil {
+	ids := []string{credLDAPSCert, credLDAPSKey}
+	values := map[string][]byte{credLDAPSCert: chain, credLDAPSKey: []byte(key.Reveal())}
+	for _, id := range ids {
+		path := filepath.Join(a.ldapsDir(), id+".cred")
+		if err := a.sealNew(ctx, path, id, values[id]); err != nil {
+			for _, id := range ids {
+				_ = os.Remove(filepath.Join(a.ldapsDir(), id+".cred.new"))
+			}
 			return err
 		}
 	}
+	for _, id := range ids {
+		if err := atomicfile.Commit(filepath.Join(a.ldapsDir(), id+".cred.new")); err != nil {
+			return err
+		}
+	}
+	a.ldapsReseal, a.ldapsVerify = false, true
 	return nil
 }
 
-// ldapsPaired says whether the LDAPS port's sealed copy is there and makes a pair, the domain's: a renewal sealing it
-// can fail between the certificate and the key, which would leave a new one next to an old one, and the port down at
-// its next start (#246's review).
-func (a *Agent) ldapsPaired(ctx context.Context, domain string) bool {
+// ldapsCopyThere says whether the LDAPS port's sealed copy is whole on disk: both files, and no new one left by a
+// sealing that stopped between its commits. It reads no credential.
+func (a *Agent) ldapsCopyThere() bool {
+	for _, id := range []string{credLDAPSCert, credLDAPSKey} {
+		path := filepath.Join(a.ldapsDir(), id+".cred")
+		if _, err := os.Stat(path); err != nil {
+			return false
+		}
+		if _, err := os.Stat(path + ".new"); err == nil {
+			return false
+		}
+	}
+	return true
+}
+
+// ldapsPaired says whether the LDAPS port's sealed copy makes a pair, the domain's. A copy that can't be unsealed is an
+// error, for the next check to try again: never taken for one that makes no pair.
+func (a *Agent) ldapsPaired(ctx context.Context, domain string) (bool, error) {
 	chain, err := a.unsealAt(ctx, filepath.Join(a.ldapsDir(), credLDAPSCert+".cred"), credLDAPSCert)
 	if err != nil {
-		return false
+		return false, fmt.Errorf("unsealing the LDAPS port's certificate to check it: %w", err)
 	}
 	key, err := a.unsealAt(ctx, filepath.Join(a.ldapsDir(), credLDAPSKey+".cred"), credLDAPSKey)
 	if err != nil {
-		return false
+		return false, fmt.Errorf("unsealing the LDAPS port's key to check it: %w", err)
 	}
 	_, err = certs.Parse(domain, chain, mesh.Secret(key))
-	return err == nil
+	return err == nil, nil
 }
 
 // ldapsFollow puts the LDAPS port in place once an app on this node signs in over LDAP and the edge holds the sign-in's
 // certificate: the certificate sealed for its unit (from the edge's own, the first time, whenever the sign-in's name
-// moves, and whenever the copy isn't a pair), its drop-in, and its socket enabled; then, if any of it is new, the unit,
+// moves, and whenever its sealing failed or stopped halfway), its drop-in, and its socket enabled; then, if any of it is new, the unit,
 // if it runs, restarts, so it serves the new one (it reads it only as it starts). Idempotent and cheap when nothing
-// changed (two unseals): it runs after every install, every certificate and at every check. The caller holds a.mu.
+// changed (it unseals nothing): it runs after every install, every certificate and at every check. The caller holds a.mu.
 func (a *Agent) ldapsFollow(ctx context.Context) error {
 	d, held := a.signInDomain()
 	if !a.ldapInUse() || !held {
@@ -291,7 +323,7 @@ func (a *Agent) ldapsFollow(ctx context.Context) error {
 	have, _ := os.ReadFile(filepath.Join(a.cfg.Root, a.ldapsDropIn()))
 	changed := !bytes.Equal(have, want)
 	renewed := false
-	if changed || !a.ldapsPaired(ctx, d) {
+	if changed || a.ldapsReseal || !a.ldapsCopyThere() {
 		chain, err := a.unsealAt(ctx, filepath.Join(a.edgeDir(), certID(d)+".cred"), certID(d))
 		if err != nil {
 			return fmt.Errorf("the sign-in's certificate: %w", err)
@@ -328,6 +360,18 @@ func (a *Agent) ldapsFollow(ctx context.Context) error {
 			return err
 		}
 		a.log.Info("the LDAPS port serves the sign-in's certificate", "name", a.signInName())
+	}
+	// Once after a sealing, never at every check: an unseal is the TPM's, and brings the key into memory.
+	if a.ldapsVerify {
+		ok, err := a.ldapsPaired(ctx, d)
+		if err != nil {
+			return err
+		}
+		a.ldapsVerify = false
+		if !ok {
+			a.ldapsReseal = true
+			return errors.New("the LDAPS port's copy of the sign-in's certificate makes no pair; sealing it again")
+		}
 	}
 	return nil
 }

@@ -138,10 +138,13 @@ type Agent struct {
 	restoringApps              map[string]bool  // apps being restored, under mu: never installed meanwhile
 	edgeDown                   string           // the edge's last check's error, so a down edge is logged once
 	ldapsDown                  string           // the LDAPS port's likewise
-	network                    lan.Network      // the network's last reading, which the table keeps while the kernel can't be asked
-	networkErr                 bool             // the network can't be read, which is logged once
-	stateErr                   error            // why the saved state couldn't be read at start, if it couldn't
-	brokenFile                 bool             // the state file is that unreadable one, not yet put aside
+	// ldapsReseal: a sealing of the LDAPS port's copy failed, so the next ldapsFollow seals the edge's again;
+	// ldapsVerify: one succeeded, and its pair isn't checked yet. The steady state unseals nothing (#246's review).
+	ldapsReseal, ldapsVerify bool
+	network                  lan.Network // the network's last reading, which the table keeps while the kernel can't be asked
+	networkErr               bool        // the network can't be read, which is logged once
+	stateErr                 error       // why the saved state couldn't be read at start, if it couldn't
+	brokenFile               bool        // the state file is that unreadable one, not yet put aside
 }
 
 // state is what the agent keeps across restarts, in StateDir/agent.json. None of it is secret.

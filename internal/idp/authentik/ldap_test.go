@@ -672,6 +672,23 @@ func ldapImpostors(w *world, a *authentik.Authentik) func(*testing.T) {
 				}
 			})
 		}
+		// An install's EnsureLDAP tidies the outpost itself, not only the hourly pass or Prepare (#246's review): a
+		// provider of the console's there goes with the next app's EnsureLDAP alone.
+		t.Run("an app's EnsureLDAP alone takes a provider of the console's off the outpost", func(t *testing.T) {
+			pk, _ := provider(t, "homerslab-evil4-ldap", "dc=evil4,dc=homerslab", nil)
+			if r, err := a.Report(ctx); err != nil || r.PasskeyOnlySignIn {
+				t.Errorf("a provider of the console's at the outpost: %+v %v, want not passkey-only", r, err)
+			}
+			if _, err := a.EnsureLDAP(ctx, other); err != nil {
+				t.Fatal(err)
+			}
+			if _, ps := outpost(); slices.Contains(ps, pk) {
+				t.Error("the console's provider is still at the outpost after an EnsureLDAP")
+			}
+			if r, err := a.Report(ctx); err != nil || !r.PasskeyOnlySignIn {
+				t.Errorf("after an EnsureLDAP: %+v %v", r, err)
+			}
+		})
 		// The outpost's own application, opened to the adults: only the policy that refuses everyone may open it.
 		t.Run("the outpost's own application opened to the adults", func(t *testing.T) {
 			var app struct {

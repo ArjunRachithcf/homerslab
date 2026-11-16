@@ -377,6 +377,14 @@ func (a *Agent) unsealAt(ctx context.Context, path, name string) ([]byte, error)
 // sealAt seals a value under its name at path, with the TPM where the machine has one, and the host key always:
 // explicitly, never "auto" (ADR 0011).
 func (a *Agent) sealAt(ctx context.Context, path, name string, value []byte) error {
+	if err := a.sealNew(ctx, path, name, value); err != nil {
+		return err
+	}
+	return atomicfile.Commit(path + ".new")
+}
+
+// sealNew seals a value under its name at path+".new", for the caller to commit.
+func (a *Agent) sealNew(ctx context.Context, path, name string, value []byte) error {
 	key := "host"
 	if a.cfg.Sysroot != nil {
 		// TPM 2.0 only: systemd-creds can't seal to a TPM 1.2.
@@ -388,7 +396,7 @@ func (a *Agent) sealAt(ctx context.Context, path, name string, value []byte) err
 		Args: []string{"encrypt", "--with-key=" + key, "--name=" + name, "-", path + ".new"}, Stdin: value}); err != nil {
 		return err
 	}
-	return atomicfile.Commit(path + ".new")
+	return nil
 }
 
 // MeshStatus is the node's mesh client, as the agent finds it right now.

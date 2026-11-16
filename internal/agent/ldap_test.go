@@ -341,30 +341,126 @@ func TestAnLDAPStepThatFailedIsDoneAgain(t *testing.T) {
 	}
 }
 
-// A renewal whose sealing for the LDAPS port failed between the certificate and the key (#246's review) leaves a copy
-// that makes no pair: the next check seals the edge's again, and the port restarts to serve it.
-func TestAnLDAPSCopyThatMakesNoPairIsSealedAgain(t *testing.T) {
+// decrypts counts the credentials the agent unsealed so far.
+func decrypts(h *agenttest.Host) int {
+	n := 0
+	for _, c := range h.Cmds() {
+		if strings.HasPrefix(c.String(), "systemd-creds decrypt ") {
+			n++
+		}
+	}
+	return n
+}
+
+// waitChecks lets the agent's check run a few times (CheckEvery is 50 ms in these tests).
+func waitChecks() { time.Sleep(400 * time.Millisecond) }
+
+// A renewal whose sealing for the LDAPS port fails halfway (#246's review) leaves the port's old pair whole, never a new
+// certificate beside an old key; the next check seals the edge's new one again, and the port restarts to serve it.
+func TestAnLDAPSSealingThatFailsHalfwayLeavesThePairWhole(t *testing.T) {
+	testenv.Isolate(t)
+	sock, h, state := signedIn(t, agent.Config{Users: withLDAPS, CheckEvery: 50 * time.Millisecond})
+	install(t, sock, "books", books(t))
+	crt, key := filepath.Join(state, "ldaps", "tls.crt.cred"), filepath.Join(state, "ldaps", "tls.key.cred")
+	oldCrt, oldKey := sealedAt(t, crt), sealedAt(t, key)
+	sealKey := "systemd-creds encrypt --with-key=host+tpm2 --name=tls.key"
+	h.Fail(sealKey)
+	chain, newKey := wildcard(t, "example.test")
+	if code, _ := call(t, sock, "PUT", "/v1/edge/certificates/example.test", map[string]string{"chain": chain, "key": newKey}); code == http.StatusOK {
+		t.Fatal("a renewal whose LDAPS key couldn't be sealed answered OK")
+	}
+	if sealedAt(t, crt) != oldCrt || sealedAt(t, key) != oldKey {
+		t.Error("a sealing that failed halfway changed the LDAPS port's pair")
+	}
+	restarts := h.Times("systemctl --no-block try-restart homerslab-ldaps.service")
+	h.Mend()
+	for deadline := time.Now().Add(5 * time.Second); sealedAt(t, key) != newKey; time.Sleep(20 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatal("the LDAPS port's key was never sealed again after the failed renewal")
+		}
+	}
+	if sealedAt(t, crt) != sealedAt(t, filepath.Join(state, "edge", "tls-example.test.crt.cred")) {
+		t.Error("the LDAPS port's certificate isn't the edge's after the reseal")
+	}
+	for deadline := time.Now().Add(5 * time.Second); h.Times("systemctl --no-block try-restart homerslab-ldaps.service") == restarts; time.Sleep(20 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatal("the LDAPS port never restarted to serve the pair sealed again")
+		}
+	}
+}
+
+// A sealing that stopped between its two commits (the agent killed) leaves a new file behind: the next check seals
+// the edge's pair again, whatever the copy holds.
+func TestAnLDAPSCopyLeftHalfCommittedIsSealedAgain(t *testing.T) {
 	testenv.Isolate(t)
 	sock, h, state := signedIn(t, agent.Config{Users: withLDAPS, CheckEvery: 50 * time.Millisecond})
 	install(t, sock, "books", books(t))
 	keyCred := filepath.Join(state, "ldaps", "tls.key.cred")
 	edgeKey := sealedAt(t, filepath.Join(state, "edge", "tls-example.test.key.cred"))
-	if sealedAt(t, keyCred) != edgeKey {
-		t.Fatal("the LDAPS port's key isn't the edge's")
-	}
 	_, other := wildcard(t, "example.test")
 	restarts := h.Times("systemctl --no-block try-restart homerslab-ldaps.service")
-	if err := os.WriteFile(keyCred, []byte("sealed:"+base64.StdEncoding.EncodeToString([]byte(other))), 0o600); err != nil {
+	stray := []byte("sealed:" + base64.StdEncoding.EncodeToString([]byte(other)))
+	if err := os.WriteFile(keyCred, stray, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(keyCred+".new", stray, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	for deadline := time.Now().Add(5 * time.Second); sealedAt(t, keyCred) != edgeKey; time.Sleep(20 * time.Millisecond) {
 		if time.Now().After(deadline) {
-			t.Fatal("the LDAPS port's key, another certificate's, was never sealed again")
+			t.Fatal("the LDAPS port's copy, left half-committed, was never sealed again")
 		}
 	}
 	for deadline := time.Now().Add(5 * time.Second); h.Times("systemctl --no-block try-restart homerslab-ldaps.service") == restarts; time.Sleep(20 * time.Millisecond) {
 		if time.Now().After(deadline) {
 			t.Fatal("the LDAPS port never restarted to serve the pair sealed again")
 		}
+	}
+}
+
+// Once the LDAPS port's copy is in place, the agent's checks unseal nothing (#246's review): an unseal is the TPM's,
+// under the agent's lock, and brings the sign-in's key into memory. The pair is checked once, after a sealing.
+func TestTheLDAPSPortsSteadyStateUnsealsNothing(t *testing.T) {
+	testenv.Isolate(t)
+	sock, h, _ := signedIn(t, agent.Config{Users: withLDAPS, CheckEvery: 50 * time.Millisecond})
+	install(t, sock, "books", books(t))
+	waitChecks()
+	n := decrypts(h)
+	waitChecks()
+	waitChecks()
+	if got := decrypts(h); got != n {
+		t.Errorf("checks in the steady state unsealed %d credentials, want none", got-n)
+	}
+}
+
+// The pair's check after a sealing that can't unseal (the TPM busy) is tried again at the next check: never taken for a
+// copy that makes no pair, so nothing is sealed again and the port, serving its apps, isn't restarted for it.
+func TestAnLDAPSCheckThatCantUnsealRestartsNothing(t *testing.T) {
+	testenv.Isolate(t)
+	sock, h, state := signedIn(t, agent.Config{Users: withLDAPS, CheckEvery: 50 * time.Millisecond})
+	install(t, sock, "books", books(t))
+	unseal := "systemd-creds decrypt --name=tls.key"
+	h.Fail(unseal)
+	chain, key := wildcard(t, "example.test")
+	if code, body := call(t, sock, "PUT", "/v1/edge/certificates/example.test", map[string]string{"chain": chain, "key": key}); code != http.StatusOK {
+		t.Fatalf("a renewal: %d %s", code, body)
+	}
+	restart := "systemctl --no-block try-restart homerslab-ldaps.service"
+	restarts, seals := h.Times(restart), lastRan(h, "systemd-creds encrypt --with-key=host+tpm2 --name=tls.key")
+	for deadline := time.Now().Add(5 * time.Second); h.Times(unseal+" "+filepath.Join(state, "ldaps", "tls.key.cred")+" -") < 2; time.Sleep(20 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatal("the pair's check wasn't tried again after an unseal failed")
+		}
+	}
+	h.Mend()
+	waitChecks()
+	if h.Times(restart) != restarts || lastRan(h, "systemd-creds encrypt --with-key=host+tpm2 --name=tls.key") != seals {
+		t.Errorf("an unseal that failed: restarted %d more times, sealed again %v; want neither", h.Times(restart)-restarts,
+			lastRan(h, "systemd-creds encrypt --with-key=host+tpm2 --name=tls.key") != seals)
+	}
+	n := decrypts(h)
+	waitChecks()
+	if decrypts(h) != n {
+		t.Error("the pair's check goes on after it passed")
 	}
 }
