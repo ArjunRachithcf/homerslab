@@ -338,8 +338,9 @@ func (l *lineReader) ask(ctx context.Context, env Env, question string) (string,
 // Ctrl-C (ctx) gives up; the caller's restore gives the terminal back as it was.
 func (l *lineReader) quiet(ctx context.Context, env Env, prompt string) (string, error) {
 	if f, ok := l.in.(*os.File); ok && l.terminal {
-		// Turned off again at every question, in case something gave echo back meanwhile (a Ctrl-Z and fg: the shell's
-		// own modes); the terminal as it was is kept from the first.
+		// Turned off again at every question, in case something gave echo back between two questions (a Ctrl-Z and fg
+		// there: the shell's own modes); the terminal as it was is kept from the first. A Ctrl-Z and fg during a read
+		// isn't covered (#263).
 		if t, err := unix.IoctlGetTermios(int(f.Fd()), unix.TCGETS); err == nil {
 			quiet := *t
 			quiet.Lflag &^= unix.ECHO

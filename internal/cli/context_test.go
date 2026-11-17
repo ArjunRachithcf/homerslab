@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -295,4 +296,100 @@ func (w *typesAt) String() string {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	return w.buf.String()
+}
+
+// echoControl is routedControl that also notes, at each PUT, whether tty had its echo back: the secret is read by
+// then, and echo isn't kept off while the request runs (up to minutes for a certificate).
+func echoControl(t *testing.T, tty *os.File, answers map[string][2]string) (string, *[]string, *atomic.Int32) {
+	t.Helper()
+	sock := filepath.Join(t.TempDir(), "manager.sock")
+	ln, err := net.Listen("unix", sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	var echoAtPut atomic.Int32 // 0: no PUT, 1: echo on, 2: echo off
+	srv := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		got = append(got, r.Method+" "+r.URL.Path+" "+string(b))
+		if r.Method == "PUT" {
+			echoAtPut.Store(2)
+			if tio, err := unix.IoctlGetTermios(int(tty.Fd()), unix.TCGETS); err == nil && tio.Lflag&unix.ECHO != 0 {
+				echoAtPut.Store(1)
+			}
+		}
+		a, ok := answers[r.Method+" "+r.URL.Path]
+		if !ok {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		_, _ = w.Write([]byte(a[1]))
+	})}
+	go func() { _ = srv.Serve(ln) }()
+	t.Cleanup(func() { srv.Close() })
+	return sock, &got, &echoAtPut
+}
+
+// The terminal has its echo back once the secret is read, before it is sent, and after the command: for setup's
+// secret and for `dns token` alike; and after a Ctrl-C at `dns token`'s prompt, with nothing sent (#243).
+func TestSecretsOnATerminalGiveEchoBackBeforeSendingAndAfter(t *testing.T) {
+	testenv.Isolate(t)
+	dnsAnswers := map[string][2]string{
+		"GET /api/v1/dns":       {"", `{"domain":"example.test","where":"Infomaniak's API"}`},
+		"PUT /api/v1/dns/token": {"", `{"renewed":false}`},
+	}
+	for _, c := range []struct {
+		name    string
+		args    []string
+		answers map[string][2]string
+		typed   []string // a line each time echo is off for a question
+		ctrlC   bool
+	}{
+		{"setup secret", []string{"setup", "secret", "mesh"}, map[string][2]string{
+			"GET /api/v1/setup":              {"", at("network", "mesh", `,"meshControlPlane":"cloud","meshUrl":"https://api.netbird.io"`)},
+			"PUT /api/v1/setup/secrets/mesh": {"", `{}`},
+		}, []string{"yes", token}, false},
+		{"dns token", []string{"dns", "token"}, dnsAnswers, []string{dnsTok}, false},
+		{"dns token, Ctrl-C", []string{"dns", "token"}, dnsAnswers, nil, true},
+	} {
+		master, tty := openPTY(t)
+		sock, got, echoAtPut := echoControl(t, tty, c.answers)
+		ctx, cancel := context.WithCancel(context.Background())
+		var errOut bytes.Buffer
+		done := make(chan int, 1)
+		go func() {
+			done <- cli.Main(ctx, append(c.args, "--control-socket", sock),
+				cli.Env{Stdin: tty, Stdout: io.Discard, Stderr: &errOut, Euid: func() int { return 0 }})
+		}()
+		waitForNoEcho(t, tty)
+		for _, line := range c.typed {
+			if _, err := master.WriteString(line + "\n"); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if c.ctrlC {
+			cancel()
+		}
+		select {
+		case code := <-done:
+			if want := map[bool]int{false: 0, true: 1}[c.ctrlC]; code != want {
+				t.Errorf("%s: exit %d, want %d: %s", c.name, code, want, errOut.String())
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatalf("%s: the command didn't end", c.name)
+		}
+		cancel()
+		if tio, err := unix.IoctlGetTermios(int(tty.Fd()), unix.TCGETS); err != nil || tio.Lflag&unix.ECHO == 0 {
+			t.Errorf("%s: the terminal was left without echo", c.name)
+		}
+		if shown := readAll(master); strings.Contains(shown, "FROMTHETERMINAL") {
+			t.Errorf("%s: the secret was shown: %q", c.name, shown)
+		}
+		switch e := echoAtPut.Load(); {
+		case c.ctrlC && (e != 0 || len(*got) != 1):
+			t.Errorf("%s: something was sent: %q", c.name, *got)
+		case !c.ctrlC && e != 1:
+			t.Errorf("%s: echo at the PUT: %d, want it back on (1) before the secret is sent", c.name, e)
+		}
+	}
 }
