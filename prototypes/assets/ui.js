@@ -1,5 +1,5 @@
-// HomersLab prototypes: shared interaction pieces, on the design system's components. PROTOTYPE, throwaway.
-// The step-up is the security moment the polish must never hide: HomersLab's own sheet says exactly what the passkey
+// Homeward prototypes: shared interaction pieces, on the design system's components. PROTOTYPE, throwaway.
+// The step-up is the security moment the polish must never hide: Homeward's own sheet says exactly what the passkey
 // approves and which plan it is bound to; then the browser's passkey prompt (simulated here) asks for the passkey.
 (() => {
   const esc = (v) => String(v ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
@@ -101,7 +101,7 @@
     });
   }
 
-  // ---------- the browser's own passkey prompt, simulated; it is not HomersLab's UI, so it looks like the browser's ----------
+  // ---------- the browser's own passkey prompt, simulated; it is not Homeward's UI, so it looks like the browser's ----------
   function osPrompt({ create = false, site, account }) {
     return new Promise((resolve) => {
       const before = document.activeElement;
@@ -112,7 +112,7 @@
           <h3 id="os-title">${create ? 'Create a passkey' : 'Use your passkey'}</h3>
           <p>${create ? `Save a passkey for <b>${esc(account)}</b> on this device, or on a security key.` : `Confirm it’s you, <b>${esc(account)}</b>, with Touch ID or your security key.`}</p></div>
         <div class="os-actions"><button type="button" class="os-btn" data-os="0">Cancel</button><button type="button" class="os-btn go" data-os="1">${create ? 'Create' : 'Continue'}</button></div>
-        <p class="os-note">Simulated: in the real product this is your browser’s own passkey prompt, not HomersLab’s.</p></div>`;
+        <p class="os-note">Simulated: in the real product this is your browser’s own passkey prompt, not Homeward’s.</p></div>`;
       document.body.appendChild(s);
       const close = (ok) => { s.remove(); document.removeEventListener('keydown', onKey, true); before?.focus?.({ preventScroll: true }); resolve(ok); };
       const onKey = (e) => { if (e.key === 'Escape') { e.preventDefault(); close(false); } };
@@ -123,7 +123,7 @@
   }
 
   // ---------- step-up: one fresh passkey answer, bound to one plan id, that approves exactly the listed things ----------
-  async function stepUp({ plan, what, title = 'Approve with your passkey', action = 'Use my passkey', sub = 'This is a risky change, so HomersLab asks for your passkey again, every time.' }) {
+  async function stepUp({ plan, what, title = 'Approve with your passkey', action = 'Use my passkey', sub = 'This is a risky change, so Homeward asks for your passkey again, every time.' }) {
     const by = D().people[0];
     const body = `
       <ul class="group stepup-list" aria-label="What your passkey approves">${what.map((w) => `<li>${I(w.icon || 'check')}<span>${w.text}</span></li>`).join('')}</ul>

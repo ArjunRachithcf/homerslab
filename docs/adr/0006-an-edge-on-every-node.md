@@ -3,6 +3,9 @@ status: accepted
 date: 2026-11-09
 ---
 
+> Written when the product was called HomersLab. It is **Homeward** now, and HomersLab the maker's name
+> ([ADR 0022](0022-homeward-the-product-homerslab-the-maker.md)); the text below is as it was decided.
+
 # An edge on every node, one wildcard certificate from the primary
 
 Every node runs its own edge: Caddy 2.11.2 or later, unprivileged, configured by the agent through Caddy's admin API.

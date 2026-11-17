@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -20,9 +21,12 @@ type control struct {
 	http   *http.Client
 }
 
-func newControl(socket string) *control {
+func newControl(socket string) *control { return newControlWaiting(socket, 10*time.Second) }
+
+// newControlWaiting is the control socket, waiting up to timeout for an answer: a certificate takes minutes.
+func newControlWaiting(socket string, timeout time.Duration) *control {
 	return &control{socket: socket, http: &http.Client{
-		Timeout: 10 * time.Second,
+		Timeout: timeout,
 		Transport: &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
 			return (&net.Dialer{}).DialContext(ctx, "unix", socket)
 		}},
@@ -33,29 +37,54 @@ func newControl(socket string) *control {
 type apiError struct {
 	Status int
 	Code   string `json:"error"`
+	Folder string `json:"folder"` // with disk-full: the folder of the manager's database
 }
 
-func (e *apiError) Error() string { return fmt.Sprintf("the manager answered %d %s", e.Status, e.Code) }
+func (e *apiError) Error() string {
+	if e.Code == "disk-full" {
+		where := e.Folder
+		if where == "" {
+			where = "the manager's database"
+		}
+		return fmt.Sprintf("The disk that holds %s is full: free some space and try again", where)
+	}
+	return fmt.Sprintf("the manager answered %d %s", e.Status, e.Code)
+}
 
 // do sends a request and decodes the JSON answer into v; with wait, it waits that long for the manager to start.
 func (c *control) do(ctx context.Context, method, path string, wait time.Duration, v any) ([]byte, error) {
+	return c.request(ctx, method, path, wait, nil, nil, v)
+}
+
+func (c *control) request(ctx context.Context, method, path string, wait time.Duration, body *bytes.Reader, hdr http.Header, v any) ([]byte, error) {
 	deadline := time.Now().Add(wait)
 	for {
-		req, err := http.NewRequestWithContext(ctx, method, "http://manager"+path, nil)
+		var r io.Reader
+		if body != nil {
+			_, _ = body.Seek(0, io.SeekStart)
+			r = body
+		}
+		req, err := http.NewRequestWithContext(ctx, method, "http://manager"+path, r)
 		if err != nil {
 			return nil, err
+		}
+		for k, vs := range hdr {
+			req.Header[k] = vs
+		}
+		if body != nil {
+			req.Header.Set("Content-Type", "application/json")
 		}
 		resp, err := c.http.Do(req)
 		if err != nil {
 			if errors.Is(err, fs.ErrPermission) || errors.Is(err, syscall.EACCES) {
-				return nil, fmt.Errorf("the manager's control socket %s is for root and the homerslab user: run it with sudo", c.socket)
+				return nil, fmt.Errorf("the manager's control socket %s is for root and the homeward user: run it with sudo", c.socket)
 			}
 			if time.Now().Before(deadline) && ctx.Err() == nil {
 				time.Sleep(200 * time.Millisecond)
 				continue
 			}
 			if errors.Is(err, os.ErrNotExist) || errors.Is(err, syscall.ECONNREFUSED) {
-				return nil, fmt.Errorf("the manager isn't running (no answer on %s): systemctl status homerslab-manager", c.socket)
+				return nil, fmt.Errorf("the manager isn't running (no answer on %s): systemctl status homeward-manager", c.socket)
 			}
 			return nil, fmt.Errorf("asking the manager: %w", err)
 		}

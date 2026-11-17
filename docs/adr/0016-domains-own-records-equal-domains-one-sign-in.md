@@ -3,6 +3,9 @@ status: accepted
 date: 2026-11-10
 ---
 
+> Written when the product was called HomersLab. It is **Homeward** now, and HomersLab the maker's name
+> ([ADR 0022](0022-homeward-the-product-homerslab-the-maker.md)); the text below is as it was decided.
+
 # Domains: only our own DNS records, every domain equal, one sign-in domain
 
 **HomersLab writes public DNS itself.** It uses the DNS provider token it already holds, through libdns, and writes:

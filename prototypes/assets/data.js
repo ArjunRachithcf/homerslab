@@ -1,4 +1,4 @@
-// HomersLab prototypes: one fake household, the official catalog and a third-party one. Backups run every hour.
+// Homeward prototypes: one fake household, the official catalog and a third-party one. Backups run every hour.
 // PROTOTYPE, throwaway: every name, address, key and figure here is invented. Totals are computed from the rows,
 // and the facts that appear twice are one value. Read the console: the asserts at the bottom must stay silent.
 (() => {
@@ -13,7 +13,7 @@
       { id: 'netbird', name: 'NetBird', plane: 'cloud', note: "NetBird's cloud", since: '2026-03-02' },
       { id: 'tailscale', name: 'Tailscale', plane: 'cloud', note: "Tailscale's cloud", tailnet: 'tail8f3c.ts.net', since: '2026-03-04' },
     ],
-    mailFrom: 'HomersLab <homerslab@ferreira.family>',
+    mailFrom: 'Homeward <homerslab@ferreira.family>',
     signup: 'invite', // 'invite' | 'domains' | 'off'
     signupDomains: ['ferreira.family'],
     version: '1.0.0',
@@ -50,10 +50,10 @@
     { id: 'inv-joana', name: 'Joana Ferreira', mail: 'joana.ferreira@posteo.pt', role: 'adult', sent: '6 Nov', expires: '13 Nov', by: 'ines', how: 'mail' },
   ];
 
-  // memory and disk in GB; `base` is what the node uses before any app (its own system, HomersLab's agent and edge)
+  // memory and disk in GB; `base` is what the node uses before any app (its own system, Homeward's agent and edge)
   const nodes = [
     { id: 'study-pc', name: 'Study PC', primary: true, os: 'Fedora 43', arch: 'x86_64', cpu: 'Ryzen 7 5700X, 8 cores', memGB: 32, baseMemGB: 11.2,
-      baseNote: 'Its own desktop, HomersLab’s manager, the household’s sign-in (Authentik)',
+      baseNote: 'Its own desktop, Homeward’s manager, the household’s sign-in (Authentik)',
       gpu: { kind: 'nvidia', name: 'NVIDIA RTX 3060, 12 GB' }, tpm: true, engine: 'Docker 29.1',
       disks: [
         { id: 'sp-sys', name: 'System disk', role: 'system', sizeGB: 1000, usedGB: 412, layout: 'single', fs: 'btrfs', enc: null, growth: 0.3, scrub: { last: 'Sun 8 Nov, 02:40', errors: 0 },
@@ -68,7 +68,7 @@
       ],
       addrs: { netbird: '100.88.12.4', tailscale: '100.101.7.22' }, joined: '2 Mar', state: 'online', load: 9 },
     { id: 'attic-nas', name: 'Attic NAS', os: 'Debian 13', arch: 'x86_64', cpu: 'Intel N100, 4 cores', memGB: 16, baseMemGB: 1.4,
-      baseNote: 'Its own system, HomersLab’s agent and edge',
+      baseNote: 'Its own system, Homeward’s agent and edge',
       gpu: { kind: 'intel', name: 'Intel UHD (N100), shared memory' }, tpm: true, engine: 'Podman 5.7, rootful',
       bays: 4,
       disks: [
@@ -85,7 +85,7 @@
       ],
       addrs: { netbird: '100.88.12.5', tailscale: '100.101.7.23' }, joined: '5 Mar', state: 'online', load: 14 },
     { id: 'kitchen-pi', name: 'Kitchen Pi', os: 'Debian 13', arch: 'arm64', cpu: 'Raspberry Pi 5, 4 cores', memGB: 8, baseMemGB: 1.1,
-      baseNote: 'Its own system, HomersLab’s agent and edge',
+      baseNote: 'Its own system, Homeward’s agent and edge',
       gpu: null, tpm: false, engine: 'Podman 5.7, rootless', usb: 'Sonoff Zigbee 3.0 dongle at /dev/ttyUSB0',
       disks: [
         { id: 'kp-nvme', name: 'NVMe disk', role: 'apps', apps: true, sizeGB: 256, usedGB: 61, layout: 'single', fs: 'btrfs', enc: null, encWhy: 'No TPM: it would ask for a passphrase at every boot', growth: 0.1, scrub: { last: 'Sun 8 Nov, 02:20', errors: 0 },
@@ -158,7 +158,7 @@
       data: [{ what: 'Everyone’s files' }, { what: 'Its settings and share links' }], secrets: ['its internal keys', 'the sign-in client’s secret'], extras: [], images: { count: 1, size: '0.4 GB' }, screenshots: ['Files', 'Sharing a link'] },
     { id: 'bentopdf', icon: 'icons/apps/bentopdf.svg', homeFor: 'Merge, split and sign PDFs', name: 'BentoPDF', purpose: 'PDF tools', glyph: 'pdf', category: 'documents', tier: 'community', catalog: 'official', version: '1.9.0', tested: '28 Oct',
       blurb: 'Merge, split, sign and shrink PDFs, in the browser, without uploading them anywhere.',
-      about: 'Everything happens in the person’s own browser. HomersLab only serves the page.',
+      about: 'Everything happens in the person’s own browser. Homeward only serves the page.',
       signIn: { method: 'guarded', words: 'The edge asks for their household account before the page opens. BentoPDF has no sign-in of its own.' },
       kidView: null, publicAllowed: false, defaultAudience: { adults: true },
       resources: { memGB: 0.2, diskGB: 1, gpu: 'none', arch: ['x86_64', 'arm64'] },
@@ -185,7 +185,7 @@
     { id: 'navidrome', icon: 'icons/apps/navidrome.svg', homeFor: 'The music library', kidFor: 'All the music', name: 'Navidrome', purpose: 'Music', glyph: 'music', category: 'music', tier: 'community', catalog: 'official', version: '0.58.0', tested: '2 Nov',
       blurb: 'The music library, streamed to any phone or browser.',
       about: 'Plays the music in the Media library. Phone apps that speak Subsonic work too.',
-      signIn: { method: 'guarded', words: 'The edge asks for their household account; Navidrome trusts the edge. Phone apps use a password HomersLab makes for each person.' },
+      signIn: { method: 'guarded', words: 'The edge asks for their household account; Navidrome trusts the edge. Phone apps use a password Homeward makes for each person.' },
       kidView: null, publicAllowed: true, defaultAudience: { adults: true },
       resources: { memGB: 0.5, diskGB: 2, gpu: 'none', arch: ['x86_64', 'arm64'] },
       data: [{ what: 'Playlists, favourites and play counts' }, { what: 'Not the music', detail: 'it is in the Media library, read-only' }], secrets: [], extras: [], needsStorage: 'media', images: { count: 1, size: '0.1 GB' }, screenshots: ['Albums', 'Now playing'] },
@@ -246,7 +246,7 @@
     { id: 'vaultwarden', icon: 'icons/apps/vaultwarden.svg', homeFor: 'Passwords for everyone', name: 'Vaultwarden', purpose: 'Passwords', glyph: 'passwords', category: 'passwords', tier: 'verified', catalog: 'official', version: '1.35.1', tested: '3 Nov',
       blurb: 'A password manager for the whole household, in every browser and phone.',
       about: 'Works with the Bitwarden apps. Each vault is encrypted with its person’s own master password.',
-      signIn: { method: 'native', words: 'With their household account, then their own master password, which encrypts their vault. HomersLab never sees it.', second: true },
+      signIn: { method: 'native', words: 'With their household account, then their own master password, which encrypts their vault. Homeward never sees it.', second: true },
       kidView: null, publicAllowed: true, defaultAudience: { adults: true },
       resources: { memGB: 0.2, diskGB: 1, gpu: 'none', arch: ['x86_64', 'arm64'] },
       data: [{ what: 'The encrypted vaults', detail: 'unreadable without each master password' }, { what: 'Its settings' }], secrets: ['the admin key', 'the sign-in client’s secret'], extras: [], images: { count: 1, size: '0.1 GB' }, screenshots: ['Vault'] },
@@ -288,7 +288,7 @@
     { id: 'freshrss', icon: 'icons/apps/freshrss.svg', homeFor: 'Sites and blogs you follow', name: 'FreshRSS', purpose: 'News', glyph: 'news', category: 'knowledge', tier: 'community', catalog: 'official', version: '1.27.1', tested: '28 Oct',
       blurb: 'The sites and blogs you follow, in one quiet list, with no feed deciding for you.',
       about: 'Reads RSS and Atom feeds; phone apps that speak its API work too.',
-      signIn: { method: 'native', words: 'With their household account, straight into FreshRSS. Phone apps use a password HomersLab makes for each person.' },
+      signIn: { method: 'native', words: 'With their household account, straight into FreshRSS. Phone apps use a password Homeward makes for each person.' },
       kidView: null, publicAllowed: true, defaultAudience: { adults: true },
       resources: { memGB: 0.2, diskGB: 1, gpu: 'none', arch: ['x86_64', 'arm64'] },
       data: [{ what: 'Feeds, articles kept and what each person has read' }], secrets: ['the sign-in client’s secret'], extras: [], images: { count: 1, size: '0.1 GB' }, screenshots: ['Reading'] },
@@ -324,7 +324,7 @@
       lastBackup: { at: '14:00', added: '0.4 MB' }, health: { state: 'working', since: '21 Oct', check: '14:05', ms: 96 },
       restore: R('ppppfppppppp'), restoreMin: 3,
       extrasApproved: [{ id: 'gpu', words: 'Uses the GPU on Attic NAS (Intel UHD), for transcoding', by: 'Inês', when: '2 Apr' }],
-      history: [{ date: '21 Oct', from: '10.11.1', to: '10.11.2', result: 'updated' }, { date: '14 Oct', from: '10.11.0', to: '10.11.1', result: 'rolledback', why: 'The web page did not answer within 4 minutes, so HomersLab returned it to its snapshot from 14 Oct 02:00.' }] },
+      history: [{ date: '21 Oct', from: '10.11.1', to: '10.11.2', result: 'updated' }, { date: '14 Oct', from: '10.11.0', to: '10.11.1', result: 'rolledback', why: 'The web page did not answer within 4 minutes, so Homeward returned it to its snapshot from 14 Oct 02:00.' }] },
     { id: 'plex', node: 'study-pc', audience: { adults: true }, exposure: 'mesh', version: '1.42.2', since: '18 Jun', memNowGB: 1.4, dataGB: 1.2,
       update: null, auto: true, lastBackup: { at: '14:00', added: '0.2 MB' }, health: { state: 'working', since: '5 Nov', check: '14:05', ms: 71 },
       restore: R('pppppppppppp'), restoreMin: 2,
@@ -358,16 +358,16 @@
     { id: 'mealie', node: 'kitchen-pi', removedOn: '2 Oct', by: 'Inês', dataGB: 3.4, lastBackup: '2 Oct, 13:00', version: '3.3.2' },
   ];
 
-  // the household's own sign-in and HomersLab itself are backed up and restore-tested too, but are not apps
+  // the household's own sign-in and Homeward itself are backed up and restore-tested too, but are not apps
   const platform = [
     { id: 'signin', name: 'The household’s sign-in', detail: 'Authentik, its database and people', node: 'study-pc', dataGB: 0.4, restore: R('pppppppppppp'), restoreMin: 3 },
-    { id: 'manager', name: 'HomersLab itself', detail: 'Desired state and history (no secrets)', node: 'study-pc', dataGB: 0.1, restore: R('pppppppppppp'), restoreMin: 1 },
+    { id: 'manager', name: 'Homeward itself', detail: 'Desired state and history (no secrets)', node: 'study-pc', dataGB: 0.1, restore: R('pppppppppppp'), restoreMin: 1 },
   ];
 
   const storedGB = 27.3; // after deduplication and compression; the apps' data below adds up to more
   const targets = [
     { id: 'nas', name: 'Attic NAS', kind: 'restic, on its backups disk', where: 'Over the mesh, inside the house', last: '14:03', storedGB, freeTB: 3.97, state: 'ok', note: 'The fast one for restores.' },
-    { id: 'b2', name: 'Backblaze B2', kind: 'restic, S3-compatible', where: 'Off-site, in Amsterdam', last: '14:04', storedGB, freeTB: null, state: 'ok', immutable: '30 days', note: 'Nothing can be deleted for 30 days, not even by HomersLab.' },
+    { id: 'b2', name: 'Backblaze B2', kind: 'restic, S3-compatible', where: 'Off-site, in Amsterdam', last: '14:04', storedGB, freeTB: null, state: 'ok', immutable: '30 days', note: 'Nothing can be deleted for 30 days, not even by Homeward.' },
     { id: 'proton', name: 'Proton Drive', kind: 'A copy, through Proton’s own command-line tool', where: 'Off-site, end-to-end encrypted', last: '14:05', storedGB, freeTB: 2.9, state: 'ok', note: 'A second off-site copy.' },
   ];
   const archive = { day: 'Sundays', at: '03:30', last: 'Sunday 8 Nov, 03:34', sizeMB: 214, to: ['Backblaze B2', 'Proton Drive'], key: household.recoveryKey,

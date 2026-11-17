@@ -1,0 +1,6 @@
+# BentoPDF 2.8.10 (its "simple" image, the tools without the landing page), for HomersLab: no published ports and no
+# restart policy. It keeps nothing: every PDF is worked on in the person's own browser.
+services:
+  web:
+    image: ghcr.io/alam00000/bentopdf-simple:2.8.10@sha256:b5227a308e796d2bd00d2eb6da9d7296093107a8be7efef38a006d06506dc3c0
+    security_opt: [no-new-privileges:true]

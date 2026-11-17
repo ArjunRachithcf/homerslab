@@ -1,0 +1,54 @@
+# The manager keeps the household's state and serves the API, unprivileged: it reaches the host only through the
+# agent. Its control socket, for the CLI on this machine, is for root and this user alone.
+[Unit]
+Description=Homeward manager
+Documentation=https://github.com/ArjunRachithcf/homeward
+# Runs as one of the package's users: on a node installed as HomersLab, only once the migration has renamed it
+# (#250), whether at boot or on an upgrade without one.
+Wants=homeward-migrate.service
+After=homeward-migrate.service
+Wants=homeward-agent.service homeward-admin.socket
+After=homeward-agent.service homeward-admin.socket network.target
+
+[Service]
+Type=exec
+User=homeward
+Group=homeward
+ExecStart=/usr/bin/homeward manager
+# Admin's socket, for the edge's group only.
+Sockets=homeward-admin.socket
+StateDirectory=homeward
+StateDirectoryMode=0700
+RuntimeDirectory=homeward
+RuntimeDirectoryMode=0700
+UMask=0077
+# Home's projection, which Home's process reads (#21); optional, so the manager starts before tmpfiles has made it.
+ReadWritePaths=-/run/homeward-projection
+Restart=on-failure
+RestartSec=2s
+
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+
+[Install]
+WantedBy=multi-user.target

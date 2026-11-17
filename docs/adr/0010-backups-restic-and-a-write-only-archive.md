@@ -3,6 +3,9 @@ status: accepted
 date: 2026-11-09
 ---
 
+> Written when the product was called HomersLab. It is **Homeward** now, and HomersLab the maker's name
+> ([ADR 0022](0022-homeward-the-product-homerslab-the-maker.md)); the text below is as it was decided.
+
 # Backups: deduplicated restic plus a weekly write-only archive, restorable by hand
 
 **Hourly backups.** Every hour, every app's own data is backed up with restic, deduplicated and encrypted. The

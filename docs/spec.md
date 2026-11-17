@@ -1,4 +1,4 @@
-# HomersLab: spec
+# Homeward: spec
 
 - **Status**: the definition, 2026-11-09. Code since 2026-11-11, from the first slice (#14). Nothing is released before 1.0.
 - **Vocabulary**: [GLOSSARY.md](../GLOSSARY.md).
@@ -23,7 +23,7 @@ Existing app managers each fall short on one side:
 
 Once a household picks one, it is locked into that interface.
 
-HomersLab's predecessor, classic, proved a stricter model for one household:
+Homeward's predecessor, classic, proved a stricter model for one household:
 - one sign-in with passkeys for every app;
 - nothing on the router;
 - TLS ending at home;
@@ -44,7 +44,7 @@ But every app took a dozen hand-edited files, and nothing could install, remove,
 
 Before anything happens, the admin sees an install plan in plain words. Risky changes ask for the passkey again.
 
-**On the household's own machines.** HomersLab runs on its own Linux machines: one primary, or a primary plus nodes
+**On the household's own machines.** Homeward runs on its own Linux machines: one primary, or a primary plus nodes
 such as a NAS or a GPU box. It is private by default and never needs a router port.
 
 **Two surfaces.**
@@ -61,7 +61,7 @@ such as a NAS or a GPU box. It is private by default and never needs a router po
 
 ### First-time setup
 
-1. As a prospective household admin, I want to install HomersLab on a Linux machine I already have from one signed
+1. As a prospective household admin, I want to install Homeward on a Linux machine I already have from one signed
    package, so that I don't need a dedicated appliance.
 2. As a prospective household admin, I want the installer to print a one-time link and a QR code that work only from
    this machine or my LAN for 30 minutes, so that nobody else can claim the machine during setup.
@@ -70,7 +70,7 @@ such as a NAS or a GPU box. It is private by default and never needs a router po
    use every day.
 4. As a prospective household admin, I want to choose the household's identity provider (Authentik or Kanidm) from a
    plain-language comparison, so that I pick what fits my hardware.
-5. As a prospective household admin, I want to choose the mesh and give its token once, so that HomersLab joins
+5. As a prospective household admin, I want to choose the mesh and give its token once, so that Homeward joins
    machines and devices without sending me to a dashboard again. The choice is NetBird, Tailscale or Headscale, or
    NetBird together with one of the other two.
 6. As a prospective household admin, I want to give my domain and its DNS provider's token once, or with Tailscale
@@ -78,7 +78,7 @@ such as a NAS or a GPU box. It is private by default and never needs a router po
 7. As a prospective household admin, I want to give a mail account once, so that invites, passkey resets and alerts
    can be sent.
 8. As a prospective household admin, I want a recovery kit at the end of first-time setup, printable and ready for my
-   password manager, so that I can restore everything even without HomersLab.
+   password manager, so that I can restore everything even without Homeward.
 9. As a prospective household admin, I want the LAN listener to close for good at my first sign-in over the mesh, so
    that the LAN never sees the household's apps.
 10. As a prospective household admin, I want to install onto another machine over SSH from the setup app and then
@@ -107,7 +107,7 @@ such as a NAS or a GPU box. It is private by default and never needs a router po
     takes a minute.
 18. As a household admin, I want a warning when a node lacks the memory, disk or GPU an app needs, so that installs
     don't fail halfway.
-19. As a household admin, I want HomersLab to suggest a node from the app's needs, and to choose another if I like,
+19. As a household admin, I want Homeward to suggest a node from the app's needs, and to choose another if I like,
     so that apps land where they work best.
 20. As a household admin, I want to set an app's audience at install and change it later, so that each person sees
     what's for them. The audience can be admins, adults, kids or named people.
@@ -117,7 +117,7 @@ such as a NAS or a GPU box. It is private by default and never needs a router po
     so that I'm never surprised.
 23. As a household admin, I want to add a third-party catalog by URL and explicitly trust its publisher's key, so
     that I can install apps the official catalog doesn't have.
-24. As a household admin, I want HomersLab to refuse any app, from any catalog, that fails the floor, so that no
+24. As a household admin, I want Homeward to refuse any app, from any catalog, that fails the floor, so that no
     catalog can weaken my household's security.
 25. As a household admin, I want apps that ship only as a vendor's package, such as a media server's own repository,
     installed and looked after like the others, so that I'm not forced into a worse version of them. "Looked after"
@@ -183,7 +183,7 @@ such as a NAS or a GPU box. It is private by default and never needs a router po
     health check fails, so that an update never leaves an app broken.
 54. As a household admin, I want versions to come only from the catalog's tested pins, so that an upstream break
     doesn't reach my household first.
-55. As a household admin, I want HomersLab itself to update the same way, from signed releases, so that the platform
+55. As a household admin, I want Homeward itself to update the same way, from signed releases, so that the platform
     stays current safely.
 
 ### Backups and restore
@@ -199,7 +199,7 @@ such as a NAS or a GPU box. It is private by default and never needs a router po
 60. As a household admin, I want to restore the whole household onto new hardware from the recovery kit, so that a
     lost machine is recoverable.
 61. As a household admin, I want to be able to restore by hand with standard tools and a one-page how-to, so that my
-    family's data never depends on HomersLab existing.
+    family's data never depends on Homeward existing.
 62. As a household admin, I want a mail and a push notification when a backup or a restore test fails, so that
     failures are never silent.
 
@@ -210,7 +210,7 @@ such as a NAS or a GPU box. It is private by default and never needs a router po
 64. As a household admin, I want "delete data" as a separate action, where I type the app's name and confirm with my
     passkey, so that losing data is never an accident. Its backups and archive copies still expire on their own
     schedule.
-65. As a household admin, I want to eject an app, so that it keeps running without HomersLab. Eject writes it out as
+65. As a household admin, I want to eject an app, so that it keeps running without Homeward. Eject writes it out as
     a plain compose project with its data, settings and secrets, plus a ready edge snippet for a guarded app. Its plan
     says plainly that nobody can reach the app until an edge is in front of it again.
 66. As a household admin of classic, I want an importer that moves my household in one sitting with a one-command
@@ -235,7 +235,7 @@ such as a NAS or a GPU box. It is private by default and never needs a router po
 73. As a household admin, I want the LAN to see the machines but not the household's apps, so that a compromised
     device at home can't reach them.
 74. As a household admin, I want signed releases and signed catalogs, so that I can verify what I install.
-75. As a household admin, I want no telemetry, so that HomersLab never reports on my household.
+75. As a household admin, I want no telemetry, so that Homeward never reports on my household.
 
 ### Assistants
 
@@ -275,9 +275,9 @@ such as a NAS or a GPU box. It is private by default and never needs a router po
     my eyes and my screen.
 91. As a catalog contributor, I want a feedstock for an app whose sign-in can only be fixed by a patch, built and
     signed by CI, so that the app can still reach the Verified tier.
-92. As a household admin, I want an upstream security release offered at once, guarded at the edge, when HomersLab's
+92. As a household admin, I want an upstream security release offered at once, guarded at the edge, when Homeward's
     sign-in patch for that app isn't ready yet, so that security fixes never wait on a patch.
-93. As a household admin, I want HomersLab to create the public DNS records it needs and touch nothing else in my zone,
+93. As a household admin, I want Homeward to create the public DNS records it needs and touch nothing else in my zone,
     so that making an app public needs no visit to my DNS provider and my mail keeps working.
 94. As a household admin, I want to add more domains that every app answers on, so that family members can use the
     address they know.
@@ -303,7 +303,7 @@ such as a NAS or a GPU box. It is private by default and never needs a router po
      the whole machine is protected without reinstalling.
 105. As a household admin, I want a disk analyzer (a space map, lists sorted by size and age, the biggest and oldest
      files, duplicates, space per person), so that I find what fills a disk.
-106. As a household admin, I want to delete what I find in storage locations and HomersLab's leftovers, with my passkey
+106. As a household admin, I want to delete what I find in storage locations and Homeward's leftovers, with my passkey
      for every delete and an app's own cleanup inside its data, so that freeing space never breaks an app.
 107. As a household admin, I want deleted items kept for 7 days, so that a wrong delete can be undone.
 108. As a household admin, I want to be told when the primary is down, even when it can't tell me itself, so that a
@@ -378,7 +378,7 @@ Stories 120–121 are decided in #87.
   - **App units**: one systemd unit per app, running standard tools: the `docker compose` CLI pinned by the agent's
     package, or Quadlet units with Podman ([ADR 0014](adr/0014-app-units-run-standard-tools.md)). The agent uses the
     Compose SDK, pinned exactly, for status, health, logs and planning, in a project-name namespace reserved for
-    HomersLab.
+    Homeward.
   - **Host apps**: the vendor's repository and package, per distro.
   - **The firewall table**: no published ports, mesh-only listeners, the LAN kept out, drift corrected. Also
     ([ADR 0020](adr/0020-only-the-edge-reaches-an-app.md); decided in #82):
@@ -420,6 +420,29 @@ Stories 120–121 are decided in #87.
     browser that reuses a connection for two apps opens a new one (#81).
   - Forward-auth to the identity provider for guarded apps, after stripping identity headers that a client could
     forge, passing the sign-in's refreshed session cookie back to the browser.
+  - **The identity contract `homerslab-v1`** (#236): a guarded app learns who someone is only from the edge, the same
+    with Authentik and with Kanidm:
+    - `X-HomersLab-Person` (the provider's stable id for the person, which a rename doesn't change: Authentik's uid,
+      Kanidm's UUID), `X-HomersLab-Name`, and `X-HomersLab-Role` (`admin`, `adult` or `kid`, from the one role group
+      the person is in);
+    - `X-HomersLab-Name` is the person's name, or their username when the provider has none: text they may change
+      themselves, raw UTF-8, which may hold commas. An app keys people on `X-HomersLab-Person` only, and never splits,
+      matches or authorises on the name;
+    - the role is computed from exact group names, never by splitting a joined list of them: with Authentik, the guard's
+      provider carries Homeward's scope mapping, which names the role in its own header from the role groups the
+      person is in directly (a group below one gives none), and names none, emptying them, when the person's or a
+      group's attributes would set any header of Authentik's or Homeward's in another spelling; with Kanidm, oauth2-proxy's comma-joined short names, since
+      Kanidm refuses a comma in a name. oauth2-proxy never runs with `--skip-jwt-bearer-tokens`, which would let a bearer
+      token stand in for the session;
+    - with Authentik, any other scope mapping on a guard's provider (Authentik's own aside), Homeward's mapping changed,
+      or a provider not in `forward_single` mode could name the role instead: the provider's report then says it
+      provides no forward-auth, and preparing the sign-in puts the guards' mappings back (#244);
+    - a person without an id, without a name or username, in no role group or in more than one, is refused (403), never
+      taken for an adult;
+    - every name the edge serves deletes every `X-HomersLab-*` header a client sends, in any case, with underscores or
+      dots for dashes too (Caddy 2.11.9 already drops a name with `_` or `.` before the upstream: the edge's deletes
+      are a second layer); an app's name also deletes every provider's identity headers (`X-Authentik-*`,
+      `X-Auth-Request-*`, `X-Forwarded-User` and the like), and none of them reaches an app.
   - **Apps are same-site with Admin and the sign-in**, so the edge keeps their cookies apart (#83):
     - it strips the guard's own cookie from the request before proxying to the app;
     - it drops any `Set-Cookie` in an app's response whose `Domain` is a household domain, unless the app's manifest
@@ -475,7 +498,7 @@ Stories 120–121 are decided in #87.
 |---|---|---|
 | Identity provider | Authentik; Kanidm with oauth2-proxy | See below |
 | Mesh | NetBird (cloud or self-hosted); Tailscale (cloud); Headscale (self-hosted, with Tailscale's clients) | See below |
-| DNS provider | libdns providers | Create, update and delete only records HomersLab owns (ACME challenges, the public path's CNAMEs and validation), as the manager's database and the inventory record list them; check through the provider's API listing that a name is free; never touch other records |
+| DNS provider | libdns providers | Create, update and delete only records Homeward owns (ACME challenges, the public path's CNAMEs and validation), as the manager's database and the inventory record list them; check through the provider's API listing that a name is free; never touch other records |
 | Container engine | Docker; Podman rootful; Podman rootless | Run, stop and inspect a compose project; logs and health; device and capability extras; GPUs (NVIDIA through CDI, Intel through its render devices) |
 | Backup target | Disk, SFTP, S3, B2 (restic); Proton Drive (official CLI, as a copy target) | Store, list and prune; immutable where the target supports it |
 
@@ -494,14 +517,14 @@ Stories 120–121 are decided in #87.
     gets a random password and is deactivated, because blocking the flow's page at the edge isn't enough: the flow
     executor API runs it too;
   - the first admin's passkey comes only from the manager's one-time enrolment link;
-- enrolment and recovery links that run a HomersLab-owned flow with only a passkey-enrolment stage, never the
+- enrolment and recovery links that run a Homeward-owned flow with only a passkey-enrolment stage, never the
   provider's own recovery flow (#84, #87);
-- admins who hold passkeys only, enforced by HomersLab with either provider (#84):
+- admins who hold passkeys only, enforced by Homeward with either provider (#84):
   - admins sign in, step-up included, only through a passkey-only authentication flow, so a password or second
     factor that a stolen session adds can't sign them in;
   - the provider's own password, second-factor and recovery flows refuse admins;
-  - before accepting a step-up, HomersLab also asks the provider for the admin's credentials. Anything but passkeys
-    refuses the step-up, raises a security event, and says the way out (`homerslab admin recover`, or another
+  - before accepting a step-up, Homeward also asks the provider for the admin's credentials. Anything but passkeys
+    refuses the step-up, raises a security event, and says the way out (`homeward admin recover`, or another
     admin);
   - an admin's app-scoped LDAP credentials (Kanidm's per-app passwords; the LDAP bind's own credentials with
     Authentik) are exempt from that check. They are never accepted by the sign-in flow, and Admin lists them among
@@ -533,7 +556,7 @@ Stories 120–121 are decided in #87.
 | Domain | Required | Optional | Required |
 
 - **Where self-hosted control planes run.** Self-hosted NetBird and Headscale run on a server reachable from the
-  internet, outside the household's machines, because HomersLab never opens a router port. HomersLab reaches them by
+  internet, outside the household's machines, because Homeward never opens a router port. Homeward reaches them by
   URL and API key.
 - **Combining meshes.** A household may use NetBird together with Tailscale or Headscale, but only one of Tailscale
   and Headscale at a time.
@@ -550,10 +573,13 @@ One folder per app: a manifest, a plain compose file (none for a host app), icon
 - **identity**: id, name, description, category;
 - **versions**: image digests per engine and architecture;
 - **sign-in methods**, in order of preference, with their settings;
+- **the identity contract** the app relies on, `identity: {edge: homerslab-v1}`: only for an app with the guard among
+  its sign-in methods; the install plan of a guarded app shows it (#236);
 - **names and exposure**: the default exposure, whether a public path is allowed, and a cookie for the whole domain
   where the app truly needs one (#83);
 - **audience**: the default audience, and the kid view;
-- **data to back up**: paths, and database dumps through declared commands;
+- **data to back up**: paths, and database dumps through declared commands, each with the command that puts it back
+  (#22);
 - **secrets to generate**, and the UID that reads them;
 - **health checks**;
 - **resources**: memory, disk, GPU, and whether the app can pause when a disk is nearly full;
@@ -621,12 +647,12 @@ Decided in #89. Details are in the amended
   - CI installs, signs in, updates and restores every verified app.
   - The admin applies an update, or opts in per app.
   - An update runs snapshot → update → health check → rollback if unhealthy.
-  - HomersLab itself and the platform's own parts (identity provider, edge, mesh clients) update the same way, from
+  - Homeward itself and the platform's own parts (identity provider, edge, mesh clients) update the same way, from
     signed releases.
 - **Remove.** Keeps the data and backups.
 - **Delete data.** Typing the app's name, plus a step-up. Its backups and archive copies expire on their own schedule.
 - **Eject.** Hands over the compose project, its secrets as `0600` files, its data and settings, and for a guarded app
-  a ready edge snippet. HomersLab's edge stops serving the app, and the plan says nobody can reach it until an edge is
+  a ready edge snippet. Homeward's edge stops serving the app, and the plan says nobody can reach it until an edge is
   in front of it again. The app's sign-in client stays while the household keeps its identity provider
   ([ADR 0012](adr/0012-every-app-can-be-ejected.md)).
 - **Restore to an earlier point.** A plan that takes a snapshot first.
@@ -644,13 +670,28 @@ Details are in [ADR 0010](adr/0010-backups-restic-and-a-write-only-archive.md), 
 - **The restore plan** compares each app's last backup with the archive's secrets. When an app's secrets are older than
   its data, it says so before anything happens (#88).
 - **A TPM that no longer opens the secrets** (#88): at boot, a credential that fails to decrypt is reported once, as
-  "this machine's TPM no longer opens HomersLab's secrets", in the machine's terminal and in an alert when one can
+  "this machine's TPM no longer opens Homeward's secrets", in the machine's terminal and in an alert when one can
   still be sent, with the restore-from-archive command.
 - **One restic repository per node** (decided in #90), at the same target, each with
   its own key and, where the target allows it, credentials scoped to its own path or bucket.
   - A node holds only its own repository's key. The primary holds them all, for restore tests and moves.
   - The recovery kit lists each repository and key, so adding a node asks for a new kit.
   - Moving an app between nodes restores from the source node's repository, then backs up into the target node's.
+- **Immutable where the target supports it** (#22). Admin says plainly, per target, whether a machine taken over could
+  delete its backups:
+  - an S3 or B2 bucket with Object Lock in compliance mode by default (versioning on) is immutable once Homeward's
+    lock run has locked every object of the node's repository. A bucket's default retention locks each object only for
+    its days after it was written, and restic writes its config, its keys and most packs once, so the run, after
+    setting the target and after each daily prune, locks every current object again for those days from now whenever
+    half of the last lock has gone (compliance mode only lets a lock be lengthened). Until that run has worked, or once
+    its lock has run out, Admin says `lock-expires`, not immutable. The run reads the bucket's settings each time, and
+    Admin shows when. What prune or a thief deletes is only hidden until its lock runs out, and a household restores it
+    by hand by reading the bucket as it was (`rclone serve restic --s3-version-at <time>`). Governance mode is not
+    immutable: a key allowed to bypass it can delete;
+  - a disk and SFTP can't be: the machine writes them, and the account that writes can delete. Only snapshots on the
+    server, out of the machine's reach, keep backups from it.
+- **A target 80% full is a warning** (#22), sent as every backup warning is: a disk target's filesystem; SFTP, S3 and
+  B2 by the node's repository against the quota the admin gave, since those services don't say their size.
 
 ### Names and certificates
 
@@ -675,7 +716,7 @@ Details are in [ADR 0010](adr/0010-backups-restic-and-a-write-only-archive.md), 
   - Tailscale's Funnel serves only `*.ts.net` names: it is the public path only for Tailscale households without a
     domain. A household with a domain goes public through NetBird, so the sign-in and the passkeys' RP ID stay at
     `auth.<main domain>` (#102).
-  - The edge serves every site on the mesh at that port too. Every URL HomersLab writes uses it: base URLs, redirect
+  - The edge serves every site on the mesh at that port too. Every URL Homeward writes uses it: base URLs, redirect
     addresses, the sign-in's origin, mails, invites and Home.
   - Changing it later is a guided migration, like renaming the main domain.
 - **Certificates**: one wildcard certificate per household domain, issued on the primary and handed to the edges over
@@ -700,14 +741,14 @@ Details are in [ADR 0010](adr/0010-backups-restic-and-a-write-only-archive.md), 
 
 ### Domains
 
-- **Records HomersLab writes**, through the DNS token ([ADR 0016](adr/0016-domains-own-records-equal-domains-one-sign-in.md)):
+- **Records Homeward writes**, through the DNS token ([ADR 0016](adr/0016-domains-own-records-equal-domains-one-sign-in.md)):
   - the certificate challenges;
   - when the first app goes public through NetBird's proxy, its wildcard CNAME and validation record, shown in the
     plan and removed when nothing is public any more;
-  - where the zone already holds a `*` record HomersLab didn't create, a CNAME per public app instead. The plan says
+  - where the zone already holds a `*` record Homeward didn't create, a CNAME per public app instead. The plan says
     why in plain words ("your domain already sends every name to …") (#79).
 - **Only its own records** (#79):
-  - the manager's database is the source of truth for the records HomersLab created: provider ID, name, type and
+  - the manager's database is the source of truth for the records Homeward created: provider ID, name, type and
     value;
   - one inventory record, a `_homerslab.<domain>` TXT, lists them by name and type, so a restored primary finds them
     again. Nothing is ever written beside a CNAME;
@@ -752,7 +793,7 @@ Details are in [ADR 0017](adr/0017-disks-btrfs-encrypted-mirrored.md).
   - **Views**: a space map; lists sorted by size, age, type and owner; the biggest and oldest files; duplicates, which
     can be freed or shared as reflinks; space per person.
   - **The passkey**: to open it (a session of up to 10 minutes), and again for every delete, bound to the exact items.
-  - **Where it may delete**: storage locations and HomersLab's leftovers. Inside an app's data, that app's own cleanup.
+  - **Where it may delete**: storage locations and Homeward's leftovers. Inside an app's data, that app's own cleanup.
   - **Undo**: "Recently deleted" keeps items for 7 days, through a btrfs snapshot.
 - **The agent's contract** gains disks, LUKS with TPM enrolment, btrfs operations and SMART. Every write is a plan,
   and the destructive ones need step-up.
@@ -784,13 +825,13 @@ Details are in [ADR 0018](adr/0018-uptime-and-notifications.md).
 When the usual way in is what broke, the household admin gets back in from the primary's own terminal.
 - **Terminal commands** run as root on the primary, over the manager's control socket. Root on the primary can already
   do anything, so they grant nothing new.
-  - `homerslab dns token` replaces the DNS token, read from stdin as in first-time setup, for when an expired
+  - `homeward dns token` replaces the DNS token, read from stdin as in first-time setup, for when an expired
     certificate keeps everyone out of Admin (#80). From Admin, the same change is a risky change.
-  - `homerslab admin recover <person>` prints a one-time link that enrols a new passkey for that admin, at the
+  - `homeward admin recover <person>` prints a one-time link that enrols a new passkey for that admin, at the
     sign-in's own address over the mesh. The admin may have no device left on the mesh, so it also prints a one-off
     mesh key and QR code for one device of theirs, as first-time setup's second half does. Both last 30 minutes and
     work once, and the command raises a security event (decided in #87).
-  - `homerslab idp restore --list` and `--to <time>` restore the identity provider from the hourly backups, with no
+  - `homeward idp restore --list` and `--to <time>` restore the identity provider from the hourly backups, with no
     browser. The command says whose passkeys, added since that point, are lost (recommended in #87; the maintainer may
     overrule).
 - **Two ways in for the first admin**: first-time setup finishes only when the first admin has two passkeys (say, the
@@ -868,32 +909,54 @@ point. Nothing needs replacing for:
 
 ### First-time setup in two halves
 
-- **The installer** prints the command `sudo homerslab setup link`, never the link itself: package managers keep a
+- **The installer** prints the command `sudo homeward setup link`, never the link itself: package managers keep a
   post-install script's output in readable logs (#74).
 - **The LAN** is the private networks and the on-link global IPv6 prefixes of the interfaces that carry the default
-  route, plus IPv6 link-local on those interfaces; never container bridges, VPNs or the mesh (#14 Q5, #73).
+  route, plus IPv6 link-local on those interfaces; never container bridges, VPNs or the mesh (#14 Q5, #73). Only the
+  main routing table's default routes count, through interfaces that may be a home network (a NIC, or a VLAN, a bond
+  or a bridge on one: never a tunnel, nor a kind of link the agent doesn't know, #169), and no prefix that overlaps the
+  mesh's ranges is the LAN, whatever a router advertises (#108).
 - **The one-time link** works on the machine or its LAN for 30 minutes. It covers everything up to "mesh connected,
   certificate issued": the household, the identity provider, the mesh and its token, the domain and its DNS token,
   mail, and the recovery kit.
 - **Then the admin joins this device to the mesh** (a QR code) and finishes at the sign-in's own address, where the
   admin's passkey is created. The passkey is bound to the name the household will use every day.
   - It comes from a one-time enrolment link for the admin's account, which the manager mints (30 minutes, once) and
-    the claimed setup session hands over, as a QR code beside the mesh one. No other path creates the first admin
-    (#84).
+    shows only in the machine's terminal (`sudo homeward setup join`), as a QR code beside the device's mesh key: no
+    secret travels over the LAN page's plain HTTP (#64). No other path creates the first admin (#84).
 - **The LAN listener closes for good** at the admin's first sign-in over the mesh.
 - **Headscale households** also make one guided change in Headscale's configuration: its base domain.
-- **The first half travels over plain HTTP on the LAN**, including the mesh token, the DNS token and the mail
-  password. The threat model accepts this, because the window is narrow:
+- **Only non-secret answers travel over plain HTTP on the LAN** (#64), with the setup session's token, until the
+  hand-off to the mesh closes the listener. The secrets are typed in the machine's terminal:
+  - the page asks for the mesh token, the DNS token and the mail password by showing a one-line command, such as
+    `sudo homeward setup secret dns`, and then follows the secret live: waiting, received and checking, then checked,
+    or refused with the terminal saying why;
+  - the command reads the secret from stdin without echo and sends it over the manager's 0600 control socket; it never
+    prints, logs or keeps it, and the manager keeps it only sealed (ADR 0011), never in its database;
+  - before it reads the secret, the command shows where it goes (the mesh's control plane, the DNS provider or server,
+    the mail server), for which household, and who claimed the setup session and when, and on a terminal it asks for a
+    yes. The secret is sent bound to the revision of the answers it showed, so the page can't change where it goes in
+    between;
+  - every API on the LAN listener refuses a request that carries a field named like a secret, in its body or its
+    query, before anything else is checked, and names the command instead.
+
+  What still crosses the LAN in clear is accepted by the threat model, because the window is narrow:
   - the link works only from this machine or the LAN, for 30 minutes, and once;
   - one claimer holds it, and a new link ends every earlier link and session;
+  - a claim whose answer was lost is answered again only for the tab that sent it: the page sends a random nonce with
+    the key, the manager keeps its hash, and for 60 seconds the same key, nonce and address get the same session back,
+    with a new token, until that session is first used (#101);
   - the listener answers only the machine's own names and addresses;
   - the listener closes for good after the hand-off to the mesh.
 
-  A self-signed certificate was considered and refused: browser warnings teach the admin to click through them.
-
-  This is temporary. **HTTPS is enforced eventually** (the maintainer, 2026-11-11; #64):
-  - setup's secrets are typed in the machine's terminal, so plain HTTP carries only non-secret answers;
-  - once the certificate exists, every name answers HTTPS only, with HSTS and `Secure` cookies.
+  A self-signed certificate was considered and refused: browser warnings teach the admin to click through them, and a
+  browser can't pin a fingerprint from the QR code. So was issuing the real certificate first and serving setup at
+  `setup.<domain>` on the LAN: the DNS token would still cross HTTP, and many routers' rebinding protection refuses a
+  public record that points at a private address.
+- **Once the certificate exists, HTTPS only** (#64): every name the edge serves answers HTTPS only, with HSTS (a year,
+  no `includeSubDomains`, no `preload`: the household's domain may carry sites that aren't Homeward's), replacing any
+  HSTS an app sends. Port 80 only redirects to HTTPS on the same name, and proxies nothing; a name the edge doesn't
+  serve gets 421 there too. Every cookie Homeward or the edge sets is `Secure`, whatever an app sent.
 - **The setup session is a bearer token**, not a cookie:
   - the page keeps it in `sessionStorage`, so one tab holds it;
   - it is bound to the address that claimed the link, ends after 30 minutes idle and 2 hours at most, and is stored
@@ -904,7 +967,7 @@ point. Nothing needs replacing for:
 
 - No router ports, ever, and no router port mapping by the mesh clients.
 - TLS ends on the household's machines.
-- HTTPS only once the certificate exists, with HSTS; no secret ever crosses plain HTTP (#64).
+- HTTPS only once the certificate exists, with HSTS and `Secure` cookies; no secret ever crosses plain HTTP (#64).
 - The LAN sees the machines, not the apps.
 - Only the edge reaches an app, and apps reach only the internet unless an extra says so (decided in #82).
 - Admin is reachable over the mesh only.
@@ -976,7 +1039,7 @@ point. Nothing needs replacing for:
     nothing public → refused (#81).
 - **The firewall**: namespace tests in which a container tries the LAN, the mesh and its node's own addresses, and is
   refused unless its extras allow it (#82).
-- **Golden renders**: what HomersLab writes for an app (compose project, edge configuration, policies) is compared
+- **Golden renders**: what Homeward writes for an app (compose project, edge configuration, policies) is compared
   byte for byte with a committed baseline. A deliberate change updates the baseline and explains the diff. Prior art:
   classic's golden tests.
   - The edge's configuration has autosave off and no inline key, and a test finds no file under the edge's state
@@ -988,7 +1051,7 @@ point. Nothing needs replacing for:
     Authentik derives the origin from the request (#92);
   - Authentik's WebAuthn stages don't require user verification unless told to, so a touch alone could approve a
     risky change (#84);
-  - NetBird's cloud lets HomersLab create a TLS passthrough service on a name under the cluster's own domain, and
+  - NetBird's cloud lets Homeward create a TLS passthrough service on a name under the cluster's own domain, and
     remove it, by API, so the mesh step can find the cluster's port (#92);
   - container DNS resolves `auth.<main domain>` to the sign-in listener on hosts running systemd-resolved (#82).
 - **Restore by hand**: CI follows the recovery kit's how-to, using only plain restic and age.
@@ -1002,7 +1065,7 @@ point. Nothing needs replacing for:
   - a test that stubs a container engine points it at nowhere;
   - tests get their own home directory;
   - nothing touches a live household.
-- **No secret in any result**: checked against every secret HomersLab generated or holds, in plain, base64 and
+- **No secret in any result**: checked against every secret Homeward generated or holds, in plain, base64 and
   URL-encoded forms, across every tool's output, logs included (#85).
 - **People and nodes**: role changes reach kid views, tested in both directions (#86). A lost node: a two-node CI
   job kills one node, applies the plan, then tries every old credential, and the test CA refuses the old certificate's
@@ -1016,7 +1079,7 @@ point. Nothing needs replacing for:
 - A PaaS for deploying your own code.
 - Kubernetes or Swarm.
 - macOS or Windows nodes.
-- Several households on one HomersLab.
+- Several households on one Homeward.
 - Native mobile apps: phones use Home as a PWA.
 - Public paths that end TLS anywhere but the household's machines, such as Cloudflare Tunnel.
 - An identity provider of our own.
@@ -1079,7 +1142,7 @@ From the review of the first prototypes and logo concepts:
 ### Design decisions (round 2, 2026-11-10)
 
 From the interactive review of the reworked prototypes:
-- **Admin names apps by product** (Immich, with "Photos" beside it). HomersLab is an app store: a household picks which
+- **Admin names apps by product** (Immich, with "Photos" beside it). Homeward is an app store: a household picks which
   app serves a purpose, or installs several apps of one kind side by side (story 26a).
 - **Two more risky changes**: replacing a mesh token, and making a new recovery kit.
 - **An admin's Home** carries one more fact, "something needs a look in Admin", whenever something does.
@@ -1114,7 +1177,7 @@ From the interactive review of the reworked prototypes:
 
 ### Design decisions (round 4 answers, 2026-11-10)
 
-- **No wallpaper choice**: every household gets HomersLab's own wallpaper.
+- **No wallpaper choice**: every household gets Homeward's own wallpaper.
 - **Hiding an app**: where a household has two apps for one purpose, each person may hide the one they don't use, on
   their own Home only.
 - **Setup defaults confirmed**:
@@ -1154,9 +1217,18 @@ Run on 2026-11-09, each in throwaway containers on the maintainer's machine. The
 
 ### Name
 
-**HomersLab**, after Homer's Odyssey, the long journey home. The logo draws on it: a ship or a lyre.
+**Homeward**, the manager: nostos, the way home, after Homer's Odyssey (#250, 2026-11-16;
+[ADR 0022](adr/0022-homeward-the-product-homerslab-the-maker.md)). **HomersLab** is the maker's umbrella name, with no
+GitHub organisation for now; each of its apps takes a Homeric or Greek name with a plain subtitle (the reading app is
+Philobiblos, "lover of books"). The logo (the Odyssey mark: a ship or a lyre) moves to Homeward.
 
-Checked on 2026-11-09:
+Checked for Homeward on 2026-11-16 (#250):
+- **Homelab projects**: none uses the name.
+- **npm and domains**: the bare npm name and the .app, .dev and .io domains are taken: the npm name is scoped,
+  `@homerslab/homeward`, and the domain comes later.
+- **Trademarks** (EUIPO/TMview, WIPO, USPTO, Swissreg): a pre-check runs before anything ships under the name.
+
+Checked for HomersLab on 2026-11-09:
 - **GitHub and npm**: no repository or package named homerslab.
 - **Domains**: no DNS for .dev, .org, .io or .app; .com is taken.
 - **Collision**: Homer, a popular self-hosted dashboard, shares the word.
@@ -1213,7 +1285,7 @@ Every answer of the grilling (2026-11-09) and where it lives:
 | 42 | One floor, two tiers | ADR 0009 |
 | 43 | Signed third-party catalogs | ADR 0009; stories 23, 82 |
 | 44 | A manifest plus plain compose | ADR 0009; The app definition |
-| 45 | HomersLab; the Odyssey | Further Notes |
+| 45 | Homeward; the Odyssey | Further Notes |
 | 46 | This repository, local first | Further Notes |
 | 47 | Prototypes before code | Further Notes |
 | 48 | English, i18n-ready | Modules (Surfaces); story 37 |
@@ -1229,7 +1301,7 @@ Every answer of the grilling (2026-11-09) and where it lives:
 | 58 | Eject per app | ADR 0012; story 65 |
 | 59 | SSH sign-in, optional, off by default | Story 43; Adapter contracts |
 | 60 | A private catalog for the maintainer's own apps | Further Notes |
-| 61 | Eject is the way out; the platform stays HomersLab's | ADR 0012 |
+| 61 | Eject is the way out; the platform stays Homeward's | ADR 0012 |
 | 62 | Secrets as TPM-sealed systemd credentials | ADR 0011 |
 | 63 | Headscale named in the mesh contract (added after the grilling) | ADR 0005; Adapter contracts |
 | 64 | First-time setup in two halves; the passkey at the sign-in's own address | First-time setup in two halves; stories 3, 9 |
@@ -1266,9 +1338,9 @@ Every answer of the grilling (2026-11-09) and where it lives:
 | 95 | Security releases ship guarded when a patch lags | ADR 0015; story 92 |
 | 96 | Third-party catalogs may declare patched builds | ADR 0015 |
 | 97 | Patches under each app's licence | ADR 0015 |
-| 98 | HomersLab builds shown in Admin's details only | ADR 0015 |
+| 98 | Homeward builds shown in Admin's details only | ADR 0015 |
 | 99 | A bot and CI keep feedstocks current | ADR 0015; story 91 |
-| 100 | HomersLab writes the public path's DNS records itself | ADR 0016; Domains; story 93 |
+| 100 | Homeward writes the public path's DNS records itself | ADR 0016; Domains; story 93 |
 | 101 | Only its own DNS records, marked; never others | ADR 0016; Adapter contracts; story 93 |
 | 102 | Every domain equal for the apps | ADR 0016; Domains; story 94 |
 | 103 | One sign-in domain, one passkey everywhere | ADR 0016; Domains; story 95 |
@@ -1353,7 +1425,7 @@ Every answer of the grilling (2026-11-09) and where it lives:
 | 182 | The probe: a recognisable throwaway service, a listener that serves nothing, named ports, leftovers swept | ADR 0021; Names and certificates (#92, #103) |
 | 183 | Catalogs signed again with a separate timestamp key, limited to version, expiry and hash (decided) | ADR 0009 (amended); Catalogs (#89, second review of #94) |
 | 184 | Admins sign in only through a passkey-only authentication flow | ADR 0004 (amended); Adapter contracts (#84, second review of #94) |
-| 185 | Enrolment and recovery links run HomersLab's own passkey-enrolment flow | Adapter contracts (#84, #87, second review of #94) |
+| 185 | Enrolment and recovery links run Homeward's own passkey-enrolment flow | Adapter contracts (#84, #87, second review of #94) |
 | 186 | The installer prints the command, not the link | First-time setup in two halves (#74) |
 | 187 | The LAN includes the default-route interfaces' on-link global IPv6 prefixes | First-time setup in two halves (#73) |
 | 188 | Admins' app-scoped LDAP credentials are exempt from the passkey-only check | Adapter contracts (#104) |

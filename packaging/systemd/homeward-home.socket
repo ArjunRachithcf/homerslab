@@ -1,0 +1,20 @@
+# Home's socket, on the primary: Home answers here, and only the edge may connect (its group), which serves it at
+# home.<main domain> over the mesh.
+[Unit]
+Description=Homeward Home, for the edge
+Documentation=https://github.com/ArjunRachithcf/homeward
+# Runs as one of the package's users: on a node installed as HomersLab, only once the migration has renamed it
+# (#250), whether at boot or on an upgrade without one.
+Wants=homeward-migrate.service
+After=homeward-migrate.service
+
+[Socket]
+ListenStream=/run/homeward-home.sock
+SocketUser=homeward-home
+SocketGroup=homeward-edge
+SocketMode=0660
+FileDescriptorName=home
+Service=homeward-home.service
+
+[Install]
+WantedBy=sockets.target

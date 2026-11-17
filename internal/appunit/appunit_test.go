@@ -1,0 +1,471 @@
+package appunit_test
+
+import (
+	"bytes"
+	"flag"
+	"maps"
+	"net/netip"
+	"os"
+	"path/filepath"
+	"slices"
+	"strings"
+	"testing"
+
+	"go.yaml.in/yaml/v4"
+
+	"github.com/ArjunRachithcf/homeward/internal/appunit"
+	"github.com/ArjunRachithcf/homeward/internal/engine"
+	"github.com/ArjunRachithcf/homeward/internal/testenv"
+)
+
+var update = flag.Bool("update", false, "write the golden renders anew")
+
+// An app that signs people in over LDAP takes its directory from its upstream's environment (#204): the LDAPS port's
+// URL, its own base DN, the DN template, none of them secret; no other service gets it, and the unit hands it no
+// secret.
+func TestAnLDAPAppTakesItsDirectoryFromItsEnvironment(t *testing.T) {
+	testenv.Isolate(t)
+	a := bentoPDF()
+	a.Project.Services = append(a.Project.Services, engine.Service{Name: "worker"})
+	a.LDAP = &appunit.LDAP{Env: map[string]string{"LDAP_URL": "ldaps://auth.ferreira.family:636", "LDAP_BASE_DN": "dc=bentopdf,dc=homerslab",
+		"LDAP_USER_DN": "cn=%s,ou=users,dc=bentopdf,dc=homerslab"}}
+	o := string(appunit.Override(a))
+	var doc struct {
+		Services map[string]struct {
+			Environment map[string]string `yaml:"environment"`
+			Secrets     []string          `yaml:"secrets"`
+		} `yaml:"services"`
+		Secrets map[string]any `yaml:"secrets"`
+	}
+	if err := yaml.Unmarshal([]byte(o), &doc); err != nil {
+		t.Fatalf("%v\n%s", err, o)
+	}
+	if web := doc.Services["web"]; !maps.Equal(web.Environment, a.LDAP.Env) || web.Secrets != nil {
+		t.Errorf("the upstream's service: environment %v, secrets %v", web.Environment, web.Secrets)
+	}
+	if w := doc.Services["worker"]; w.Environment != nil {
+		t.Errorf("another service got the directory: %+v", w)
+	}
+	if doc.Secrets != nil || len(a.Handed()) != 0 || strings.Contains(string(appunit.UnitFile(a)), "LoadCredential") {
+		t.Errorf("an LDAP app handed a secret:\n%s", o)
+	}
+}
+
+// bentoPDF is BentoPDF as the agent installs it on a machine with SELinux: one service, no secret.
+func bentoPDF() appunit.App {
+	return appunit.App{ID: "bentopdf", Product: "BentoPDF", Plan: "p-8c125cd2f9f38dfdd95c9c0ba3cd2663",
+		Project: engine.Project{Name: "homerslab-bentopdf", Services: []engine.Service{{Name: "web", Image: "ghcr.io/alam00000/bentopdf-simple:2.8.10@sha256:b5227a308e796d2bd00d2eb6da9d7296093107a8be7efef38a006d06506dc3c0"}},
+			Networks: []engine.Network{{Name: "default"}}},
+		Service: "web", Upstream: netip.MustParseAddrPort("172.31.240.2:8080"), Subnet: netip.MustParsePrefix("172.31.240.0/28"),
+		Level: "s0:c600,c601", SELinux: true, Dir: "/var/lib/homeward-agent/apps/bentopdf"}
+}
+
+// withSecrets is an app of several services with a secret two of them read, and networks of its own.
+func withSecrets() appunit.App {
+	return appunit.App{ID: "everything", Product: "Everything", Plan: "p-0123456789abcdef0123456789abcdef",
+		Project: engine.Project{Name: "homerslab-everything", Secrets: []string{"db-password", "secret-key"}, Services: []engine.Service{
+			{Name: "web", Networks: []string{"back", "front"}}, {Name: "db", Networks: []string{"back"}}, {Name: "worker"}},
+			Networks: []engine.Network{{Name: "back"}, {Name: "default"}, {Name: "front"}}},
+		Service: "web", Upstream: netip.MustParseAddrPort("172.31.240.18:8080"), Subnet: netip.MustParsePrefix("172.31.240.16/28"),
+		Level: "s0:c602,c603", Slot: 1, SELinux: true, Dir: "/var/lib/homeward-agent/apps/everything",
+		SignIn: "auth.example.test", SignInAt: netip.MustParseAddr("172.31.255.241"),
+		Secrets: []appunit.Secret{{Name: "secret-key", UID: 1000}, {Name: "db-password", UID: 999}}}
+}
+
+// withStorage is an app given two storage locations (#28): a folder it only reads, and a share on the mesh it writes.
+func withStorage() appunit.App {
+	a := withSecrets()
+	a.Mounts = []appunit.Mount{
+		{Location: "films", Service: "web", Source: "/srv/media/Films", Target: "/media", ReadOnly: true},
+		{Location: "uploads", Service: "worker", Source: "/var/lib/homeward-storage/uploads", Target: "/uploads", Unit: "homeward-storage-uploads.service"},
+	}
+	return a
+}
+
+// mealie is Mealie as the agent installs it (#20): it signs people in itself, with the OIDC client the household
+// account made for it, whose settings it takes from its environment and whose secret from a file.
+func mealie() appunit.App {
+	return appunit.App{ID: "mealie", Product: "Mealie", Plan: "p-3a5f8e0c1d2b4a6978c0e1f2a3b4c5d6",
+		Project: engine.Project{Name: "homerslab-mealie", Services: []engine.Service{{Name: "web", Image: "ghcr.io/mealie-recipes/mealie:v3.30.0@sha256:90f83da6f3ab0a421efc827118a556168573930105f13fa3321768f42163d784"}},
+			Networks: []engine.Network{{Name: "default"}}},
+		Service: "web", Upstream: netip.MustParseAddrPort("172.31.240.34:9000"), Subnet: netip.MustParsePrefix("172.31.240.32/28"),
+		Level: "s0:c604,c605", Slot: 2, SELinux: true, Dir: "/var/lib/homeward-agent/apps/mealie",
+		OIDC: &appunit.OIDC{SecretUID: 911, Env: map[string]string{
+			"OIDC_CONFIGURATION_URL":  "https://auth.ferreira.family:9443/application/o/homerslab-mealie/.well-known/openid-configuration",
+			"OIDC_CLIENT_ID":          "homerslab-mealie",
+			"OIDC_CLIENT_SECRET_FILE": appunit.ClientSecretPath,
+			"BASE_URL":                "https://recipes.ferreira.family:9443",
+			"OIDC_ADMIN_GROUP":        "homerslab-admins",
+		}}}
+}
+
+// Golden renders (spec: Testing Decisions): the unit and the compose file the agent writes for an app, byte for byte.
+// A deliberate change runs `go test ./internal/appunit -update` and explains the diff.
+func TestAnAppsUnitAndComposeFileAreTheirGoldenRenders(t *testing.T) {
+	testenv.Isolate(t)
+	noSELinux := withSecrets()
+	noSELinux.SELinux = false
+	for name, a := range map[string]appunit.App{"bentopdf": bentoPDF(), "mealie": mealie(), "with-secrets": withSecrets(), "without-selinux": noSELinux,
+		"with-storage": withStorage()} {
+		for file, got := range map[string][]byte{name + ".service": appunit.UnitFile(a), name + ".compose.yaml": appunit.Override(a)} {
+			t.Run(file, func(t *testing.T) {
+				path := filepath.Join("testdata", file)
+				if *update {
+					if err := os.WriteFile(path, got, 0o644); err != nil {
+						t.Fatal(err)
+					}
+				}
+				want, err := os.ReadFile(path)
+				if err != nil {
+					t.Fatalf("%v (run with -update to write it)", err)
+				}
+				if !bytes.Equal(got, want) {
+					t.Errorf("the render differs from %s:\n%s", path, got)
+				}
+			})
+		}
+	}
+}
+
+// systemd owns the app (#19): every service's restart policy is off, so a container never outlives its unit or comes
+// back without it; the unit restarts the app instead.
+func TestEveryServiceRunsWithoutARestartPolicyAndTheUnitRestarts(t *testing.T) {
+	testenv.Isolate(t)
+	a := withSecrets()
+	o := string(appunit.Override(a))
+	for _, s := range a.Project.Services {
+		block := o[strings.Index(o, "  \""+s.Name+"\":\n"):]
+		if !strings.HasPrefix(block, "  \""+s.Name+"\":\n    restart: \"no\"\n    deploy:\n      restart_policy:\n        condition: \"none\"\n"+
+			"    security_opt:\n      - \"label=level:s0:c602,c603\"\n") {
+			t.Errorf("%s isn't left without a restart policy at the app's level:\n%s", s.Name, o)
+		}
+	}
+	u := string(appunit.UnitFile(a))
+	for _, want := range []string{"\nRestart=always\n", "\nStandardOutput=null\nStandardError=null\n", "\nExecStart=/usr/bin/docker compose --project-name homerslab-everything ",
+		" up --no-log-prefix --quiet-pull --abort-on-container-exit\n", "\nWantedBy=multi-user.target\n"} {
+		if !strings.Contains(u, want) {
+			t.Errorf("the unit lacks %q:\n%s", want, u)
+		}
+	}
+}
+
+// Secrets (ADR 0011): each is loaded from the credential the agent sealed under the name <app>.<secret>, copied for the
+// one container user that reads it (0400) into the unit's own runtime directory, labelled at the app's level, and handed
+// in only as a Compose secret: never an environment variable, never a shared folder.
+func TestSecretsReachTheContainersOnlyAsFilesAtTheAppsLevel(t *testing.T) {
+	testenv.Isolate(t)
+	a := withSecrets()
+	u, o := string(appunit.UnitFile(a)), string(appunit.Override(a))
+	for _, want := range []string{
+		"LoadCredentialEncrypted=everything.db-password:/var/lib/homeward-agent/apps/everything/credentials/db-password.cred\n",
+		"ExecStartPre=/usr/bin/install -m 0400 -o 999 -g 999 %d/everything.db-password /run/homeward-app-everything/db-password\n",
+		"ExecStartPre=/usr/bin/install -m 0400 -o 1000 -g 1000 %d/everything.secret-key /run/homeward-app-everything/secret-key\n",
+		"ExecStartPre=/usr/bin/chcon -t container_file_t -l s0:c602,c603 /run/homeward-app-everything/db-password /run/homeward-app-everything/secret-key\n",
+		"RuntimeDirectory=homeward-app-everything\nRuntimeDirectoryMode=0700\n",
+	} {
+		if !strings.Contains(u, want) {
+			t.Errorf("the unit lacks %q:\n%s", want, u)
+		}
+	}
+	if !strings.Contains(o, "secrets:\n  \"db-password\":\n    file: \"/run/homeward-app-everything/db-password\"\n  \"secret-key\":\n    file: \"/run/homeward-app-everything/secret-key\"\n") {
+		t.Errorf("the secrets aren't the unit's copies:\n%s", o)
+	}
+	for _, bad := range []string{"environment", "Environment=", "volumes", ":z", ":Z"} {
+		if strings.Contains(u, bad) || strings.Contains(o, bad) {
+			t.Errorf("the app's files carry %q", bad)
+		}
+	}
+	noSELinux := a
+	noSELinux.SELinux = false
+	if strings.Contains(string(appunit.UnitFile(noSELinux)), "chcon") {
+		t.Error("a machine without SELinux is asked to label")
+	}
+}
+
+// An app with native sign-in takes its OIDC client's settings from its environment, and its secret only as a file
+// (#20): the secret is a credential the agent sealed, loaded and copied like the app's own for the one user that reads
+// it, and handed in as a Compose secret on the upstream's service. The environment names the file, never the secret.
+func TestAnOIDCClientsSecretReachesTheAppOnlyAsAFile(t *testing.T) {
+	testenv.Isolate(t)
+	a := mealie()
+	a.Project.Services = append(a.Project.Services, engine.Service{Name: "worker"})
+	u, o := string(appunit.UnitFile(a)), string(appunit.Override(a))
+	for _, want := range []string{
+		"LoadCredentialEncrypted=mealie.oidc-client-secret:/var/lib/homeward-agent/apps/mealie/credentials/oidc-client-secret.cred\n",
+		"ExecStartPre=/usr/bin/install -m 0400 -o 911 -g 911 %d/mealie.oidc-client-secret /run/homeward-app-mealie/oidc-client-secret\n",
+		"ExecStartPre=/usr/bin/chcon -t container_file_t -l s0:c604,c605 /run/homeward-app-mealie/oidc-client-secret\n",
+	} {
+		if !strings.Contains(u, want) {
+			t.Errorf("the unit lacks %q:\n%s", want, u)
+		}
+	}
+	var doc struct {
+		Services map[string]struct {
+			Environment map[string]string `yaml:"environment"`
+			Secrets     []string          `yaml:"secrets"`
+		} `yaml:"services"`
+		Secrets map[string]struct {
+			File string `yaml:"file"`
+		} `yaml:"secrets"`
+	}
+	if err := yaml.Unmarshal([]byte(o), &doc); err != nil {
+		t.Fatalf("%v\n%s", err, o)
+	}
+	web := doc.Services["web"]
+	if !maps.Equal(web.Environment, a.OIDC.Env) || !slices.Equal(web.Secrets, []string{"oidc-client-secret"}) {
+		t.Errorf("the upstream's service: environment %v, secrets %v", web.Environment, web.Secrets)
+	}
+	if w := doc.Services["worker"]; w.Environment != nil || w.Secrets != nil {
+		t.Errorf("another service got the client: %+v", w)
+	}
+	if f := doc.Secrets["oidc-client-secret"].File; f != "/run/homeward-app-mealie/oidc-client-secret" {
+		t.Errorf("the client's secret is %q, want the unit's copy", f)
+	}
+	if strings.Contains(u, "Environment=") || strings.Contains(o, "CLIENT_SECRET\":") && !strings.Contains(o, "\"OIDC_CLIENT_SECRET_FILE\": \"/run/secrets/oidc-client-secret\"") {
+		t.Errorf("a secret in the environment:\n%s\n%s", u, o)
+	}
+	without := mealie()
+	without.OIDC = nil
+	if bytes.Contains(appunit.Override(without), []byte("oidc")) || strings.Contains(string(appunit.UnitFile(without)), "oidc") {
+		t.Error("an app without a client still gets one")
+	}
+}
+
+// The app's one upstream is on a network of its own, at a fixed address; the service keeps the networks it had.
+func TestTheUpstreamIsAFixedAddressOnANetworkOfItsOwn(t *testing.T) {
+	testenv.Isolate(t)
+	b, s := string(appunit.Override(bentoPDF())), string(appunit.Override(withSecrets()))
+	if !strings.Contains(b, "    networks:\n      \"default\": {}\n      \"homerslab-upstream\":\n        ipv4_address: \"172.31.240.2\"\n") {
+		t.Errorf("a service on the default network loses it, or has no upstream:\n%s", b)
+	}
+	if strings.Contains(s, "\"default\": {}") || !strings.Contains(s, "      \"homerslab-upstream\":\n        ipv4_address: \"172.31.240.18\"\n") {
+		t.Errorf("a service with networks of its own:\n%s", s)
+	}
+	if !strings.Contains(s, "        - subnet: \"172.31.240.16/28\"\n          gateway: \"172.31.240.17\"\n") {
+		t.Errorf("the upstream's network:\n%s", s)
+	}
+	for _, bad := range []string{"ports", "network_mode", "host"} {
+		if strings.Contains(b, bad) {
+			t.Errorf("the agent's compose file has %q", bad)
+		}
+	}
+}
+
+// Every bridge of an app's is named by the agent, after the app's slot (#82): the firewall table keeps this machine's
+// processes out of an app's networks by those names, before the engine has made them.
+func TestEveryNetworkOfAnAppsHasABridgeTheAgentNamed(t *testing.T) {
+	testenv.Isolate(t)
+	o := string(appunit.Override(withSecrets()))
+	for net, br := range map[string]string{"back": "hla1n0", "default": "hla1n1", "front": "hla1n2", "homerslab-upstream": "hla1u"} {
+		if !strings.Contains(o, "\n  \""+net+"\":\n") || !strings.Contains(o, "      com.docker.network.bridge.name: \""+br+"\"\n") {
+			t.Errorf("%s isn't on bridge %s:\n%s", net, br, o)
+		}
+	}
+	if got := appunit.Bridge(199, 63); len(got) > 15 {
+		t.Errorf("a bridge name over Linux's 15 characters: %s", got)
+	}
+}
+
+// No free text reaches the files the agent writes (#195's review): a name that YAML would read as several lines (U+0085,
+// U+2028 and U+2029 break lines in YAML) or that would continue a unit's line changes nothing. The agent's compose file
+// is one YAML document with exactly the keys the agent writes, and the unit has only the agent's lines.
+func TestNoTextOfTheAppsEndsALineOfItsFiles(t *testing.T) {
+	testenv.Isolate(t)
+	const probe = "X\u0085---\u0085services: {web: {privileged: true, pid: host, volumes: [\"/:/host\"]}}\u0085---\u0085#"
+	for name, a := range map[string]appunit.App{
+		"NEL":                    func() appunit.App { a := withSecrets(); a.Product = probe; return a }(),
+		"the line separator":     func() appunit.App { a := withSecrets(); a.Product = "X\u2028include: [/etc/shadow]\u2028#"; return a }(),
+		"a backslash at its end": func() appunit.App { a := withSecrets(); a.Product = "X\\"; return a }(),
+		"a plan that isn't one":  func() appunit.App { a := withSecrets(); a.Plan = "p-1\u2028include: [/x]"; return a }(),
+		"a client's setting": func() appunit.App {
+			a := withSecrets()
+			a.OIDC = &appunit.OIDC{SecretUID: 1, Env: map[string]string{"BASE_URL": "https://x\u2028cap_add: [ALL]", "X\u0085user: root": "y\u2029"}}
+			return a
+		}(),
+		"a service's odd name": func() appunit.App {
+			a := withSecrets()
+			a.Project.Services = append(a.Project.Services, engine.Service{Name: "odd\u0085privileged: true"})
+			return a
+		}(),
+	} {
+		t.Run(name, func(t *testing.T) {
+			o := appunit.Override(a)
+			dec := yaml.NewDecoder(bytes.NewReader(o))
+			var doc map[string]any
+			if err := dec.Decode(&doc); err != nil {
+				t.Fatalf("the agent's compose file doesn't parse: %v\n%s", err, o)
+			}
+			var more any
+			if err := dec.Decode(&more); err == nil {
+				t.Errorf("a second YAML document:\n%s", o)
+			}
+			services, _ := doc["services"].(map[string]any)
+			if keys := slices.Sorted(maps.Keys(doc)); !slices.Equal(keys, []string{"name", "networks", "secrets", "services"}) {
+				t.Errorf("top-level keys %q:\n%s", keys, o)
+			}
+			var want []string
+			for _, s := range a.Project.Services {
+				want = append(want, s.Name)
+			}
+			slices.Sort(want)
+			if got := slices.Sorted(maps.Keys(services)); !slices.Equal(got, want) {
+				t.Errorf("services %q, want %q", got, want)
+			}
+			for svc, v := range services {
+				for k := range v.(map[string]any) {
+					if !slices.Contains([]string{"restart", "deploy", "security_opt", "extra_hosts", "networks", "volumes", "environment", "secrets"}, k) {
+						t.Errorf("%q has %q:\n%s", svc, k, o)
+					}
+				}
+			}
+			for _, bad := range []string{"\u0085", "\u2028", "\u2029", "privileged", "include", "/host"} {
+				if strings.Contains(string(o), bad) && !(bad == "privileged" && strings.Contains(string(o), `\u0085privileged`)) {
+					t.Errorf("the agent's compose file carries %q:\n%s", bad, o)
+				}
+			}
+			if a.OIDC != nil {
+				env, _ := services["web"].(map[string]any)["environment"].(map[string]any)
+				if len(env) != len(a.OIDC.Env) || env["BASE_URL"] != a.OIDC.Env["BASE_URL"] {
+					t.Errorf("the client's settings came back as %q", env)
+				}
+			}
+			u := string(appunit.UnitFile(a))
+			for _, line := range strings.Split(strings.TrimSuffix(u, "\n"), "\n") {
+				key, _, isKey := strings.Cut(line, "=")
+				switch {
+				case line == "", strings.HasPrefix(line, "# "), line == "[Unit]", line == "[Service]", line == "[Install]":
+				case isKey && slices.Contains([]string{"Description", "Documentation", "Requires", "After", "Wants", "Type", "RuntimeDirectory",
+					"RuntimeDirectoryMode", "UMask", "LoadCredentialEncrypted", "ExecStartPre", "ExecStart", "ExecStopPost", "Restart",
+					"SuccessExitStatus", "RestartSec", "TimeoutStopSec", "WantedBy", "StandardOutput", "StandardError"}, key):
+				default:
+					t.Errorf("a line the agent doesn't write: %q", line)
+				}
+				if strings.HasSuffix(line, "\\") || strings.ContainsAny(line, "\u0085\u2028\u2029\r") {
+					t.Errorf("a line that goes on: %q", line)
+				}
+			}
+			if !strings.Contains(u, "\nDescription=Homeward app everything\n") {
+				t.Errorf("the unit's description:\n%s", u)
+			}
+		})
+	}
+}
+
+// Every container resolves the sign-in's name to the sign-in listener (ADR 0020): from its own hosts file, whatever
+// resolver the machine runs (systemd-resolved's stub included).
+func TestEveryContainerResolvesTheSignInToItsListener(t *testing.T) {
+	testenv.Isolate(t)
+	a := withSecrets()
+	o := string(appunit.Override(a))
+	for _, s := range a.Project.Services {
+		if !strings.Contains(o, "  \""+s.Name+"\":\n    restart: \"no\"\n    deploy:\n      restart_policy:\n        condition: \"none\"\n"+
+			"    security_opt:\n      - \"label=level:s0:c602,c603\"\n    extra_hosts:\n      - \"auth.example.test=172.31.255.241\"\n") {
+			t.Errorf("%s doesn't resolve the sign-in to its listener:\n%s", s.Name, o)
+		}
+	}
+	if strings.Contains(string(appunit.Override(bentoPDF())), "extra_hosts") {
+		t.Error("an app on a node without the sign-in resolves it")
+	}
+}
+
+// Some of an app's services run on their own (a restore's database, #22) exactly as the app's unit runs them: the same
+// compose command and secrets, the same runtime directory, its services without the others (--no-deps).
+func TestSomeServicesRunAsTheUnitRunsThem(t *testing.T) {
+	testenv.Isolate(t)
+	a := withStorage()
+	args := a.ServicesRun("homeward-restore-1", []string{"db"})
+	at := slices.Index(args, "--")
+	if at < 0 || args[0] != "--unit=homeward-restore-1" {
+		t.Fatalf("%q", args)
+	}
+	props := strings.Join(args[:at], "\n") + "\n"
+	for _, line := range strings.Split(string(appunit.UnitFile(a)), "\n") {
+		// The secrets, and every storage location's folder checked again before the start (#28).
+		for _, key := range []string{"LoadCredentialEncrypted=", "ExecStartPre=", "RuntimeDirectory=", "RuntimeDirectoryMode=", "UMask="} {
+			if strings.HasPrefix(line, key) && !strings.Contains(props, "\n"+line+"\n") {
+				t.Errorf("the unit has %q, the services' run doesn't:\n%s", line, props)
+			}
+		}
+	}
+	if !strings.Contains(props, "check-storage") || !strings.Contains(props, "/usr/bin/install") {
+		t.Errorf("the services' run checks no location, or hands over no secret:\n%s", props)
+	}
+	// It waits for each share's own unit, and starts only once the share is mounted (#28).
+	for _, want := range []string{"\nRequires=homeward-storage-uploads.service\n", "\nAfter=homeward-storage-uploads.service\n",
+		"\nExecStartPre=/usr/bin/mountpoint -q /var/lib/homeward-storage/uploads\n"} {
+		if !strings.Contains(props, want) {
+			t.Errorf("the services' run lacks %q:\n%s", want, props)
+		}
+	}
+	want := append(a.Compose(), "up", "--no-log-prefix", "--no-deps", "--abort-on-container-exit", "db")
+	if got := args[at+1:]; !slices.Equal(got, want) {
+		t.Errorf("the services' command:\n got %q\nwant %q", got, want)
+	}
+}
+
+// A storage location reaches only the service that asked for it, as a bind of exactly its folder (or its share's mount),
+// read-only where the plan says so, and never made where it isn't there (#28). The unit waits for a share's own unit, and
+// starts the app only once the share is mounted: an app never writes into the empty folder under a share.
+func TestAStorageLocationIsABindOfItsFolderReadOnlyWhereThePlanSays(t *testing.T) {
+	testenv.Isolate(t)
+	a := withStorage()
+	o, u := string(appunit.Override(a)), string(appunit.UnitFile(a))
+	for _, want := range []string{
+		"  \"web\":\n", "    volumes:\n      - type: \"bind\"\n        source: \"/srv/media/Films\"\n        target: \"/media\"\n        read_only: true\n" +
+			"        bind:\n          create_host_path: false\n",
+		"        source: \"/var/lib/homeward-storage/uploads\"\n        target: \"/uploads\"\n        read_only: false\n",
+	} {
+		if !strings.Contains(o, want) {
+			t.Errorf("the agent's compose file lacks %q:\n%s", want, o)
+		}
+	}
+	if db := o[strings.Index(o, "  \"db\":\n"):strings.Index(o, "  \"web\":\n")]; strings.Contains(db, "volumes") {
+		t.Errorf("a service that didn't ask sees a location:\n%s", db)
+	}
+	// A service that writes to a location can't make a device there; one that only reads keeps its capabilities.
+	if n := strings.Count(o, "    cap_drop:\n      - \"MKNOD\"\n"); n != 1 {
+		t.Errorf("MKNOD dropped for %d services, want the one that writes:\n%s", n, o)
+	}
+	ro := withStorage()
+	for i := range ro.Mounts {
+		ro.Mounts[i].ReadOnly = true
+	}
+	if strings.Contains(string(appunit.Override(ro)), "cap_drop") {
+		t.Error("a service that only reads its locations lost a capability")
+	}
+	// Before every start the unit has each folder checked again: the engine binds the path as root, following symlinks.
+	// A share's mount is root's own folder, which the unit waits for instead.
+	if want := "ExecStartPre=/usr/bin/homeward agent check-storage \"/srv/media/Films\"\n"; !strings.Contains(u, want) ||
+		strings.Index(u, want) > strings.Index(u, "ExecStart=") || strings.Count(u, "check-storage") != 1 {
+		t.Errorf("the unit lacks %q before its start, or checks a share's mount:\n%s", want, u)
+	}
+	for _, want := range []string{"\nWants=network-online.target homeward-storage-uploads.service\n", "\nPartOf=homeward-storage-uploads.service\n", "homeward-agent.service homeward-storage-uploads.service\n",
+		"\nExecStartPre=/usr/bin/mountpoint -q /var/lib/homeward-storage/uploads\n"} {
+		if !strings.Contains(u, want) {
+			t.Errorf("the unit lacks %q:\n%s", want, u)
+		}
+	}
+	if strings.Contains(u, "mountpoint -q /srv") {
+		t.Error("a folder is waited on as a share")
+	}
+	// A source or a target no check passed is never written (compose would read ${...} as a variable), and the app
+	// doesn't start without it: the engine refuses a bind of a folder that is never there.
+	for _, m := range []appunit.Mount{
+		{Location: "films", Service: "web", Source: "/srv/${HOME}", Target: "/media", ReadOnly: true},
+		{Location: "films", Service: "web", Source: "/etc", Target: "/media", ReadOnly: true},
+		{Location: "films", Service: "web", Source: "/srv/media", Target: "/media/../etc", ReadOnly: true},
+		{Location: "x", Service: "web", Source: "/var/lib/homeward-storage/y", Target: "/media", Unit: "homeward-storage-y.service"},
+		{Location: "../x", Service: "web", Source: "/srv/media", Target: "/media"},
+	} {
+		b := withSecrets()
+		b.Mounts = []appunit.Mount{m}
+		o := string(appunit.Override(b))
+		if strings.Contains(o, m.Source) || strings.Contains(o, m.Target+"\"") ||
+			!strings.Contains(o, "        source: \""+appunit.RefusedMount+"\"\n        target: \""+appunit.RefusedMount+"\"\n        read_only: true\n") {
+			t.Errorf("%+v written:\n%s", m, o)
+		}
+		if u := string(appunit.UnitFile(b)); strings.Contains(u, "check-storage") {
+			t.Errorf("%+v reached the unit:\n%s", m, u)
+		}
+	}
+}

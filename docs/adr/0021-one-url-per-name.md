@@ -3,6 +3,9 @@ status: accepted
 date: 2026-11-11
 ---
 
+> Written when the product was called HomersLab. It is **Homeward** now, and HomersLab the maker's name
+> ([ADR 0022](0022-homeward-the-product-homerslab-the-maker.md)); the text below is as it was decided.
+
 # One URL per name, its port chosen in first-time setup
 
 Every name has one URL, `https://<name>.<domain>[:<port>]`, the same on the mesh and from the internet. The

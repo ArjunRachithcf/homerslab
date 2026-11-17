@@ -1,4 +1,4 @@
-// HomersLab first-time setup prototype, as a setup assistant (round 2). PROTOTYPE, throwaway.
+// Homeward first-time setup prototype, as a setup assistant (round 2). PROTOTYPE, throwaway.
 // One question per screen, in plain words, with a sensible default already chosen: the sign-in suggested from the
 // machine's memory, NetBird, the domain from your mail address and its DNS provider from the domain's name servers, the
 // mail server from the domain. Everything else waits behind "More options"; each token has "Where do I find this?".
@@ -53,12 +53,12 @@
   const dns = () => S.dns || guessDns(S.domain);
   const HELP = {
     netbird: { title: 'Where to find a NetBird token', sub: 'In NetBird’s dashboard; it takes about a minute.', steps: ['Open <b>app.netbird.io</b> and sign in.', 'Go to <span class="path"><b>Team</b>›<b>Service users</b></span> and choose <b>Create service user</b>, as an admin.', 'Open it, choose <b>Create token</b>, and copy the token.'] },
-    tailscale: { title: 'Where to find a Tailscale token', sub: 'In Tailscale’s admin console. HomersLab uses it once to make its own OAuth client, then forgets it.', steps: ['Open <b>login.tailscale.com/admin</b>.', 'Go to <span class="path"><b>Settings</b>›<b>Keys</b></span>.', 'Choose <b>Generate access token</b> and copy it.'] },
+    tailscale: { title: 'Where to find a Tailscale token', sub: 'In Tailscale’s admin console. Homeward uses it once to make its own OAuth client, then forgets it.', steps: ['Open <b>login.tailscale.com/admin</b>.', 'Go to <span class="path"><b>Settings</b>›<b>Keys</b></span>.', 'Choose <b>Generate access token</b> and copy it.'] },
     headscale: { title: 'Where to find a Headscale key', sub: 'On the server that runs Headscale.', steps: ['Open a terminal on that server.', 'Run <b>headscale apikeys create</b>.', 'Copy the key it prints.'] },
-    infomaniak: { title: 'Where to find an Infomaniak token', sub: 'HomersLab only writes _acme-challenge records, for one wildcard certificate. Your mail records stay as they are.', steps: ['Open <b>manager.infomaniak.com</b> and sign in.', 'Go to <span class="path"><b>Your profile</b>›<b>Developer</b>›<b>API tokens</b></span>.', 'Create a token with the <b>domain</b> scope, and copy it.'] },
-    cloudflare: { title: 'Where to find a Cloudflare token', sub: 'HomersLab only writes _acme-challenge records.', steps: ['Open <b>dash.cloudflare.com</b>.', 'Go to <span class="path"><b>My profile</b>›<b>API tokens</b></span>.', 'Use the <b>Edit zone DNS</b> template for this zone, and copy the token.'] },
-    dns: { title: 'Where to find a DNS token', sub: 'HomersLab only writes _acme-challenge records.', steps: ['Open your DNS provider’s dashboard.', 'Find its API tokens or keys.', 'Make one that may edit this domain’s DNS records, and copy it.'] },
-    smtp: { title: 'Where to find the mail password', sub: 'The password of the mailbox HomersLab sends from. An app password is better, where your provider has them.', steps: ['Open your mail provider’s settings for that address.', 'Make an app password if it offers one; otherwise use the mailbox’s password.', 'Copy it and paste it here.'] },
+    infomaniak: { title: 'Where to find an Infomaniak token', sub: 'Homeward only writes _acme-challenge records, for one wildcard certificate. Your mail records stay as they are.', steps: ['Open <b>manager.infomaniak.com</b> and sign in.', 'Go to <span class="path"><b>Your profile</b>›<b>Developer</b>›<b>API tokens</b></span>.', 'Create a token with the <b>domain</b> scope, and copy it.'] },
+    cloudflare: { title: 'Where to find a Cloudflare token', sub: 'Homeward only writes _acme-challenge records.', steps: ['Open <b>dash.cloudflare.com</b>.', 'Go to <span class="path"><b>My profile</b>›<b>API tokens</b></span>.', 'Use the <b>Edit zone DNS</b> template for this zone, and copy the token.'] },
+    dns: { title: 'Where to find a DNS token', sub: 'Homeward only writes _acme-challenge records.', steps: ['Open your DNS provider’s dashboard.', 'Find its API tokens or keys.', 'Make one that may edit this domain’s DNS records, and copy it.'] },
+    smtp: { title: 'Where to find the mail password', sub: 'The password of the mailbox Homeward sends from. An app password is better, where your provider has them.', steps: ['Open your mail provider’s settings for that address.', 'Make an app password if it offers one; otherwise use the mailbox’s password.', 'Copy it and paste it here.'] },
   };
   const meshes = () => [S.mesh, ...(S.mesh === 'netbird' && S.second !== 'none' ? [S.second] : [])];
   const meshNames = () => UI.and(meshes().map((m) => MESH[m].name));
@@ -79,11 +79,11 @@
   // ---------- the screens: a title, one sentence, the question, More options, one primary ----------
   const V = {};
   V.welcome = () => ({
-    illo: 'welcome', title: resume ? 'Welcome back' : 'Let’s set up HomersLab',
+    illo: 'welcome', title: resume ? 'Welcome back' : 'Let’s set up Homeward',
     lead: resume ? 'You stopped at your private network yesterday at 21:40. What you chose then is kept.' : 'This machine, <b>study-pc</b>, becomes your household’s home server. It takes about 20 minutes, and you can stop at any time.',
     moreLabel: 'About this machine',
     more: `<div class="group">${kv('Machine', 'study-pc · Fedora 43 · x86_64')}${kv('Processor', 'Ryzen 7 5700X, 8 cores')}${kv('Memory', '32 GB')}${kv('GPU', 'NVIDIA RTX 3060, 12 GB')}${kv('Secrets', 'Sealed to its TPM 2.0')}${kv('Containers', 'Docker 29.1')}</div>
-      <p class="group-head">You’ll need</p><ul class="group lead-sm">${[['mesh', 'Your mesh’s token: NetBird, Tailscale or Headscale'], ['globe', 'Your domain and its DNS provider’s token'], ['mail', 'The password of a mailbox HomersLab can send from'], ['printer', 'A printer or a password manager, for the recovery kit'], ['laptop', 'This laptop or your phone, to put on the mesh']].map(([i, t]) => `<li class="row"><span class="row-lead">${I(i, 'icon icon-md')}</span><span class="row-main"><span class="row-label wrap">${t}</span></span></li>`).join('')}</ul>`,
+      <p class="group-head">You’ll need</p><ul class="group lead-sm">${[['mesh', 'Your mesh’s token: NetBird, Tailscale or Headscale'], ['globe', 'Your domain and its DNS provider’s token'], ['mail', 'The password of a mailbox Homeward can send from'], ['printer', 'A printer or a password manager, for the recovery kit'], ['laptop', 'This laptop or your phone, to put on the mesh']].map(([i, t]) => `<li class="row"><span class="row-lead">${I(i, 'icon icon-md')}</span><span class="row-main"><span class="row-label wrap">${t}</span></span></li>`).join('')}</ul>`,
     primary: { label: resume ? 'Continue where I stopped' : 'Get started' },
   });
   V.you = () => ({
@@ -112,7 +112,7 @@
         + (S.checked.mesh ? check(`Checked at ${esc(S.checked.mesh)}: ${esc(m.checked)}.`) : ''),
       more: radios('Mesh', S.mesh, Object.entries(MESH).map(([k, x]) => [k, x.name, x.sub]))
         + (S.mesh === 'netbird' ? `<label class="as-row"><span class="row-main"><span class="row-label">Tailscale as well</span><span class="row-sub wrap">For people who already use the Tailscale app; every node joins both meshes.</span></span><input type="checkbox" class="switch" data-s="second" ${S.second === 'tailscale' ? 'checked' : ''} aria-label="Tailscale as well"></label>`
-          + field('planeUrl', 'Your own NetBird server', S.planeUrl, { hint: 'Leave it empty for NetBird’s cloud. On a server outside your home: HomersLab never opens a port on your router.' }) : ''),
+          + field('planeUrl', 'Your own NetBird server', S.planeUrl, { hint: 'Leave it empty for NetBird’s cloud. On a server outside your home: Homeward never opens a port on your router.' }) : ''),
       primary: { label: meshes().every((k) => S.saved[k === S.mesh ? 'mesh' : 'second']) && S.checked.mesh ? 'Continue' : 'Check and continue' },
     };
   };
@@ -124,12 +124,12 @@
         + `<div class="as-row">${I('globe', 'icon icon-md')}<span class="row-main"><span class="row-title">Its DNS is at ${esc(p.name)}</span><span class="row-sub wrap">${S.dns ? 'As you chose' : `Found from ${esc(S.domain || 'the domain')}’s name servers`}</span></span></div>`
         + secret('dns', `${p.name} API token`, HELP[dns()] ? dns() : 'dns')
         + (S.checked.dns ? check(`Checked at ${esc(S.checked.dns)}: the certificate for <b>*.${esc(S.domain)}</b> is issued.`) : ''),
-      more: `<div class="field"><label class="field-label" for="f-dns">Another DNS provider</label><select id="f-dns" class="select" data-r="dns">${Object.entries(DNS).map(([k, x]) => `<option value="${k}" ${dns() === k ? 'selected' : ''}>${x.name}</option>`).join('')}</select></div><p class="subhead">HomersLab only writes _acme-challenge records, for one wildcard certificate, so the apps’ names never appear in public certificate logs. Nothing else in your zone changes, mail records included.</p>`,
+      more: `<div class="field"><label class="field-label" for="f-dns">Another DNS provider</label><select id="f-dns" class="select" data-r="dns">${Object.entries(DNS).map(([k, x]) => `<option value="${k}" ${dns() === k ? 'selected' : ''}>${x.name}</option>`).join('')}</select></div><p class="subhead">Homeward only writes _acme-challenge records, for one wildcard certificate, so the apps’ names never appear in public certificate logs. Nothing else in your zone changes, mail records included.</p>`,
       primary: { label: S.saved.dns && S.checked.dns ? 'Continue' : 'Check and continue' },
     };
   };
   V.mail = () => ({
-    illo: 'mail', title: 'Sending mail', lead: `HomersLab writes invites, passkey resets and alerts from <b>${esc(S.smtp.from)}</b>, through ${esc(DNS[dns()].name)}’s mail server.`,
+    illo: 'mail', title: 'Sending mail', lead: `Homeward writes invites, passkey resets and alerts from <b>${esc(S.smtp.from)}</b>, through ${esc(DNS[dns()].name)}’s mail server.`,
     body: secret('smtp', `The password of ${esc(S.smtp.from)}`, 'smtp') + (S.mailSent ? check(`A test mail went to ${esc(S.mail)} at ${esc(S.mailSent)}.`) : ''),
     secondary: S.saved.smtp && !S.mailSent ? `<button type="button" class="btn btn-plain" data-s="testmail">${I('mail')}Send a test mail</button>` : '',
     more: `<div class="fields">${[['from', 'Send from'], ['host', 'Mail server'], ['port', 'Port'], ['user', 'Username']].map(([k, l]) => `<div class="field"><label class="field-label" for="m-${k}">${l}</label><input id="m-${k}" class="input" value="${esc(S.smtp[k])}" data-m="${k}" autocomplete="off" spellcheck="false"></div>`).join('')}
@@ -139,12 +139,12 @@
   V.kit = () => {
     const onPrimary = Proto.get('browser', 'laptop') === 'primary', kept = S.kitKept.print || S.kitKept.save, confirmed = S.kitConfirm.trim().toUpperCase() === KEY.slice(-4);
     if (onPrimary) return {
-      illo: 'kit', title: 'Your recovery kit', lead: 'Enough to restore everything on new hardware, even without HomersLab.',
-      body: `<div class="notice notice-warn" role="alert">${I('alert')}<span class="notice-body"><b>This browser is on study-pc itself.</b>The kit’s key would be made on the machine it protects against, so HomersLab won’t make it here. Open this link on another device on your home network, such as your laptop.</span></div>`,
+      illo: 'kit', title: 'Your recovery kit', lead: 'Enough to restore everything on new hardware, even without Homeward.',
+      body: `<div class="notice notice-warn" role="alert">${I('alert')}<span class="notice-body"><b>This browser is on study-pc itself.</b>The kit’s key would be made on the machine it protects against, so Homeward won’t make it here. Open this link on another device on your home network, such as your laptop.</span></div>`,
       primary: { label: 'Continue', ok: false, why: 'Make the kit on another device.' },
     };
     return {
-      illo: 'kit', title: 'Your recovery kit', lead: 'Enough to restore everything on new hardware, even without HomersLab. Print it, or save it in your password manager, away from your machines.',
+      illo: 'kit', title: 'Your recovery kit', lead: 'Enough to restore everything on new hardware, even without Homeward. Print it, or save it in your password manager, away from your machines.',
       body: `<div class="as-two"><button type="button" class="btn" data-s="print" aria-pressed="${S.kitKept.print}">${I(S.kitKept.print ? 'check' : 'printer')}${S.kitKept.print ? 'Printed' : 'Print it'}</button><button type="button" class="btn" data-s="save" aria-pressed="${S.kitKept.save}">${I(S.kitKept.save ? 'check' : 'download')}${S.kitKept.save ? 'Saved' : 'Save it'}</button></div>`
         + field('kitConfirm', 'Type the last four characters of its key', S.kitConfirm, { mono: true, hint: confirmed ? 'That matches.' : 'From the kit, so we know you have it somewhere safe.' }),
       moreLabel: 'What’s in the kit',
@@ -218,7 +218,7 @@
     if (location.hash !== '#/' + st.id) history.replaceState(null, '', location.pathname + location.search + '#/' + st.id);
     const v = V[st.id](), i = idx(st.id);
     const atAuth = st.half === 'mesh' && st.id !== 'join';
-    document.querySelector('#s-top').innerHTML = `<span class="brand"><span class="brand-l">${LOCKUP}</span><span class="brand-m" role="img" aria-label="HomersLab">${MARK}</span></span>
+    document.querySelector('#s-top').innerHTML = `<span class="brand"><span class="brand-l">${LOCKUP}</span><span class="brand-m" role="img" aria-label="Homeward">${MARK}</span></span>
       <span class="as-where">${S.closed ? `${I('lock')}<span class="host">${esc(AUTH())}</span><span class="sep long">· the home network is closed</span>`
         : atAuth ? `<span class="dot dot-green" aria-hidden="true"></span><span class="host">${esc(AUTH())}</span><span class="sep long">· over ${esc(MESH[S.mesh].name)}</span>`
         : `${I('home')}<span class="host">192.168.1.20:7020</span><span class="sep">· link until ${hhmm(LINK_UNTIL)}</span>`}</span>`;
@@ -232,10 +232,10 @@
         ${v.more ? `<details class="more" data-more="${st.id}" ${S.open[st.id] ? 'open' : ''}><summary>${v.moreLabel || 'More options'}${I('chevronDown')}</summary><div class="more-body">${v.more}</div></details>` : ''}
         <div class="as-actions">${actionsHtml(v)}</div>
       </section>`;
-    document.querySelector('#s-foot').textContent = S.closed ? 'Setup is done. From now on HomersLab answers only on the mesh.'
+    document.querySelector('#s-foot').textContent = S.closed ? 'Setup is done. From now on Homeward answers only on the mesh.'
       : st.half === 'lan' ? `You can stop at any time: what you’ve chosen is kept, and you continue where you stopped. This link works once, from this machine or your home network, until ${hhmm(LINK_UNTIL)}.`
       : 'You can stop at any time: what you’ve chosen is kept, and you continue where you stopped.';
-    document.title = `${v.title.replace(/<[^>]+>/g, '')} · HomersLab setup`;
+    document.title = `${v.title.replace(/<[^>]+>/g, '')} · Homeward setup`;
     Proto.refresh();
   }
   // a re-render that keeps the person's place: the focused field and its caret, the open More options
@@ -312,7 +312,7 @@
         const keys = meshes().map((k) => (k === S.mesh ? 'mesh' : 'second'));
         if (keys.every((k) => S.saved[k]) && S.checked.mesh) return next(st);
         if (!needSecrets(keys)) return;
-        return busyThen('Checking the token…', 900, () => { S.checked.mesh = hhmm(now()); toast(`Checked: ${MESH[S.mesh].checked}. HomersLab sets up its rules and names.`, 'mesh'); next(st); });
+        return busyThen('Checking the token…', 900, () => { S.checked.mesh = hhmm(now()); toast(`Checked: ${MESH[S.mesh].checked}. Homeward sets up its rules and names.`, 'mesh'); next(st); });
       }
       if (st.id === 'domain') {
         if (!S.domain.trim()) { S.err = 'domain'; rerender(); return; }
@@ -324,17 +324,17 @@
       if (st.id === 'passkey') { S.closed = hhmm(now()); S.done.add('passkey'); toast('Signed in over the mesh. The home-network listener is closed, for good.', 'lock'); go('done'); return; }
       return next(st);
     }
-    if (a === 'help') { const h = HELP[b.dataset.k] || HELP.dns; await UI.dialog({ title: esc(h.title), sub: esc(h.sub), body: `<ol class="group help-steps">${h.steps.map((x) => `<li><span>${x}</span></li>`).join('')}</ol><p class="subhead">HomersLab seals it on study-pc and never shows it again. Replacing it later is a risky change, so it asks for your passkey.</p>`, actions: [{ label: 'Done', value: 'ok', kind: 'primary' }] }); return; }
+    if (a === 'help') { const h = HELP[b.dataset.k] || HELP.dns; await UI.dialog({ title: esc(h.title), sub: esc(h.sub), body: `<ol class="group help-steps">${h.steps.map((x) => `<li><span>${x}</span></li>`).join('')}</ol><p class="subhead">Homeward seals it on study-pc and never shows it again. Replacing it later is a risky change, so it asks for your passkey.</p>`, actions: [{ label: 'Done', value: 'ok', kind: 'primary' }] }); return; }
     if (a === 'replace') { delete S.saved[b.dataset.k]; if (b.dataset.k === 'mesh') delete S.checked.mesh; if (b.dataset.k === 'dns') delete S.checked.dns; if (b.dataset.k === 'smtp') S.mailSent = null; rerender(); document.querySelector(`[data-secret="${b.dataset.k}"]`)?.focus(); return; }
     if (a === 'testmail') { S.mailSent = hhmm(now()); rerender(); toast(`A test mail went to ${S.mail}.`, 'mail'); return; }
     if (a === 'print') {
       S.kitKept.print = true;
-      document.querySelector('#kit-print').innerHTML = `<h1>HomersLab recovery kit · ${esc(S.household)} (PROTOTYPE, fake values)</h1><dl><dt>Archive key (age)</dt><dd>${KEY}</dd><dt>Backup password (restic)</dt><dd>${RESTIC}</dd><dt>The primary</dt><dd>study-pc, Fedora 43, 192.168.1.20</dd><dt>Domain</dt><dd>${esc(S.domain)}</dd></dl>`;
+      document.querySelector('#kit-print').innerHTML = `<h1>Homeward recovery kit · ${esc(S.household)} (PROTOTYPE, fake values)</h1><dl><dt>Archive key (age)</dt><dd>${KEY}</dd><dt>Backup password (restic)</dt><dd>${RESTIC}</dd><dt>The primary</dt><dd>study-pc, Fedora 43, 192.168.1.20</dd><dt>Domain</dt><dd>${esc(S.domain)}</dd></dl>`;
       rerender(); try { window.print(); } catch {} return;
     }
     if (a === 'save') {
       S.kitKept.save = true;
-      try { const txt = `HomersLab recovery kit (PROTOTYPE, fake values)\n${S.household}\n\nArchive key (age): ${KEY}\nBackup password (restic): ${RESTIC}\n`; const url = URL.createObjectURL(new Blob([txt], { type: 'text/plain' })); const l = document.createElement('a'); l.href = url; l.download = 'homerslab-recovery-kit.txt'; l.click(); setTimeout(() => URL.revokeObjectURL(url), 1000); } catch {}
+      try { const txt = `Homeward recovery kit (PROTOTYPE, fake values)\n${S.household}\n\nArchive key (age): ${KEY}\nBackup password (restic): ${RESTIC}\n`; const url = URL.createObjectURL(new Blob([txt], { type: 'text/plain' })); const l = document.createElement('a'); l.href = url; l.download = 'homeward-recovery-kit.txt'; l.click(); setTimeout(() => URL.revokeObjectURL(url), 1000); } catch {}
       rerender(); return;
     }
     if (a === 'join') { S.joined = hhmm(now()); toast(`This laptop joined ${MESH[S.mesh].name} as Inês’s laptop.`, 'mesh'); HL.run(rerender, { type: 'fade' }); return; }

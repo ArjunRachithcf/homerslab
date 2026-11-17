@@ -1,0 +1,53 @@
+# The sign-in listener's LDAPS port (ADR 0020, #204): `homeward edge ldaps` ends TLS with the household's certificate
+# for the sign-in's name, as its own unprivileged user, and hands each connection on, unread, to the identity
+# provider's LDAP outpost on the sign-in network (packaging/sign-in, service ldap). The certificate and its key are
+# systemd credentials the agent sealed, the edge's, loaded as files through a drop-in the agent writes with the
+# sign-in's name (HOMEWARD_SIGN_IN): never in a database, an environment or a log (ADR 0011).
+[Unit]
+Description=Homeward sign-in listener, LDAPS
+Documentation=https://github.com/ArjunRachithcf/homeward
+# Runs as one of the package's users: on a node installed as HomersLab, only once the migration has renamed it
+# (#250), whether at boot or on an upgrade without one.
+Wants=homeward-migrate.service
+After=homeward-migrate.service
+Requires=homeward-ldaps.socket
+After=homeward-ldaps.socket homeward-agent.service
+ConditionPathExists=/etc/systemd/system/homeward-ldaps.service.d/50-homeward-certificates.conf
+
+[Service]
+Type=exec
+User=homeward-ldaps
+Group=homeward-ldaps
+ExecStart=/usr/bin/homeward edge ldaps --name ${HOMEWARD_SIGN_IN} --cert %d/tls.crt --key %d/tls.key --upstream 172.31.250.11:3389
+Restart=on-failure
+RestartSec=2s
+UMask=0077
+LimitNOFILE=4096
+
+CapabilityBoundingSet=
+AmbientCapabilities=
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+PrivateIPC=yes
+ProtectProc=invisible
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RestrictAddressFamilies=AF_UNIX AF_INET
+IPAddressDeny=any
+IPAddressAllow=172.31.240.0/20
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+MemoryMax=128M

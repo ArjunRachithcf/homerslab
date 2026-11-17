@@ -90,13 +90,14 @@ export function Assistant(p: Props) {
 export function Field(p: {
   id: string; label: string; value: string; onChange: (v: string) => void;
   type?: string; autoComplete?: string; hint?: string; error?: string;
+  dir?: 'auto'; // a name's or an address's direction follows its first strong letter (#124)
 }) {
   const describedBy = [p.hint && `h-${p.id}`, p.error && `e-${p.id}`].filter(Boolean).join(' ') || undefined;
   return (
     <div className="field">
       <label className="field-label" htmlFor={`f-${p.id}`}>{p.label}</label>
       <input id={`f-${p.id}`} className="input" type={p.type ?? 'text'} value={p.value} autoComplete={p.autoComplete ?? 'off'}
-        spellCheck={false} aria-invalid={p.error ? true : undefined} aria-describedby={describedBy}
+        spellCheck={false} dir={p.dir} aria-invalid={p.error ? true : undefined} aria-describedby={describedBy}
         onChange={(e) => p.onChange(e.target.value)} />
       {p.hint && <span className="hint" id={`h-${p.id}`}>{p.hint}</span>}
       {p.error && <span className="error-text" id={`e-${p.id}`}>{p.error}</span>}

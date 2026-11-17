@@ -1,6 +1,6 @@
-// HomersLab Admin prototype: the disk analyzer (ADR 0017), for admins only. PROTOTYPE, throwaway.
+// Homeward Admin prototype: the disk analyzer (ADR 0017), for admins only. PROTOTYPE, throwaway.
 // Opening it asks for the passkey (it shows file names across the household's data); the session lasts 10 minutes.
-// It deletes only in storage locations and HomersLab's own leftovers; inside an app's data it offers the app's own
+// It deletes only in storage locations and Homeward's own leftovers; inside an app's data it offers the app's own
 // cleanup. Every delete asks for the passkey again, bound to the exact items and their size. Deleted items stay in
 // "Recently deleted" for 7 days, kept by a btrfs snapshot.
 (() => {
@@ -11,7 +11,7 @@
   const SESSION = 10 * 60 * 1000;
   const open = () => AZ.until > Date.now();
   const disks = () => S.nodes.flatMap((n) => n.disks.map((d) => ({ n, d }))).filter((x) => D.analyzer[x.d.id]);
-  const OWNER = (o) => (!o ? '—' : o === 'leftover' ? 'HomersLab’s leftovers' : o === 'system' ? 'The system' : o.startsWith('st:') ? S.storage.find((s) => 'st:' + s.id === o)?.name || 'A storage location' : cat(o)?.name || o);
+  const OWNER = (o) => (!o ? '—' : o === 'leftover' ? 'Homeward’s leftovers' : o === 'system' ? 'The system' : o.startsWith('st:') ? S.storage.find((s) => 'st:' + s.id === o)?.name || 'A storage location' : cat(o)?.name || o);
   const TONE_TYPE = { Video: 2, Audio: 3, Books: 6, Documents: 6, Mixed: 4, Cache: 1, Snapshots: 5, 'App data': 1, Logs: 4, 'Move copy': 4, 'Removed app': 4, Images: 4, System: 5, 'Disk image': 4 };
   const toneOf = (x) => (x.owner === 'leftover' ? 4 : x.owner === 'system' ? 5 : x.owner && !x.owner.startsWith('st:') ? 1 : TONE_TYPE[x.type] || 2);
 
@@ -22,7 +22,7 @@
       const o = x.owner || owner, p = path ? `${path}/${x.name}` : x.name;
       const item = { ...x, owner: o, path: p, key: `${diskId}:${p}`, parent };
       item.canDelete = !!(o && (o === 'leftover' || o.startsWith('st:')) && !x.group && !x.inApp && !x.note && !x.kids); // a folder: choose inside it
-      item.why = x.inApp ? `Inside ${OWNER(o)}’s own data: deleting behind its back would corrupt it. Use its own cleanup.` : o === 'system' ? 'The system and the snapshots backups are made from: HomersLab looks after these itself.' : x.group ? `${x.name.replace(/^Other /, '').replace(/ \(.*/, '')}: open the storage location in a file manager to choose among them.` : '';
+      item.why = x.inApp ? `Inside ${OWNER(o)}’s own data: deleting behind its back would corrupt it. Use its own cleanup.` : o === 'system' ? 'The system and the snapshots backups are made from: Homeward looks after these itself.' : x.group ? `${x.name.replace(/^Other /, '').replace(/ \(.*/, '')}: open the storage location in a file manager to choose among them.` : '';
       if (AZ.gone[item.key]) return null;
       item.kids = x.kids ? x.kids.map((k) => go1(k, p, o, item)).filter(Boolean) : null;
       if (item.kids) item.gb = item.kids.reduce((s, k) => s + k.gb, 0);
@@ -87,7 +87,7 @@
         <div class="btn-row" style="margin-top:16px"><button class="btn btn-danger" data-act="az-free">${I('trash')}Free the space now, ${size(total)}</button></div>` : `<div class="group"><div class="empty">${I('trash')}<p class="empty-title">Nothing recently deleted</p><p class="empty-text">What you delete here waits 7 days before its space comes back.</p></div></div>`}`;
     }
     const selGb = sel.reduce((s, y) => s + y.gb, 0);
-    return `<div class="page-head"><div><h1>Disk analyzer</h1><p class="page-sub">${esc(x.n.name)} · ${esc(x.d.name)} · ${size(x.d.id === 'an-media' ? Math.round(x.d.sizeGB * (A.mediaPaused() ? 0.96 : 0.91)) : x.d.usedGB)} of ${size(x.d.sizeGB)} used. Deletes only in storage locations and HomersLab’s leftovers.</p></div><div class="page-actions">${pill()}<button class="btn" data-act="az-lock">${I('lock')}Lock</button></div></div>
+    return `<div class="page-head"><div><h1>Disk analyzer</h1><p class="page-sub">${esc(x.n.name)} · ${esc(x.d.name)} · ${size(x.d.id === 'an-media' ? Math.round(x.d.sizeGB * (A.mediaPaused() ? 0.96 : 0.91)) : x.d.usedGB)} of ${size(x.d.sizeGB)} used. Deletes only in storage locations and Homeward’s leftovers.</p></div><div class="page-actions">${pill()}<button class="btn" data-act="az-lock">${I('lock')}Lock</button></div></div>
       <div class="az-tools"><label class="sr-only" for="az-disk">Disk</label><select id="az-disk" class="input az-disk" data-change="az-disk">${disks().map((y) => `<option value="${y.d.id}" ${y.d.id === x.d.id ? 'selected' : ''}>${esc(y.n.name)}: ${esc(y.d.name)}</option>`).join('')}</select>
         <label class="sr-only" for="az-view-sel">View</label><select id="az-view-sel" class="input az-view-sel" data-change="az-view">${views.map(([k, l]) => `<option value="${k}" ${view === k ? 'selected' : ''}>${l.replace(/<[^>]+>/g, '').replace(/\s+\d+$/, '')}</option>`).join('')}</select>
         <div class="segmented az-views" style="--n:6" role="tablist" aria-label="Views" data-seg="az-view"><span class="segmented-thumb" aria-hidden="true"></span>${views.map(([k, l]) => `<button type="button" role="tab" aria-selected="${view === k}" data-act="az-go" data-to="${esc(`#/analyzer?disk=${x.d.id}&view=${k}`)}">${l}</button>`).join('')}</div></div>
@@ -96,7 +96,7 @@
   }, { after: () => { if (open()) { tick(); requestAnimationFrame(() => HL.treemapFit(document.querySelector('#main'))); } } });
 
   act('az-open', async () => {
-    const ok = await stepUp({ plan: { id: UI.planId({ k: 'analyzer', t: Math.floor(Date.now() / 60000) }), summary: 'open the disk analyzer for 10 minutes' }, title: 'Open the disk analyzer', action: 'Open it', sub: 'It shows file names across the household’s data, so HomersLab asks for your passkey.', what: [{ icon: 'eye', text: 'See what fills every disk, down to file names, for 10 minutes' }] });
+    const ok = await stepUp({ plan: { id: UI.planId({ k: 'analyzer', t: Math.floor(Date.now() / 60000) }), summary: 'open the disk analyzer for 10 minutes' }, title: 'Open the disk analyzer', action: 'Open it', sub: 'It shows file names across the household’s data, so Homeward asks for your passkey.', what: [{ icon: 'eye', text: 'See what fills every disk, down to file names, for 10 minutes' }] });
     if (!ok) return; AZ.until = Date.now() + SESSION; log('analyzer opened for 10 minutes'); HL.run(render, { type: 'fade' });
   });
   act('az-lock', () => { AZ.until = 0; AZ.sel = {}; HL.run(render, { type: 'fade' }); });
@@ -116,7 +116,7 @@
   act('az-clear', () => { AZ.sel = {}; render(); });
   async function del(items) {
     const gb = items.reduce((s, y) => s + y.gb, 0), pid = UI.planId({ k: 'az-del', items: items.map((y) => y.key) });
-    const ok = await stepUp({ plan: { id: pid, summary: `delete ${items.length} ${items.length === 1 ? 'item' : 'items'}, ${size(gb)}` }, title: `Delete ${items.length === 1 ? esc(items[0].name) : `${items.length} items`}`, action: 'Delete them', sub: 'HomersLab asks for your passkey for every delete, bound to exactly these items.',
+    const ok = await stepUp({ plan: { id: pid, summary: `delete ${items.length} ${items.length === 1 ? 'item' : 'items'}, ${size(gb)}` }, title: `Delete ${items.length === 1 ? esc(items[0].name) : `${items.length} items`}`, action: 'Delete them', sub: 'Homeward asks for your passkey for every delete, bound to exactly these items.',
       what: [...items.map((y) => ({ icon: 'trash', text: `${esc(y.name)}<small>${size(y.gb)} · ${esc(y.where)}</small>` })), { icon: 'clock', text: `Kept in Recently deleted for 7 days<small>${size(gb)} comes back after that, or when you free it</small>` }] });
     if (!ok) return false;
     const until = UI.dayMonth(new Date(now().getTime() + 7 * 86400000));
@@ -133,7 +133,7 @@
   });
   act('az-restore', async (t) => {
     const y = AZ.deleted[+t.dataset.i];
-    const ok = await stepUp({ plan: { id: UI.planId({ k: 'az-restore', key: y.key }), summary: `restore ${y.name}` }, title: `Restore ${esc(y.name)}`, action: 'Restore it', sub: 'Restoring puts files back where people can see them, so HomersLab asks for your passkey.', what: [{ icon: 'rollback', text: `${esc(y.name)}<small>${size(y.gb)}, back to ${esc(y.where)}</small>` }] });
+    const ok = await stepUp({ plan: { id: UI.planId({ k: 'az-restore', key: y.key }), summary: `restore ${y.name}` }, title: `Restore ${esc(y.name)}`, action: 'Restore it', sub: 'Restoring puts files back where people can see them, so Homeward asks for your passkey.', what: [{ icon: 'rollback', text: `${esc(y.name)}<small>${size(y.gb)}, back to ${esc(y.where)}</small>` }] });
     if (!ok) return; delete AZ.gone[y.key]; AZ.deleted.splice(+t.dataset.i, 1); S.approvals.push(ok); log(`analyzer: restored ${y.name}`); toast(`${y.name} is back in ${y.where}.`, 'rollback'); A.renderList();
   });
   act('az-free', async () => {

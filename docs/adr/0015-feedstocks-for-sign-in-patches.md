@@ -3,6 +3,9 @@ status: accepted
 date: 2026-11-10
 ---
 
+> Written when the product was called HomersLab. It is **Homeward** now, and HomersLab the maker's name
+> ([ADR 0022](0022-homeward-the-product-homerslab-the-maker.md)); the text below is as it was decided.
+
 # Feedstocks: HomersLab-built images, only where sign-in needs a patch
 
 **What a feedstock is.** Some open-source apps can't reach Verified sign-in through their own settings, OIDC, LDAP or

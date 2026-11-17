@@ -1,0 +1,82 @@
+id: everything
+name: Everything
+purpose: Photos
+description: An app that uses every field of the manifest.
+category: photos
+tier: verified
+icon: icon.svg
+screenshots:
+  - {file: screenshots/one.png, caption: The first screen}
+versions:
+  app: v1.2.3
+  images:
+    - service: web
+      digests:
+        docker:
+          x86_64: sha256:1111111111111111111111111111111111111111111111111111111111111111
+          arm64: sha256:2222222222222222222222222222222222222222222222222222222222222222
+        podman:
+          x86_64: sha256:1111111111111111111111111111111111111111111111111111111111111111
+signIn:
+  - method: oidc
+    redirectUris: [/auth/callback, app.everything:///callback]
+    scopes: [openid, email, profile]
+    env:
+      issuer: OIDC_ISSUER
+      discovery: OIDC_DISCOVERY_URL
+      clientId: OIDC_CLIENT_ID
+      clientSecretFile: OIDC_CLIENT_SECRET_FILE
+      redirectUri: OIDC_REDIRECT_URI
+      url: BASE_URL
+      adminGroup: OIDC_ADMIN_GROUP
+    secretUid: 1000
+    refusePaths: [/api/password-login, "PUT /api/users"]
+  - method: ldap
+    attributes: [uid, mail]
+    ldap:
+      url: LDAP_URL
+      host: LDAP_HOST
+      port: LDAP_PORT
+      baseDn: LDAP_BASE_DN
+      userDn: LDAP_USER_DN
+      adminGroup: LDAP_ADMIN_GROUP
+    refusePaths: [/api/local-login]
+  - method: guard
+identity:
+  edge: homerslab-v1
+names:
+  name: everything
+  service: web
+  port: 8080
+  exposure: mesh
+  public: true
+audience:
+  default: adults
+  kidView: Only the kids' albums
+data:
+  - {what: The library, service: web, path: /data}
+  - what: Its database
+    service: web
+    dump: {command: [pg_dump, --username=postgres, everything], file: everything.sql, restore: [psql, --username=postgres, everything]}
+  - {what: Thumbnails, service: web, path: /cache, backup: false, why: They are made again from the library}
+storage:
+  - {id: library, what: The films and series it shows, service: web, path: /media}
+  - {id: uploads, what: Where it saves what people upload, service: web, path: /uploads, access: read-write}
+secrets:
+  - {name: db-password, what: the database password, uid: 999}
+health:
+  - service: web
+    http: {port: 8080, path: /health}
+  - {service: web, compose: true}
+resources:
+  memoryMiB: 2048
+  diskGiB: 10
+  grows: the library
+  gpu: {need: optional, vendors: [nvidia, intel], for: faster thumbnails}
+  canPause: true
+extras:
+  - {id: render, kind: device, service: web, device: /dev/dri/renderD128, why: Video made smaller on the GPU, optional: true}
+  - {id: lan, kind: network, service: web, why: It finds the TVs at home}
+  - {id: admin, kind: capability, service: web, capability: NET_ADMIN, why: It sets up its own network}
+updateNotes:
+  - {version: v1.2.3, notes: The first version in the catalog.}

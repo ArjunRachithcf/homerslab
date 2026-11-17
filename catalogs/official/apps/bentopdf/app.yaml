@@ -1,0 +1,55 @@
+id: bentopdf
+name: BentoPDF
+purpose: PDF tools
+description: >-
+  Merge, split, sign, compress and convert PDFs. Everything happens in the person's own browser, so no document is
+  ever uploaded, not even to the household's own machines. BentoPDF has no sign-in of its own: the edge asks for the
+  household account before the page opens.
+category: documents
+tier: community
+icon: icon.svg
+screenshots:
+  - {file: screenshots/tools.jpg, caption: Every tool on one page}
+  - {file: screenshots/merge.jpg, caption: Merging PDFs}
+
+versions:
+  app: "2.8.10"
+  images:
+    - service: web
+      digests:
+        docker: &web
+          x86_64: sha256:c1981c9462e8cb9d6ffe6a4e8dd89336c3bee5459f8a603cfafda55f2958789a
+          arm64: sha256:d743523cb79a2fea095c5f19355d1d10387fc0cc678685a928483ba65f380ba8
+        podman: *web
+
+signIn:
+  - method: guard
+
+names:
+  name: pdf
+  service: web
+  port: 8080
+  exposure: mesh
+  public: false
+
+audience:
+  default: adults
+
+data: []
+
+secrets: []
+
+health:
+  - service: web
+    http: {port: 8080, path: /}
+
+resources:
+  memoryMiB: 128
+  diskGiB: 1
+  gpu: {need: none}
+  canPause: false
+
+extras: []
+
+updateNotes:
+  - {version: "2.8.10", notes: The version the catalog starts with.}

@@ -3,6 +3,9 @@ status: accepted
 date: 2026-11-09
 ---
 
+> Written when the product was called HomersLab. It is **Homeward** now, and HomersLab the maker's name
+> ([ADR 0022](0022-homeward-the-product-homerslab-the-maker.md)); the text below is as it was decided.
+
 # Build only the glue, on maintained parts
 
 HomersLab is a new codebase. It writes only what was missing on 2026-11-09:
@@ -15,7 +18,8 @@ Everything else is maintained software:
 - Authentik and Kanidm for sign-in;
 - Caddy for the edge;
 - NetBird and Tailscale for the mesh;
-- Docker's Compose SDK for running apps;
+- the standard `docker compose` command and Podman's Quadlet for running apps, with Docker's Compose SDK only for
+  reading and planning them ([ADR 0014](0014-app-units-run-standard-tools.md));
 - restic and age for backups;
 - libdns for DNS providers.
 
@@ -35,3 +39,9 @@ build, but we don't reinvent a sign-in, a proxy, a mesh or a backup tool.
   - It has no install, remove, update or restore.
   - We reuse its ideas: the security model, secrets that only travel inward, golden tests, wizards for steps only a
     person can do.
+
+## Amended (2026-11-11)
+
+Proposed in #17, for the maintainer's acceptance: the line on running apps follows the decision of 2026-11-10 (ADR
+0014). Apps run as systemd units that call the standard compose command or Quadlet; the Compose SDK only reads and
+plans. HomersLab's binary is never in an app's start path.

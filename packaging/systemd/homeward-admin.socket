@@ -1,0 +1,20 @@
+# Admin's socket, on the primary: the manager serves Admin here, and only the edge may connect (its group), which
+# answers at admin.<main domain> over the mesh only.
+[Unit]
+Description=Homeward Admin, for the edge
+Documentation=https://github.com/ArjunRachithcf/homeward
+# Runs as one of the package's users: on a node installed as HomersLab, only once the migration has renamed it
+# (#250), whether at boot or on an upgrade without one.
+Wants=homeward-migrate.service
+After=homeward-migrate.service
+
+[Socket]
+ListenStream=/run/homeward-admin.sock
+SocketUser=homeward
+SocketGroup=homeward-edge
+SocketMode=0660
+FileDescriptorName=admin
+Service=homeward-manager.service
+
+[Install]
+WantedBy=sockets.target

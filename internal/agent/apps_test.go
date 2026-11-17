@@ -1,0 +1,808 @@
+package agent_test
+
+import (
+	"bytes"
+	"encoding/base64"
+	"encoding/json"
+	"io/fs"
+	"log/slog"
+	"net/http"
+	"net/netip"
+	"net/url"
+	"os"
+	"path/filepath"
+	"slices"
+	"strings"
+	"sync"
+	"testing"
+
+	"github.com/ArjunRachithcf/homeward/catalogs"
+	"github.com/ArjunRachithcf/homeward/internal/agent"
+	"github.com/ArjunRachithcf/homeward/internal/agent/agenttest"
+	"github.com/ArjunRachithcf/homeward/internal/appunit"
+	"github.com/ArjunRachithcf/homeward/internal/catalog"
+	"github.com/ArjunRachithcf/homeward/internal/engine"
+	"github.com/ArjunRachithcf/homeward/internal/engine/compose"
+	"github.com/ArjunRachithcf/homeward/internal/testenv"
+)
+
+// bentoPDF is the official catalog's BentoPDF as its install plan hands it to the agent.
+func bentoPDF(t *testing.T) agent.AppRequest {
+	t.Helper()
+	file, err := fs.ReadFile(catalogs.Official(), "apps/bentopdf/compose.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return agent.AppRequest{Plan: "p-8c125cd2f9f38dfdd95c9c0ba3cd2663", Product: "BentoPDF", Compose: string(file), Name: "pdf.example.test",
+		Service: "web", Port: 8080, Guard: true, Secrets: []appunit.Secret{}, Health: []agent.AppHealth{{Service: "web", Port: 8080, Path: "/"}}}
+}
+
+// withSecrets is a guarded app with a database, whose password its two services read.
+func withSecrets() agent.AppRequest {
+	return agent.AppRequest{Plan: "p-0123456789abcdef0123456789abcdef", Product: "Ledger", Name: "ledger.example.test", Service: "web", Port: 3000, Guard: true,
+		Compose: `services:
+  web:
+    image: ghcr.io/example/ledger:1@sha256:1111111111111111111111111111111111111111111111111111111111111111
+    secrets: [db-password]
+  db:
+    image: docker.io/library/postgres:16@sha256:2222222222222222222222222222222222222222222222222222222222222222
+    secrets: [db-password]
+    healthcheck: {test: ["CMD", "pg_isready"]}
+secrets:
+  db-password:
+    file: ./db-password
+`,
+		Secrets: []appunit.Secret{{Name: "db-password", UID: 999}},
+		Health:  []agent.AppHealth{{Service: "web", Port: 3000, Path: "/health"}, {Service: "db", Compose: true}}}
+}
+
+// clientSecret stands in for the secret of Mealie's OIDC client, which the manager hands the agent inward only.
+const clientSecret = "CLIENT-SECRET-PLACEHOLDER-0123456789abcdefghijklmnopqrstuv"
+
+// mealie is the official catalog's Mealie as its install plan hands it to the agent (#20): it signs people in itself,
+// with the OIDC client the household account made for it.
+func mealie(t *testing.T) agent.AppRequest {
+	t.Helper()
+	file, err := fs.ReadFile(catalogs.Official(), "apps/mealie/compose.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return agent.AppRequest{Plan: "p-3a5f8e0c1d2b4a6978c0e1f2a3b4c5d6", Product: "Mealie", Compose: string(file), Name: "recipes.example.test",
+		Service: "web", Port: 9000, Secrets: []appunit.Secret{}, Health: []agent.AppHealth{{Service: "web", Port: 9000, Path: "/api/app/about"}},
+		OIDC: &agent.AppOIDC{
+			Env: catalog.OIDCEnv{Discovery: "OIDC_CONFIGURATION_URL", ClientID: "OIDC_CLIENT_ID", ClientSecretFile: "OIDC_CLIENT_SECRET_FILE",
+				URL: "BASE_URL", AdminGroup: "OIDC_ADMIN_GROUP", RedirectURI: "OIDC_REDIRECT_URI", Issuer: "OIDC_ISSUER"},
+			Issuer: "https://auth.example.test/application/o/homerslab-mealie/", ClientID: "homerslab-mealie",
+			RedirectURIs: []string{"https://recipes.example.test/login"}, AdminGroup: "homerslab-admins", SecretUID: 911, ClientSecret: clientSecret,
+			RefusePaths: []string{"/api/auth/token", "PUT /api/users"},
+		}}
+}
+
+// signedIn is an agent on a joined primary whose edge serves the sign-in: where a guarded app can be served.
+func signedIn(t *testing.T, c agent.Config) (string, *agenttest.Host, string) {
+	t.Helper()
+	sock, h, state := joined(t, c)
+	chain, key := wildcard(t, "example.test")
+	call(t, sock, "PUT", "/v1/edge/certificates/example.test", map[string]string{"chain": chain, "key": key})
+	call(t, sock, "PUT", "/v1/sign-in", map[string]string{"provider": "authentik", "bootstrapToken": bootstrap})
+	if code, body := call(t, sock, "PUT", "/v1/edge", agent.EdgeSites{Port: 443, Admin: "admin.example.test", SignIn: "auth.example.test"}); code != http.StatusOK {
+		t.Fatalf("the edge: %d %s", code, body)
+	}
+	return sock, h, state
+}
+
+func install(t *testing.T, sock, id string, r agent.AppRequest) agent.AppStatus {
+	t.Helper()
+	code, body := call(t, sock, "PUT", "/v1/apps/"+id, r)
+	if code != http.StatusAccepted {
+		t.Fatalf("installing %s: %d %s", id, code, body)
+	}
+	var s agent.AppStatus
+	if err := json.Unmarshal(body, &s); err != nil {
+		t.Fatal(err)
+	}
+	return s
+}
+
+func apps(t *testing.T, sock string) agent.AppsStatus {
+	t.Helper()
+	code, body := call(t, sock, "GET", "/v1/apps", nil)
+	var s agent.AppsStatus
+	if code != http.StatusOK || json.Unmarshal(body, &s) != nil {
+		t.Fatalf("the apps: %d %s", code, body)
+	}
+	return s
+}
+
+// The agent installs an app as its plan says (#19): one unit of its own, written where systemd links it from, running
+// the standard compose command on the catalog's file and the agent's; systemd enables and starts it. The agent's
+// compose file is the golden render's, from what the agent read of the project.
+func TestAnAppIsOneUnitRunningTheStandardComposeCommand(t *testing.T) {
+	testenv.Isolate(t)
+	sock, h, state := signedIn(t, agent.Config{Sysroot: withSELinux{agenttest.Primary()}})
+	r := bentoPDF(t)
+	s := install(t, sock, "bentopdf", r)
+	if s.Unit != "homeward-app-bentopdf.service" || s.Project != "homerslab-bentopdf" || s.Upstream != "172.31.240.2:8080" || s.Plan != r.Plan {
+		t.Errorf("the app: %+v", s)
+	}
+	dir := filepath.Join(state, "apps", "bentopdf")
+	unit, err := os.ReadFile(filepath.Join(h.Root, agent.UnitsDir, "homeward-app-bentopdf.service"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := appunit.App{ID: "bentopdf", Product: "BentoPDF", Plan: r.Plan,
+		Project: engine.Project{Name: "homerslab-bentopdf", Services: []engine.Service{{Name: "web", Image: "ghcr.io/alam00000/bentopdf-simple:2.8.10@sha256:b5227a308e796d2bd00d2eb6da9d7296093107a8be7efef38a006d06506dc3c0"}},
+			Networks: []engine.Network{{Name: "default"}}},
+		Service: "web", Upstream: mustAddrPort("172.31.240.2:8080"), Subnet: mustPrefix("172.31.240.0/28"), Level: "s0:c600,c601", Slot: 0, SELinux: true, Dir: dir,
+		SignIn: "auth.example.test", SignInAt: agent.SignInListen}
+	if !bytes.Equal(unit, appunit.UnitFile(want)) {
+		t.Errorf("the unit:\n%s\nwant\n%s", unit, appunit.UnitFile(want))
+	}
+	if got, _ := os.ReadFile(filepath.Join(dir, "homeward.yaml")); !bytes.Equal(got, appunit.Override(want)) {
+		t.Errorf("the agent's compose file:\n%s", got)
+	}
+	if got, _ := os.ReadFile(filepath.Join(dir, "compose.yaml")); string(got) != r.Compose {
+		t.Errorf("the catalog's compose file, as it is:\n%s", got)
+	}
+	enable := h.Ran("systemctl enable /" + agent.UnitsDir + "/homeward-app-bentopdf.service")
+	reload := h.Ran("systemctl daemon-reload")
+	start := h.Ran("systemctl --no-block restart homeward-app-bentopdf.service")
+	if enable < 0 || start < 0 || start < enable || h.Times("systemctl daemon-reload") == 0 {
+		t.Errorf("systemd: enabled at %d, reloaded at %d, started at %d", enable, reload, start)
+	}
+	// Applying the same plan again writes the same files, and keeps the app where it was.
+	if again := install(t, sock, "bentopdf", r); again.Upstream != s.Upstream {
+		t.Errorf("applied again: %+v", again)
+	}
+}
+
+// The edge serves the app's name behind its guard, to its one upstream; the firewall table lets only the edge's user and
+// the agent's open that upstream (ADR 0020). The sign-in's server is also opened by the manager's user, and by Home's,
+// whose clients of the sign-in exchange their codes there (#21); Home's never reaches an app.
+func TestTheEdgeAloneReachesTheApp(t *testing.T) {
+	testenv.Isolate(t)
+	users := func(name string) (uint32, bool) {
+		uid, ok := map[string]uint32{"homeward-edge": 981, "homeward": 980, "homeward-home": 982}[name]
+		return uid, ok
+	}
+	sock, h, _ := signedIn(t, agent.Config{Users: users})
+	install(t, sock, "bentopdf", bentoPDF(t))
+	cfg := string(h.Edge.Config())
+	for _, want := range []string{`"pdf.example.test"`, `"dial":"172.31.240.2:8080"`, `"uri":"/outpost.goauthentik.io/auth/caddy"`, `"X-Authentik-*"`} {
+		if !strings.Contains(strings.ReplaceAll(cfg, " ", ""), strings.ReplaceAll(want, " ", "")) {
+			t.Errorf("the edge's configuration lacks %s:\n%s", want, cfg)
+		}
+	}
+	table, _ := h.Table()
+	if !strings.Contains(table, "ip daddr . tcp dport . meta skuid { 172.31.240.2 . 8080 . 0, 172.31.240.2 . 8080 . 981, 172.31.250.10 . 9000 . 0, 172.31.250.10 . 9000 . 980, 172.31.250.10 . 9000 . 981, 172.31.250.10 . 9000 . 982 } accept") {
+		t.Errorf("the firewall table:\n%s", table)
+	}
+}
+
+// The sign-in's LDAP outpost (#204): of this machine's processes only the LDAPS port's opens its plain LDAP port, and
+// none its own LDAPS or metrics port, whether an app signs in over LDAP yet or not.
+func TestOnlyTheLDAPSPortsProcessOpensTheOutpost(t *testing.T) {
+	testenv.Isolate(t)
+	users := func(name string) (uint32, bool) {
+		uid, ok := map[string]uint32{"homeward-edge": 981, "homeward": 980, "homeward-home": 982, "homeward-ldaps": 60604}[name]
+		return uid, ok
+	}
+	_, h, _ := signedIn(t, agent.Config{Users: users})
+	table, _ := h.Table()
+	if !strings.Contains(table, "172.31.250.11 . tcp . 3389, 172.31.250.11 . tcp . 6636, 172.31.250.11 . tcp . 9300 } jump to_apps") {
+		t.Errorf("the outpost's ports aren't kept to to_apps:\n%s", table)
+	}
+	if !strings.Contains(table, "172.31.250.10 . 9000 . 982, 172.31.250.11 . 3389 . 60604 } accept") {
+		t.Errorf("the LDAPS port's process can't open the outpost:\n%s", table)
+	}
+	for _, bad := range []string{"172.31.250.11 . 3389 . 0", "172.31.250.11 . 3389 . 98", "172.31.250.11 . 6636 .", "172.31.250.11 . 9300 ."} {
+		if strings.Contains(table, bad) {
+			t.Errorf("the table lets %q through:\n%s", bad, table)
+		}
+	}
+	if agent.LDAPOutpost.String() != "172.31.250.11" {
+		t.Errorf("the outpost's address: %s", agent.LDAPOutpost)
+	}
+}
+
+// Apps reach the sign-in through the sign-in listener only (ADR 0020): its own address, on the machine's loopback, on
+// the household's port, with the sign-in's route only; every container resolves auth.<main domain> to it, and the
+// firewall table lets the apps' networks open that and nothing else of the machine. Before an app, there is none.
+func TestAppsReachTheSignInThroughItsListener(t *testing.T) {
+	testenv.Isolate(t)
+	sock, h, state := signedIn(t, agent.Config{})
+	if table, _ := h.Table(); bytes.Contains(h.Edge.Config(), []byte("172.31.255.241")) || strings.Contains(table, "172.31.255.241") || len(h.Loopback()) != 0 {
+		t.Errorf("a listener before any app:\n%s\n%s", h.Edge.Config(), table)
+	}
+	install(t, sock, "bentopdf", bentoPDF(t))
+	if got := h.Loopback(); !slices.Equal(got, []string{"172.31.255.241/32"}) {
+		t.Errorf("the loopback's addresses: %q", got)
+	}
+	cfg := strings.NewReplacer(" ", "", "\n", "").Replace(string(h.Edge.Config()))
+	if !strings.Contains(cfg, `"sign-in":{`) || !strings.Contains(cfg, `"listen":["172.31.255.241:443"]`) {
+		t.Errorf("the edge has no sign-in listener:\n%s", cfg)
+	}
+	if table, _ := h.Table(); !strings.Contains(table, "\tchain apps_in {\n\t\tmeta l4proto { tcp, udp } th dport 53 fib daddr . iif type local accept\n\t\tip daddr . tcp dport { 172.31.255.241 . 443 } accept\n") {
+		t.Errorf("the firewall table doesn't let apps reach the listener:\n%s", table)
+	}
+	if o, _ := os.ReadFile(filepath.Join(state, "apps", "bentopdf", "homeward.yaml")); !strings.Contains(string(o), "extra_hosts:\n      - \"auth.example.test=172.31.255.241\"\n") {
+		t.Errorf("the app's containers don't resolve the sign-in to its listener:\n%s", o)
+	}
+}
+
+// An app installed before the sign-in is served follows it once it is: its compose file is written again, so its
+// containers resolve the sign-in to the listener, and systemd restarts it.
+func TestAnAppInstalledBeforeTheSignInFollowsIt(t *testing.T) {
+	testenv.Isolate(t)
+	sock, h, state := joined(t, agent.Config{})
+	chain, key := wildcard(t, "example.test")
+	call(t, sock, "PUT", "/v1/edge/certificates/example.test", map[string]string{"chain": chain, "key": key})
+	call(t, sock, "PUT", "/v1/edge", agent.EdgeSites{Port: 443, Admin: "admin.example.test"})
+	install(t, sock, "bentopdf", bentoPDF(t))
+	file := filepath.Join(state, "apps", "bentopdf", "homeward.yaml")
+	if o, _ := os.ReadFile(file); strings.Contains(string(o), "extra_hosts") {
+		t.Fatalf("before the sign-in:\n%s", o)
+	}
+	restarts := h.Times("systemctl --no-block restart homeward-app-bentopdf.service")
+	call(t, sock, "PUT", "/v1/sign-in", map[string]string{"provider": "authentik", "bootstrapToken": bootstrap})
+	if code, body := call(t, sock, "PUT", "/v1/edge", agent.EdgeSites{Port: 443, Admin: "admin.example.test", SignIn: "auth.example.test"}); code != http.StatusOK {
+		t.Fatalf("the edge: %d %s", code, body)
+	}
+	if o, _ := os.ReadFile(file); !strings.Contains(string(o), "extra_hosts:\n      - \"auth.example.test=172.31.255.241\"\n") {
+		t.Errorf("after the sign-in:\n%s", o)
+	}
+	if got := h.Times("systemctl --no-block restart homeward-app-bentopdf.service"); got != restarts+1 {
+		t.Errorf("restarts: %d, then %d", restarts, got)
+	}
+	if !bytes.Contains(h.Edge.Config(), []byte(`"172.31.255.241:443"`)) {
+		t.Errorf("no listener:\n%s", h.Edge.Config())
+	}
+}
+
+// Where the listener's address can't be put on the loopback, the edge serves everything else, without the listener;
+// the table doesn't open it either.
+func TestTheEdgeServesWithoutTheListenerWhenItsAddressFails(t *testing.T) {
+	testenv.Isolate(t)
+	sock, h, _ := signedIn(t, agent.Config{})
+	h.Fail("ip -4 address replace")
+	s := install(t, sock, "bentopdf", bentoPDF(t))
+	if len(s.Pending) != 0 {
+		t.Errorf("pending: %q", s.Pending)
+	}
+	cfg := h.Edge.Config()
+	if !bytes.Contains(cfg, []byte("pdf.example.test")) || bytes.Contains(cfg, []byte("172.31.255.241")) {
+		t.Errorf("the edge:\n%s", cfg)
+	}
+	if table, _ := h.Table(); strings.Contains(table, "172.31.255.241") {
+		t.Errorf("the table opens the listener:\n%s", table)
+	}
+}
+
+// Without the sign-in served, the app's name isn't served at all: never unguarded.
+func TestAGuardedAppIsNeverServedWithoutItsGuard(t *testing.T) {
+	testenv.Isolate(t)
+	sock, h, _ := joined(t, agent.Config{})
+	chain, key := wildcard(t, "example.test")
+	call(t, sock, "PUT", "/v1/edge/certificates/example.test", map[string]string{"chain": chain, "key": key})
+	call(t, sock, "PUT", "/v1/edge", agent.EdgeSites{Port: 443, Admin: "admin.example.test"})
+	install(t, sock, "bentopdf", bentoPDF(t))
+	if bytes.Contains(h.Edge.Config(), []byte("pdf.example.test")) {
+		t.Errorf("the edge serves the app before the sign-in:\n%s", h.Edge.Config())
+	}
+}
+
+// Compose project names belong to Homeward (#19): an install is refused while the engine runs a project of that name
+// that this agent didn't create, and nothing is written for it.
+func TestAnInstallIsRefusedOverAProjectHomewardDidntCreate(t *testing.T) {
+	testenv.Isolate(t)
+	sock, h, state := signedIn(t, agent.Config{})
+	h.Project(engine.State{Name: "homerslab-bentopdf", Containers: []engine.Container{{Service: "web", Name: "homerslab-bentopdf-web-1", State: "exited"}}})
+	if code, body := call(t, sock, "PUT", "/v1/apps/bentopdf", bentoPDF(t)); code != http.StatusConflict || !strings.Contains(string(body), "not-ours") {
+		t.Errorf("over someone else's project: %d %s", code, body)
+	}
+	if _, err := os.Stat(filepath.Join(state, "apps", "bentopdf")); err == nil || h.Ran("systemctl enable /"+agent.UnitsDir) >= 0 {
+		t.Error("something was written for it")
+	}
+	// Only checking: refused the same, and an app that would install is only said to.
+	if code, body := call(t, sock, "PUT", "/v1/apps/bentopdf?check=true", bentoPDF(t)); code != http.StatusConflict || !strings.Contains(string(body), "not-ours") {
+		t.Errorf("checking over someone else's project: %d %s", code, body)
+	}
+	if code, body := call(t, sock, "PUT", "/v1/apps/ledger?check=true", withSecrets()); code != http.StatusOK || !strings.Contains(string(body), `"installable":true`) {
+		t.Errorf("checking an app that would install: %d %s", code, body)
+	}
+	if _, err := os.Stat(filepath.Join(state, "apps", "ledger")); err == nil || h.Ran("systemctl enable /"+agent.UnitsDir) >= 0 || len(apps(t, sock).Apps) != 0 {
+		t.Error("checking installed something")
+	}
+	h.EngineDown(true)
+	if code, body := call(t, sock, "PUT", "/v1/apps/other", bentoPDF(t)); code != http.StatusServiceUnavailable {
+		t.Errorf("with the engine down: %d %s", code, body)
+	}
+}
+
+// An install that fails halfway (here, systemd won't start the unit) leaves the agent as it was: no app kept, so the
+// firewall table and the edge never open to it, and its unit stopped.
+func TestAnInstallThatFailsHalfwayLeavesNothingServed(t *testing.T) {
+	testenv.Isolate(t)
+	sock, h, _ := signedIn(t, agent.Config{})
+	h.Fail("systemctl --no-block restart homeward-app-ledger.service")
+	if code, body := call(t, sock, "PUT", "/v1/apps/ledger", withSecrets()); code != http.StatusInternalServerError || !strings.Contains(string(body), "unit-failed") {
+		t.Fatalf("a unit systemd won't start: %d %s", code, body)
+	}
+	if s := apps(t, sock); len(s.Apps) != 0 {
+		t.Errorf("the agent keeps it: %+v", s.Apps)
+	}
+	if h.Ran("systemctl disable --now homeward-app-ledger.service") < 0 {
+		t.Error("its unit wasn't stopped")
+	}
+	if table, _ := h.Table(); strings.Contains(table, "172.31.240.2 . tcp . 3000") {
+		t.Errorf("the firewall table opens to it:\n%s", table)
+	}
+	h.Mend()
+	install(t, sock, "ledger", withSecrets())
+}
+
+// An install whose wiring doesn't take (the firewall table won't load) is still an install: the unit runs the app, the
+// answer says what is pending, and the agent keeps it, so the household records it; the upstream stays closed meanwhile.
+func TestAnInstallWhoseWiringDoesntTakeSaysSo(t *testing.T) {
+	testenv.Isolate(t)
+	sock, h, _ := signedIn(t, agent.Config{})
+	h.Fail("nft -f -")
+	s := install(t, sock, "ledger", withSecrets())
+	if !slices.Equal(s.Pending, []string{"firewall"}) {
+		t.Errorf("pending: %q", s.Pending)
+	}
+	if got := apps(t, sock); len(got.Apps) != 1 || got.Apps[0].ID != "ledger" {
+		t.Errorf("the agent's apps: %+v", got.Apps)
+	}
+	if table, _ := h.Table(); strings.Contains(table, "172.31.240.2 . tcp . 3000") {
+		t.Errorf("the upstream is open:\n%s", table)
+	}
+}
+
+// An app's name is its own: never Admin's, the sign-in's or another app's, which the edge would serve first.
+func TestAnAppsNameIsItsOwn(t *testing.T) {
+	testenv.Isolate(t)
+	sock, _, _ := signedIn(t, agent.Config{})
+	install(t, sock, "ledger", withSecrets())
+	for _, name := range []string{"ledger.example.test", "admin.example.test", "auth.example.test"} {
+		r := bentoPDF(t)
+		r.Name = name
+		if code, body := call(t, sock, "PUT", "/v1/apps/bentopdf", r); code != http.StatusConflict || !strings.Contains(string(body), "name-taken") {
+			t.Errorf("%s: %d %s", name, code, body)
+		}
+	}
+	install(t, sock, "ledger", withSecrets()) // its own name, applied again
+}
+
+// The agent refuses what the floor and the wiring can't take, whatever the manager asks: a published port, a folder
+// relabelled for SELinux (shared by every container that mounts it), a network mode, an upstream the project doesn't
+// run, secrets other than the plan's, an app that isn't guarded, and ids that are Homeward's own.
+func TestAnAppsProjectIsRefusedWhenItCantBeWired(t *testing.T) {
+	testenv.Isolate(t)
+	sock, h, _ := signedIn(t, agent.Config{})
+	edit := func(f func(*agent.AppRequest)) agent.AppRequest {
+		r := withSecrets()
+		f(&r)
+		return r
+	}
+	for name, c := range map[string]struct {
+		id   string
+		r    agent.AppRequest
+		code int
+		why  string
+	}{
+		"a published port": {"ledger", edit(func(r *agent.AppRequest) {
+			r.Compose = strings.Replace(r.Compose, "    secrets: [db-password]\n  db:", "    secrets: [db-password]\n    ports: [\"127.0.0.1:3000:3000\"]\n  db:", 1)
+		}), 422, "publishes-ports"},
+		"a relabelled folder": {"ledger", edit(func(r *agent.AppRequest) {
+			r.Compose = strings.Replace(r.Compose, "  db:\n", "  db:\n    volumes: [\"/srv/ledger:/var/lib/postgresql/data:z\"]\n", 1)
+		}), 422, "relabels-a-folder"},
+		"a folder of the machine, bound by the catalog's file": {"ledger", edit(func(r *agent.AppRequest) {
+			r.Compose = strings.Replace(r.Compose, "  db:\n", "  db:\n    volumes: [\"/etc:/host-etc\"]\n", 1)
+		}), 422, "binds-a-folder"},
+		"a bind in the long form": {"ledger", edit(func(r *agent.AppRequest) {
+			r.Compose = strings.Replace(r.Compose, "  db:\n", "  db:\n    volumes: [{type: bind, source: /srv/media, target: /media}]\n", 1)
+		}), 422, "binds-a-folder"},
+		"a config from a file of the machine": {"ledger", edit(func(r *agent.AppRequest) {
+			r.Compose = strings.Replace(r.Compose, "  db:\n", "  db:\n    configs: [shadow]\n", 1) + "configs:\n  shadow:\n    file: /etc/shadow\n"
+		}), 422, "binds-a-folder"},
+		"a network mode": {"ledger", edit(func(r *agent.AppRequest) {
+			r.Compose = strings.Replace(r.Compose, "  db:\n", "  db:\n    network_mode: host\n", 1)
+		}), 422, "network-mode"},
+		"its own security options, which would undo its level": {"ledger", edit(func(r *agent.AppRequest) {
+			r.Compose = strings.Replace(r.Compose, "  db:\n", "  db:\n    security_opt: [\"label=disable\"]\n", 1)
+		}), 422, "loosens-confinement"},
+		"privileged": {"ledger", edit(func(r *agent.AppRequest) {
+			r.Compose = strings.Replace(r.Compose, "  db:\n", "  db:\n    privileged: true\n", 1)
+		}), 422, "loosens-confinement"},
+		"the machine's process namespace": {"ledger", edit(func(r *agent.AppRequest) {
+			r.Compose = strings.Replace(r.Compose, "  db:\n", "  db:\n    pid: host\n", 1)
+		}), 422, "off-floor"},
+		"the sign-in's network, as external": {"ledger", edit(func(r *agent.AppRequest) {
+			r.Compose = strings.Replace(r.Compose, "  db:\n", "  db:\n    networks: [ak]\n", 1) +
+				"networks:\n  ak: {external: true, name: homerslab-authentik_default}\n"
+		}), 422, "network-not-its-own"},
+		"the sign-in's network, by its name": {"ledger", edit(func(r *agent.AppRequest) {
+			r.Compose = strings.Replace(r.Compose, "  db:\n", "  db:\n    networks: [ak]\n", 1) + "networks:\n  ak: {name: homerslab-authentik_default}\n"
+		}), 422, "network-not-its-own"},
+		"a network called as the upstream's": {"ledger", edit(func(r *agent.AppRequest) {
+			r.Compose = strings.Replace(r.Compose, "  db:\n", "  db:\n    networks: [homerslab-upstream]\n", 1) + "networks:\n  homerslab-upstream: {}\n"
+		}), 422, "network-not-its-own"},
+		"a network on the LAN": {"ledger", edit(func(r *agent.AppRequest) {
+			r.Compose = strings.Replace(r.Compose, "  db:\n", "  db:\n    networks: [lan]\n", 1) +
+				"networks:\n  lan: {driver: macvlan, driver_opts: {parent: eth0}}\n"
+		}), 422, "network-configured"},
+		"a network's own addresses": {"ledger", edit(func(r *agent.AppRequest) {
+			r.Compose = strings.Replace(r.Compose, "  db:\n", "  db:\n    networks: [back]\n", 1) +
+				"networks:\n  back: {ipam: {config: [{subnet: 172.31.250.0/28}]}}\n"
+		}), 422, "network-configured"},
+		"its own address for the sign-in": {"ledger", edit(func(r *agent.AppRequest) {
+			r.Compose = strings.Replace(r.Compose, "  db:\n", "  db:\n    extra_hosts: [\"auth.example.test=10.0.0.1\"]\n", 1)
+		}), 422, "names-the-sign-in"},
+		"an upstream it doesn't run":     {"ledger", edit(func(r *agent.AppRequest) { r.Service = "api" }), 422, "no-such-service"},
+		"a secret the plan doesn't make": {"ledger", edit(func(r *agent.AppRequest) { r.Secrets = nil }), 422, "secrets-mismatch"},
+		"a secret the file doesn't take": {"ledger", edit(func(r *agent.AppRequest) {
+			r.Secrets = append(r.Secrets, appunit.Secret{Name: "api-key", UID: 1000})
+		}), 422, "secrets-mismatch"},
+		"not guarded":           {"ledger", edit(func(r *agent.AppRequest) { r.Guard = false }), 400, "sign-in-not-built"},
+		"the sign-in's own id":  {"authentik", withSecrets(), 400, "bad-app"},
+		"an id that isn't one":  {"Ledger", withSecrets(), 400, "bad-app"},
+		"a plan that isn't one": {"ledger", edit(func(r *agent.AppRequest) { r.Plan = "latest" }), 400, "bad-app"},
+		"a name YAML reads as several lines": {"ledger", edit(func(r *agent.AppRequest) {
+			r.Product = "X\u0085---\u0085services: {web: {privileged: true, pid: host, volumes: [\"/:/host\"]}}\u0085---\u0085#"
+		}), 400, "bad-app"},
+		"a name with the line separator": {"ledger", edit(func(r *agent.AppRequest) { r.Product = "X\u2028include: [/etc/shadow]" }), 400, "bad-app"},
+		"a secret's odd name":            {"ledger", edit(func(r *agent.AppRequest) { r.Secrets[0].Name = "../db" }), 400, "bad-secrets"},
+		"not a compose file":             {"ledger", edit(func(r *agent.AppRequest) { r.Compose = "include: [/etc/shadow]\n" }), 422, "invalid-compose"},
+		"a check of no service":          {"ledger", edit(func(r *agent.AppRequest) { r.Health[1].Service = "cache" }), 422, "no-such-service"},
+	} {
+		code, body := call(t, sock, "PUT", "/v1/apps/"+c.id, c.r)
+		if code != c.code || !strings.Contains(string(body), `"`+c.why+`"`) {
+			t.Errorf("%s: %d %s, want %d %s", name, code, body, c.code, c.why)
+		}
+	}
+	if h.Ran("systemctl enable /"+agent.UnitsDir) >= 0 {
+		t.Error("a refused app's unit was enabled")
+	}
+}
+
+// Secrets (ADR 0011): made by the agent, sealed as root with the host key and the TPM, under <app>.<name>, once; never
+// in an answer, the agent's state, or a file it writes in the clear.
+func TestAnAppsSecretsAreMadeAndSealedByTheAgent(t *testing.T) {
+	testenv.Isolate(t)
+	sock, h, state := signedIn(t, agent.Config{Sysroot: withSELinux{agenttest.Primary()}})
+	s := install(t, sock, "ledger", withSecrets())
+	cred := filepath.Join(state, "apps", "ledger", "credentials", "db-password.cred")
+	var sealed []string
+	for _, c := range h.Cmds() {
+		if c.Name == "systemd-creds" && c.Args[0] == "encrypt" && strings.Contains(c.String(), "/apps/") {
+			sealed = append(sealed, strings.Join(c.Args, " "))
+		}
+	}
+	if len(sealed) != 1 || sealed[0] != "encrypt --with-key=host+tpm2 --name=ledger.db-password - "+cred+".new" {
+		t.Fatalf("sealed: %q", sealed)
+	}
+	b, err := os.ReadFile(cred)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secret, _ := base64.StdEncoding.DecodeString(strings.TrimPrefix(string(b), "sealed:"))
+	if len(secret) < 32 {
+		t.Fatalf("the secret is %d bytes", len(secret))
+	}
+	unit, _ := os.ReadFile(filepath.Join(h.Root, agent.UnitsDir, "homeward-app-ledger.service"))
+	if !strings.Contains(string(unit), "LoadCredentialEncrypted=ledger.db-password:"+cred+"\n") ||
+		!strings.Contains(string(unit), "ExecStartPre=/usr/bin/chcon -t container_file_t -l "+"s0:c600,c601 /run/homeward-app-ledger/db-password\n") {
+		t.Errorf("the unit:\n%s", unit)
+	}
+	// Nowhere in the clear: not the answer, the state, the files, the logs.
+	seen := []string{toString(s)}
+	_ = filepath.Walk(state, func(p string, fi os.FileInfo, err error) error {
+		if err == nil && !fi.IsDir() && p != cred {
+			b, _ := os.ReadFile(p)
+			seen = append(seen, string(b))
+		}
+		return nil
+	})
+	_ = filepath.Walk(h.Root, func(p string, fi os.FileInfo, err error) error {
+		if err == nil && !fi.IsDir() {
+			b, _ := os.ReadFile(p)
+			seen = append(seen, string(b))
+		}
+		return nil
+	})
+	for _, c := range h.Cmds() {
+		seen = append(seen, strings.Join(c.Args, " "))
+	}
+	_, body := call(t, sock, "GET", "/v1/apps", nil)
+	seen = append(seen, string(body))
+	for _, txt := range seen {
+		if strings.Contains(txt, string(secret)) {
+			t.Fatalf("the secret is in the clear: %.200s", txt)
+		}
+	}
+	// Made once: applying again seals nothing new.
+	install(t, sock, "ledger", withSecrets())
+	after, _ := os.ReadFile(cred)
+	if !bytes.Equal(after, b) {
+		t.Error("applying again made a new secret")
+	}
+}
+
+// No SELinux-labelled folder is shared, and no two apps share a level: each app gets a level and an upstream network
+// of its own.
+func TestEachAppHasALevelAndANetworkOfItsOwn(t *testing.T) {
+	testenv.Isolate(t)
+	sock, _, state := signedIn(t, agent.Config{})
+	a := install(t, sock, "bentopdf", bentoPDF(t))
+	b := install(t, sock, "ledger", withSecrets())
+	if a.Upstream == b.Upstream || b.Upstream != "172.31.240.18:3000" {
+		t.Errorf("upstreams %s and %s", a.Upstream, b.Upstream)
+	}
+	ao, _ := os.ReadFile(filepath.Join(state, "apps", "bentopdf", "homeward.yaml"))
+	bo, _ := os.ReadFile(filepath.Join(state, "apps", "ledger", "homeward.yaml"))
+	if !strings.Contains(string(ao), "level:s0:c600,c601") || !strings.Contains(string(bo), "level:s0:c602,c603") {
+		t.Errorf("levels:\n%s\n%s", ao, bo)
+	}
+}
+
+// Status, health and logs for every app at once, from the engine through the Compose SDK; a container that runs
+// without its unit is drift (#19).
+func TestAppsReportTheirHealthAndContainersRunningWithoutTheirUnitAreDrift(t *testing.T) {
+	testenv.Isolate(t)
+	sock, h, _ := signedIn(t, agent.Config{})
+	install(t, sock, "bentopdf", bentoPDF(t))
+	install(t, sock, "ledger", withSecrets())
+	// The sign-in's own project runs under its unit: never drift.
+	h.Project(engine.State{Name: "homerslab-authentik", Containers: []engine.Container{{Service: "server", Name: "homerslab-authentik-server-1", State: "running"}}})
+	s := apps(t, sock)
+	if len(s.Apps) != 2 || s.Apps[0].ID != "bentopdf" || s.Apps[0].Health != "healthy" || !s.Apps[0].Active || s.Apps[1].Health != "healthy" || len(s.Drift) != 0 {
+		t.Fatalf("installed: %+v", s)
+	}
+	if c := s.Apps[1].Checks; len(c) != 2 || c[0].Kind != "http" || !c[0].OK || c[1].Kind != "compose" || !c[1].OK {
+		t.Errorf("ledger's checks: %+v", c)
+	}
+
+	// A service's check is as good as its worst container.
+	h.Project(engine.State{Name: "homerslab-ledger", Containers: []engine.Container{
+		{Service: "db", Name: "homerslab-ledger-db-1", State: "running", Health: "unhealthy"},
+		{Service: "db", Name: "homerslab-ledger-db-2", State: "running", Health: "healthy"},
+		{Service: "web", Name: "homerslab-ledger-web-1", State: "running"}}})
+	if s = apps(t, sock); s.Apps[1].Health != "unhealthy" || s.Apps[1].Checks[1].OK || s.Apps[1].Checks[1].Detail != "unhealthy" || s.Apps[0].Health != "healthy" {
+		t.Errorf("one replica sick: %+v", s.Apps)
+	}
+
+	h.Sick("homerslab-ledger", "unhealthy")
+	h.Answer("172.31.240.2:8080", "Internal Server Error")
+	s = apps(t, sock)
+	if s.Apps[0].Health != "unhealthy" || s.Apps[1].Health != "unhealthy" {
+		t.Errorf("sick: %+v", s.Apps)
+	}
+
+	// Someone stops the unit, and starts the containers by hand: the engine runs them without their unit.
+	h.StopUnit("homeward-app-bentopdf.service")
+	h.Project(engine.State{Name: "homerslab-stray", Containers: []engine.Container{{Service: "x", Name: "homerslab-stray-x-1", State: "running"}}})
+	s = apps(t, sock)
+	if len(s.Drift) != 2 || s.Drift[0].Project != "homerslab-bentopdf" || s.Drift[0].What != "running-without-unit" ||
+		s.Drift[1].Project != "homerslab-stray" || s.Apps[0].Active {
+		t.Errorf("drift: %+v", s.Drift)
+	}
+
+	h.EngineDown(true)
+	if s = apps(t, sock); s.Apps[0].Health != "unknown" {
+		t.Errorf("with the engine down: %+v", s.Apps[0])
+	}
+}
+
+// An app's logs, through the engine, with every secret of its own cut out of them, in whatever form it was written.
+func TestAnAppsLogsNeverCarryItsSecrets(t *testing.T) {
+	testenv.Isolate(t)
+	sock, h, state := signedIn(t, agent.Config{})
+	install(t, sock, "ledger", withSecrets())
+	b, _ := os.ReadFile(filepath.Join(state, "apps", "ledger", "credentials", "db-password.cred"))
+	secret, _ := base64.StdEncoding.DecodeString(strings.TrimPrefix(string(b), "sealed:"))
+	h.SetLogs("homerslab-ledger", []compose.LogLine{
+		{Container: "homerslab-ledger-db-1", Line: "connecting with password " + string(secret)},
+		{Container: "homerslab-ledger-web-1", Line: "auth: Basic " + base64.StdEncoding.EncodeToString(secret), Err: true},
+		{Container: "homerslab-ledger-web-1", Line: "GET /?p=" + url.QueryEscape(string(secret))},
+		{Container: "homerslab-ledger-web-1", Line: "Authorization: Basic " + base64.StdEncoding.EncodeToString([]byte("ledger:"+string(secret)))},
+		{Container: "homerslab-ledger-web-1", Line: "token " + base64.RawURLEncoding.EncodeToString([]byte(`{"sub":"x","pw":"`+string(secret)+`"}`))},
+		{Container: "homerslab-ledger-web-1", Line: "ready"},
+	})
+	code, body := call(t, sock, "GET", "/v1/apps/ledger/logs", nil)
+	if code != http.StatusOK || !strings.Contains(string(body), `"ready"`) {
+		t.Fatalf("%d %s", code, body)
+	}
+	for _, form := range []string{string(secret), base64.StdEncoding.EncodeToString(secret), url.QueryEscape(string(secret)),
+		base64.StdEncoding.EncodeToString([]byte("ledger:" + string(secret))), base64.RawURLEncoding.EncodeToString([]byte(`{"sub":"x","pw":"` + string(secret) + `"}`))} {
+		if strings.Contains(string(body), form) {
+			t.Errorf("the logs carry the secret: %s", body)
+		}
+	}
+	if code, _ := call(t, sock, "GET", "/v1/apps/nothing/logs", nil); code != http.StatusNotFound {
+		t.Errorf("an app that isn't installed: %d", code)
+	}
+}
+
+// lockedBuffer is the agent's log, as a test reads it.
+type lockedBuffer struct {
+	mu sync.Mutex
+	b  bytes.Buffer
+}
+
+func (l *lockedBuffer) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.Write(p)
+}
+func (l *lockedBuffer) String() string { l.mu.Lock(); defer l.mu.Unlock(); return l.b.String() }
+
+func toString(v any) string {
+	b, _ := json.Marshal(v)
+	return string(b)
+}
+
+func mustAddrPort(s string) netip.AddrPort { return netip.MustParseAddrPort(s) }
+func mustPrefix(s string) netip.Prefix     { return netip.MustParsePrefix(s) }
+
+// An app with native sign-in gets its OIDC client from the agent (#20): its settings in its upstream's environment, as
+// the manifest names them, and the client's secret only as a credential the agent seals, handed to the one container
+// user that reads it as a file. The secret is nowhere else: not the agent's state, its files, its commands, its answers
+// or the app's logs. The edge serves the app without a guard, its identity headers still stripped.
+func TestAnAppWithNativeSignInGetsItsClientsSecretAsAFileOnly(t *testing.T) {
+	testenv.Isolate(t)
+	var logs lockedBuffer
+	sock, h, state := signedIn(t, agent.Config{Sysroot: withSELinux{agenttest.Primary()}, Log: slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug}))})
+	r := mealie(t)
+	check := r
+	check.OIDC = &agent.AppOIDC{}
+	*check.OIDC = *r.OIDC
+	check.OIDC.ClientSecret = ""
+	if code, body := call(t, sock, "PUT", "/v1/apps/mealie?check=true", check); code != http.StatusOK {
+		t.Fatalf("checking, before the client has a secret: %d %s", code, body)
+	}
+	if code, body := call(t, sock, "PUT", "/v1/apps/mealie", check); code != http.StatusBadRequest || !strings.Contains(string(body), "no-client-secret") {
+		t.Errorf("installing without the client's secret: %d %s", code, body)
+	}
+	s := install(t, sock, "mealie", r)
+	dir := filepath.Join(state, "apps", "mealie")
+	cred := filepath.Join(dir, "credentials", "oidc-client-secret.cred")
+	var sealed []string
+	for _, c := range h.Cmds() {
+		if c.Name == "systemd-creds" && c.Args[0] == "encrypt" && strings.Contains(c.String(), "/apps/") {
+			sealed = append(sealed, strings.Join(c.Args, " "))
+		}
+	}
+	if len(sealed) != 1 || sealed[0] != "encrypt --with-key=host+tpm2 --name=mealie.oidc-client-secret - "+cred+".new" {
+		t.Fatalf("sealed: %q", sealed)
+	}
+	if b, _ := os.ReadFile(cred); string(b) != "sealed:"+base64.StdEncoding.EncodeToString([]byte(clientSecret)) {
+		t.Errorf("the sealed credential holds %q", b)
+	}
+	want := appunit.App{ID: "mealie", Product: "Mealie", Plan: r.Plan,
+		Project: engine.Project{Name: "homerslab-mealie", Services: []engine.Service{{Name: "web", Image: "ghcr.io/mealie-recipes/mealie:v3.30.0@sha256:90f83da6f3ab0a421efc827118a556168573930105f13fa3321768f42163d784"}},
+			Networks: []engine.Network{{Name: "default"}}},
+		Service: "web", Upstream: mustAddrPort("172.31.240.2:9000"), Subnet: mustPrefix("172.31.240.0/28"), Level: "s0:c600,c601", SELinux: true, Dir: dir,
+		SignIn: "auth.example.test", SignInAt: agent.SignInListen,
+		OIDC: &appunit.OIDC{SecretUID: 911, Env: map[string]string{
+			"OIDC_ISSUER":             "https://auth.example.test/application/o/homerslab-mealie/",
+			"OIDC_CONFIGURATION_URL":  "https://auth.example.test/application/o/homerslab-mealie/.well-known/openid-configuration",
+			"OIDC_CLIENT_ID":          "homerslab-mealie",
+			"OIDC_CLIENT_SECRET_FILE": "/run/secrets/oidc-client-secret",
+			"OIDC_REDIRECT_URI":       "https://recipes.example.test/login",
+			"BASE_URL":                "https://recipes.example.test",
+			"OIDC_ADMIN_GROUP":        "homerslab-admins",
+		}}}
+	if got, _ := os.ReadFile(filepath.Join(dir, "homeward.yaml")); !bytes.Equal(got, appunit.Override(want)) {
+		t.Errorf("the agent's compose file:\n%s\nwant\n%s", got, appunit.Override(want))
+	}
+	if unit, _ := os.ReadFile(filepath.Join(h.Root, agent.UnitsDir, "homeward-app-mealie.service")); !bytes.Equal(unit, appunit.UnitFile(want)) {
+		t.Errorf("the unit:\n%s\nwant\n%s", unit, appunit.UnitFile(want))
+	}
+	var cfg struct {
+		Apps struct {
+			HTTP struct {
+				Servers map[string]struct{ Routes []json.RawMessage }
+			}
+		}
+	}
+	_ = json.Unmarshal(h.Edge.Config(), &cfg)
+	var site string
+	for _, r := range cfg.Apps.HTTP.Servers["mesh"].Routes {
+		if compact := strings.Join(strings.Fields(string(r)), ""); strings.Contains(compact, `"host":["recipes.example.test"]`) {
+			site = compact
+		}
+	}
+	if !strings.Contains(site, `"dial":"172.31.240.2:9000"`) || strings.Contains(site, "outpost.goauthentik.io") || !strings.Contains(site, `"X-Authentik-*"`) ||
+		!strings.Contains(site, `"path":["/api/auth/token","/api/auth/token/*"]`) {
+		t.Errorf("the app's site, which signs people in itself: no guard, identity headers stripped, its password sign-in refused:\n%s", site)
+	}
+
+	// Nowhere in the clear but the sealed credential.
+	seen := []string{toString(s)}
+	for _, root := range []string{state, h.Root} {
+		_ = filepath.Walk(root, func(p string, fi os.FileInfo, err error) error {
+			if err == nil && !fi.IsDir() && p != cred {
+				b, _ := os.ReadFile(p)
+				seen = append(seen, string(b))
+			}
+			return nil
+		})
+	}
+	for _, c := range h.Cmds() {
+		seen = append(seen, strings.Join(c.Args, " "))
+	}
+	_, body := call(t, sock, "GET", "/v1/apps", nil)
+	seen = append(seen, string(body), logs.String())
+	for _, txt := range seen {
+		if strings.Contains(txt, clientSecret) {
+			t.Fatalf("the client's secret is in the clear: %.200s", txt)
+		}
+	}
+	h.SetLogs("homerslab-mealie", []compose.LogLine{{Container: "homerslab-mealie-web-1", Line: "oidc: client_secret=" + clientSecret}})
+	if _, body := call(t, sock, "GET", "/v1/apps/mealie/logs", nil); strings.Contains(string(body), clientSecret) {
+		t.Errorf("the app's logs carry its client's secret: %s", body)
+	}
+
+	// A client made again (a new secret) reaches the app at the next apply: the secret is sealed again.
+	r.OIDC.ClientSecret = clientSecret + "-new"
+	install(t, sock, "mealie", r)
+	if b, _ := os.ReadFile(cred); string(b) != "sealed:"+base64.StdEncoding.EncodeToString([]byte(clientSecret+"-new")) {
+		t.Errorf("after the client's secret changed, the credential holds %q", b)
+	}
+}
+
+// The agent takes an app's OIDC client only as the app's own (#20): its issuer at the sign-in this node serves, its
+// URL the app's one name, its redirect addresses on that URL, its settings' names and values plain; and an app signs in
+// one way, the guard or its own client.
+func TestAnOIDCClientIsTakenOnlyAsTheAppsOwn(t *testing.T) {
+	testenv.Isolate(t)
+	sock, _, _ := signedIn(t, agent.Config{})
+	for name, c := range map[string]struct {
+		edit func(*agent.AppRequest)
+		code string
+	}{
+		"another sign-in's issuer":   {func(r *agent.AppRequest) { r.OIDC.Issuer = "https://auth.evil.example/application/o/x/" }, "bad-sign-in"},
+		"an issuer over plain HTTP":  {func(r *agent.AppRequest) { r.OIDC.Issuer = "http://auth.example.test/application/o/x/" }, "bad-sign-in"},
+		"an issuer that ends a line": {func(r *agent.AppRequest) { r.OIDC.Issuer = "https://auth.example.test/x\u2028y/" }, "bad-sign-in"},
+		"a client id with a quote":   {func(r *agent.AppRequest) { r.OIDC.ClientID = `x"y` }, "bad-sign-in"},
+		"a redirect on another site": {func(r *agent.AppRequest) { r.OIDC.RedirectURIs = []string{"https://evil.example/login"} }, "bad-sign-in"},
+		"a redirect on a lookalike": {func(r *agent.AppRequest) {
+			r.OIDC.RedirectURIs = []string{"https://recipes.example.test.evil.example/login"}
+		}, "bad-sign-in"},
+		"a refused route of an odd method": {func(r *agent.AppRequest) { r.OIDC.RefusePaths = []string{"PROPFIND /x"} }, "bad-sign-in"},
+		"a refused route of every path":    {func(r *agent.AppRequest) { r.OIDC.RefusePaths = []string{"PUT /"} }, "bad-sign-in"},
+		"a refused route elsewhere":        {func(r *agent.AppRequest) { r.OIDC.RefusePaths = []string{"PUT //evil.example/x"} }, "bad-sign-in"},
+		"a redirect compose would expand": {func(r *agent.AppRequest) {
+			r.OIDC.RedirectURIs = []string{"https://recipes.example.test/login$HOME"}
+		}, "bad-sign-in"},
+		"its own app's address, ending a line": {func(r *agent.AppRequest) {
+			r.OIDC.RedirectURIs = append(r.OIDC.RedirectURIs, "org.example.app:/cb\u2028x")
+		}, "bad-sign-in"},
+		"a variable that isn't one":     {func(r *agent.AppRequest) { r.OIDC.Env.URL = "BASE URL" }, "bad-sign-in"},
+		"one variable twice":            {func(r *agent.AppRequest) { r.OIDC.Env.URL = "OIDC_CLIENT_ID" }, "bad-sign-in"},
+		"no variable for the secret":    {func(r *agent.AppRequest) { r.OIDC.Env.ClientSecretFile = "" }, "bad-sign-in"},
+		"an admins' group that's odd":   {func(r *agent.AppRequest) { r.OIDC.AdminGroup = "admins\nx" }, "bad-sign-in"},
+		"a secret of a line's end":      {func(r *agent.AppRequest) { r.OIDC.ClientSecret = "x\ny" }, "bad-sign-in"},
+		"a guard and a client":          {func(r *agent.AppRequest) { r.Guard = true }, "bad-app"},
+		"no way to sign in":             {func(r *agent.AppRequest) { r.OIDC = nil }, "sign-in-not-built"},
+		"its own secret of that name":   {func(r *agent.AppRequest) { r.Secrets = []appunit.Secret{{Name: "oidc-client-secret", UID: 1}} }, "bad-secrets"},
+		"a negative uid for the secret": {func(r *agent.AppRequest) { r.OIDC.SecretUID = -1 }, "bad-sign-in"},
+		"refusing every path":           {func(r *agent.AppRequest) { r.OIDC.RefusePaths = []string{"/"} }, "bad-sign-in"},
+		"refusing a pattern":            {func(r *agent.AppRequest) { r.OIDC.RefusePaths = []string{"/api/*"} }, "bad-sign-in"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			r := mealie(t)
+			o := *r.OIDC
+			r.OIDC = &o
+			c.edit(&r)
+			code, body := call(t, sock, "PUT", "/v1/apps/mealie", r)
+			if code/100 != 4 || !strings.Contains(string(body), c.code) {
+				t.Errorf("%d %s, want %s", code, body, c.code)
+			}
+		})
+	}
+	if len(apps(t, sock).Apps) != 0 {
+		t.Error("a refused request installed an app")
+	}
+}

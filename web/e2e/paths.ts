@@ -5,7 +5,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 
-/** The real binary (`go build -o bin/homerslab ./cmd/homerslab`), or the one HOMERSLAB_BIN names. */
-export const bin = process.env.HOMERSLAB_BIN ?? path.join(here, '..', '..', 'bin', 'homerslab');
+/** The real binary (`go build -o bin/homeward ./cmd/homeward`), or the one HOMEWARD_BIN names. */
+export const bin = process.env.HOMEWARD_BIN ?? path.join(here, '..', '..', 'bin', 'homeward');
 export const sysroot = path.join(here, '..', '..', 'testdata', 'primary');
 export const galleryUrl = pathToFileURL(path.join(here, '..', '..', 'design', 'index.html')).href;

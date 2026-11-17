@@ -6,9 +6,9 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/ArjunRachithcf/homerslab/internal/agent"
-	"github.com/ArjunRachithcf/homerslab/internal/agent/agenttest"
-	"github.com/ArjunRachithcf/homerslab/internal/testenv"
+	"github.com/ArjunRachithcf/homeward/internal/agent/agenttest"
+	"github.com/ArjunRachithcf/homeward/internal/node"
+	"github.com/ArjunRachithcf/homeward/internal/testenv"
 )
 
 // The manager's first resource is the primary as its agent reports it: the same JSON, on the control socket and
@@ -16,9 +16,13 @@ import (
 func TestTheManagerServesThePrimaryAsItsAgentReportsIt(t *testing.T) {
 	testenv.Isolate(t)
 	p := newPrimary(t)
-	direct := serve(agent.Handler(agenttest.Primary(), nil), newRequest("GET", "/v1/node", nil, "@"))
+	facts, err := node.Read(agenttest.Primary())
+	if err != nil {
+		t.Fatal(err)
+	}
 	var want any
-	direct.json(t, &want)
+	b, _ := json.Marshal(facts)
+	_ = json.Unmarshal(b, &want)
 
 	for name, r := range map[string]response{
 		"control socket": p.control("GET", "/api/v1/nodes/primary", nil),

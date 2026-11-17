@@ -1,0 +1,9 @@
+services:
+  web:
+    image: ghcr.io/example/everything:v1.2.3@sha256:0000000000000000000000000000000000000000000000000000000000000000
+    volumes:
+      - library:/data
+      - {type: volume, source: cache, target: /cache}
+volumes:
+  library:
+  cache:

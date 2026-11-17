@@ -1,0 +1,28 @@
+# Written by Homeward's agent. Never edit by hand.
+# Storage location films: a network share on the mesh, mounted by the standard mount command (ADR 0014). The firewall
+# table lets this machine reach its server through the mesh only, never the LAN.
+# Its credentials are a systemd credential the agent sealed (ADR 0011), decrypted for the mount alone.
+[Unit]
+Description=Homeward storage location films
+Documentation=https://github.com/ArjunRachithcf/homeward
+After=network-online.target netbird.service homeward-agent.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+StateDirectory=homeward-storage/films
+StateDirectoryMode=0700
+# The shares' folder is root's alone: nobody on the machine walks into a share beside the apps that bind it.
+ExecStartPre=/usr/bin/chmod 0700 /var/lib/homeward-storage
+LoadCredentialEncrypted=storage-films:/var/lib/homeward-agent/storage/films.cred
+ExecStart=/usr/bin/mount -t cifs -o credentials=%d/storage-films,nosuid,nodev,noexec,nodfs,dir_mode=0750,file_mode=0640,context=system_u:object_r:container_file_t:s0 //100.64.1.2/media /var/lib/homeward-storage/films
+# Lazily: a share whose server is gone never holds up a shutdown.
+ExecStop=/usr/bin/umount -l /var/lib/homeward-storage/films
+TimeoutStartSec=60s
+# Until the mesh is up at boot, or the share answers again.
+Restart=on-failure
+RestartSec=30s
+
+[Install]
+WantedBy=multi-user.target

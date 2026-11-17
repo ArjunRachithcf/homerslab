@@ -1,4 +1,4 @@
-// HomersLab icons: one outline set on a 16px grid (1.5px stroke, round caps), and the mark.
+// Homeward icons: one outline set on a 16px grid (1.5px stroke, round caps), and the mark.
 // Plain path data, no framework: the prototypes call I(name), React components can import the same strings.
 // The mark and the lockup come from the logo kit (brand/kit), filled from the tokens so they take the accent.
 (() => {
@@ -96,7 +96,7 @@
   window.MARK_LARGE = `<svg class="mark-glyph mark-large" viewBox="0 0 192 192" aria-hidden="true" focusable="false"><path class="logo-l" fill="currentColor" d="${MASTER}"/><path class="logo-d" fill="currentColor" d="${REVERSED}"/></svg>`;
   window.MARK_16 = `<svg class="mark-glyph mark-16" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path fill="currentColor" d="${CUT16}"/></svg>`;
   window.MARK_32 = `<svg class="mark-glyph mark-32" viewBox="0 0 32 32" aria-hidden="true" focusable="false"><path fill="currentColor" d="${CUT32}"/></svg>`;
-  window.LOCKUP = `<svg class="lockup" viewBox="0 0 868 192" role="img" aria-label="HomersLab" focusable="false"><path class="lockup-mark logo-l" d="${MASTER}"/><path class="lockup-mark logo-d" d="${REVERSED}"/><path class="lockup-word logo-l" d="${WORD}"/><path class="lockup-word logo-d" d="${WORD_DARK}"/></svg>`;
+  window.LOCKUP = `<svg class="lockup" viewBox="0 0 868 192" role="img" aria-label="Homeward" focusable="false"><path class="lockup-mark logo-l" d="${MASTER}"/><path class="lockup-mark logo-d" d="${REVERSED}"/><path class="lockup-word logo-l" d="${WORD}"/><path class="lockup-word logo-d" d="${WORD_DARK}"/></svg>`;
   window.HL_ICONS = ui;
   window.I = (name, cls = 'icon') => svg(ui[name] || ui.info, cls);
 })();

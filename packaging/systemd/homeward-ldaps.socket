@@ -1,0 +1,19 @@
+# The sign-in listener's LDAPS port (ADR 0020, #204): an app whose sign-in method is LDAP binds at
+# auth.<main domain>:636, which its container resolves to the listener's own address. systemd binds the port, so the
+# process behind it needs no capability; FreeBind, since the agent puts the address on the loopback only while a
+# listener is wanted. The agent enables this socket once an LDAP app is installed. Only the apps' networks and the
+# sign-in network are peers it talks to; the firewall table lets only LDAP apps' networks reach it.
+[Unit]
+Description=Homeward sign-in listener, LDAPS
+Documentation=https://github.com/ArjunRachithcf/homeward
+
+[Socket]
+ListenStream=172.31.255.241:636
+FreeBind=yes
+NoDelay=yes
+Service=homeward-ldaps.service
+IPAddressDeny=any
+IPAddressAllow=172.31.240.0/20
+
+[Install]
+WantedBy=sockets.target

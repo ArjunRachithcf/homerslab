@@ -1,4 +1,4 @@
-// HomersLab charts: the few pictures of data Admin needs, as plain HTML and SVG strings, no library.
+// Homeward charts: the few pictures of data Admin needs, as plain HTML and SVG strings, no library.
 // HL.treemap (the disk analyzer's space map), HL.usage (a disk's use, stacked), HL.days (ninety days of uptime),
 // HL.spark (a day of response times). Colours come from the --viz-* tokens, each with its own ink, so labels keep AA.
 (() => {

@@ -1,14 +1,26 @@
-# HomersLab
+# Homeward
 
-HomersLab installs and looks after a household's self-hosted apps on the household's own machines. These are the
+Homeward installs and looks after a household's self-hosted apps on the household's own machines. These are the
 words the product, its docs and its code use.
 
 ## Language
 
+### The names
+
+**Homeward**:
+The product: the manager, its agents, Home and Admin. Its binary, units, folders and users are named `homeward`.
+_Avoid_: HomersLab (for the product)
+
+**HomersLab**:
+The maker's umbrella name, which Homeward and its maker's other apps (Philobiblos, the reading app) are published
+under. Its prefix stays in what Homeward has written into other software or published to apps: the identity headers
+`X-HomersLab-*`, the identity contract `homerslab-v1`, and the identity provider's, the mesh's and the engine's
+objects (ADR 0022).
+
 ### The household
 
 **Household**:
-The people and the machines one HomersLab looks after.
+The people and the machines one Homeward looks after.
 _Avoid_: instance, tenant, homelab, family (as a system term)
 
 **Person**:
@@ -24,7 +36,7 @@ A person with the admin role, who installs apps and adds nodes and people.
 _Avoid_: operator, owner, superuser
 
 **Household account**:
-A person's single sign-in for every app and for HomersLab itself.
+A person's single sign-in for every app and for Homeward itself.
 _Avoid_: SSO account, IdP account, login
 
 **Audience**:
@@ -72,19 +84,19 @@ A person's ask for an app the household doesn't have, which an admin approves or
 _Avoid_: wish, suggestion, ticket
 
 **Feedstock**:
-HomersLab's recipe for building one app from its upstream source, with the few patches it needs to fit the household's
+Homeward's recipe for building one app from its upstream source, with the few patches it needs to fit the household's
 sign-in.
 _Avoid_: fork, mirror, build repo
 
 **Official catalog**:
-The catalog HomersLab itself publishes.
+The catalog Homeward itself publishes.
 
 **Third-party catalog**:
 A catalog someone else publishes, which a household admin trusts by its publisher's key.
 _Avoid_: community store
 
 **Floor**:
-The security requirements every app meets before it can be installed, checked by HomersLab itself.
+The security requirements every app meets before it can be installed, checked by Homeward itself.
 _Avoid_: baseline, minimum, policy
 
 **Tier**:
@@ -129,7 +141,7 @@ _Avoid_: purge, wipe
 
 **Eject**:
 Writing an app out as a standalone setup with its data, settings and secrets, so it keeps running without
-HomersLab.
+Homeward.
 _Avoid_: export, detach, leave
 
 ### Machines and reach
@@ -139,7 +151,7 @@ A machine in the household that runs apps.
 _Avoid_: server, host, worker, box
 
 **Primary**:
-The node that runs HomersLab's manager and the household's sign-in.
+The node that runs Homeward's manager and the household's sign-in.
 _Avoid_: master, controller, main node
 
 **Placement**:
@@ -170,6 +182,10 @@ _Avoid_: peer, client, endpoint
 A node's front door: it ends encryption and asks for the household account before an app sees a request.
 _Avoid_: proxy, reverse proxy, ingress, gateway
 
+**Identity contract**:
+What a guarded app is told about who someone is, by the edge alone: their stable id, their name and their role.
+_Avoid_: identity headers (the providers' own, which never reach an app), SSO headers
+
 **Exposure**:
 Whether an app is reachable only over the mesh (the default) or is also **public**.
 _Avoid_: visibility, publishing
@@ -181,6 +197,12 @@ _Avoid_: primary domain (the primary is a node), root domain
 **Public path**:
 The way a public app is reached from the internet without opening the household's router.
 _Avoid_: tunnel, port forward
+
+**Uplink**:
+A way a node reaches the internet: its link to the home network, or a private tunnel it sends its traffic through.
+Apps reach the internet only through an uplink, and a tunnel that is an uplink is never the home network. A link is an
+uplink for each address family whose internet its routes cover: a tunnel for IPv6 alone is none for IPv4.
+_Avoid_: gateway, WAN
 
 ### Sign-in
 
@@ -234,7 +256,7 @@ The weekly proof that an app's latest backup restores and works.
 _Avoid_: backup check, verification
 
 **Recovery kit**:
-What the household admin keeps away from the machines, enough to restore everything even without HomersLab.
+What the household admin keeps away from the machines, enough to restore everything even without Homeward.
 _Avoid_: emergency kit, recovery codes
 
 ### Surfaces and history
@@ -252,9 +274,9 @@ The one guided sitting that turns a fresh machine into a working household.
 _Avoid_: onboarding, wizard, bootstrap
 
 **Classic**:
-HomersLab's predecessor, one household's homelab.
+Homeward's predecessor, one household's homelab.
 _Avoid_: v1, legacy, the old homelab
 
 **Importer**:
-What moves a classic household into HomersLab.
+What moves a classic household into Homeward.
 _Avoid_: migrator

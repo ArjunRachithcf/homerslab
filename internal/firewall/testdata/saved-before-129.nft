@@ -1,0 +1,46 @@
+# HomersLab's agent owns this table, and puts it back when it drifts.
+table inet homerslab
+delete table inet homerslab
+table inet homerslab {
+	chain input {
+		type filter hook input priority filter - 5; policy drop;
+		ct state established,related accept
+		ct state invalid drop
+		iif "lo" accept
+		iifname { "wt0" } accept
+		iifname { "docker0" } jump apps_in
+		iifname != { "enp5s0" } jump virtual_in
+		meta l4proto { icmp, ipv6-icmp } accept
+		udp dport { 68, 546, 5353 } accept
+		udp dport 51820 accept
+		iifname { "enp5s0" } tcp dport 7020 accept
+	}
+	chain forward {
+		type filter hook forward priority filter - 5; policy drop;
+		ct state established,related accept
+		iifname { "wt0" } drop
+		iifname { "docker0" } jump apps_out
+		iifname { "enp5s0" } drop
+		jump outbound
+	}
+	chain apps_in {
+		meta l4proto { tcp, udp } th dport 53 accept
+		icmpv6 type { nd-neighbor-solicit, nd-neighbor-advert, nd-router-solicit } accept
+		drop
+	}
+	chain virtual_in {
+		udp dport { 67, 547 } accept
+		meta l4proto { tcp, udp } th dport 53 accept
+	}
+	chain apps_out {
+		iifname "docker0" oifname "docker0" accept
+		ip daddr { 192.168.1.1 } meta l4proto { tcp, udp } th dport 53 accept
+		jump outbound
+	}
+	chain outbound {
+		oifname != { "enp5s0" } drop
+		ip daddr { 10.0.0.0/8, 100.64.0.0/10, 169.254.0.0/16, 172.16.0.0/12, 192.168.0.0/16 } drop
+		ip6 daddr { fc00::/7, fe80::/10 } drop
+		accept
+	}
+}

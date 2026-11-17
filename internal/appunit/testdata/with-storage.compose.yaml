@@ -1,0 +1,82 @@
+# Written by Homeward's agent, from install plan p-0123456789abcdef0123456789abcdef. Never edit by hand.
+# What Homeward adds to app everything's own compose file, as the second file of the standard compose command (ADR 0014):
+#   - every service: no restart policy, the engine's nor swarm's (the app's unit restarts the app), at the app's own
+#     SELinux level;
+#   - the app's one upstream, a fixed address on a network of its own, which only the edge and the agent may open;
+#   - every network's bridge named by the agent, so the firewall table knows it before it is made;
+#   - the sign-in's name, at the sign-in listener's address: the one thing of this machine's the app may open;
+#   - its secrets, as files its unit copies from the credentials the agent sealed;
+#   - its storage locations, each a bind of the location's folder, read-only unless the plan says otherwise; a
+#     service that writes to one can't make a device;
+#   - for an app that signs people in itself, its OIDC client's settings, and the client's secret as a file.
+name: "homerslab-everything"
+services:
+  "db":
+    restart: "no"
+    deploy:
+      restart_policy:
+        condition: "none"
+    security_opt:
+      - "label=level:s0:c602,c603"
+    extra_hosts:
+      - "auth.example.test=172.31.255.241"
+  "web":
+    restart: "no"
+    deploy:
+      restart_policy:
+        condition: "none"
+    security_opt:
+      - "label=level:s0:c602,c603"
+    extra_hosts:
+      - "auth.example.test=172.31.255.241"
+    volumes:
+      - type: "bind"
+        source: "/srv/media/Films"
+        target: "/media"
+        read_only: true
+        bind:
+          create_host_path: false
+    networks:
+      "homerslab-upstream":
+        ipv4_address: "172.31.240.18"
+  "worker":
+    restart: "no"
+    deploy:
+      restart_policy:
+        condition: "none"
+    security_opt:
+      - "label=level:s0:c602,c603"
+    extra_hosts:
+      - "auth.example.test=172.31.255.241"
+    volumes:
+      - type: "bind"
+        source: "/var/lib/homeward-storage/uploads"
+        target: "/uploads"
+        read_only: false
+        bind:
+          create_host_path: false
+    cap_drop:
+      - "MKNOD"
+networks:
+  "back":
+    driver_opts:
+      com.docker.network.bridge.name: "hla1n0"
+  "default":
+    driver_opts:
+      com.docker.network.bridge.name: "hla1n1"
+  "front":
+    driver_opts:
+      com.docker.network.bridge.name: "hla1n2"
+  "homerslab-upstream":
+    driver: bridge
+    driver_opts:
+      com.docker.network.bridge.name: "hla1u"
+    ipam:
+      config:
+        - subnet: "172.31.240.16/28"
+          gateway: "172.31.240.17"
+secrets:
+  "db-password":
+    file: "/run/homeward-app-everything/db-password"
+  "secret-key":
+    file: "/run/homeward-app-everything/secret-key"

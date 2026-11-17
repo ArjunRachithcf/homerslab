@@ -1,4 +1,6 @@
-# HomersLab
+# Homeward
+
+_By HomersLab._ Homeward is the product; HomersLab is the name its maker publishes under ([ADR 0022](docs/adr/0022-homeward-the-product-homerslab-the-maker.md)).
 
 A polished, security-first app manager for a household's self-hosted apps, on the household's own Linux machines.
 
@@ -22,7 +24,7 @@ A polished, security-first app manager for a household's self-hosted apps, on th
 - **One machine or several.** A primary, plus optional nodes such as a NAS or a GPU box; each app runs on one of
   them.
 - **No lock-in.**
-  - Any app can be ejected as a plain compose project with its data, and keeps running without HomersLab.
+  - Any app can be ejected as a plain compose project with its data, and keeps running without Homeward.
   - Any backup can be restored by hand with standard tools.
 
 ## Priorities
@@ -45,22 +47,25 @@ Security, then polish, then breadth:
 
 | | |
 |---|---|
-| `cmd/homerslab`, `internal/` | The one binary (Go): the manager, the agent and the CLI |
+| `cmd/homeward`, `internal/` | The one binary (Go): the manager, the agent and the CLI |
 | `web/` | Admin, Home and first-time setup (React and TypeScript), built on [design/](design/) into `internal/surfaces` |
 | `packaging/` | The systemd units: the manager unprivileged, the agent as root |
 
 ```sh
 go test ./...                                   # the two-process test needs root: it runs in CI's Go container
-(cd web && npm ci --ignore-scripts && npm run lint && npm run build)
-CGO_ENABLED=0 go build -o bin/homerslab ./cmd/homerslab
-(cd web && npx playwright test)                 # first-time setup in a browser, against bin/homerslab
+(cd web && npm ci --ignore-scripts && npm run lint && npm run test:unit && npm run build)
+CGO_ENABLED=0 go build -o bin/homeward ./cmd/homeward
+(cd web && npx playwright test)                 # first-time setup in a browser, against bin/homeward
+go -C tools tool govulncheck -C .. ./...        # known vulnerabilities in called code (Go 1.27.4 or later)
+(cd web && npm audit --omit=dev)                # known vulnerabilities in the web packages that ship
+(cd web && npm audit --json | node scripts/audit-accepted.mjs)  # all of them: warns on one not in audit-accepted.json
 ```
 
 Tests keep to their own world: each has its own home directory, and any container engine points at nowhere.
 
 ## Where it comes from
 
-HomersLab reimagines [homelab](https://github.com/ArjunRachithcf/homelab) ("classic" in these documents), one
+Homeward reimagines [homelab](https://github.com/ArjunRachithcf/homelab) ("classic" in these documents), one
 household's homelab made component-driven, as an app manager for any household. Classic contributes its ideas, not
 its code.
 

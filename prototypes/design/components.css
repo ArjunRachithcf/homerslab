@@ -1,4 +1,4 @@
-/* HomersLab components. Needs tokens.css first. Framework-free: classes and states (aria-*, :checked, .is-*) that the
+/* Homeward components. Needs tokens.css first. Framework-free: classes and states (aria-*, :checked, .is-*) that the
    React components will render; every value comes from a token. design/index.html shows each one live, with when to
    use it. Glass (today's Apple materials) holds what floats: bars, the sidebar, the tab bar, sheets, menus, toasts and
    Home's panels. Motion is feedback on springs; motion.js adds screen changes and shared elements (View Transitions).
@@ -381,7 +381,7 @@ button.widget:active, a.widget:active { transform: scale(0.98); transition-durat
 }
 .app-icon-sm { --size: 28px; } .app-icon-md { --size: 32px; } .app-icon-lg { --size: 56px; } .app-icon-xl { --size: 72px; }
 .app-icon.is-full { padding: 0; }
-/* HomersLab's own tile: the light teal mark at half the tile, white in both themes (the kit's app icon) */
+/* Homeward's own tile: the light teal mark at half the tile, white in both themes (the kit's app icon) */
 .app-icon.is-mark { display: grid; place-items: center; padding: 0; color: var(--brand-accent-light); }
 .app-icon.is-mark .mark-glyph { width: 50%; height: 50%; color: inherit; }
 
@@ -549,7 +549,7 @@ button.widget:active, a.widget:active { transform: scale(0.98); transition-durat
   .sheet.is-static { border-radius: var(--radius-card); transform: none; }
 }
 
-/* the step-up: HomersLab's own words first (what this passkey approves, bound to which plan), then the browser asks */
+/* the step-up: Homeward's own words first (what this passkey approves, bound to which plan), then the browser asks */
 .stepup-mark { color: var(--accent); width: 40px; height: 40px; stroke-width: 1.3; }
 .stepup-list { display: grid; }
 .stepup-list li { position: relative; display: flex; align-items: flex-start; gap: 12px; padding: 12px var(--row-pad-x); }
@@ -928,7 +928,7 @@ body.has-wallpaper { background: transparent; --text-2: var(--text-2-on-wall); }
 .notif-title { font-weight: var(--weight-semibold); }
 .notif-body { font-size: var(--fs-sub); color: var(--text-2); }
 
-/* a DNS record HomersLab owns, or someone else's that it leaves alone */
+/* a DNS record Homeward owns, or someone else's that it leaves alone */
 .owner-mark { display: inline-flex; align-items: center; gap: 5px; font-size: var(--fs-sub); white-space: nowrap; }
 .owner-mark .icon { width: 14px; height: 14px; }
 .owner-mark.is-ours { color: color-mix(in srgb, var(--accent) 85%, var(--text)); font-weight: var(--weight-semibold); }
@@ -1002,6 +1002,8 @@ body.has-wallpaper { background: transparent; --text-2: var(--text-2-on-wall); }
 .illo-orb .icon { width: 50%; height: 50%; stroke-width: 1.8; }
 .illo-chip { display: inline-flex; align-items: center; gap: 6px; height: 32px; padding: 0 14px; border-radius: var(--radius-pill); white-space: nowrap; color: var(--text); font: var(--weight-semibold) 13px/1 var(--font); letter-spacing: 0; }
 .illo-chip .icon { width: 14px; height: 14px; color: var(--accent); stroke-width: 2; }
+/* a long name wraps inside the stage rather than running out of it (#124) */
+.illo-chip { width: max-content; max-width: 280px; height: auto; min-height: 32px; padding-block: 6px; white-space: normal; overflow-wrap: anywhere; line-height: 1.25; text-align: start; }
 .illo-lines { left: 0; top: 0; width: 100%; height: 100%; transform: none; overflow: visible; }
 .illo-lines path { fill: none; stroke: var(--accent); stroke-width: 1.5; stroke-linecap: round; stroke-dasharray: 3 6; opacity: 0.55; }
 .illo-initial { font: var(--weight-bold) 34px/1 var(--font); letter-spacing: -0.02em; color: var(--accent); }
@@ -1071,12 +1073,15 @@ html[data-vt="pop"]::view-transition-new(screen) { animation: vt-in-left var(--d
 /* ---------- reduced motion: screens cross-fade, nothing moves, nothing loops ---------- */
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { transition-duration: 0s !important; transition-delay: 0s !important; animation-duration: 0s !important; animation-iteration-count: 1 !important; }
+  /* ::details-content, which * doesn't reach, in a rule of its own: a browser that doesn't know it drops only this rule */
+  *::details-content { transition-duration: 0s !important; transition-delay: 0s !important; animation-duration: 0s !important; animation-iteration-count: 1 !important; }
   .spinner { border-top-color: var(--fill-strong); border-right-color: var(--accent); }
   ::view-transition-group(*) { animation: none !important; }
   ::view-transition-old(*) { animation: vt-fade-out var(--dur-fade) linear both !important; }
   ::view-transition-new(*) { animation: vt-fade-in var(--dur-fade) linear both !important; }
 }
 :root[data-motion="reduce"] *, :root[data-motion="reduce"] *::before, :root[data-motion="reduce"] *::after { transition-duration: 0s !important; transition-delay: 0s !important; animation-duration: 0s !important; animation-iteration-count: 1 !important; }
+:root[data-motion="reduce"] *::details-content { transition-duration: 0s !important; transition-delay: 0s !important; animation-duration: 0s !important; animation-iteration-count: 1 !important; }
 :root[data-motion="reduce"] .spinner { border-top-color: var(--fill-strong); border-right-color: var(--accent); }
 html[data-motion="reduce"]::view-transition-group(*) { animation: none !important; }
 html[data-motion="reduce"]::view-transition-old(*) { animation: vt-fade-out var(--dur-fade) linear both !important; }

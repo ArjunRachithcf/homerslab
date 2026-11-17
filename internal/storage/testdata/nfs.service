@@ -1,0 +1,26 @@
+# Written by Homeward's agent. Never edit by hand.
+# Storage location music: a network share on the mesh, mounted by the standard mount command (ADR 0014). The firewall
+# table lets this machine reach its server through the mesh only, never the LAN.
+[Unit]
+Description=Homeward storage location music
+Documentation=https://github.com/ArjunRachithcf/homeward
+After=network-online.target netbird.service homeward-agent.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+StateDirectory=homeward-storage/music
+StateDirectoryMode=0700
+# The shares' folder is root's alone: nobody on the machine walks into a share beside the apps that bind it.
+ExecStartPre=/usr/bin/chmod 0700 /var/lib/homeward-storage
+ExecStart=/usr/bin/mount -t nfs -o nosuid,nodev,noexec 100.64.1.3:/volume1/Music /var/lib/homeward-storage/music
+# Lazily: a share whose server is gone never holds up a shutdown.
+ExecStop=/usr/bin/umount -l /var/lib/homeward-storage/music
+TimeoutStartSec=60s
+# Until the mesh is up at boot, or the share answers again.
+Restart=on-failure
+RestartSec=30s
+
+[Install]
+WantedBy=multi-user.target

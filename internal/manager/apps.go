@@ -1,0 +1,407 @@
+package manager
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"net/http"
+	"slices"
+	"strconv"
+	"time"
+
+	"github.com/ArjunRachithcf/homeward/internal/agent"
+	"github.com/ArjunRachithcf/homeward/internal/appunit"
+	"github.com/ArjunRachithcf/homeward/internal/catalog"
+	"github.com/ArjunRachithcf/homeward/internal/engine"
+	"github.com/ArjunRachithcf/homeward/internal/idp"
+	"github.com/ArjunRachithcf/homeward/internal/manager/plan"
+	"github.com/ArjunRachithcf/homeward/internal/manager/store"
+)
+
+// Applying an install plan (#19, #20; spec: The install plan). Applying takes the plan's id and does what the plan
+// says, nothing more: the plan must still be the one the household gets now (the same definition, from the same
+// catalog, into the same household, which is what its id hashes), so a stale plan is refused rather than applied in
+// part. Then:
+//   - the identity provider gets the app's guard, for its name and its audience; or, for an app that signs people in
+//     itself, its OIDC client, for its audience and the plan's redirect addresses exactly; or, for an app that signs
+//     people in over LDAP, its own directory at the LDAP outpost, for its audience (#204), and the agent the outpost's
+//     token;
+//   - the agent gets the app: the plan's name, upstream, secrets and health checks, the catalog's compose file whose
+//     digest the plan carries, and an OIDC client's settings and secret (which the agent seals; the manager keeps
+//     none of it);
+//   - the household keeps that the plan was applied.
+//
+// A risky plan (one with an extra, or a storage location the app writes to) needs the admin's passkey again from Admin
+// (step-up, stepup.go), bound to the plan; the terminal needs none. A plan with an extra isn't applied yet: the agent
+// runs extras with the next part of #25.
+// A plan whose sign-in isn't wired isn't applied either: an OIDC app applies once its manifest says how it takes its
+// client, an LDAP app once it says how it takes its directory.
+
+// The ways applying is refused.
+var (
+	errStalePlan   = errors.New("stale-plan")
+	errStepUp      = errors.New("step-up-required")
+	errExtras      = errors.New("extras-not-built")
+	errNotBuilt    = errors.New("sign-in-not-built")
+	errNoSignInYet = errors.New("sign-in-not-ready")
+)
+
+// appView is an installed app as the household sees it: what its plan says, and how the agent finds it.
+type appView struct {
+	ID        string              `json:"id"`
+	Name      string              `json:"name"`
+	Purpose   string              `json:"purpose"`
+	Host      string              `json:"host"`
+	URL       string              `json:"url"`
+	Plan      string              `json:"plan"`
+	AppliedAt time.Time           `json:"appliedAt"`
+	Node      string              `json:"node"`
+	Health    string              `json:"health"`
+	Active    bool                `json:"active"`
+	Checks    []agent.CheckResult `json:"checks"`
+	// Pending is what of the app's wiring the agent is still putting right (firewall, edge).
+	Pending []string `json:"pending,omitempty"`
+}
+
+// siteURL is an app's one URL, https://<name>[:port] (ADR 0021).
+func siteURL(ans map[string]string, host string) string {
+	u := "https://" + host
+	if p := householdPort(ans); p != 443 {
+		u += ":" + strconv.Itoa(p)
+	}
+	return u
+}
+
+// roles are the roles in a plan's default audience.
+func roles(audience string) []idp.Role {
+	switch audience {
+	case "everyone":
+		return []idp.Role{idp.Admin, idp.Adult, idp.Kid}
+	case "adults":
+		return []idp.Role{idp.Admin, idp.Adult}
+	case "admins":
+		return []idp.Role{idp.Admin}
+	}
+	return nil
+}
+
+// current is the plan the household gets now for the app a plan installs, so the two can be compared by id.
+func (m *Manager) current(ctx context.Context, p plan.Plan) (catalog.App, error) {
+	a, ok := m.catalog.App(p.App.ID)
+	if !ok || p.App.Catalog != m.catalog.ID || a.Digest != p.App.Definition {
+		return catalog.App{}, errStalePlan
+	}
+	h, err := m.household(ctx)
+	if err != nil {
+		return catalog.App{}, err
+	}
+	project, err := m.agent.readProject(ctx, engine.ProjectPrefix+a.ID, a.Compose)
+	if err != nil {
+		return catalog.App{}, err
+	}
+	chosen := map[string]string{}
+	for _, s := range p.Storage {
+		chosen[s.Ask] = s.Location
+	}
+	now, err := plan.MakeWith(a, plan.From{ID: m.catalog.ID, Publisher: m.catalog.Publisher}, project, h, m.cfg.Now(), chosen)
+	if errors.Is(err, plan.ErrStorageNeeded) || errors.Is(err, plan.ErrNoSuchLocation) {
+		return catalog.App{}, errStalePlan // its location is gone
+	}
+	if err != nil {
+		return catalog.App{}, err
+	}
+	if now.ID != p.ID {
+		return catalog.App{}, errStalePlan
+	}
+	return a, nil
+}
+
+// applyPlan applies a plan by its id; terminal says the request came on the control socket, from the machine's
+// terminal, where a risky plan needs no step-up.
+func (m *Manager) applyPlan(terminal bool) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) { m.apply(w, r, terminal) }
+}
+
+func (m *Manager) apply(w http.ResponseWriter, r *http.Request, terminal bool) {
+	ctx := r.Context()
+	b, err := m.db.Plan(ctx, r.PathValue("id"))
+	if errors.Is(err, store.ErrNotFound) {
+		fail(w, http.StatusNotFound, "no-such-plan")
+		return
+	}
+	if err != nil {
+		m.internal(w, "reading a plan", err)
+		return
+	}
+	var p plan.Plan
+	if err := json.Unmarshal(b, &p); err != nil {
+		m.internal(w, "reading a plan", err)
+		return
+	}
+	if p.Kind == "restore" {
+		m.applyRestore(w, r, b, terminal)
+		return
+	}
+	switch {
+	case p.Kind != "install":
+		fail(w, http.StatusUnprocessableEntity, "not-an-install")
+		return
+	case len(p.Extras) > 0:
+		// The agent doesn't run extras yet: an app is never installed without what its plan says it gets.
+		fail(w, http.StatusUnprocessableEntity, errExtras.Error())
+		return
+	}
+	// One apply at a time: an install that fails deletes the client it made, which must be no other apply's.
+	m.applying.Lock()
+	defer m.applying.Unlock()
+	a, err := m.current(ctx, p)
+	var refused *agentRefused
+	switch {
+	case errors.Is(err, errStalePlan):
+		fail(w, http.StatusConflict, err.Error())
+		return
+	case errors.Is(err, errNotSetUp):
+		fail(w, http.StatusConflict, err.Error())
+		return
+	case errors.As(err, &refused):
+		fail(w, http.StatusUnprocessableEntity, refused.Code)
+		return
+	case err != nil:
+		m.log.Warn("making the plan again, to apply it", "plan", p.ID, "err", err)
+		fail(w, http.StatusServiceUnavailable, errAgent.Error())
+		return
+	}
+	if !p.SignIn.Wired { // after the stale check: a plan made before Homeward could set its sign-in up is stale
+		fail(w, http.StatusUnprocessableEntity, errNotBuilt.Error())
+		return
+	}
+	ans, err := m.db.Answers(ctx)
+	if err != nil {
+		m.internal(w, "reading the answers", err)
+		return
+	}
+	provider, err := m.provider(ctx, ans)
+	if err != nil {
+		m.log.Warn("the household account, to guard an app", "err", err)
+		fail(w, http.StatusConflict, errNoSignInYet.Error())
+		return
+	}
+	// Everything else checked, nothing changed yet: the step-up last, held while the plan is applied, spent only once it
+	// is, and given back for the retry when applying fails.
+	var ap *approval
+	if p.Risky && !terminal {
+		if ap, err = m.reserveStepUp(r, "plan:"+p.ID); err != nil {
+			m.stepUpRefusal(w, err)
+			return
+		}
+		defer ap.release()
+	}
+	var native, ldap *catalog.SignIn // an app's own OIDC client, or its own directory: how it takes it
+	switch p.SignIn.Method {
+	case catalog.OIDC:
+		native = &a.SignIn[slices.IndexFunc(a.SignIn, func(s catalog.SignIn) bool { return s.Method == catalog.OIDC })]
+	case catalog.LDAP:
+		ldap = &a.SignIn[slices.IndexFunc(a.SignIn, func(s catalog.SignIn) bool { return s.Method == catalog.LDAP })]
+	}
+	directory, _ := provider.(idp.LDAP)
+	if ldap != nil && directory == nil {
+		fail(w, http.StatusUnprocessableEntity, errNotBuilt.Error())
+		return
+	}
+	req := agent.AppRequest{Plan: p.ID, Product: p.App.Name, Compose: string(a.Compose), Name: p.Name.Host, Service: a.Names.Service,
+		Port: a.Names.Port, Guard: native == nil && ldap == nil, Secrets: []appunit.Secret{}, Health: []agent.AppHealth{}, Backups: []agent.AppData{}}
+	if ldap != nil {
+		// The app's base DN and DN template come once the identity provider has made its directory, below.
+		req.LDAP = &agent.AppLDAP{Env: *ldap.LDAP, RefusePaths: ldap.RefusePaths}
+	}
+	if native != nil {
+		// The client's issuer, id and secret come once the identity provider has made it, below.
+		req.OIDC = &agent.AppOIDC{Env: *native.Env, RedirectURIs: p.SignIn.RedirectURIs, AdminGroup: idp.RoleGroup(idp.Admin),
+			SecretUID: *native.SecretUID, RefusePaths: native.RefusePaths}
+	}
+	for _, s := range a.Secrets {
+		req.Secrets = append(req.Secrets, appunit.Secret{Name: s.Name, UID: s.UID})
+	}
+	// What the plan backs up, and nothing else: its data, but what it says isn't backed up (#22). Never its words of
+	// what each is: the agent gets services, paths, commands and file names, which it checks again.
+	for _, d := range a.Data {
+		switch {
+		case !d.BackedUp():
+		case d.Dump != nil:
+			req.Backups = append(req.Backups, agent.AppData{Service: d.Service, Dump: d.Dump.Command, File: d.Dump.File, Restore: d.Dump.Restore})
+		default:
+			req.Backups = append(req.Backups, agent.AppData{Service: d.Service, Path: d.Path})
+		}
+	}
+	for _, s := range p.Storage {
+		req.Storage = append(req.Storage, agent.AppStorage{Location: s.Location, Service: s.Service, Path: s.Path, ReadOnly: s.ReadOnly})
+	}
+	for _, h := range a.Health {
+		ah := agent.AppHealth{Service: h.Service, Compose: h.Compose}
+		if h.HTTP != nil {
+			ah.Port, ah.Path = h.HTTP.Port, h.HTTP.Path
+		}
+		req.Health = append(req.Health, ah)
+	}
+	// The agent checks the app first, so a refused plan changes nothing anywhere; then the guard or the client, before
+	// the edge serves the app's name; then the app.
+	agentFailed := func(err error) {
+		var e *agentError
+		if errors.As(err, &e) && e.Status/100 == 4 {
+			m.log.Error("the agent refused an app", "app", a.ID, "plan", p.ID, "code", e.Code)
+			fail(w, http.StatusUnprocessableEntity, e.Code)
+			return
+		}
+		m.log.Error("installing an app", "app", a.ID, "err", err)
+		fail(w, http.StatusServiceUnavailable, errAgent.Error())
+	}
+	if err := m.agent.install(ctx, a.ID, req, true, nil); err != nil {
+		agentFailed(err)
+		return
+	}
+	slug := "homerslab-" + a.ID
+	newClient, newLDAP := false, false
+	switch {
+	case ldap != nil:
+		// The outpost first, its token with the agent, so the directory has an outpost to serve it from.
+		token, err := directory.LDAPOutpost(ctx)
+		if err != nil {
+			m.log.Error("making the LDAP outpost", "app", a.ID, "err", err)
+			fail(w, http.StatusBadGateway, "ldap-failed")
+			return
+		}
+		if err := m.agent.ldapOutpost(ctx, token); err != nil {
+			agentFailed(err)
+			return
+		}
+		creds, err := directory.EnsureLDAP(ctx, idp.LDAPApp{Slug: slug, Name: p.App.Name, Roles: roles(p.Audience.Default)})
+		if err != nil {
+			m.log.Error("making an app's LDAP directory", "app", a.ID, "err", err)
+			fail(w, http.StatusBadGateway, "ldap-failed")
+			return
+		}
+		newLDAP = creds.Created // only a directory this apply made is this apply's to delete
+		req.LDAP.BaseDN, req.LDAP.UserDN = creds.BaseDN, creds.UserDN
+	case native == nil:
+		guard := idp.Guard{Slug: slug, Name: p.App.Name, URL: siteURL(ans, p.Name.Host), Roles: roles(p.Audience.Default)}
+		if err := provider.EnsureGuard(ctx, guard); err != nil {
+			m.log.Error("making an app's guard", "app", a.ID, "err", err)
+			fail(w, http.StatusBadGateway, "guard-failed")
+			return
+		}
+	default:
+		client := idp.Client{Slug: slug, Name: p.App.Name, RedirectURIs: p.SignIn.RedirectURIs, Roles: roles(p.Audience.Default)}
+		creds, err := provider.EnsureClient(ctx, client)
+		if err != nil {
+			m.log.Error("making an app's OIDC client", "app", a.ID, "err", err)
+			fail(w, http.StatusBadGateway, "client-failed")
+			return
+		}
+		newClient = creds.Created // only a client this apply made is this apply's to delete
+		req.OIDC.Issuer, req.OIDC.ClientID, req.OIDC.ClientSecret = creds.Issuer, creds.ID, creds.Secret.Reveal()
+	}
+	var st agent.AppStatus
+	if err := m.agent.install(ctx, a.ID, req, false, &st); err != nil {
+		// No client for an app the household doesn't have: only one this apply made, and only when the agent answered
+		// that it didn't install it. A request that timed out or was given up on may still be installing, and a client
+		// that was there already may be a running app's (an earlier apply that timed out made it): either would lose
+		// its sign-in.
+		if e := (*agentError)(nil); newClient && errors.As(err, &e) {
+			if err := provider.DeleteClient(context.WithoutCancel(ctx), slug); err != nil {
+				m.log.Error("deleting the client of an app that didn't install", "app", a.ID, "err", err)
+			}
+		}
+		if e := (*agentError)(nil); newLDAP && errors.As(err, &e) {
+			if err := directory.DeleteLDAP(context.WithoutCancel(ctx), slug); err != nil {
+				m.log.Error("deleting the directory of an app that didn't install", "app", a.ID, "err", err)
+			}
+		}
+		agentFailed(err)
+		return
+	}
+	if err := m.db.SaveApp(ctx, a.ID, p.ID, m.cfg.Now()); err != nil {
+		m.internal(w, "keeping an app", err)
+		return
+	}
+	ap.applied()
+	m.log.Info("applied an install plan", "plan", p.ID, "app", a.ID, "host", p.Name.Host)
+	if err := m.RefreshHome(ctx); err != nil {
+		m.log.Warn("Home's projection, after an install", "err", err)
+	}
+	writeJSON(w, http.StatusAccepted, m.view(store.App{ID: a.ID, Plan: p.ID, AppliedAt: m.cfg.Now().UTC()}, p, ans, &st))
+}
+
+// view is an app as the household sees it, from its plan and the agent's status (nil while the agent doesn't say).
+func (m *Manager) view(a store.App, p plan.Plan, ans map[string]string, st *agent.AppStatus) appView {
+	v := appView{ID: a.ID, Name: p.App.Name, Purpose: p.App.Purpose, Host: p.Name.Host, URL: siteURL(ans, p.Name.Host), Plan: a.Plan,
+		AppliedAt: a.AppliedAt, Node: p.Placement.Node, Health: "unknown", Checks: []agent.CheckResult{}}
+	if st != nil {
+		v.Health, v.Active, v.Pending = st.Health, st.Active, st.Pending
+		if st.Checks != nil {
+			v.Checks = st.Checks
+		}
+	}
+	return v
+}
+
+// getApps is the household's apps, each with its health as the agent finds it now, and what runs without its unit.
+func (m *Manager) getApps(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	apps, err := m.db.Apps(ctx)
+	if err != nil {
+		m.internal(w, "reading the apps", err)
+		return
+	}
+	ans, err := m.db.Answers(ctx)
+	if err != nil {
+		m.internal(w, "reading the answers", err)
+		return
+	}
+	var st agent.AppsStatus
+	if err := m.agent.with(m.agent.status).call(ctx, http.MethodGet, "/v1/apps", nil, &st); err != nil {
+		m.log.Warn("asking the agent for the apps", "err", err)
+	}
+	byID := map[string]*agent.AppStatus{}
+	for i := range st.Apps {
+		byID[st.Apps[i].ID] = &st.Apps[i]
+	}
+	out := []appView{}
+	for _, a := range apps {
+		b, err := m.db.Plan(ctx, a.Plan)
+		if err != nil {
+			m.internal(w, "reading a plan", err)
+			return
+		}
+		var p plan.Plan
+		if err := json.Unmarshal(b, &p); err != nil {
+			m.internal(w, "reading a plan", err)
+			return
+		}
+		out = append(out, m.view(a, p, ans, byID[a.ID]))
+	}
+	drift := st.Drift
+	if drift == nil {
+		drift = []agent.AppDrift{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"apps": out, "drift": drift})
+}
+
+// install hands the agent an app, or only asks whether it would install it (check), waiting for the engine's answer,
+// the compose read and the rest of the install.
+func (a *agentClient) install(ctx context.Context, id string, req agent.AppRequest, check bool, out *agent.AppStatus) error {
+	ctx, cancel := context.WithTimeout(ctx, agent.InstallDeadline+5*time.Second)
+	defer cancel()
+	p := "/v1/apps/" + id
+	if check {
+		p += "?check=true"
+		return a.with(a.installs).call(ctx, http.MethodPut, p, req, nil)
+	}
+	return a.with(a.installs).call(ctx, http.MethodPut, p, req, out)
+}
+
+// with is the client, asking through c.
+func (a *agentClient) with(c *http.Client) *agentClient {
+	b := *a
+	b.http = c
+	return &b
+}

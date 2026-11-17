@@ -4,7 +4,7 @@
 import { accessible, wear, type Look } from './a11y';
 import { expect, test } from './primary';
 
-test.skip(!process.env.HOMERSLAB_PLANTED, 'run by a11y-check.spec.ts');
+test.skip(!process.env.HOMEWARD_PLANTED, 'run by a11y-check.spec.ts');
 
 // css: [selector, property, value], set through the CSSOM (the page's CSP refuses inline style sheets)
 // cut: the viewport made short enough that its bottom edge runs through the middle of the lead. (A lead whose top is
@@ -73,6 +73,14 @@ const plants: {
       ['#planted-sticky', 'background-color', '#222'], ['#planted-sticky', 'color', '#fff'], ['#planted-scrolled', 'margin', '0'],
       ['#planted-scrolled', 'color', '#c4c4c4'], ['#planted-room', 'height', '300px']],
     scroll: ['#planted-scroller', 40] },
+  // a faint word in a strip that snaps (Admin's screenshots): the strip's snap points are its ends, so scrolling a word
+  // to the middle snaps back and leaves it half off the strip's edge; it is measured all the same, snap or not
+  { name: 'a faint word in a strip that snaps', look: { theme: 'light', motion: 'reduce', transparency: 'no-preference' },
+    html: '<div id="planted-strip"><p id="planted-snapped">Alpha beta gamma delta</p><p id="planted-snapped-faint">Alpha beta gamma delta</p></div>',
+    css: [['#planted-strip', 'width', '240px'], ['#planted-strip', 'overflow-x', 'auto'], ['#planted-strip', 'display', 'grid'],
+      ['#planted-strip', 'grid-auto-flow', 'column'], ['#planted-strip', 'grid-auto-columns', '200px'], ['#planted-strip', 'column-gap', '16px'], 
+      ['#planted-strip', 'background-color', '#fff'], ['#planted-snapped', 'color', '#000'], ['#planted-snapped-faint', 'color', '#c4c4c4']],
+    sheet: '#planted-strip { scroll-snap-type: x mandatory; } #planted-strip p { margin: 0; white-space: nowrap; scroll-snap-align: start; }' },
   // what fields show: a select's option, a button's value
   { name: 'a faint option in a select', look: { theme: 'light', motion: 'reduce', transparency: 'reduce' },
     html: '<select id="planted-select" aria-label="Planted"><option>A faint option</option></select>',
@@ -147,7 +155,7 @@ for (const plant of plants) {
   test(`planted: ${plant.name}`, async ({ page, primary }) => {
     await wear(page, plant.look);
     await page.goto((await primary.newLink()).localUrl);
-    await expect(page.getByRole('heading', { level: 1 })).toContainText('Let’s set up HomersLab');
+    await expect(page.getByRole('heading', { level: 1 })).toContainText('Let’s set up Homeward');
     const html = plant.html;
     if (html) await page.locator(plant.after ?? '.as-lead').evaluate((el, h) => el.insertAdjacentHTML('afterend', h), html);
     for (const [sel, prop, value] of plant.css ?? []) {

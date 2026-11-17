@@ -1,4 +1,4 @@
-// HomersLab Admin prototype: disks (ADR 0017). Each node's disks and the household's; preparing, adopting and erasing a
+// Homeward Admin prototype: disks (ADR 0017). Each node's disks and the household's; preparing, adopting and erasing a
 // disk; a failed disk in a mirror and its guided replacement; moving an app's data; low space; encrypting the system
 // disk. PROTOTYPE, throwaway. Every write is a plan; the destructive ones need the passkey (erase: the serial too).
 (() => {
@@ -25,13 +25,13 @@
     return failed() ? { ...m, smart: 'failed', tempC: null } : m;
   });
   const fullIn = (d) => { if (!d.growth) return null; const u = usedOf(d); return { to95: Math.max(0, Math.round((d.sizeGB * 0.95 - u) / d.growth)), toFull: Math.round((d.sizeGB - u) / d.growth) }; };
-  const ROLE = { system: 'The system', apps: 'App data', media: 'Media and storage locations', backups: 'Backups', empty: 'Not in use', foreign: 'Not HomersLab’s' };
+  const ROLE = { system: 'The system', apps: 'App data', media: 'Media and storage locations', backups: 'Backups', empty: 'Not in use', foreign: 'Not Homeward’s' };
   const encWords = (d) => (d.enc === 'luks-tpm' ? 'LUKS2, unlocked by the TPM at boot; its recovery key is in the kit' : d.encWhy ? `Not encrypted. ${d.encWhy}` : d.role === 'system' ? 'Not encrypted yet' : '—');
   const smartPill = (m) => (m.smart === 'failed' ? '<span class="pill pill-red">Failed</span>' : m.smart === 'warning' ? '<span class="pill pill-orange">SMART warnings</span>' : m.fresh ? '<span class="pill pill-green">New</span>' : '<span class="pill pill-green">Healthy</span>');
   const volState = (d) => {
     const pct = (usedOf(d) / d.sizeGB) * 100;
     if (d.state === 'empty' && !R4.prepared[d.id]) return { pill: '<span class="pill">Empty</span>', words: 'Empty: ready to prepare' };
-    if (d.state === 'foreign' && !R4.erased[d.id]) return { pill: R4.adopted[d.id] ? '<span class="pill pill-green">Adopted</span>' : '<span class="pill">Not HomersLab’s</span>', words: R4.adopted[d.id] ? 'A storage location, read-only, untouched' : `${d.fs}, “${d.label}”: adopt it or erase it` };
+    if (d.state === 'foreign' && !R4.erased[d.id]) return { pill: R4.adopted[d.id] ? '<span class="pill pill-green">Adopted</span>' : '<span class="pill">Not Homeward’s</span>', words: R4.adopted[d.id] ? 'A storage location, read-only, untouched' : `${d.fs}, “${d.label}”: adopt it or erase it` };
     if (d.state === 'foreign') return { pill: '<span class="pill">Empty</span>', words: 'Erased: ready to prepare' };
     if (d.id === 'an-apps' && failed()) return { pill: '<span class="pill pill-red">At risk</span>', words: 'Running on Bay 2 alone' };
     if (d.id === 'an-apps' && !R4.replaced) return { pill: '<span class="pill pill-orange">Watch Bay 1</span>', words: 'Mirrored; Bay 1 reports SMART warnings' };
@@ -39,14 +39,14 @@
     if (pct >= 90) return { pill: '<span class="pill pill-orange">90% full</span>', words: `${Math.round(pct)}% full` };
     return { pill: '<span class="pill pill-green">Healthy</span>', words: d.layout === 'mirror' ? 'Mirrored, both disks healthy' : 'Healthy' };
   };
-  // what fills a volume, from the analyzer's tree: apps, storage locations, HomersLab's leftovers, the system
+  // what fills a volume, from the analyzer's tree: apps, storage locations, Homeward's leftovers, the system
   function segs(d) {
     const tree = D.analyzer[d.id];
     if (!tree) return d.role === 'backups' ? [{ label: 'Backups', gb: usedOf(d), tone: 2 }] : d.state === 'foreign' && !R4.erased[d.id] ? [{ label: `${d.label} (${d.fs})`, gb: d.usedGB, tone: 5 }] : usedOf(d) ? [{ label: 'The system', gb: usedOf(d), tone: 5 }] : [];
     const by = new Map(), add = (k, label, gb, tone) => { const x = by.get(k) || { label, gb: 0, tone }; x.gb += gb; by.set(k, x); };
     for (const k of tree.kids) {
       if (!k.owner || k.owner === 'system') add('system', 'System and snapshots', k.gb, 5);
-      else if (k.owner === 'leftover') add('left', 'HomersLab’s leftovers', k.gb, 4);
+      else if (k.owner === 'leftover') add('left', 'Homeward’s leftovers', k.gb, 4);
       else if (k.owner.startsWith('st:')) add(k.owner, S.storage.find((s) => 'st:' + s.id === k.owner).name, k.gb, 2);
       else add(k.owner, cat(k.owner).name, k.gb, 1 + (by.size % 2 ? 2 : 0));
     }
@@ -93,7 +93,7 @@
     const alerts = d.id === 'an-apps' && failed() ? `<div class="notice notice-error a-finding" role="alert">${I('alert')}<span class="notice-body"><b>Bay 1 failed at 13:41: it stopped answering.</b>App data is at risk: it runs on Bay 2 alone, and the apps on it keep working. Replace the disk soon; a mirror is not a backup, and backups ran at 14:00.</span><span class="notice-actions"><a class="btn btn-sm" href="#/disks/an-apps/replace">Replace it</a></span></div>`
       : d.id === 'an-apps' && !R4.replaced ? `<div class="notice notice-warn a-finding" role="status">${I('alert')}<span class="notice-body"><b>Bay 1 reports SMART warnings.</b>24 reallocated sectors and 8 pending, up from 0 on 9 Oct. The mirror is fine, and Sunday’s scrub repaired 2 blocks from Bay 2. Order a replacement; when Bay 1 fails, App data keeps running on Bay 2.</span><span class="notice-actions"><a class="btn btn-sm" href="#/disks/an-apps/replace">Replace it now</a></span></div>`
       : d.id === 'an-media' ? A.diskAlerts().split('</div>').filter((s) => s.includes('Media pool')).map((s) => s + '</div>').join('') : '';
-    if (unprepared || foreign) return `${head}${sec('dk', 'What is on it', foreign ? `It holds a ${esc(d.fs)} filesystem HomersLab didn’t make. Adopt it to use it as it is, or erase it to prepare it.` : 'Nothing: no partitions, no filesystem. Preparing it encrypts and formats it.',
+    if (unprepared || foreign) return `${head}${sec('dk', 'What is on it', foreign ? `It holds a ${esc(d.fs)} filesystem Homeward didn’t make. Adopt it to use it as it is, or erase it to prepare it.` : 'Nothing: no partitions, no filesystem. Preparing it encrypts and formats it.',
       `${foreign ? `<div class="group">${d.contents.map((c) => `<div class="row"><span class="row-main"><span class="row-label">${esc(c.what)}</span></span><span class="row-value num">${esc(c.size)}</span></div>`).join('')}</div>` : ''}${memberRows(d, ms)}`)}`;
     return `${head}${alerts}
       ${sec('du', 'What fills it', f ? `Growing about ${d.growth >= 1 ? Math.round(d.growth) + ' GB' : size(d.growth)} a day: ${f.to95 > 730 ? 'years of room at this rate' : f.to95 > 0 ? `about ${f.to95} days until 95%, ${f.toFull} until full` : 'past 95%'}.` : 'What is on it, by app and storage location.',
@@ -113,7 +113,7 @@
   // ---------- adopt: use what is on it, untouched ----------
   act('disk-adopt', async (t) => {
     const { n, d } = vol(t.dataset.id);
-    const v = await dialog({ title: `Adopt ${esc(d.name)}`, sub: `HomersLab uses “${esc(d.label)}” as it is. Nothing on it is changed, moved or encrypted.`,
+    const v = await dialog({ title: `Adopt ${esc(d.name)}`, sub: `Homeward uses “${esc(d.label)}” as it is. Nothing on it is changed, moved or encrypted.`,
       body: `<div class="field"><label class="field-label" for="ad-name">Name it</label><input id="ad-name" class="input" value="${esc(d.label)}" autocomplete="off"></div>
         <div><p class="group-head">As</p><div class="group" role="radiogroup" aria-label="As"><label class="row row-choice"><input type="radio" name="ad-as" checked><span class="row-main"><span class="row-label">A storage location</span><span class="row-sub wrap">Apps may read it; read-only unless you say otherwise. It stays ${esc(d.fs)}, so it has no snapshots or checksums.</span></span><span class="row-trail">${I('check2', 'icon checkmark')}</span></label>
           <label class="row row-choice"><input type="radio" name="ad-as"><span class="row-main"><span class="row-label">Space for app data</span><span class="row-sub wrap">Only on btrfs or ext4: an ${esc(d.fs)} disk can’t hold app data</span></span><span class="row-trail">${I('check2', 'icon checkmark')}</span></label></div></div>`,
@@ -166,7 +166,7 @@
   act('prep-go', async (t) => {
     const { n, d } = vol(t.dataset.id), o = prep[d.id], mate = n.disks.find((x) => x.apps);
     const pid = UI.planId({ k: 'prep', d: d.id, o });
-    const ok = await stepUp({ plan: { id: pid, summary: `prepare ${d.members[0].model}` }, title: `Prepare ${esc(d.members[0].model)}`, action: 'Prepare it', sub: 'Preparing a disk writes over it, so HomersLab asks for your passkey.',
+    const ok = await stepUp({ plan: { id: pid, summary: `prepare ${d.members[0].model}` }, title: `Prepare ${esc(d.members[0].model)}`, action: 'Prepare it', sub: 'Preparing a disk writes over it, so Homeward asks for your passkey.',
       what: [{ icon: 'disk', text: `Encrypt and format the disk in ${esc(d.members[0].slot)}<small>Serial ${esc(d.members[0].serial)}, ${size(d.sizeGB)}</small>` }, { icon: o.use === 'apps' ? 'copy' : 'folder', text: o.use === 'apps' ? `Make it a mirror of ${esc(mate.name)}` : 'Offer it as a storage location, single' }] });
     if (!ok) return; S.approvals.push(ok); log(`prepare ${d.id} approved (${pid})`);
     run('prep-' + d.id, prepSteps(d, n, o, mate).slice(0, -1).map((s) => ({ t: s.t, s: s.s })).concat([{ t: 'Ready', s: o.use === 'apps' ? `${mate.name} is mirrored now` : 'Name it and choose who reads it on the Nodes page' }]),
@@ -205,14 +205,14 @@
     return `<div class="page-head"><div class="a-ident">${I('disk', 'icon disk-plan-glyph')}<div><h1>Erase ${esc(d.members[0].model)}</h1><p class="page-sub">${esc(n.name)}, ${esc(d.members[0].slot)} · serial <span class="mono">${esc(sn)}</span> · ${esc(d.fs)}, “${esc(d.label)}”</p></div></div></div>
       <div class="split"><div class="plan-sections">
         <section><div class="plan-q"><h2>What is on it</h2><span>${size(d.usedGB)} of ${size(d.sizeGB)}</span></div><div class="group">${d.contents.map((c) => `<div class="row"><span class="row-lead">${I('folder', 'icon icon-md')}</span><span class="row-main"><span class="row-label">${esc(c.what)}</span></span><span class="row-value num">${esc(c.size)}</span></div>`).join('')}</div>
-          <p class="group-foot">None of it is in HomersLab’s backups: it was never HomersLab’s. Once erased, it is gone for good. To keep it, <button type="button" class="link" data-act="disk-adopt" data-id="${d.id}">adopt the disk instead</button>.</p></section>
+          <p class="group-foot">None of it is in Homeward’s backups: it was never Homeward’s. Once erased, it is gone for good. To keep it, <button type="button" class="link" data-act="disk-adopt" data-id="${d.id}">adopt the disk instead</button>.</p></section>
         <section><div class="plan-q"><h2>Confirm with its serial</h2><span>Printed on its label</span></div><div class="group"><div class="audience-box"><div class="field"><label class="field-label" for="er-serial">Type the serial, <span class="mono">${esc(sn)}</span></label><input id="er-serial" class="input mono" autocomplete="off" spellcheck="false" data-serial="${esc(sn)}" aria-describedby="er-hint"><span class="hint" id="er-hint">So the disk you erase is the one in your hand.</span></div></div></div></section>
         <div class="plan-go"><button class="btn btn-danger btn-lg btn-block" data-act="erase-go" data-id="${d.id}" disabled>${I('trash')}Erase with your passkey</button></div></div>
         <aside class="rail"><div class="card stack" style="gap:12px"><h2 class="card-title">Never offered</h2><p class="muted">A system disk, or any disk with app data, backups or a storage location in use, can’t be erased here. Remove what uses it first.</p></div></aside></div>`;
   }, { back: (m) => ({ href: `#/disks/${m[1]}`, label: vol(m[1])?.d.name || 'Disk' }), after: () => { const i = document.querySelector('#er-serial'), b = document.querySelector('[data-act="erase-go"]'); i?.addEventListener('input', () => { b.disabled = i.value.trim().toUpperCase() !== i.dataset.serial; }); } });
   act('erase-go', async (t) => {
     const { d } = vol(t.dataset.id), m = d.members[0];
-    const ok = await stepUp({ plan: { id: UI.planId({ k: 'erase', d: d.id }), summary: `erase ${m.model} ${m.serial}` }, title: `Erase ${esc(m.model)}`, action: 'Erase it', sub: 'Erasing a disk destroys what is on it, so HomersLab asks for your passkey.', what: [{ icon: 'trash', text: `Destroy ${size(d.usedGB)} on the disk with serial <span class="mono">${esc(m.serial)}</span><small>${esc(d.contents.map((c) => c.what).join(', '))}</small>` }] });
+    const ok = await stepUp({ plan: { id: UI.planId({ k: 'erase', d: d.id }), summary: `erase ${m.model} ${m.serial}` }, title: `Erase ${esc(m.model)}`, action: 'Erase it', sub: 'Erasing a disk destroys what is on it, so Homeward asks for your passkey.', what: [{ icon: 'trash', text: `Destroy ${size(d.usedGB)} on the disk with serial <span class="mono">${esc(m.serial)}</span><small>${esc(d.contents.map((c) => c.what).join(', '))}</small>` }] });
     if (!ok) return; S.approvals.push(ok); R4.erased[d.id] = true; log(`erased ${d.id}`); toast(`${m.model} is erased. Prepare it to use it.`, 'trash'); go(`#/disks/${d.id}`);
   });
 
@@ -240,7 +240,7 @@
   act('rep-pulled', () => { rep.step = 'insert'; log('Bay 1 pulled'); HL.run(render, { type: 'fade' }); });
   act('rep-check', () => { rep.step = 'found'; log('new disk found in Bay 1'); HL.run(render, { type: 'fade' }); });
   act('rep-go', async () => {
-    const ok = await stepUp({ plan: { id: UI.planId({ k: 'replace', d: 'an-apps' }), summary: 'rebuild App data’s mirror on Attic NAS' }, title: 'Rebuild the mirror', action: 'Rebuild it', sub: 'Adding a disk writes over it, so HomersLab asks for your passkey.', what: [{ icon: 'disk', text: 'Encrypt the new disk in Bay 1 and make it half of App data’s mirror<small>Serial S6PTNM0T611042A</small>' }] });
+    const ok = await stepUp({ plan: { id: UI.planId({ k: 'replace', d: 'an-apps' }), summary: 'rebuild App data’s mirror on Attic NAS' }, title: 'Rebuild the mirror', action: 'Rebuild it', sub: 'Adding a disk writes over it, so Homeward asks for your passkey.', what: [{ icon: 'disk', text: 'Encrypt the new disk in Bay 1 and make it half of App data’s mirror<small>Serial S6PTNM0T611042A</small>' }] });
     if (!ok) return; S.approvals.push(ok);
     const { d } = vol('an-apps');
     run('rebuild', [{ t: 'Encrypted the new disk', s: 'LUKS2, enrolled in Attic NAS’s TPM; recovery key added to the kit' }, { t: 'Swapped it into the mirror', s: 'btrfs replace, from the missing disk to Bay 1' }, { t: 'Rebuilding: 12 of 46 GB', s: 'From Bay 2' }, { t: 'Rebuilding: 31 of 46 GB', s: 'From Bay 2' }, { t: 'Rebuilt: 46 GB on both disks' }, { t: 'Scrubbed both disks', s: 'No errors' }, { t: 'The mirror is whole again' }],
@@ -277,7 +277,7 @@
     const n = node(m[1]), d = n.disks.find((x) => x.role === 'system'), pre = (S.encPre = S.encPre || { copy: false, vm: false, phrases: 1 });
     const ready = pre.copy && pre.vm && pre.phrases >= 2;
     const row = (done, title, sub, btn) => `<div class="row is-top row-wrap"><span class="row-lead">${done ? I('check2', 'icon icon-md is-done') : I('clock', 'icon icon-md')}</span><span class="row-main"><span class="row-title">${title}</span><span class="row-sub wrap">${sub}</span></span>${btn || ''}</div>`;
-    return `<div class="page-head"><div><h1>Encrypt ${esc(UI.poss(n.name))} system disk</h1><p class="page-sub">${esc(d.members[0].model)} · ${size(d.usedGB)} of ${size(d.sizeGB)} used · not encrypted. Encrypting it in place is the riskiest thing HomersLab does, so it asks for three things first.</p></div></div>
+    return `<div class="page-head"><div><h1>Encrypt ${esc(UI.poss(n.name))} system disk</h1><p class="page-sub">${esc(d.members[0].model)} · ${size(d.usedGB)} of ${size(d.sizeGB)} used · not encrypted. Encrypting it in place is the riskiest thing Homeward does, so it asks for three things first.</p></div></div>
       <div class="split"><div class="stack" style="gap:24px">
         <section aria-labelledby="h-pre"><div class="group-head"><h2 id="h-pre">Before it can start</h2></div><div class="group lead-md">
           ${row(pre.copy, 'A full copy, verified', pre.copy ? 'Copied to the Seagate Expansion USB disk at 14:20; every file’s checksum matches' : 'Every byte of the system disk, to an external disk, checked file by file. It is what you boot from if anything goes wrong.', pre.copy ? '' : '<button class="btn btn-sm" data-act="enc-pre" data-k="copy">Make the copy</button>')}
@@ -286,9 +286,9 @@
           ${row(false, 'A time at the console', 'About two hours with someone at Study PC’s keyboard: it reboots twice, and the first boot asks for a passphrase once.')}</div></section>
         <section aria-labelledby="h-how"><div class="group-head"><h2 id="h-how">How the TPM opens it</h2></div><div class="card stack" style="gap:10px">
           <p>${esc(n.name)} boots with UEFI and Secure Boot, so the TPM binds the key to the firmware and the Secure Boot state (PCRs 0 and 7). If someone changes the firmware or boots something else, the TPM refuses, and a recovery passphrase opens the disk.</p>
-          <p class="muted">On a machine that boots in legacy BIOS mode there is no Secure Boot state to bind, so the TPM binds weaker measurements (PCRs 0 and 4). The disk is still encrypted, but someone with the machine could more easily get the TPM to open it. HomersLab says so on that machine’s page, and suggests switching to UEFI first where the firmware allows.</p></div></section></div>
+          <p class="muted">On a machine that boots in legacy BIOS mode there is no Secure Boot state to bind, so the TPM binds weaker measurements (PCRs 0 and 4). The disk is still encrypted, but someone with the machine could more easily get the TPM to open it. Homeward says so on that machine’s page, and suggests switching to UEFI first where the firmware allows.</p></div></section></div>
         <aside class="rail"><div class="card stack" style="gap:12px"><h2 class="card-title">Start</h2><p class="muted">${ready ? 'Everything is ready. Pick a time when someone can be at the console.' : 'The start opens once the copy is verified, the rehearsal has passed and both passphrases are set.'}</p><button class="btn btn-primary btn-block" data-act="enc-start" ${ready ? '' : 'disabled'}>${I('key')}Start with your passkey</button><p class="subhead">It can be stopped before the first reboot; after it, the copy is the way back.</p></div></aside></div>`;
   }, { back: (m) => ({ href: `#/nodes/${m[1]}`, label: node(m[1])?.name || 'Node' }) });
   act('enc-pre', (t) => { const k = t.dataset.k; if (k === 'phrases') S.encPre.phrases = 2; else S.encPre[k] = true; toast(k === 'copy' ? 'Prototype: the copy and its check would take about 40 minutes.' : k === 'vm' ? 'Prototype: the rehearsal would take about 25 minutes.' : 'Tomás set his passphrase on his phone.', 'info'); render(); });
-  act('enc-start', async () => { const ok = await stepUp({ plan: { id: UI.planId({ k: 'encsys' }), summary: 'encrypt Study PC’s system disk' }, title: 'Encrypt the system disk', action: 'Start', sub: 'This changes how Study PC boots, so HomersLab asks for your passkey.', what: [{ icon: 'lock', text: 'Encrypt Study PC’s system disk in place, with two reboots<small>Bound to the TPM (PCRs 0+7); two recovery passphrases</small>' }] }); if (ok) { S.approvals.push(ok); toast('Prototype: the migration would start now, step by step at the console.', 'info'); } });
+  act('enc-start', async () => { const ok = await stepUp({ plan: { id: UI.planId({ k: 'encsys' }), summary: 'encrypt Study PC’s system disk' }, title: 'Encrypt the system disk', action: 'Start', sub: 'This changes how Study PC boots, so Homeward asks for your passkey.', what: [{ icon: 'lock', text: 'Encrypt Study PC’s system disk in place, with two reboots<small>Bound to the TPM (PCRs 0+7); two recovery passphrases</small>' }] }); if (ok) { S.approvals.push(ok); toast('Prototype: the migration would start now, step by step at the console.', 'info'); } });
 })();

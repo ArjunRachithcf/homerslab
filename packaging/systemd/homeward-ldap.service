@@ -1,0 +1,38 @@
+# Homeward's LDAP outpost (#204, ADR 0020): the sign-in's compose project and file, its service ldap alone (profile
+# ldap), apart from the sign-in's own unit. One command ends when its one container stops, and systemd starts it again
+# (ADR 0014); the sign-in's command never watches the outpost, so the outpost's exit never takes Authentik down.
+#
+# Its token is a systemd credential the agent sealed (ADR 0011), loaded by the agent's drop-in
+# (homeward-ldap.service.d/50-homeward-credentials.conf), whose ExecStartPre lines copy it into this unit's runtime
+# directory for the outpost's container user, labelled at the sign-in's SELinux level. The agent enables this unit
+# once an app signs in over LDAP.
+#
+# No mount sandboxing here: Docker's daemon must see the runtime directory (systemd credentials spike, rule 7).
+[Unit]
+Description=Homeward sign-in, LDAP outpost
+Documentation=https://github.com/ArjunRachithcf/homeward
+Requires=docker.service
+After=docker.service network-online.target homeward-agent.service homeward-authentik.service
+Wants=network-online.target
+ConditionPathExists=/etc/systemd/system/homeward-ldap.service.d/50-homeward-credentials.conf
+
+[Service]
+Type=exec
+RuntimeDirectory=homeward-ldap
+RuntimeDirectoryMode=0700
+UMask=0077
+# The sign-in's unit alone makes the sign-in's network (#245): at boot both units start together (After= orders only
+# their start), and two compose commands making one network at once fail. Waiting counts toward the start's timeout,
+# after which systemd tries again. This line runs before the agent's drop-in's.
+ExecStartPre=/bin/sh -c 'until /usr/bin/docker network inspect homerslab-authentik_sign-in >/dev/null 2>&1; do sleep 1; done'
+ExecStart=/usr/bin/docker compose --project-name homerslab-authentik --file /usr/share/homeward/sign-in/authentik.compose.yaml --profile ldap up --no-deps --no-log-prefix --quiet-pull --abort-on-container-exit ldap
+ExecStopPost=/usr/bin/docker compose --project-name homerslab-authentik --file /usr/share/homeward/sign-in/authentik.compose.yaml --profile ldap stop ldap
+# Always: compose ends with the stopped container's own exit status, 0 included.
+Restart=always
+# systemctl stop: compose ends with 130 when it stops the container itself.
+SuccessExitStatus=130
+RestartSec=10s
+TimeoutStopSec=30s
+
+[Install]
+WantedBy=multi-user.target
