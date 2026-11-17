@@ -17,6 +17,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"maps"
 	"net"
 	"net/netip"
 	"os"
@@ -643,21 +644,7 @@ func TestATunnelIsAWayOutOnlyForTheFamiliesItCovers(t *testing.T) {
 	}
 	n.listen(t, "vpn", "198.51.100.7:9012")
 	n.listen(t, "vpn", "[2001:db8:aaaa::7]:9013")
-	// The box's IPv6 link-local addresses, which neighbour discovery needs, are usable once duplicate address
-	// detection is done.
-	for i := 0; ; i++ {
-		out, err := exec.Command("ip", "-6", "addr", "show", "tentative").Output()
-		if err != nil {
-			t.Fatal(err)
-		}
-		if len(bytes.TrimSpace(out)) == 0 {
-			break
-		}
-		if i == 50 {
-			t.Fatalf("duplicate address detection never ended:\n%s", out)
-		}
-		time.Sleep(100 * time.Millisecond)
-	}
+	n.addressesSettled(t)
 	n.together(func() {
 		n.want(t, "before the table: an app reaches the IPv4 internet through the tunnel", "ctr", "198.51.100.7:9012", true)
 		n.want(t, "before the table: and the IPv6 internet", "ctr", "[2001:db8:aaaa::7]:9013", true)
@@ -899,7 +886,46 @@ NFT`)
 	n.udpListen(t, "", "0.0.0.0:53") // the box's DNS, at every address
 	n.listen(t, "peer", "100.88.1.2:53")
 	n.udpListen(t, "peer", "100.88.1.2:53")
+	n.addressesSettled(t)
 	return n
+}
+
+// addressesSettled returns once every namespace (the box's and each child's) is settled (#247): no IPv6 address in
+// duplicate address detection, and a usable link-local address on each link that neighbour discovery runs on. The
+// kernel adds a link-local address only once the link has carrier, and neighbour discovery sends from it: the LAN
+// host answers an app with a source on its loopback, so it solicits the box's address from eth0's link-local, and
+// sends no solicitation while that is missing or tentative; the app's IPv6 connection then never completes.
+func (n *netns) addressesSettled(t *testing.T) {
+	t.Helper()
+	names := append([]string{""}, slices.Sorted(maps.Keys(n.pids))...)
+	ip := func(name string, args ...string) string {
+		cmd := exec.Command("ip", args...)
+		if name != "" {
+			cmd = exec.Command("nsenter", append([]string{"-t", strconv.Itoa(n.pids[name]), "-n", "ip"}, args...)...)
+		}
+		out, err := cmd.Output()
+		if err != nil {
+			t.Fatalf("%s: ip %s: %v", orBox(name), strings.Join(args, " "), err)
+		}
+		return string(out)
+	}
+	deadline := time.Now().Add(15 * time.Second)
+	for _, name := range names {
+		for {
+			links, addrs := ip(name, "-o", "link", "show"), ip(name, "-6", "-o", "addr", "show")
+			ok, failed := settled(links, addrs)
+			if failed {
+				t.Fatalf("%s: duplicate address detection failed:\n%s", orBox(name), addrs)
+			}
+			if ok {
+				break
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("%s: IPv6 addresses never settled:\n%s\n%s", orBox(name), links, addrs)
+			}
+			time.Sleep(50 * time.Millisecond) // a poll of the condition, not a wait in its place
+		}
+	}
 }
 
 func (n *netns) udpListen(t *testing.T, name, addr string) {
@@ -1023,4 +1049,40 @@ func fresh(links, addrs string) bool {
 		}
 	}
 	return len(lines) > 0
+}
+
+// settled says whether a namespace's `ip -o link show` and `ip -6 -o addr show` list no IPv6 address in duplicate
+// address detection, and a link-local address on every link that is up, has carrier and does neighbour discovery
+// (not loopback, not a NOARP tunnel); failed says whether duplicate address detection failed for one.
+func settled(links, addrs string) (ok, failed bool) {
+	usable := map[string]bool{} // the links, by index, with a usable link-local address
+	ok = true
+	for _, l := range strings.Split(strings.TrimSpace(addrs), "\n") {
+		f := strings.Fields(l)
+		if len(f) == 0 {
+			continue
+		}
+		tentative := slices.Contains(f, "tentative")
+		if slices.Contains(f, "dadfailed") {
+			return false, true
+		}
+		if tentative {
+			ok = false
+		} else if i := slices.Index(f, "scope"); i > 0 && i+1 < len(f) && f[i+1] == "link" {
+			usable[f[0]] = true
+		}
+	}
+	for _, l := range strings.Split(strings.TrimSpace(links), "\n") {
+		f := strings.Fields(l)
+		if len(f) < 3 {
+			continue
+		}
+		flags := strings.Split(strings.Trim(f[2], "<>"), ",")
+		needs := slices.Contains(flags, "UP") && slices.Contains(flags, "LOWER_UP") &&
+			!slices.Contains(flags, "LOOPBACK") && !slices.Contains(flags, "NOARP")
+		if needs && !usable[f[0]] {
+			ok = false
+		}
+	}
+	return ok, false
 }
