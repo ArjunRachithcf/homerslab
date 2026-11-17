@@ -83,11 +83,30 @@ type Browser interface {
 	SignIn(t *testing.T, authorize, username string, f Factors) (state, code string, err error)
 }
 
+// prepare makes the household's sign-in as the manager does: a provider that isn't ready yet (Authentik's worker
+// applying its own blueprints again after a restart, #254) is asked again, for up to three minutes.
+func prepare(ctx context.Context, p idp.Provider, h idp.Household) error {
+	return untilReady(func() error { return p.Prepare(ctx, h) }, 3*time.Minute, 3*time.Second)
+}
+
+// untilReady calls try until it succeeds, fails with anything but idp.ErrNotReady, or wait has passed, and returns its
+// last error.
+func untilReady(try func() error, wait, poll time.Duration) error {
+	deadline := time.Now().Add(wait)
+	for {
+		err := try()
+		if !errors.Is(err, idp.ErrNotReady) || time.Now().After(deadline) {
+			return err
+		}
+		time.Sleep(poll)
+	}
+}
+
 // Run runs the contract against a World.
 func Run(t *testing.T, w World, version string) {
 	ctx := context.Background()
 	p, h := w.Provider(), w.Household()
-	if err := p.Prepare(ctx, h); err != nil {
+	if err := prepare(ctx, p, h); err != nil {
 		t.Fatalf("preparing the sign-in: %v", err)
 	}
 
@@ -622,7 +641,7 @@ func Run(t *testing.T, w World, version string) {
 		if r.UserVerification == "required" || r.RPID == h.SignIn() || r.Origin == h.Origin() || r.PasskeyOnlySignIn {
 			t.Errorf("the drift didn't show in the report: %+v", r)
 		}
-		if err := p.Prepare(ctx, h); err != nil {
+		if err := prepare(ctx, p, h); err != nil {
 			t.Fatal(err)
 		}
 		if r, _ := p.Report(ctx); r != want {
