@@ -410,9 +410,10 @@ func typeInto(t *testing.T, master, tty *os.File, line string) {
 	t.Errorf("the terminal never took in %d typed bytes", len(line))
 }
 
-// Echo is off from the command's start: a secret pasted while it still asks the manager where it goes, or as "Send it
-// there?" appears, is never shown; it is taken as the answer, so nothing is sent (#263). The same for `dns token`,
-// whose secret it is.
+// Echo is off from the command's start: a secret pasted while it still asks the manager where it goes is never shown;
+// it is taken as the answer, so nothing is sent (#263). The same for `dns token`, whose secret it is. When the command
+// stops before it reads it (nothing waits for it), the terminal drops it: the shell never gets it, to show it, run it
+// or keep it in its history.
 func TestSecretsOnATerminalShowNothingPastedBeforeTheQuestion(t *testing.T) {
 	testenv.Isolate(t)
 	setup := map[string][2]string{
@@ -430,7 +431,9 @@ func TestSecretsOnATerminalShowNothingPastedBeforeTheQuestion(t *testing.T) {
 		code, puts         int
 	}{
 		{"setup secret, during the GET", "GET", token, []string{"setup", "secret", "mesh"}, setup, 1, 0},
-		{"setup secret, at the question", "Send it there?", token, []string{"setup", "secret", "mesh"}, setup, 1, 0},
+		{"setup secret, nothing waiting", "GET", token, []string{"setup", "secret", "mesh"}, map[string][2]string{
+			"GET /api/v1/setup": {"", `{"revision":3,"steps":[{"id":"you","state":"done"}],"answers":{}}`},
+		}, 1, 0},
 		{"dns token, during the GET", "GET", dnsTok, []string{"dns", "token"}, dns, 0, 1},
 	} {
 		master, tty := openPTY(t)
@@ -479,6 +482,9 @@ func TestSecretsOnATerminalShowNothingPastedBeforeTheQuestion(t *testing.T) {
 		if tio, err := unix.IoctlGetTermios(int(tty.Fd()), unix.TCGETS); err != nil || tio.Lflag&unix.ECHO == 0 {
 			t.Errorf("%s: the terminal was left without echo", c.name)
 		}
+		if n, err := unix.IoctlGetInt(int(tty.Fd()), unix.TIOCINQ); err != nil || n != 0 {
+			t.Errorf("%s: %d typed bytes left for the shell", c.name, n)
+		}
 		if int(puts.Load()) != c.puts {
 			t.Errorf("%s: sent %d times, want %d", c.name, puts.Load(), c.puts)
 		}
@@ -494,14 +500,21 @@ func TestSetupSecretOnATerminalTurnsEchoOffAgainWhenContinued(t *testing.T) {
 		"PUT /api/v1/setup/secrets/mesh": {"", `{}`},
 	})
 	master, tty := openPTY(t)
-	var errOut bytes.Buffer
+	errOut := &typesAt{t: t, done: true} // only kept, safe to read meanwhile
 	done := make(chan int, 1)
 	go func() {
 		done <- cli.Main(context.Background(), []string{"setup", "secret", "mesh", "--control-socket", sock},
-			cli.Env{Stdin: tty, Stdout: io.Discard, Stderr: &errOut, Euid: func() int { return 0 }})
+			cli.Env{Stdin: tty, Stdout: io.Discard, Stderr: errOut, Euid: func() int { return 0 }})
 	}()
-	for _, line := range []string{"yes", token} {
-		waitForNoEcho(t, tty)
+	for _, q := range [][2]string{{"Send it there? Type yes: ", "yes"}, {"Your mesh's token", token}} {
+		line := q[1]
+		// The question is asked: the command is in its read, and turns echo off again only when continued.
+		for i := 0; !strings.Contains(errOut.String(), q[0]); i++ {
+			if i == 400 {
+				t.Fatalf("never asked %q", q[0])
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
 		// The shell, at fg: its own modes, with echo.
 		tio, err := unix.IoctlGetTermios(int(tty.Fd()), unix.TCGETS)
 		if err != nil {

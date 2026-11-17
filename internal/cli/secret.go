@@ -72,7 +72,7 @@ func setupSecret(ctx context.Context, args []string, env Env) error {
 			return err
 		}
 		if a := strings.ToLower(yes); a != "yes" && a != "y" {
-			return errors.New("stopped: nothing was read or sent")
+			return errors.New("stopped: nothing was sent")
 		}
 	}
 	value, err := in.secret(ctx, env, prompt)
@@ -354,54 +354,62 @@ func (l *lineReader) quiet(ctx context.Context, env Env, prompt string) (string,
 }
 
 // noEcho turns a terminal's echo off until restore; it does nothing on other stdins. It is applied again at every
-// question, and whenever the command is continued (SIGCONT) meanwhile: after a Ctrl-Z, the shell gives the terminal
-// its own modes, echo on, and fg doesn't take them back (#263). The terminal as it was is kept from the first call.
+// question, and whenever the command is continued in the foreground (SIGCONT) meanwhile: after a Ctrl-Z, the shell
+// gives the terminal its own modes, echo on, and fg doesn't take them back (#263). The terminal as it was is kept from
+// the first call.
 func (l *lineReader) noEcho() error {
 	f, ok := l.in.(*os.File)
 	if !ok || !l.terminal {
 		return nil
 	}
 	fd := int(f.Fd())
+	if l.saved != nil {
+		return echoOff(fd)
+	}
 	t, err := unix.IoctlGetTermios(fd, unix.TCGETS)
 	if err != nil {
 		return nil
 	}
-	quiet := *t
-	quiet.Lflag &^= unix.ECHO
-	if err := unix.IoctlSetTermios(fd, unix.TCSETS, &quiet); err != nil {
+	if err := echoOff(fd); err != nil {
 		return err
 	}
-	if l.saved != nil {
-		return nil
-	}
 	l.saved = t
-	cont := make(chan os.Signal, 1)
+	cont, watched := make(chan os.Signal, 1), make(chan struct{})
 	signal.Notify(cont, unix.SIGCONT)
-	quit, stopped := make(chan struct{}), make(chan struct{})
 	go func() {
-		defer close(stopped)
-		for {
-			select {
-			case <-cont:
-				_ = unix.IoctlSetTermios(fd, unix.TCSETS, &quiet)
-			case <-quit:
-				return
+		defer close(watched)
+		for range cont {
+			// Only in the foreground: a background job that sets its terminal is stopped again (SIGTTOU), after a bg.
+			if pg, err := unix.IoctlGetInt(fd, unix.TIOCGPGRP); err != nil || pg == unix.Getpgrp() {
+				_ = echoOff(fd)
 			}
 		}
 	}()
 	l.stop = func() {
 		signal.Stop(cont)
-		close(quit)
-		<-stopped
+		close(cont)
+		<-watched
 	}
 	return nil
 }
 
+// echoOff turns echo off on the terminal fd, and changes nothing else.
+func echoOff(fd int) error {
+	t, err := unix.IoctlGetTermios(fd, unix.TCGETS)
+	if err != nil {
+		return nil
+	}
+	t.Lflag &^= unix.ECHO
+	return unix.IoctlSetTermios(fd, unix.TCSETS, t)
+}
+
 // restore gives the terminal back its echo, as it was before the first question; it does nothing when noEcho changed
-// nothing, or a second time.
+// nothing, or a second time. What was typed and not read is dropped first: a secret pasted before the command stopped
+// never reaches the shell, which would show it, run it and keep it in its history.
 func (l *lineReader) restore() {
 	if f, ok := l.in.(*os.File); ok && l.saved != nil {
 		l.stop()
+		_ = unix.IoctlSetInt(int(f.Fd()), unix.TCFLSH, unix.TCIFLUSH)
 		_ = unix.IoctlSetTermios(int(f.Fd()), unix.TCSETS, l.saved)
 		l.saved, l.stop = nil, nil
 	}
