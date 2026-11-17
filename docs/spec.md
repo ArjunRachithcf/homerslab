@@ -431,9 +431,12 @@ Stories 120–121 are decided in #87.
     - the role is computed from exact group names, never by splitting a joined list of them: with Authentik, the guard's
       provider carries Homeward's scope mapping, which names the role in its own header from the role groups the
       person is in directly (a group below one gives none), and names none, emptying them, when the person's or a
-      group's attributes would set any header of Authentik's or Homeward's in another spelling. Any other scope mapping on a guard's provider (Authentik's own aside), or that mapping changed, could name the role instead: the provider's report then says it provides no forward-auth, and preparing the sign-in puts the guards back (#244); with Kanidm, oauth2-proxy's comma-joined short names, since
+      group's attributes would set any header of Authentik's or Homeward's in another spelling; with Kanidm, oauth2-proxy's comma-joined short names, since
       Kanidm refuses a comma in a name. oauth2-proxy never runs with `--skip-jwt-bearer-tokens`, which would let a bearer
       token stand in for the session;
+    - with Authentik, any other scope mapping on a guard's provider (Authentik's own aside), Homeward's mapping changed,
+      or a provider not in `forward_single` mode could name the role instead: the provider's report then says it
+      provides no forward-auth, and preparing the sign-in puts the guards' mappings back (#244);
     - a person without an id, without a name or username, in no role group or in more than one, is refused (403), never
       taken for an adult;
     - every name the edge serves deletes every `X-HomersLab-*` header a client sends, in any case, with underscores or

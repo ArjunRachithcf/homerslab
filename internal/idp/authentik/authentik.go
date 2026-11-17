@@ -1440,11 +1440,11 @@ func roleExpression() string {
 // roleScope is the role mapping's scope, which sorts after ak_proxy's.
 const roleScope = "homerslab"
 
-// proxyDefaults are the scope mappings Authentik puts on every proxy provider itself, whatever it is sent
-// (ProxyProvider.set_oauth_defaults, 2026.8.5).
-var proxyDefaults = []string{"goauthentik.io/providers/oauth2/scope-openid", "goauthentik.io/providers/oauth2/scope-profile",
-	"goauthentik.io/providers/oauth2/scope-email", "goauthentik.io/providers/oauth2/scope-entitlements",
-	"goauthentik.io/providers/proxy/scope-proxy"}
+// authentiksOwn is the prefix of the mappings Authentik manages itself, its blueprints putting them back: among them
+// the ones it puts on every proxy provider, whatever it is sent (ProxyProvider.set_oauth_defaults). Neither the API
+// nor the console sets a mapping's managed id, so no admin's mapping carries one; a later Authentik that adds a
+// default of its own adds one of these.
+const authentiksOwn = "goauthentik.io/providers/"
 
 func (a *Authentik) ensureRoleMapping(ctx context.Context) (string, error) {
 	return a.ensure(ctx, "/propertymappings/provider/scope/", roleMapping, map[string]any{"name": roleMapping,
@@ -1455,6 +1455,7 @@ func (a *Authentik) ensureRoleMapping(ctx context.Context) (string, error) {
 type guardProvider struct {
 	PK       int      `json:"pk"`
 	Name     string   `json:"name"`
+	Mode     string   `json:"mode"`
 	App      *string  `json:"assigned_application_slug"`
 	Mappings []string `json:"property_mappings"`
 }
@@ -1478,7 +1479,7 @@ func (a *Authentik) guardMappings(ctx context.Context) (guards []guardProvider, 
 	}
 	allowed, mine := map[string]bool{}, 0
 	for _, m := range ms {
-		if m.Managed != nil && slices.Contains(proxyDefaults, *m.Managed) {
+		if m.Managed != nil && strings.HasPrefix(*m.Managed, authentiksOwn) {
 			allowed[m.PK] = true
 		}
 		if m.Name == roleMapping {
@@ -1512,7 +1513,7 @@ type scopeMapping struct {
 // Homeward's does, since Authentik merges each mapping's answer in its scope's order, and over the one before it
 // (#244).
 func mappedAsOurs(p guardProvider, allowed map[string]bool, role string) bool {
-	if !slices.Contains(p.Mappings, role) {
+	if p.Mode != "forward_single" || !slices.Contains(p.Mappings, role) { // #83: never forward_domain
 		return false
 	}
 	for _, m := range p.Mappings {
@@ -1523,8 +1524,9 @@ func mappedAsOurs(p guardProvider, allowed map[string]bool, role string) bool {
 	return true
 }
 
-// guardsIntact says whether every guard is as Homeward makes it: its own app's provider, carrying Homeward's role
-// mapping, unchanged, and no mapping beside it but Authentik's own (#244).
+// guardsIntact says whether every guard is as Homeward makes it: its own app's provider, in forward_single mode,
+// carrying Homeward's role mapping, unchanged, and no mapping beside it but Authentik's own (#244). A homerslab-
+// application whose provider is another one isn't intact either; Prepare leaves that one to EnsureGuard for its app.
 func (a *Authentik) guardsIntact(ctx context.Context) (bool, error) {
 	guards, allowed, role, err := a.guardMappings(ctx)
 	if err != nil || len(guards) == 0 {
@@ -1556,16 +1558,18 @@ func (a *Authentik) ensureGuards(ctx context.Context) error {
 		}
 		role = &scopeMapping{PK: pk}
 	}
+	// One guard that can't be put back keeps none of the others from it: its error comes back with theirs.
+	var errs []error
 	for _, p := range guards {
 		if p.Name != *p.App || mappedAsOurs(p, allowed, role.PK) {
 			continue
 		}
 		if err := a.api.call(ctx, http.MethodPatch, fmt.Sprintf("/providers/proxy/%d/", p.PK), map[string]any{"mode": "forward_single",
-			"property_mappings": []string{role.PK}}, nil); err != nil {
-			return fmt.Errorf("authentik: the guard %s's mappings: %w", p.Name, err)
+			"cookie_domain": "", "property_mappings": []string{role.PK}}, nil); err != nil {
+			errs = append(errs, fmt.Errorf("authentik: the guard %s's mappings: %w", p.Name, err))
 		}
 	}
-	return nil
+	return errors.Join(errs...)
 }
 
 // EnsureGuard makes an app's guard: a proxy provider of its own in forward_single mode, at the app's one URL, its

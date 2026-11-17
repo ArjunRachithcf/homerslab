@@ -188,6 +188,21 @@ func guardDrift(w *world, a *authentik.Authentik) func(*testing.T) {
 			t.Errorf("after Prepare, the provider carries %v, want %v", got, before)
 		}
 
+		// The guard switched to the whole domain (#83: never forward_domain), its mappings left alone.
+		w.raw(t, w.own, "PATCH", fmt.Sprintf("/api/v3/providers/proxy/%d/", p.PK), map[string]any{"mode": "forward_domain",
+			"cookie_domain": household.Domain}, nil)
+		intact("a guard for the whole domain", false)
+		prepare()
+		intact("after Prepare", true)
+		var mode struct {
+			Mode   string `json:"mode"`
+			Cookie string `json:"cookie_domain"`
+		}
+		w.raw(t, w.own, "GET", fmt.Sprintf("/api/v3/providers/proxy/%d/", p.PK), nil, &mode)
+		if mode.Mode != "forward_single" || mode.Cookie != "" {
+			t.Errorf("after Prepare, the guard is %+v, want forward_single with no cookie domain", mode)
+		}
+
 		// Homeward's role mapping changed: its expression, then its scope (one before ak_proxy's would lose to the
 		// person's attributes).
 		for _, change := range []map[string]any{
