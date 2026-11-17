@@ -86,7 +86,8 @@ type Browser interface {
 
 // Prepare makes the household's sign-in as the manager does: a provider that isn't ready yet (Authentik's worker
 // applying its own blueprints again after a restart, #254) is asked again, for up to three minutes. Any other error
-// fails at once. A provider's own tests call it wherever they call Prepare (#259).
+// fails at once, an unreachable provider too (the manager waits that out as well; a test's provider is up). A
+// provider's own tests call it wherever they call Prepare (#259).
 func Prepare(ctx context.Context, p idp.Provider, h idp.Household) error {
 	return untilReady(ctx, func() error { return p.Prepare(ctx, h) }, 3*time.Minute, 3*time.Second)
 }
