@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"os/signal"
 	"strconv"
 	"strings"
 	"time"
@@ -46,6 +47,12 @@ func setupSecret(ctx context.Context, args []string, env Env) error {
 		fs.Usage()
 		return errUsage
 	}
+	// Echo is off from here on a terminal: a secret pasted while the manager is asked where it goes isn't shown (#263).
+	in := lines(env)
+	defer in.restore()
+	if err := in.noEcho(); err != nil {
+		return err
+	}
 	c := newControl(*socket)
 	var st setupState
 	if _, err := c.do(ctx, "GET", "/api/v1/setup", 0, &st); err != nil {
@@ -59,15 +66,13 @@ func setupSecret(ctx context.Context, args []string, env Env) error {
 		return errors.New(refusal(name, "checking"))
 	}
 	fmt.Fprintln(env.Stderr, context64(name, st))
-	in := lines(env)
-	defer in.restore()
 	if in.terminal {
 		yes, err := in.ask(ctx, env, "Send it there? Type yes: ")
 		if err != nil {
 			return err
 		}
 		if a := strings.ToLower(yes); a != "yes" && a != "y" {
-			return errors.New("stopped: nothing was read or sent")
+			return errors.New("stopped: nothing was sent")
 		}
 	}
 	value, err := in.secret(ctx, env, prompt)
@@ -177,6 +182,11 @@ func dnsToken(ctx context.Context, args []string, env Env) error {
 		} `json:"certificate"`
 		RenewAt time.Time `json:"renewAt"`
 	}
+	in := lines(env) // echo off from here, as setup secret's (#263)
+	defer in.restore()
+	if err := in.noEcho(); err != nil {
+		return err
+	}
 	if _, err := newControl(*socket).do(ctx, "GET", "/api/v1/dns", 0, &st); err != nil {
 		return refused("dns", err)
 	}
@@ -187,8 +197,6 @@ func dnsToken(ctx context.Context, args []string, env Env) error {
 			fmt.Fprintf(env.Stderr, "Renewing it has failed since %s: %s\n", day(c.FailingSince), c.LastError)
 		}
 	}
-	in := lines(env)
-	defer in.restore()
 	value, err := in.secret(ctx, env, secretPrompts["dns"])
 	in.restore()
 	if err != nil {
@@ -279,7 +287,8 @@ type lineReader struct {
 	in       io.Reader
 	r        *bufio.Reader
 	terminal bool
-	saved    *unix.Termios // the terminal as it was, while quiet keeps its echo off
+	saved    *unix.Termios // the terminal as it was, while noEcho keeps its echo off
+	stop     func()        // ends the watch for SIGCONT, once it has stopped re-applying
 }
 
 func lines(env Env) *lineReader {
@@ -333,35 +342,78 @@ func (l *lineReader) ask(ctx context.Context, env Env, question string) (string,
 	return answer, nil
 }
 
-// quiet reads one line with prompt, on stderr. On a terminal it turns echo off first, and leaves it off until restore:
-// between two questions echo never comes back, so a secret typed or pasted as the yes is read isn't shown either (#243).
-// Ctrl-C (ctx) gives up; the caller's restore gives the terminal back as it was.
+// quiet reads one line with prompt, on stderr. On a terminal it turns echo off first (noEcho), and leaves it off until
+// restore: between two questions echo never comes back, so a secret typed or pasted as the yes is read isn't shown
+// either (#243). Ctrl-C (ctx) gives up; the caller's restore gives the terminal back as it was.
 func (l *lineReader) quiet(ctx context.Context, env Env, prompt string) (string, error) {
-	if f, ok := l.in.(*os.File); ok && l.terminal {
-		// Turned off again at every question, in case something gave echo back between two questions (a Ctrl-Z and fg
-		// there: the shell's own modes); the terminal as it was is kept from the first. A Ctrl-Z and fg during a read
-		// isn't covered (#263).
-		if t, err := unix.IoctlGetTermios(int(f.Fd()), unix.TCGETS); err == nil {
-			quiet := *t
-			quiet.Lflag &^= unix.ECHO
-			if err := unix.IoctlSetTermios(int(f.Fd()), unix.TCSETS, &quiet); err != nil {
-				return "", err
-			}
-			if l.saved == nil {
-				l.saved = t
-			}
-		}
+	if err := l.noEcho(); err != nil {
+		return "", err
 	}
 	fmt.Fprint(env.Stderr, prompt)
 	return l.line(ctx)
 }
 
-// restore gives the terminal back its echo, as it was before the first question; it does nothing when quiet changed
-// nothing, or a second time.
+// noEcho turns a terminal's echo off until restore; it does nothing on other stdins. It is applied again at every
+// question, and whenever the command is continued in the foreground (SIGCONT) meanwhile: after a Ctrl-Z, the shell
+// gives the terminal its own modes, echo on, and fg doesn't take them back (#263). The terminal as it was is kept from
+// the first call.
+func (l *lineReader) noEcho() error {
+	f, ok := l.in.(*os.File)
+	if !ok || !l.terminal {
+		return nil
+	}
+	fd := int(f.Fd())
+	if l.saved != nil {
+		return echoOff(fd)
+	}
+	t, err := unix.IoctlGetTermios(fd, unix.TCGETS)
+	if err != nil {
+		return nil
+	}
+	if err := echoOff(fd); err != nil {
+		return err
+	}
+	l.saved = t
+	cont, watched := make(chan os.Signal, 1), make(chan struct{})
+	signal.Notify(cont, unix.SIGCONT)
+	go func() {
+		defer close(watched)
+		for range cont {
+			// Only in the foreground: a background job that sets its terminal is stopped again (SIGTTOU), after a bg.
+			// Untested: the tests' pty isn't their controlling terminal (TIOCGPGRP fails, so this re-applies), and
+			// one that is needs a child in its own session (Setsid, Setctty), a re-executed test binary.
+			if pg, err := unix.IoctlGetInt(fd, unix.TIOCGPGRP); err != nil || pg == unix.Getpgrp() {
+				_ = echoOff(fd)
+			}
+		}
+	}()
+	l.stop = func() {
+		signal.Stop(cont)
+		close(cont)
+		<-watched
+	}
+	return nil
+}
+
+// echoOff turns echo off on the terminal fd, and changes nothing else.
+func echoOff(fd int) error {
+	t, err := unix.IoctlGetTermios(fd, unix.TCGETS)
+	if err != nil {
+		return nil
+	}
+	t.Lflag &^= unix.ECHO
+	return unix.IoctlSetTermios(fd, unix.TCSETS, t)
+}
+
+// restore gives the terminal back its echo, as it was before the first question; it does nothing when noEcho changed
+// nothing, or a second time. What was typed and not read is dropped first: a secret pasted before the command stopped
+// never reaches the shell, which would show it, run it and keep it in its history.
 func (l *lineReader) restore() {
 	if f, ok := l.in.(*os.File); ok && l.saved != nil {
+		l.stop()
+		_ = unix.IoctlSetInt(int(f.Fd()), unix.TCFLSH, unix.TCIFLUSH)
 		_ = unix.IoctlSetTermios(int(f.Fd()), unix.TCSETS, l.saved)
-		l.saved = nil
+		l.saved, l.stop = nil, nil
 	}
 }
 

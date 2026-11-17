@@ -188,6 +188,20 @@ func TestSetupSecretOnATerminalAsksForAYesFirst(t *testing.T) {
 	}
 }
 
+// waitForQuestion waits until stderr shows question, the command then in its read ("": its first question).
+// Echo is off from the command's start (#263), so echo alone doesn't say the command got that far.
+func waitForQuestion(t *testing.T, stderr *typesAt, question string) {
+	t.Helper()
+	for range 1000 {
+		out := stderr.String()
+		if question != "" && strings.Contains(out, question) || question == "" && (strings.Contains(out, "Send it there?") || strings.Contains(out, "it isn't shown as you paste it")) {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("never asked %q: %q", question, stderr.String())
+}
+
 // readAll is what the terminal showed so far: everything its master side can read now, without blocking.
 func readAll(master *os.File) string {
 	time.Sleep(50 * time.Millisecond)
@@ -308,7 +322,7 @@ func echoControl(t *testing.T, tty *os.File, answers map[string][2]string) (stri
 		t.Fatal(err)
 	}
 	var got []string
-	var echoAtPut atomic.Int32 // 0: no PUT, 1: echo on, 2: echo off
+	var echoAtPut atomic.Int32 // 0: no PUT, 1: echo on, 2: echo off, 3: on, but off after a SIGCONT
 	srv := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		b, _ := io.ReadAll(r.Body)
 		got = append(got, r.Method+" "+r.URL.Path+" "+string(b))
@@ -316,6 +330,18 @@ func echoControl(t *testing.T, tty *os.File, answers map[string][2]string) (stri
 			echoAtPut.Store(2)
 			if tio, err := unix.IoctlGetTermios(int(tty.Fd()), unix.TCGETS); err == nil && tio.Lflag&unix.ECHO != 0 {
 				echoAtPut.Store(1)
+				// A Ctrl-Z and fg during the request: the command has given echo back, so continuing it must not take
+				// echo away again (restore stopped its SIGCONT watch).
+				if err := unix.Kill(os.Getpid(), unix.SIGCONT); err != nil {
+					t.Error(err)
+				}
+				for range 40 {
+					if tio, err := unix.IoctlGetTermios(int(tty.Fd()), unix.TCGETS); err == nil && tio.Lflag&unix.ECHO == 0 {
+						echoAtPut.Store(3)
+						break
+					}
+					time.Sleep(5 * time.Millisecond)
+				}
 			}
 		}
 		a, ok := answers[r.Method+" "+r.URL.Path]
@@ -355,13 +381,13 @@ func TestSecretsOnATerminalGiveEchoBackBeforeSendingAndAfter(t *testing.T) {
 		master, tty := openPTY(t)
 		sock, got, echoAtPut := echoControl(t, tty, c.answers)
 		ctx, cancel := context.WithCancel(context.Background())
-		var errOut bytes.Buffer
+		errOut := &typesAt{t: t, done: true}
 		done := make(chan int, 1)
 		go func() {
 			done <- cli.Main(ctx, append(c.args, "--control-socket", sock),
-				cli.Env{Stdin: tty, Stdout: io.Discard, Stderr: &errOut, Euid: func() int { return 0 }})
+				cli.Env{Stdin: tty, Stdout: io.Discard, Stderr: errOut, Euid: func() int { return 0 }})
 		}()
-		waitForNoEcho(t, tty)
+		waitForQuestion(t, errOut, "")
 		for _, line := range c.typed {
 			if _, err := master.WriteString(line + "\n"); err != nil {
 				t.Fatal(err)
@@ -388,8 +414,159 @@ func TestSecretsOnATerminalGiveEchoBackBeforeSendingAndAfter(t *testing.T) {
 		switch e := echoAtPut.Load(); {
 		case c.ctrlC && (e != 0 || len(*got) != 1):
 			t.Errorf("%s: something was sent: %q", c.name, *got)
+		case !c.ctrlC && e == 3:
+			t.Errorf("%s: a Ctrl-Z and fg during the PUT turned echo off again: the SIGCONT watch outlived restore", c.name)
 		case !c.ctrlC && e != 1:
 			t.Errorf("%s: echo at the PUT: %d, want it back on (1) before the secret is sent", c.name, e)
 		}
+	}
+}
+
+// typeInto types line into the terminal and returns once the terminal has taken it in, so whether it is shown is
+// decided by the echo of that moment. Only while the command isn't reading: a read empties the queue.
+func typeInto(t *testing.T, master, tty *os.File, line string) {
+	if _, err := master.WriteString(line); err != nil {
+		t.Error(err)
+		return
+	}
+	for range 400 {
+		if n, err := unix.IoctlGetInt(int(tty.Fd()), unix.TIOCINQ); err == nil && n >= len(line) {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Errorf("the terminal never took in %d typed bytes", len(line))
+}
+
+// Echo is off from the command's start: a secret pasted while it still asks the manager where it goes is never shown;
+// it is taken as the answer, so nothing is sent (#263). The same for `dns token`, whose secret it is. When the command
+// stops before it reads it (nothing waits for it), the terminal drops it: the shell never gets it, to show it, run it
+// or keep it in its history.
+func TestSecretsOnATerminalShowNothingPastedBeforeTheQuestion(t *testing.T) {
+	testenv.Isolate(t)
+	setup := map[string][2]string{
+		"GET /api/v1/setup":              {"", at("network", "mesh", `,"meshControlPlane":"cloud","meshUrl":"https://api.netbird.io"`)},
+		"PUT /api/v1/setup/secrets/mesh": {"", `{}`},
+	}
+	dns := map[string][2]string{
+		"GET /api/v1/dns":       {"", `{"domain":"example.test","where":"Infomaniak's API"}`},
+		"PUT /api/v1/dns/token": {"", `{"renewed":false}`},
+	}
+	for _, c := range []struct {
+		name, when, secret string // when: "GET" while the manager answers, or the start of a line on stderr
+		args               []string
+		answers            map[string][2]string
+		code, puts         int
+	}{
+		{"setup secret, during the GET", "GET", token, []string{"setup", "secret", "mesh"}, setup, 1, 0},
+		{"setup secret, nothing waiting", "GET", token, []string{"setup", "secret", "mesh"}, map[string][2]string{
+			"GET /api/v1/setup": {"", `{"revision":3,"steps":[{"id":"you","state":"done"}],"answers":{}}`},
+		}, 1, 0},
+		{"dns token, during the GET", "GET", dnsTok, []string{"dns", "token"}, dns, 0, 1},
+	} {
+		master, tty := openPTY(t)
+		sock := filepath.Join(t.TempDir(), "manager.sock")
+		ln, err := net.Listen("unix", sock)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var puts atomic.Int32
+		srv := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Method == "GET" && c.when == "GET" {
+				typeInto(t, master, tty, c.secret+"\n")
+			}
+			if r.Method == "PUT" {
+				puts.Add(1)
+			}
+			a, ok := c.answers[r.Method+" "+r.URL.Path]
+			if !ok {
+				w.WriteHeader(http.StatusNotFound)
+				return
+			}
+			_, _ = w.Write([]byte(a[1]))
+		})}
+		go func() { _ = srv.Serve(ln) }()
+		errOut := &typesAt{t: t, when: c.when, master: master, tty: tty, typed: c.secret + "\n"}
+		if c.when == "GET" {
+			errOut.done = true
+		}
+		done := make(chan int, 1)
+		go func() {
+			done <- cli.Main(context.Background(), append(c.args, "--control-socket", sock),
+				cli.Env{Stdin: tty, Stdout: io.Discard, Stderr: errOut, Euid: func() int { return 0 }})
+		}()
+		select {
+		case code := <-done:
+			if code != c.code {
+				t.Errorf("%s: exit %d, want %d: %s", c.name, code, c.code, errOut.String())
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatalf("%s: the command didn't end", c.name)
+		}
+		srv.Close()
+		if shown := readAll(master); strings.Contains(shown, "FROMTHETERMINAL") {
+			t.Errorf("%s: the secret was shown: %q", c.name, shown)
+		}
+		if tio, err := unix.IoctlGetTermios(int(tty.Fd()), unix.TCGETS); err != nil || tio.Lflag&unix.ECHO == 0 {
+			t.Errorf("%s: the terminal was left without echo", c.name)
+		}
+		if n, err := unix.IoctlGetInt(int(tty.Fd()), unix.TIOCINQ); err != nil || n != 0 {
+			t.Errorf("%s: %d typed bytes left for the shell", c.name, n)
+		}
+		if int(puts.Load()) != c.puts {
+			t.Errorf("%s: sent %d times, want %d", c.name, puts.Load(), c.puts)
+		}
+	}
+}
+
+// A Ctrl-Z and fg while a question waits gives the terminal the shell's modes, echo on: when the command is continued
+// it turns echo off again, so what is typed next isn't shown (#263).
+func TestSetupSecretOnATerminalTurnsEchoOffAgainWhenContinued(t *testing.T) {
+	testenv.Isolate(t)
+	sock, got := headerControl(t, map[string][2]string{
+		"GET /api/v1/setup":              {"", at("network", "mesh", `,"meshControlPlane":"cloud","meshUrl":"https://api.netbird.io"`)},
+		"PUT /api/v1/setup/secrets/mesh": {"", `{}`},
+	})
+	master, tty := openPTY(t)
+	errOut := &typesAt{t: t, done: true} // only kept, safe to read meanwhile
+	done := make(chan int, 1)
+	go func() {
+		done <- cli.Main(context.Background(), []string{"setup", "secret", "mesh", "--control-socket", sock},
+			cli.Env{Stdin: tty, Stdout: io.Discard, Stderr: errOut, Euid: func() int { return 0 }})
+	}()
+	for _, q := range [][2]string{{"Send it there? Type yes: ", "yes"}, {"Your mesh's token", token}} {
+		line := q[1]
+		// The question is asked: the command is in its read, and turns echo off again only when continued.
+		waitForQuestion(t, errOut, q[0])
+		// The shell, at fg: its own modes, with echo.
+		tio, err := unix.IoctlGetTermios(int(tty.Fd()), unix.TCGETS)
+		if err != nil {
+			t.Fatal(err)
+		}
+		tio.Lflag |= unix.ECHO
+		if err := unix.IoctlSetTermios(int(tty.Fd()), unix.TCSETS, tio); err != nil {
+			t.Fatal(err)
+		}
+		if err := unix.Kill(os.Getpid(), unix.SIGCONT); err != nil {
+			t.Fatal(err)
+		}
+		waitForNoEcho(t, tty)
+		if _, err := master.WriteString(line + "\n"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	select {
+	case code := <-done:
+		if code != 0 {
+			t.Fatalf("exit %d: %s", code, errOut.String())
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the command didn't end")
+	}
+	if shown := readAll(master); strings.Contains(shown, "FROMTHETERMINAL") {
+		t.Errorf("the token was shown: %q", shown)
+	}
+	if len(*got) != 2 {
+		t.Errorf("requests %q", *got)
 	}
 }
