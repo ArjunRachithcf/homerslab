@@ -102,16 +102,17 @@ func TestTheIdentityProviderContractOnAuthentik(t *testing.T) {
 				t.Errorf("the default flow %s, once bootstrap was done: %d", slug, code)
 			}
 		}
-		var bs struct {
-			Results []struct {
-				Path, Status string
-			}
+		// Authentik's worker may run a blueprint again after Bootstrap saw it succeed, and two of its own runs can
+		// deadlock in Postgres, leaving one in error (#254): that one is applied again, as the adapter does, until a
+		// deadline. One that stays in error, or that Bootstrap didn't wait for, still fails.
+		list := func() []blueprint {
+			var bs struct{ Results []blueprint }
+			w.raw(t, own, "GET", "/api/v3/managed/blueprints/?page_size=500", nil, &bs)
+			return bs.Results
 		}
-		w.raw(t, own, "GET", "/api/v3/managed/blueprints/?page_size=500", nil, &bs)
-		for _, b := range bs.Results {
-			if (strings.HasPrefix(b.Path, "default/") || strings.HasPrefix(b.Path, "system/")) && b.Status != "successful" && b.Status != "orphaned" {
-				t.Errorf("the blueprint %s, once bootstrap was done: %s", b.Path, b.Status)
-			}
+		apply := func(pk string) { w.do(t, own, "POST", "/api/v3/managed/blueprints/"+pk+"/apply/", nil) }
+		for _, left := range settle(list, apply, 3*time.Minute, 20*time.Second) {
+			t.Errorf("the blueprint %s, once bootstrap was done", left)
 		}
 		if code := w.status(t, w.bootstrap, "/api/v3/core/users/me/"); code != http.StatusForbidden && code != http.StatusUnauthorized {
 			t.Errorf("the bootstrap token after bootstrap: %d, want refused", code)
@@ -861,6 +862,48 @@ func secret() string {
 	b := make([]byte, 32)
 	_, _ = rand.Read(b)
 	return base64.RawURLEncoding.EncodeToString(b)
+}
+
+// blueprint is one of Authentik's blueprint instances, as its API lists them.
+type blueprint struct {
+	PK     string `json:"pk"`
+	Path   string `json:"path"`
+	Status string `json:"status"`
+}
+
+// settle looks at Authentik's default and system blueprints until each has applied (or is orphaned: an upgrade
+// removed its file), and returns, as "path: status", those that haven't by the end of wait. One in error is applied
+// again, not more often than every; any other state at the first look means Bootstrap didn't wait for it, and is
+// returned at once.
+func settle(list func() []blueprint, apply func(pk string), wait, every time.Duration) []string {
+	deadline := time.Now().Add(wait)
+	applied := map[string]time.Time{}
+	for first := true; ; first = false {
+		var left, early []string
+		for _, b := range list() {
+			if !strings.HasPrefix(b.Path, "default/") && !strings.HasPrefix(b.Path, "system/") || b.Status == "successful" || b.Status == "orphaned" {
+				continue
+			}
+			left = append(left, b.Path+": "+b.Status)
+			if b.Status != "error" {
+				if first {
+					early = append(early, b.Path+": "+b.Status)
+				}
+				continue
+			}
+			if time.Since(applied[b.PK]) >= every {
+				apply(b.PK)
+				applied[b.PK] = time.Now()
+			}
+		}
+		if len(early) > 0 {
+			return early
+		}
+		if len(left) == 0 || time.Now().After(deadline) {
+			return left
+		}
+		time.Sleep(min(every, 2*time.Second))
+	}
 }
 
 // up starts the packaged compose file, with the test's addresses and secret files, and waits until Authentik takes
