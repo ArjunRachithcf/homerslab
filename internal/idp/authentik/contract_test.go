@@ -313,6 +313,9 @@ func TestTheIdentityProviderContractOnAuthentik(t *testing.T) {
 		pass("kid")
 	})
 
+	t.Run("the role mapping names no role when anything is forged, whatever order the outpost writes in (#244)", roleMappingFailsClosed(w))
+	t.Run("drift: a foreign scope mapping on a guard, or Homeward's role mapping changed, shows in the report, and Prepare puts it back (#244)", guardDrift(w, a))
+
 	t.Run("each guard's provider keeps its own app's URL (#219)", func(t *testing.T) {
 		for slug, host := range map[string]string{"homerslab-bentopdf": "https://pdf.example.test", "homerslab-chores": "https://chores.example.test"} {
 			var ps struct {
