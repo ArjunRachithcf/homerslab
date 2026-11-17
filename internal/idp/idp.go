@@ -155,7 +155,8 @@ type ClientCredentials struct {
 type Report struct {
 	Provider string `json:"provider"` // authentik, kanidm
 	Version  string `json:"version"`
-	// OIDC, ForwardAuth and LDAP are the sign-in methods it provides to apps.
+	// OIDC, ForwardAuth and LDAP are the sign-in methods it provides to apps. ForwardAuth is false while a guard isn't
+	// as Homeward made it, so the role it names may not be Homeward's (#244); Prepare puts its mappings back.
 	OIDC        bool `json:"oidc"`
 	ForwardAuth bool `json:"forwardAuth"`
 	LDAP        bool `json:"ldap"`
