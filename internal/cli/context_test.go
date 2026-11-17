@@ -188,6 +188,20 @@ func TestSetupSecretOnATerminalAsksForAYesFirst(t *testing.T) {
 	}
 }
 
+// waitForQuestion waits until stderr shows question, the command then in its read ("": its first question).
+// Echo is off from the command's start (#263), so echo alone doesn't say the command got that far.
+func waitForQuestion(t *testing.T, stderr *typesAt, question string) {
+	t.Helper()
+	for range 1000 {
+		out := stderr.String()
+		if question != "" && strings.Contains(out, question) || question == "" && (strings.Contains(out, "Send it there?") || strings.Contains(out, "it isn't shown as you paste it")) {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("never asked %q: %q", question, stderr.String())
+}
+
 // readAll is what the terminal showed so far: everything its master side can read now, without blocking.
 func readAll(master *os.File) string {
 	time.Sleep(50 * time.Millisecond)
@@ -355,13 +369,13 @@ func TestSecretsOnATerminalGiveEchoBackBeforeSendingAndAfter(t *testing.T) {
 		master, tty := openPTY(t)
 		sock, got, echoAtPut := echoControl(t, tty, c.answers)
 		ctx, cancel := context.WithCancel(context.Background())
-		var errOut bytes.Buffer
+		errOut := &typesAt{t: t, done: true}
 		done := make(chan int, 1)
 		go func() {
 			done <- cli.Main(ctx, append(c.args, "--control-socket", sock),
-				cli.Env{Stdin: tty, Stdout: io.Discard, Stderr: &errOut, Euid: func() int { return 0 }})
+				cli.Env{Stdin: tty, Stdout: io.Discard, Stderr: errOut, Euid: func() int { return 0 }})
 		}()
-		waitForNoEcho(t, tty)
+		waitForQuestion(t, errOut, "")
 		for _, line := range c.typed {
 			if _, err := master.WriteString(line + "\n"); err != nil {
 				t.Fatal(err)
@@ -509,12 +523,7 @@ func TestSetupSecretOnATerminalTurnsEchoOffAgainWhenContinued(t *testing.T) {
 	for _, q := range [][2]string{{"Send it there? Type yes: ", "yes"}, {"Your mesh's token", token}} {
 		line := q[1]
 		// The question is asked: the command is in its read, and turns echo off again only when continued.
-		for i := 0; !strings.Contains(errOut.String(), q[0]); i++ {
-			if i == 400 {
-				t.Fatalf("never asked %q", q[0])
-			}
-			time.Sleep(5 * time.Millisecond)
-		}
+		waitForQuestion(t, errOut, q[0])
 		// The shell, at fg: its own modes, with echo.
 		tio, err := unix.IoctlGetTermios(int(tty.Fd()), unix.TCGETS)
 		if err != nil {

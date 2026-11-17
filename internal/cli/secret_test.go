@@ -213,16 +213,17 @@ func TestCtrlCAtThePromptStopsAndLeavesTheTerminalAsItWas(t *testing.T) {
 	sock, got := routedControl(t, map[string][2]string{"GET /api/v1/setup": {"", atNetworkStep}})
 	master, tty := openPTY(t)
 	ctx, cancel := context.WithCancel(context.Background())
-	var errOut bytes.Buffer
+	errOut := &typesAt{t: t, done: true}
 	done := make(chan int, 1)
 	go func() {
 		done <- cli.Main(ctx, []string{"setup", "secret", "mesh", "--control-socket", sock},
-			cli.Env{Stdin: tty, Stdout: io.Discard, Stderr: &errOut, Euid: func() int { return 0 }})
+			cli.Env{Stdin: tty, Stdout: io.Discard, Stderr: errOut, Euid: func() int { return 0 }})
 	}()
 	if _, err := master.WriteString("yes\n"); err != nil {
 		t.Fatal(err)
 	}
-	waitForNoEcho(t, tty)
+	// Echo is off from the start (#263): wait for the secret's own read.
+	waitForQuestion(t, errOut, "Your mesh's token")
 	cancel() // Ctrl-C
 	select {
 	case code := <-done:
