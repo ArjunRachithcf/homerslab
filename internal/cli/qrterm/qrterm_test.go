@@ -4,9 +4,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/ArjunRachithcf/homerslab/internal/cli/qrterm"
-	"github.com/ArjunRachithcf/homerslab/internal/cli/qrterm/qrtermtest"
-	"github.com/ArjunRachithcf/homerslab/internal/testenv"
+	"github.com/ArjunRachithcf/homeward/internal/cli/qrterm"
+	"github.com/ArjunRachithcf/homeward/internal/cli/qrterm/qrtermtest"
+	"github.com/ArjunRachithcf/homeward/internal/testenv"
 )
 
 // This key's code, drawn with mask 0 whatever the data, has a patch that ZXing's detector takes for the bottom-left

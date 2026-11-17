@@ -23,7 +23,7 @@ for (const look of looks) {
     await page.unroute('**/api/v1/setup');
 
     await page.goto((await primary.newLink()).localUrl);
-    await expect(h1).toContainText('Let’s set up HomersLab');
+    await expect(h1).toContainText('Let’s set up Homeward');
     await accessible(page, 'welcome');
     await page.getByText('About this machine').click();
     await accessible(page, 'welcome, about this machine open');
@@ -88,7 +88,7 @@ for (const look of looks) {
     await primary.stopManager();
     await page.evaluate(() => { location.hash = '#k=a-new-link'; }); // a new link arrives, and nothing answers
     // the claim is sent again after 1, 2 and 4 s before setup says so, and offers "Try again"
-    await expect(h1).toContainText('Setup can’t reach HomersLab', { timeout: 15_000 });
+    await expect(h1).toContainText('Setup can’t reach Homeward', { timeout: 15_000 });
     await expect(page.getByRole('button', { name: 'Try again' })).toBeVisible();
     await accessible(page, 'the manager can’t be reached');
   });
@@ -98,7 +98,7 @@ for (const look of looks) {
 test('the check catches too little contrast and a field without a label', async ({ page, primary }) => {
   await wear(page, { theme: 'light', motion: 'reduce', transparency: 'reduce' });
   await page.goto((await primary.newLink()).localUrl);
-  await expect(page.getByRole('heading', { level: 1 })).toContainText('Let’s set up HomersLab');
+  await expect(page.getByRole('heading', { level: 1 })).toContainText('Let’s set up Homeward');
   await page.locator('.as-lead').evaluate((lead) => lead.insertAdjacentHTML('afterend',
     '<p id="planted-faint" style="background: #fff; color: #ccc">A planted sentence</p><input id="planted-unlabelled" type="text">'));
   const { violations, passes, incomplete, inapplicable } = await audit(page);
@@ -120,7 +120,7 @@ test('the check catches too little contrast and a field without a label', async 
 test('the pixel check measures at the glass level it is given', async ({ page, primary }) => {
   await wear(page, { theme: 'light', motion: 'reduce', transparency: 'no-preference' });
   await page.goto((await primary.newLink()).localUrl);
-  await expect(page.getByRole('heading', { level: 1 })).toContainText('Let’s set up HomersLab');
+  await expect(page.getByRole('heading', { level: 1 })).toContainText('Let’s set up Homeward');
   const html = page.locator('html');
   const lead = async (glass?: Glass) => {
     const { runs, problems } = await legible(page, glass);
@@ -142,7 +142,7 @@ test('the pixel check measures at the glass level it is given', async ({ page, p
 test('the pixel check passes words that read well', async ({ page, primary }) => {
   await wear(page, { theme: 'light', motion: 'reduce', transparency: 'reduce' });
   await page.goto((await primary.newLink()).localUrl);
-  await expect(page.getByRole('heading', { level: 1 })).toContainText('Let’s set up HomersLab');
+  await expect(page.getByRole('heading', { level: 1 })).toContainText('Let’s set up Homeward');
   await page.locator('.as-lead').evaluate((lead) => {
     lead.insertAdjacentHTML('afterend', ['<div id="ok-host"></div><p id="ok-lined">Words with a line through</p>',
       '<select id="ok-select" aria-label="A select"><option>A shown option</option></select>',

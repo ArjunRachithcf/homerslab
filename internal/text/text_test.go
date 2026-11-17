@@ -3,8 +3,8 @@ package text_test
 import (
 	"testing"
 
-	"github.com/ArjunRachithcf/homerslab/internal/testenv"
-	"github.com/ArjunRachithcf/homerslab/internal/text"
+	"github.com/ArjunRachithcf/homeward/internal/testenv"
+	"github.com/ArjunRachithcf/homeward/internal/text"
 )
 
 func TestANameIsOneLineOfPrintableText(t *testing.T) {

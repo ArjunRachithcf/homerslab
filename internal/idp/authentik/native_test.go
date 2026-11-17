@@ -42,13 +42,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ArjunRachithcf/homerslab/internal/appunit"
-	"github.com/ArjunRachithcf/homerslab/internal/catalog"
-	"github.com/ArjunRachithcf/homerslab/internal/edge"
-	"github.com/ArjunRachithcf/homerslab/internal/idp"
-	"github.com/ArjunRachithcf/homerslab/internal/idp/authentik"
-	"github.com/ArjunRachithcf/homerslab/internal/manager/plan"
-	"github.com/ArjunRachithcf/homerslab/internal/oidc"
+	"github.com/ArjunRachithcf/homeward/internal/appunit"
+	"github.com/ArjunRachithcf/homeward/internal/catalog"
+	"github.com/ArjunRachithcf/homeward/internal/edge"
+	"github.com/ArjunRachithcf/homeward/internal/idp"
+	"github.com/ArjunRachithcf/homeward/internal/idp/authentik"
+	"github.com/ArjunRachithcf/homeward/internal/manager/plan"
+	"github.com/ArjunRachithcf/homeward/internal/oidc"
 )
 
 // The native case's own addresses: the mesh, where Chromium reaches the edge, and the app's network, where the edge
@@ -121,7 +121,7 @@ func nativeSignIn(t *testing.T, w *world, a *authentik.Authentik) {
 	values := map[string]string{m.Env.Issuer: creds.Issuer, m.Env.Discovery: creds.Issuer + ".well-known/openid-configuration",
 		m.Env.ClientID: creds.ID, m.Env.ClientSecretFile: appunit.ClientSecretPath, m.Env.RedirectURI: redirects[0], m.Env.URL: appURL,
 		m.Env.AdminGroup: idp.RoleGroup(idp.Admin)}
-	env := map[string]string{"SSL_CERT_FILE": "/etc/homerslab-test/ca.crt", "REQUESTS_CA_BUNDLE": "/etc/homerslab-test/ca.crt"}
+	env := map[string]string{"SSL_CERT_FILE": "/etc/homeward-test/ca.crt", "REQUESTS_CA_BUNDLE": "/etc/homeward-test/ca.crt"}
 	for _, n := range m.Env.Names() {
 		if n != "" {
 			env[n] = values[n]
@@ -132,9 +132,9 @@ func nativeSignIn(t *testing.T, w *world, a *authentik.Authentik) {
 	ca, chain, key, spki := householdCertificate(t, household.Domain)
 	files := map[string]string{"ca.crt": ca, "tls.crt": chain, "tls.key": key, "oidc-client-secret": creds.Secret.Reveal(),
 		"app.compose.yaml": string(app.Compose)}
-	cfg, err := edge.Render(edge.Config{AdminSocket: "/run/homerslab-edge/admin.sock", Storage: "/var/lib/homerslab-edge",
+	cfg, err := edge.Render(edge.Config{AdminSocket: "/run/homeward-edge/admin.sock", Storage: "/var/lib/homeward-edge",
 		Listen: []netip.Addr{netip.MustParseAddr(nativeMesh)}, Port: household.Port,
-		Certificates: []edge.Certificate{{Domain: household.Domain, CertFile: "/etc/homerslab-test/tls.crt", KeyFile: "/etc/homerslab-test/tls.key"}},
+		Certificates: []edge.Certificate{{Domain: household.Domain, CertFile: "/etc/homeward-test/tls.crt", KeyFile: "/etc/homeward-test/tls.key"}},
 		SignIn:       &edge.Site{Name: household.SignIn(), Dial: strings.TrimPrefix(upstream, "http://")},
 		SignInListen: netip.MustParseAddr(nativeListener),
 		Apps:         []edge.App{{Name: host, Dial: nativeApp + ":" + strconv.Itoa(app.Names.Port), SignsIn: true, Refused: m.RefusePaths}}})
@@ -160,15 +160,15 @@ networks:
 services:
   edge:
     image: ` + edgeImage + `
-    command: ["caddy", "run", "--config", "/etc/homerslab-test/edge.json"]
+    command: ["caddy", "run", "--config", "/etc/homeward-test/edge.json"]
     user: "4100:4100"
     cap_drop: [ALL]
     cap_add: [NET_BIND_SERVICE]
-    environment: {HOME: /var/lib/homerslab-edge, XDG_DATA_HOME: /var/lib/homerslab-edge, XDG_CONFIG_HOME: /var/lib/homerslab-edge}
+    environment: {HOME: /var/lib/homeward-edge, XDG_DATA_HOME: /var/lib/homeward-edge, XDG_CONFIG_HOME: /var/lib/homeward-edge}
     tmpfs:
-      - /run/homerslab-edge:uid=4100,gid=4100,mode=0750
-      - /var/lib/homerslab-edge:uid=4100,gid=4100,mode=0700
-    volumes: ["` + dir + `:/etc/homerslab-test:ro"]
+      - /run/homeward-edge:uid=4100,gid=4100,mode=0750
+      - /var/lib/homeward-edge:uid=4100,gid=4100,mode=0700
+    volumes: ["` + dir + `:/etc/homeward-test:ro"]
     labels: {homerslab-test: native}
     # On the host, as on a node: it reaches the sign-in from the sign-in network's gateway, the one address Authentik
     # takes X-Forwarded-* from, and listens on the bridges' addresses, which exist once the networks do.
@@ -180,7 +180,7 @@ services:
     extra_hosts: ["` + household.SignIn() + `=` + nativeListener + `"]
     environment: ` + string(envJSON) + `
     secrets: [` + appunit.ClientSecret + `]
-    volumes: ["` + dir + `/ca.crt:/etc/homerslab-test/ca.crt:ro"]
+    volumes: ["` + dir + `/ca.crt:/etc/homeward-test/ca.crt:ro"]
     labels: {homerslab-test: native}
   phone:
     image: ` + phoneImage + `
@@ -212,7 +212,7 @@ secrets:
 			out, _ := compose("logs", "--no-color", "--tail", "120")
 			t.Logf("the edge's and the app's logs:\n%s", out)
 		}
-		if os.Getenv("HOMERSLAB_TEST_KEEP") == "" {
+		if os.Getenv("HOMEWARD_TEST_KEEP") == "" {
 			_, _ = compose("down", "-v", "--remove-orphans")
 		}
 	})
@@ -273,9 +273,9 @@ secrets:
 	if err := os.WriteFile(world, spec, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if os.Getenv("HOMERSLAB_TEST_BROWSER") == "external" {
+	if os.Getenv("HOMEWARD_TEST_BROWSER") == "external" {
 		shareWithTheBrowser(t, dir, world)
-		t.Logf("waiting for the browser: HOMERSLAB_TEST_NATIVE=%s npx playwright test e2e/native-sign-in.idp.spec.ts --project=desktop", world)
+		t.Logf("waiting for the browser: HOMEWARD_TEST_NATIVE=%s npx playwright test e2e/native-sign-in.idp.spec.ts --project=desktop", world)
 		for deadline := time.Now().Add(10 * time.Minute); time.Now().Before(deadline); time.Sleep(time.Second) {
 			if _, err := os.Stat(filepath.Join(dir, "browser.txt")); err == nil {
 				break
@@ -285,7 +285,7 @@ secrets:
 		cmd := exec.Command("npx", "playwright", "test", "e2e/native-sign-in.idp.spec.ts", "--project=desktop", "--reporter=list",
 			"--output=test-results/native-sign-in")
 		cmd.Dir = filepath.Join(root, "web")
-		cmd.Env = append(os.Environ(), "HOMERSLAB_TEST_NATIVE="+world)
+		cmd.Env = append(os.Environ(), "HOMEWARD_TEST_NATIVE="+world)
 		got, err := cmd.CombinedOutput()
 		t.Logf("the browser:\n%s", got)
 		if err != nil {
@@ -302,7 +302,7 @@ secrets:
 func householdCertificate(t *testing.T, domain string) (ca, chain, key, spki string) {
 	t.Helper()
 	caKey, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	caTmpl := &x509.Certificate{SerialNumber: big.NewInt(20), Subject: pkix.Name{CommonName: "HomersLab test CA"},
+	caTmpl := &x509.Certificate{SerialNumber: big.NewInt(20), Subject: pkix.Name{CommonName: "Homeward test CA"},
 		NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(2 * time.Hour), IsCA: true, BasicConstraintsValid: true,
 		KeyUsage: x509.KeyUsageCertSign | x509.KeyUsageCRLSign, SubjectKeyId: []byte{20, 20}}
 	caDER, err := x509.CreateCertificate(rand.Reader, caTmpl, caTmpl, &caKey.PublicKey, caKey)
@@ -329,7 +329,7 @@ func householdCertificate(t *testing.T, domain string) (ca, chain, key, spki str
 }
 
 // shareWithTheBrowser lets a browser that runs as another user (a developer's, where Go runs in a container as root)
-// read the world's file and write its answer beside it. Only for HOMERSLAB_TEST_BROWSER=external: the folder is the
+// read the world's file and write its answer beside it. Only for HOMEWARD_TEST_BROWSER=external: the folder is the
 // test's own, and what is in it is the test's.
 func shareWithTheBrowser(t *testing.T, dir, world string) {
 	t.Helper()

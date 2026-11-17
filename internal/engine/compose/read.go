@@ -20,20 +20,20 @@ import (
 	"github.com/docker/compose/v5/pkg/api"
 	"go.yaml.in/yaml/v4" // the parser Compose itself uses, so that both read merge keys and tags alike
 
-	"github.com/ArjunRachithcf/homerslab/internal/engine"
+	"github.com/ArjunRachithcf/homeward/internal/engine"
 )
 
 var projectName = regexp.MustCompile(`^` + engine.ProjectPrefix + `[a-z0-9]([a-z0-9-]*[a-z0-9])?$`)
 
 // The ways a read is refused.
 var (
-	ErrNotOurs  = errors.New("not one of HomersLab's compose project names (homerslab-<app>)")
+	ErrNotOurs  = errors.New("not one of Homeward's compose project names (homerslab-<app>)")
 	ErrNotPlain = errors.New("an app's compose file is one plain file: no include, extends, env_file, label_file, profiles, aliases or merge keys; at most 64 KiB, nested at most 64 deep, 64 services and 128 references between them")
 	// ErrOffFloor is a project the floor refuses outright (spec: The floor): one that shares the host's namespaces.
 	ErrOffFloor = errors.New("not allowed for an app")
 )
 
-// OurName says whether name is one of HomersLab's compose project names, homerslab-<app>.
+// OurName says whether name is one of Homeward's compose project names, homerslab-<app>.
 func OurName(name string) bool { return projectName.MatchString(name) }
 
 // readerOptions make the reader's service: a dry run with no stream, so nothing it is asked can change an engine.
@@ -71,7 +71,7 @@ func (r *Reader) Read(ctx context.Context, name string, file []byte) (engine.Pro
 // load loads a file that plain() passed. It follows no extends and no include, so it reads no other file even if
 // plain() missed one, and it refuses a project with a service it extends or one that a profile leaves out.
 func (r *Reader) load(ctx context.Context, name string, file []byte) (engine.Project, error) {
-	dir, err := os.MkdirTemp("", "homerslab-read-")
+	dir, err := os.MkdirTemp("", "homeward-read-")
 	if err != nil {
 		return engine.Project{}, err
 	}

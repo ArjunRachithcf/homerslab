@@ -8,20 +8,20 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/ArjunRachithcf/homerslab/internal/agent"
-	"github.com/ArjunRachithcf/homerslab/internal/agent/agenttest"
-	"github.com/ArjunRachithcf/homerslab/internal/edge"
-	"github.com/ArjunRachithcf/homerslab/internal/testenv"
+	"github.com/ArjunRachithcf/homeward/internal/agent"
+	"github.com/ArjunRachithcf/homeward/internal/agent/agenttest"
+	"github.com/ArjunRachithcf/homeward/internal/edge"
+	"github.com/ArjunRachithcf/homeward/internal/testenv"
 )
 
 // The edge runs unprivileged, with only the capability to bind low ports, configured only through its admin API on a
 // socket in a directory only its user and the agent may enter (#78).
 func TestTheEdgeRunsUnprivilegedWithOnlyTheCapabilityToBindLowPorts(t *testing.T) {
 	testenv.Isolate(t)
-	e := unit(t, "homerslab-edge.service")
+	e := unit(t, "homeward-edge.service")
 	for k, want := range map[string]string{
-		"User": "homerslab-edge", "Group": "homerslab-edge",
-		"ExecStart":             "/usr/bin/caddy run --config /usr/share/homerslab/edge-boot.json",
+		"User": "homeward-edge", "Group": "homeward-edge",
+		"ExecStart":             "/usr/bin/caddy run --config /usr/share/homeward/edge-boot.json",
 		"AmbientCapabilities":   "CAP_NET_BIND_SERVICE",
 		"CapabilityBoundingSet": "CAP_NET_BIND_SERVICE",
 		"NoNewPrivileges":       "yes", "ProtectSystem": "strict", "ProtectHome": "yes", "PrivateTmp": "yes", "PrivateDevices": "yes",
@@ -37,14 +37,14 @@ func TestTheEdgeRunsUnprivilegedWithOnlyTheCapabilityToBindLowPorts(t *testing.T
 		t.Error("the edge resumes an autosaved configuration")
 	}
 	// The agent alone is in the edge's group, which may open its admin socket.
-	if got := unit(t, "homerslab-agent.service")["SupplementaryGroups"]; len(got) != 1 || got[0] != "homerslab-edge" {
-		t.Errorf("the agent's SupplementaryGroups = %v, want homerslab-edge", got)
+	if got := unit(t, "homeward-agent.service")["SupplementaryGroups"]; len(got) != 1 || got[0] != "homeward-edge" {
+		t.Errorf("the agent's SupplementaryGroups = %v, want homeward-edge", got)
 	}
-	if got := unit(t, "homerslab-manager.service")["SupplementaryGroups"]; len(got) != 0 {
+	if got := unit(t, "homeward-manager.service")["SupplementaryGroups"]; len(got) != 0 {
 		t.Errorf("the manager is in %v", got)
 	}
-	sysusers, _ := os.ReadFile("sysusers.d/homerslab.conf")
-	if !strings.Contains(string(sysusers), "\nu homerslab-edge ") {
+	sysusers, _ := os.ReadFile("sysusers.d/homeward.conf")
+	if !strings.Contains(string(sysusers), "\nu homeward-edge ") {
 		t.Errorf("sysusers.d doesn't make the edge's user:\n%s", sysusers)
 	}
 }
@@ -73,14 +73,14 @@ func TestTheEdgeBootsWithItsAdminSocketOnlyAndAutosaveOff(t *testing.T) {
 // Admin's socket is for the edge's group only, where the agent tells the edge to find it.
 func TestAdminsSocketIsForTheEdgeOnly(t *testing.T) {
 	testenv.Isolate(t)
-	s := section(t, "homerslab-admin.socket", "[Socket]")
-	for k, want := range map[string]string{"ListenStream": agent.DefaultEdge.AdminUpstream, "SocketUser": "homerslab",
-		"SocketGroup": "homerslab-edge", "SocketMode": "0660", "FileDescriptorName": "admin", "Service": "homerslab-manager.service"} {
+	s := section(t, "homeward-admin.socket", "[Socket]")
+	for k, want := range map[string]string{"ListenStream": agent.DefaultEdge.AdminUpstream, "SocketUser": "homeward",
+		"SocketGroup": "homeward-edge", "SocketMode": "0660", "FileDescriptorName": "admin", "Service": "homeward-manager.service"} {
 		if got := s[k]; len(got) != 1 || got[0] != want {
 			t.Errorf("Admin's socket's %s = %v, want %s", k, got, want)
 		}
 	}
-	if got := unit(t, "homerslab-manager.service")["Sockets"]; len(got) != 1 || got[0] != "homerslab-admin.socket" {
+	if got := unit(t, "homeward-manager.service")["Sockets"]; len(got) != 1 || got[0] != "homeward-admin.socket" {
 		t.Errorf("the manager's Sockets = %v", got)
 	}
 }
@@ -90,10 +90,10 @@ func TestAdminsSocketIsForTheEdgeOnly(t *testing.T) {
 func TestTheAgentsUnitLetsItWriteWhereItWrites(t *testing.T) {
 	testenv.Isolate(t)
 	var rw []string
-	for _, p := range strings.Fields(strings.Join(unit(t, "homerslab-agent.service")["ReadWritePaths"], " ")) {
+	for _, p := range strings.Fields(strings.Join(unit(t, "homeward-agent.service")["ReadWritePaths"], " ")) {
 		rw = append(rw, strings.TrimPrefix(p, "-")) // "-": a folder that may not be there yet doesn't fail the start
 	}
-	tmpfiles, err := os.ReadFile("tmpfiles.d/homerslab.conf")
+	tmpfiles, err := os.ReadFile("tmpfiles.d/homeward.conf")
 	if err != nil {
 		t.Fatal(err)
 	}

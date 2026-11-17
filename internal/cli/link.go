@@ -9,7 +9,7 @@ import (
 	"os"
 	"time"
 
-	"github.com/ArjunRachithcf/homerslab/internal/cli/qrterm"
+	"github.com/ArjunRachithcf/homeward/internal/cli/qrterm"
 )
 
 func setupLink(ctx context.Context, args []string, env Env) error {
@@ -45,7 +45,7 @@ works on this machine only. Open it once, within 30 minutes (until %s), in a bro
 
   %s
 `, until, l.URL)
-		fmt.Fprint(env.Stdout, "\nEach new link ends the earlier ones. To make another: sudo homerslab setup link\n")
+		fmt.Fprint(env.Stdout, "\nEach new link ends the earlier ones. To make another: sudo homeward setup link\n")
 		return nil
 	}
 	qr, err := qrterm.Render(l.URL, isTerminal(env.Stdout))
@@ -63,7 +63,7 @@ Scan the code with a phone's camera to open it there.
 	if l.LocalURL != "" && l.LocalURL != l.URL {
 		fmt.Fprintf(env.Stdout, "On this machine itself, this works too:\n  %s\n", l.LocalURL)
 	}
-	fmt.Fprint(env.Stdout, "\nEach new link ends the earlier ones. To make another: sudo homerslab setup link\n")
+	fmt.Fprint(env.Stdout, "\nEach new link ends the earlier ones. To make another: sudo homeward setup link\n")
 	return nil
 }
 

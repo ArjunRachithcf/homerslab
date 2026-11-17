@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ArjunRachithcf/homerslab/internal/testenv"
+	"github.com/ArjunRachithcf/homeward/internal/testenv"
 )
 
 func TestALinkIsForTheLANAndThisMachine(t *testing.T) {

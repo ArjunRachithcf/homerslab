@@ -10,14 +10,14 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/ArjunRachithcf/homerslab/internal/storage"
-	"github.com/ArjunRachithcf/homerslab/internal/testenv"
+	"github.com/ArjunRachithcf/homeward/internal/storage"
+	"github.com/ArjunRachithcf/homeward/internal/testenv"
 )
 
 var update = flag.Bool("update", false, "write the golden renders anew")
 
 // A local folder is taken only where it is a folder of its own, reached without a symlink, and holds nothing of the
-// machine's or HomersLab's: not /, nor /etc, /proc, /sys, /dev, the engine's socket, HomersLab's state, nor a folder
+// machine's or Homeward's: not /, nor /etc, /proc, /sys, /dev, the engine's socket, Homeward's state, nor a folder
 // that holds one of them (#28).
 func TestAFolderIsTakenOnlyWhereItHoldsNothingOfTheMachines(t *testing.T) {
 	testenv.Isolate(t)
@@ -38,42 +38,42 @@ func TestAFolderIsTakenOnlyWhereItHoldsNothingOfTheMachines(t *testing.T) {
 		}
 	}
 	for p, want := range map[string]error{
-		"srv/media":                storage.ErrPath, // not absolute
-		"/srv/media/":              storage.ErrPath, // not clean
-		"/srv/../etc":              storage.ErrPath,
-		"/srv/./media":             storage.ErrPath,
-		"/srv/media\nservices:":    storage.ErrPath,
-		"/srv/${HOME}":             storage.ErrPath, // compose would interpolate it
-		"/srv/a:b":                 storage.ErrPath,
-		"/srv/.hidden":             storage.ErrPath,
-		"/srv/50%":                 storage.ErrPath, // a unit's specifier
-		"/srv/a\"b":                storage.ErrPath,
-		"/srv/ x":                  storage.ErrPath,
-		"/srv/a\u2028b":            storage.ErrPath,
-		"/":                        storage.ErrForbidden,
-		"/etc":                     storage.ErrForbidden,
-		"/etc/ssl":                 storage.ErrForbidden,
-		"/proc":                    storage.ErrForbidden,
-		"/sys/fs":                  storage.ErrForbidden,
-		"/dev":                     storage.ErrForbidden,
-		"/run":                     storage.ErrForbidden, // the engine's socket
-		"/var/run":                 storage.ErrForbidden,
-		"/var/lib/docker":          storage.ErrForbidden,
-		"/var/lib/homerslab":       storage.ErrForbidden,
-		"/var/lib/homerslab-agent": storage.ErrForbidden,
-		"/var/lib/homerslab-other": storage.ErrForbidden,
-		"/var/lib/netbird":         storage.ErrForbidden, // the mesh's keys
-		"/var/spool/cron":          storage.ErrForbidden, // root's crontabs
-		"/home/rui":                storage.ErrForbidden,
-		"/root/keys":               storage.ErrForbidden,
-		"/srv/state":               storage.ErrForbidden, // the agent's state, wherever it is
-		"/var/lib":                 storage.ErrForbidden, // holds HomersLab's state
-		"/var":                     storage.ErrForbidden,
-		"/srv/to-etc":              storage.ErrSymlink,
-		"/data/link":               storage.ErrSymlink,
-		"/mnt/real":                storage.ErrSymlink, // a symlink on the way
-		"/srv/a-file":              storage.ErrNotFolder,
-		"/srv/nothing":             storage.ErrNotFolder,
+		"srv/media":               storage.ErrPath, // not absolute
+		"/srv/media/":             storage.ErrPath, // not clean
+		"/srv/../etc":             storage.ErrPath,
+		"/srv/./media":            storage.ErrPath,
+		"/srv/media\nservices:":   storage.ErrPath,
+		"/srv/${HOME}":            storage.ErrPath, // compose would interpolate it
+		"/srv/a:b":                storage.ErrPath,
+		"/srv/.hidden":            storage.ErrPath,
+		"/srv/50%":                storage.ErrPath, // a unit's specifier
+		"/srv/a\"b":               storage.ErrPath,
+		"/srv/ x":                 storage.ErrPath,
+		"/srv/a\u2028b":           storage.ErrPath,
+		"/":                       storage.ErrForbidden,
+		"/etc":                    storage.ErrForbidden,
+		"/etc/ssl":                storage.ErrForbidden,
+		"/proc":                   storage.ErrForbidden,
+		"/sys/fs":                 storage.ErrForbidden,
+		"/dev":                    storage.ErrForbidden,
+		"/run":                    storage.ErrForbidden, // the engine's socket
+		"/var/run":                storage.ErrForbidden,
+		"/var/lib/docker":         storage.ErrForbidden,
+		"/var/lib/homeward":       storage.ErrForbidden,
+		"/var/lib/homeward-agent": storage.ErrForbidden,
+		"/var/lib/homeward-other": storage.ErrForbidden,
+		"/var/lib/netbird":        storage.ErrForbidden, // the mesh's keys
+		"/var/spool/cron":         storage.ErrForbidden, // root's crontabs
+		"/home/rui":               storage.ErrForbidden,
+		"/root/keys":              storage.ErrForbidden,
+		"/srv/state":              storage.ErrForbidden, // the agent's state, wherever it is
+		"/var/lib":                storage.ErrForbidden, // holds Homeward's state
+		"/var":                    storage.ErrForbidden,
+		"/srv/to-etc":             storage.ErrSymlink,
+		"/data/link":              storage.ErrSymlink,
+		"/mnt/real":               storage.ErrSymlink, // a symlink on the way
+		"/srv/a-file":             storage.ErrNotFolder,
+		"/srv/nothing":            storage.ErrNotFolder,
 	} {
 		if err := storage.CheckFolder(root, os.Getuid(), p, "/srv/state"); !errors.Is(err, want) {
 			t.Errorf("%q: %v, want %v", p, err, want)
@@ -216,7 +216,7 @@ func TestAShareIsMountedByItsOwnUnitAsItsGoldenRender(t *testing.T) {
 	testenv.Isolate(t)
 	shares := map[string]storage.Share{
 		"smb.service": {ID: "films", Protocol: storage.SMB, Server: netip.MustParseAddr("100.64.1.2"), Share: "media",
-			Credential: "/var/lib/homerslab-agent/storage/films.cred", SELinux: true},
+			Credential: "/var/lib/homeward-agent/storage/films.cred", SELinux: true},
 		"nfs.service": {ID: "music", Protocol: storage.NFS, Server: netip.MustParseAddr("100.64.1.3"), Share: "/volume1/Music"},
 	}
 	for file, s := range shares {
@@ -245,13 +245,13 @@ func TestAShareIsMountedByItsOwnUnitAsItsGoldenRender(t *testing.T) {
 	}
 	// The credentials never reach the unit: it names the sealed file, which systemd decrypts for the mount only.
 	u := string(storage.ShareUnit(shares["smb.service"]))
-	if !strings.Contains(u, "LoadCredentialEncrypted=storage-films:/var/lib/homerslab-agent/storage/films.cred\n") ||
+	if !strings.Contains(u, "LoadCredentialEncrypted=storage-films:/var/lib/homeward-agent/storage/films.cred\n") ||
 		!strings.Contains(u, "credentials=%d/storage-films,") {
 		t.Errorf("the unit doesn't mount with the sealed credential:\n%s", u)
 	}
 	// A share is root's and its group's alone on the machine, under a folder only root walks into, follows no DFS
 	// referral (to a server the firewall table wouldn't keep on the mesh), and its user's name isn't on the command line.
-	for _, want := range []string{",nodfs,dir_mode=0750,file_mode=0640", "\nExecStartPre=/usr/bin/chmod 0700 /var/lib/homerslab-storage\n", ",nosuid,nodev,noexec"} {
+	for _, want := range []string{",nodfs,dir_mode=0750,file_mode=0640", "\nExecStartPre=/usr/bin/chmod 0700 /var/lib/homeward-storage\n", ",nosuid,nodev,noexec"} {
 		if !strings.Contains(u, want) {
 			t.Errorf("the unit lacks %q:\n%s", want, u)
 		}

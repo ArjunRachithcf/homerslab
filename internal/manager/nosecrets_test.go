@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/ArjunRachithcf/homerslab/internal/testenv"
+	"github.com/ArjunRachithcf/homeward/internal/testenv"
 )
 
 // No API on the LAN listener takes a secret (#64): every one of them refuses a request that carries one, before
@@ -24,7 +24,7 @@ func TestNoAPIOnTheLANListenerTakesASecret(t *testing.T) {
 	p := newPrimary(t)
 	b := p.claimed()
 	stranger := p.browser(onTheLAN) // no session: the secret is refused all the same
-	anyOf := "sudo homerslab setup secret mesh|dns|mail"
+	anyOf := "sudo homeward setup secret mesh|dns|mail"
 	for secret, fields := range secretFields {
 		for _, field := range fields {
 			for _, c := range []struct {
@@ -34,19 +34,19 @@ func TestNoAPIOnTheLANListenerTakesASecret(t *testing.T) {
 				want               string
 			}{
 				// Each step, with the secret it would need, or none: its own command, or the list.
-				{"the network step", "PUT", "/api/v1/setup/steps/network", b, map[string]any{"mesh": "netbird", field: "x"}, "sudo homerslab setup secret mesh"},
-				{"the domain step", "PUT", "/api/v1/setup/steps/domain", b, map[string]any{"domain": "example.test", field: "x"}, "sudo homerslab setup secret dns"},
-				{"the mail step", "PUT", "/api/v1/setup/steps/mail", b, map[string]any{field: "x"}, "sudo homerslab setup secret mail"},
+				{"the network step", "PUT", "/api/v1/setup/steps/network", b, map[string]any{"mesh": "netbird", field: "x"}, "sudo homeward setup secret mesh"},
+				{"the domain step", "PUT", "/api/v1/setup/steps/domain", b, map[string]any{"domain": "example.test", field: "x"}, "sudo homeward setup secret dns"},
+				{"the mail step", "PUT", "/api/v1/setup/steps/mail", b, map[string]any{field: "x"}, "sudo homeward setup secret mail"},
 				{"a step that is done", "PUT", "/api/v1/setup/steps/welcome", b, map[string]any{field: "x"}, anyOf},
 				{"a step that isn't one", "PUT", "/api/v1/setup/steps/wifi", b, map[string]any{field: "x"}, anyOf},
 				{"a step, nested", "PUT", "/api/v1/setup/steps/you", b, map[string]any{"name": "Inês", "more": []any{map[string]any{field: "x"}}}, anyOf},
-				{"a step, without a session", "PUT", "/api/v1/setup/steps/network", stranger, map[string]any{field: "x"}, "sudo homerslab setup secret mesh"},
+				{"a step, without a session", "PUT", "/api/v1/setup/steps/network", stranger, map[string]any{field: "x"}, "sudo homeward setup secret mesh"},
 				{"the claim", "POST", "/api/v1/setup/claim", stranger, map[string]any{"key": "k", "nonce": newNonce(), field: "x"}, anyOf},
 				{"the claim, nested", "POST", "/api/v1/setup/claim", stranger, map[string]any{"key": map[string]any{field: "x"}}, anyOf},
 				{"a read, in its query", "GET", "/api/v1/setup?" + field + "=x", b, nil, anyOf},
 				{"a read of the machine, in its query", "GET", "/api/v1/nodes/primary?" + field + "=x", b, nil, anyOf},
 				// The control socket's own address for it, asked over the LAN: the command, whatever the field.
-				{"the control socket's address for the secret", "PUT", "/api/v1/setup/secrets/" + secret, b, map[string]any{"value": "x"}, "sudo homerslab setup secret " + secret},
+				{"the control socket's address for the secret", "PUT", "/api/v1/setup/secrets/" + secret, b, map[string]any{"value": "x"}, "sudo homeward setup secret " + secret},
 				{"a form's post", "POST", "/api/v1/setup/claim", stranger, nil, anyOf},
 			} {
 				r := c.who.do(c.method, c.path, c.body, func(r *http.Request) {

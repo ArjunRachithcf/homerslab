@@ -11,7 +11,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/ArjunRachithcf/homerslab/internal/testenv"
+	"github.com/ArjunRachithcf/homeward/internal/testenv"
 )
 
 func TestIsolateGivesEachTestItsOwnHome(t *testing.T) {

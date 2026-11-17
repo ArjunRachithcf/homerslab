@@ -102,7 +102,7 @@ const (
 var localKinds = []string{"", "bridge", "veth", "vlan", "bond", "team", "dummy", "macvlan", "ipvlan", "macvtap", "vrf",
 	"netkit", "ifb", "nlmon"}
 
-// meshRanges are the ranges the meshes HomersLab runs give out (#14 Q5, ADR 0005): CGNAT (NetBird, Headscale and
+// meshRanges are the ranges the meshes Homeward runs give out (#14 Q5, ADR 0005): CGNAT (NetBird, Headscale and
 // Tailscale) and Tailscale's ULA, whichever mesh this machine is on.
 var meshRanges = []netip.Prefix{netip.MustParsePrefix("100.64.0.0/10"), netip.MustParsePrefix("fd7a:115c:a1e0::/48")}
 

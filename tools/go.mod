@@ -1,6 +1,6 @@
-// The developer tools CI runs, pinned here with their sums so they never join HomersLab's own module graph.
+// The developer tools CI runs, pinned here with their sums so they never join Homeward's own module graph.
 // Run them from the repository root, e.g. `go -C tools tool govulncheck -C .. ./...`.
-module homerslab.invalid/tools
+module homeward.invalid/tools
 
 go 1.27.4
 

@@ -3,7 +3,7 @@
 // Mealie, installed as its plan says, whose server reaches the sign-in only through the node's sign-in listener (#19).
 //
 // The identity provider contract suite (internal/idp/authentik, native_test.go) runs this file and hands it, in
-// HOMERSLAB_TEST_NATIVE, a JSON file: the real edge's address (it serves both the sign-in and the app, and Mealie's
+// HOMEWARD_TEST_NATIVE, a JSON file: the real edge's address (it serves both the sign-in and the app, and Mealie's
 // server reaches the sign-in through its sign-in listener), a one-time enrolment link, an authorize URL of Admin's
 // client (the household account's sign-in, somewhere else first), and the app's URL. Without it there is nothing to run.
 //
@@ -28,10 +28,10 @@ type World = {
   out: string; // where the browser says it is done, for the suite
 };
 
-const file = process.env.HOMERSLAB_TEST_NATIVE;
+const file = process.env.HOMEWARD_TEST_NATIVE;
 const world: World | null = file ? (JSON.parse(readFileSync(file, 'utf8')) as World) : null;
 
-test.skip(!world, 'run by the identity provider contract suite (HOMERSLAB_TEST_NATIVE)');
+test.skip(!world, 'run by the identity provider contract suite (HOMEWARD_TEST_NATIVE)');
 test.describe.configure({ mode: 'serial', timeout: 180_000 });
 
 test.use({

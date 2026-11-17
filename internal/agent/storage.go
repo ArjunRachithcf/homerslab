@@ -18,15 +18,15 @@ import (
 
 	"golang.org/x/sys/unix"
 
-	"github.com/ArjunRachithcf/homerslab/internal/appunit"
-	"github.com/ArjunRachithcf/homerslab/internal/host"
-	"github.com/ArjunRachithcf/homerslab/internal/storage"
+	"github.com/ArjunRachithcf/homeward/internal/appunit"
+	"github.com/ArjunRachithcf/homeward/internal/host"
+	"github.com/ArjunRachithcf/homeward/internal/storage"
 )
 
 // Storage locations on this node (#28; story 48; ADR 0003): a local folder, or a network share reached over the mesh,
 // which the manager adds once and apps' plans name.
 //   - A folder is taken only where storage.CheckFolder passes: a folder of its own, reached without a symlink through
-//     folders only root can change, holding nothing of the machine's, the engine's or HomersLab's. It is never
+//     folders only root can change, holding nothing of the machine's, the engine's or Homeward's. It is never
 //     relabelled or changed. The check runs again when an app that uses it is installed, and before every start of
 //     that app (CheckStorageMain, from the app's unit): the engine binds the path as root, following symlinks.
 //   - A folder an app writes to is on a filesystem mounted nosuid and nodev, as every share is mounted: what an app
@@ -217,7 +217,7 @@ func noSetuid(path string) (bool, error) {
 	return st.Flags&unix.ST_NOSUID != 0 && st.Flags&unix.ST_NODEV != 0, nil
 }
 
-// CheckStorageMain is the agent's check-storage mode (homerslab agent check-storage PATH...): what an app's unit runs
+// CheckStorageMain is the agent's check-storage mode (homeward agent check-storage PATH...): what an app's unit runs
 // before every start, as root, for each folder its compose file binds. It ends with 0 only where each still passes
 // storage.CheckFolder, so an app never starts on a path that has become a symlink, or that another user than root
 // could make one, since its location was added.
@@ -227,7 +227,7 @@ func CheckStorageMain(args []string, stderr io.Writer) int {
 	}
 	for _, p := range args {
 		if err := storage.CheckFolder("/", 0, p); err != nil {
-			fmt.Fprintf(stderr, "homerslab: storage folder %q is refused: %v\n", p, err)
+			fmt.Fprintf(stderr, "homeward: storage folder %q is refused: %v\n", p, err)
 			return 1
 		}
 	}

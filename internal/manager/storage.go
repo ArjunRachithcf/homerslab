@@ -6,11 +6,11 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/ArjunRachithcf/homerslab/internal/agent"
-	"github.com/ArjunRachithcf/homerslab/internal/manager/store"
-	"github.com/ArjunRachithcf/homerslab/internal/mesh"
-	"github.com/ArjunRachithcf/homerslab/internal/storage"
-	"github.com/ArjunRachithcf/homerslab/internal/text"
+	"github.com/ArjunRachithcf/homeward/internal/agent"
+	"github.com/ArjunRachithcf/homeward/internal/manager/store"
+	"github.com/ArjunRachithcf/homeward/internal/mesh"
+	"github.com/ArjunRachithcf/homeward/internal/storage"
+	"github.com/ArjunRachithcf/homeward/internal/text"
 )
 
 // Storage locations (#28; story 48; ADR 0003). The admin adds each once, in Admin: a local folder on the primary, or a

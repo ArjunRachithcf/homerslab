@@ -16,14 +16,14 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/ArjunRachithcf/homerslab/catalogs"
-	"github.com/ArjunRachithcf/homerslab/internal/agent"
-	"github.com/ArjunRachithcf/homerslab/internal/agent/agenttest"
-	"github.com/ArjunRachithcf/homerslab/internal/appunit"
-	"github.com/ArjunRachithcf/homerslab/internal/catalog"
-	"github.com/ArjunRachithcf/homerslab/internal/engine"
-	"github.com/ArjunRachithcf/homerslab/internal/engine/compose"
-	"github.com/ArjunRachithcf/homerslab/internal/testenv"
+	"github.com/ArjunRachithcf/homeward/catalogs"
+	"github.com/ArjunRachithcf/homeward/internal/agent"
+	"github.com/ArjunRachithcf/homeward/internal/agent/agenttest"
+	"github.com/ArjunRachithcf/homeward/internal/appunit"
+	"github.com/ArjunRachithcf/homeward/internal/catalog"
+	"github.com/ArjunRachithcf/homeward/internal/engine"
+	"github.com/ArjunRachithcf/homeward/internal/engine/compose"
+	"github.com/ArjunRachithcf/homeward/internal/testenv"
 )
 
 // bentoPDF is the official catalog's BentoPDF as its install plan hands it to the agent.
@@ -122,11 +122,11 @@ func TestAnAppIsOneUnitRunningTheStandardComposeCommand(t *testing.T) {
 	sock, h, state := signedIn(t, agent.Config{Sysroot: withSELinux{agenttest.Primary()}})
 	r := bentoPDF(t)
 	s := install(t, sock, "bentopdf", r)
-	if s.Unit != "homerslab-app-bentopdf.service" || s.Project != "homerslab-bentopdf" || s.Upstream != "172.31.240.2:8080" || s.Plan != r.Plan {
+	if s.Unit != "homeward-app-bentopdf.service" || s.Project != "homerslab-bentopdf" || s.Upstream != "172.31.240.2:8080" || s.Plan != r.Plan {
 		t.Errorf("the app: %+v", s)
 	}
 	dir := filepath.Join(state, "apps", "bentopdf")
-	unit, err := os.ReadFile(filepath.Join(h.Root, agent.UnitsDir, "homerslab-app-bentopdf.service"))
+	unit, err := os.ReadFile(filepath.Join(h.Root, agent.UnitsDir, "homeward-app-bentopdf.service"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -138,15 +138,15 @@ func TestAnAppIsOneUnitRunningTheStandardComposeCommand(t *testing.T) {
 	if !bytes.Equal(unit, appunit.UnitFile(want)) {
 		t.Errorf("the unit:\n%s\nwant\n%s", unit, appunit.UnitFile(want))
 	}
-	if got, _ := os.ReadFile(filepath.Join(dir, "homerslab.yaml")); !bytes.Equal(got, appunit.Override(want)) {
+	if got, _ := os.ReadFile(filepath.Join(dir, "homeward.yaml")); !bytes.Equal(got, appunit.Override(want)) {
 		t.Errorf("the agent's compose file:\n%s", got)
 	}
 	if got, _ := os.ReadFile(filepath.Join(dir, "compose.yaml")); string(got) != r.Compose {
 		t.Errorf("the catalog's compose file, as it is:\n%s", got)
 	}
-	enable := h.Ran("systemctl enable /" + agent.UnitsDir + "/homerslab-app-bentopdf.service")
+	enable := h.Ran("systemctl enable /" + agent.UnitsDir + "/homeward-app-bentopdf.service")
 	reload := h.Ran("systemctl daemon-reload")
-	start := h.Ran("systemctl --no-block restart homerslab-app-bentopdf.service")
+	start := h.Ran("systemctl --no-block restart homeward-app-bentopdf.service")
 	if enable < 0 || start < 0 || start < enable || h.Times("systemctl daemon-reload") == 0 {
 		t.Errorf("systemd: enabled at %d, reloaded at %d, started at %d", enable, reload, start)
 	}
@@ -162,7 +162,7 @@ func TestAnAppIsOneUnitRunningTheStandardComposeCommand(t *testing.T) {
 func TestTheEdgeAloneReachesTheApp(t *testing.T) {
 	testenv.Isolate(t)
 	users := func(name string) (uint32, bool) {
-		uid, ok := map[string]uint32{"homerslab-edge": 981, "homerslab": 980, "homerslab-home": 982}[name]
+		uid, ok := map[string]uint32{"homeward-edge": 981, "homeward": 980, "homeward-home": 982}[name]
 		return uid, ok
 	}
 	sock, h, _ := signedIn(t, agent.Config{Users: users})
@@ -184,7 +184,7 @@ func TestTheEdgeAloneReachesTheApp(t *testing.T) {
 func TestOnlyTheLDAPSPortsProcessOpensTheOutpost(t *testing.T) {
 	testenv.Isolate(t)
 	users := func(name string) (uint32, bool) {
-		uid, ok := map[string]uint32{"homerslab-edge": 981, "homerslab": 980, "homerslab-home": 982, "homerslab-ldaps": 60604}[name]
+		uid, ok := map[string]uint32{"homeward-edge": 981, "homeward": 980, "homeward-home": 982, "homeward-ldaps": 60604}[name]
 		return uid, ok
 	}
 	_, h, _ := signedIn(t, agent.Config{Users: users})
@@ -225,7 +225,7 @@ func TestAppsReachTheSignInThroughItsListener(t *testing.T) {
 	if table, _ := h.Table(); !strings.Contains(table, "\tchain apps_in {\n\t\tmeta l4proto { tcp, udp } th dport 53 fib daddr . iif type local accept\n\t\tip daddr . tcp dport { 172.31.255.241 . 443 } accept\n") {
 		t.Errorf("the firewall table doesn't let apps reach the listener:\n%s", table)
 	}
-	if o, _ := os.ReadFile(filepath.Join(state, "apps", "bentopdf", "homerslab.yaml")); !strings.Contains(string(o), "extra_hosts:\n      - \"auth.example.test=172.31.255.241\"\n") {
+	if o, _ := os.ReadFile(filepath.Join(state, "apps", "bentopdf", "homeward.yaml")); !strings.Contains(string(o), "extra_hosts:\n      - \"auth.example.test=172.31.255.241\"\n") {
 		t.Errorf("the app's containers don't resolve the sign-in to its listener:\n%s", o)
 	}
 }
@@ -239,11 +239,11 @@ func TestAnAppInstalledBeforeTheSignInFollowsIt(t *testing.T) {
 	call(t, sock, "PUT", "/v1/edge/certificates/example.test", map[string]string{"chain": chain, "key": key})
 	call(t, sock, "PUT", "/v1/edge", agent.EdgeSites{Port: 443, Admin: "admin.example.test"})
 	install(t, sock, "bentopdf", bentoPDF(t))
-	file := filepath.Join(state, "apps", "bentopdf", "homerslab.yaml")
+	file := filepath.Join(state, "apps", "bentopdf", "homeward.yaml")
 	if o, _ := os.ReadFile(file); strings.Contains(string(o), "extra_hosts") {
 		t.Fatalf("before the sign-in:\n%s", o)
 	}
-	restarts := h.Times("systemctl --no-block restart homerslab-app-bentopdf.service")
+	restarts := h.Times("systemctl --no-block restart homeward-app-bentopdf.service")
 	call(t, sock, "PUT", "/v1/sign-in", map[string]string{"provider": "authentik", "bootstrapToken": bootstrap})
 	if code, body := call(t, sock, "PUT", "/v1/edge", agent.EdgeSites{Port: 443, Admin: "admin.example.test", SignIn: "auth.example.test"}); code != http.StatusOK {
 		t.Fatalf("the edge: %d %s", code, body)
@@ -251,7 +251,7 @@ func TestAnAppInstalledBeforeTheSignInFollowsIt(t *testing.T) {
 	if o, _ := os.ReadFile(file); !strings.Contains(string(o), "extra_hosts:\n      - \"auth.example.test=172.31.255.241\"\n") {
 		t.Errorf("after the sign-in:\n%s", o)
 	}
-	if got := h.Times("systemctl --no-block restart homerslab-app-bentopdf.service"); got != restarts+1 {
+	if got := h.Times("systemctl --no-block restart homeward-app-bentopdf.service"); got != restarts+1 {
 		t.Errorf("restarts: %d, then %d", restarts, got)
 	}
 	if !bytes.Contains(h.Edge.Config(), []byte(`"172.31.255.241:443"`)) {
@@ -291,9 +291,9 @@ func TestAGuardedAppIsNeverServedWithoutItsGuard(t *testing.T) {
 	}
 }
 
-// Compose project names belong to HomersLab (#19): an install is refused while the engine runs a project of that name
+// Compose project names belong to Homeward (#19): an install is refused while the engine runs a project of that name
 // that this agent didn't create, and nothing is written for it.
-func TestAnInstallIsRefusedOverAProjectHomersLabDidntCreate(t *testing.T) {
+func TestAnInstallIsRefusedOverAProjectHomewardDidntCreate(t *testing.T) {
 	testenv.Isolate(t)
 	sock, h, state := signedIn(t, agent.Config{})
 	h.Project(engine.State{Name: "homerslab-bentopdf", Containers: []engine.Container{{Service: "web", Name: "homerslab-bentopdf-web-1", State: "exited"}}})
@@ -324,14 +324,14 @@ func TestAnInstallIsRefusedOverAProjectHomersLabDidntCreate(t *testing.T) {
 func TestAnInstallThatFailsHalfwayLeavesNothingServed(t *testing.T) {
 	testenv.Isolate(t)
 	sock, h, _ := signedIn(t, agent.Config{})
-	h.Fail("systemctl --no-block restart homerslab-app-ledger.service")
+	h.Fail("systemctl --no-block restart homeward-app-ledger.service")
 	if code, body := call(t, sock, "PUT", "/v1/apps/ledger", withSecrets()); code != http.StatusInternalServerError || !strings.Contains(string(body), "unit-failed") {
 		t.Fatalf("a unit systemd won't start: %d %s", code, body)
 	}
 	if s := apps(t, sock); len(s.Apps) != 0 {
 		t.Errorf("the agent keeps it: %+v", s.Apps)
 	}
-	if h.Ran("systemctl disable --now homerslab-app-ledger.service") < 0 {
+	if h.Ran("systemctl disable --now homeward-app-ledger.service") < 0 {
 		t.Error("its unit wasn't stopped")
 	}
 	if table, _ := h.Table(); strings.Contains(table, "172.31.240.2 . tcp . 3000") {
@@ -376,7 +376,7 @@ func TestAnAppsNameIsItsOwn(t *testing.T) {
 
 // The agent refuses what the floor and the wiring can't take, whatever the manager asks: a published port, a folder
 // relabelled for SELinux (shared by every container that mounts it), a network mode, an upstream the project doesn't
-// run, secrets other than the plan's, an app that isn't guarded, and ids that are HomersLab's own.
+// run, secrets other than the plan's, an app that isn't guarded, and ids that are Homeward's own.
 func TestAnAppsProjectIsRefusedWhenItCantBeWired(t *testing.T) {
 	testenv.Isolate(t)
 	sock, h, _ := signedIn(t, agent.Config{})
@@ -490,9 +490,9 @@ func TestAnAppsSecretsAreMadeAndSealedByTheAgent(t *testing.T) {
 	if len(secret) < 32 {
 		t.Fatalf("the secret is %d bytes", len(secret))
 	}
-	unit, _ := os.ReadFile(filepath.Join(h.Root, agent.UnitsDir, "homerslab-app-ledger.service"))
+	unit, _ := os.ReadFile(filepath.Join(h.Root, agent.UnitsDir, "homeward-app-ledger.service"))
 	if !strings.Contains(string(unit), "LoadCredentialEncrypted=ledger.db-password:"+cred+"\n") ||
-		!strings.Contains(string(unit), "ExecStartPre=/usr/bin/chcon -t container_file_t -l "+"s0:c600,c601 /run/homerslab-app-ledger/db-password\n") {
+		!strings.Contains(string(unit), "ExecStartPre=/usr/bin/chcon -t container_file_t -l "+"s0:c600,c601 /run/homeward-app-ledger/db-password\n") {
 		t.Errorf("the unit:\n%s", unit)
 	}
 	// Nowhere in the clear: not the answer, the state, the files, the logs.
@@ -539,8 +539,8 @@ func TestEachAppHasALevelAndANetworkOfItsOwn(t *testing.T) {
 	if a.Upstream == b.Upstream || b.Upstream != "172.31.240.18:3000" {
 		t.Errorf("upstreams %s and %s", a.Upstream, b.Upstream)
 	}
-	ao, _ := os.ReadFile(filepath.Join(state, "apps", "bentopdf", "homerslab.yaml"))
-	bo, _ := os.ReadFile(filepath.Join(state, "apps", "ledger", "homerslab.yaml"))
+	ao, _ := os.ReadFile(filepath.Join(state, "apps", "bentopdf", "homeward.yaml"))
+	bo, _ := os.ReadFile(filepath.Join(state, "apps", "ledger", "homeward.yaml"))
 	if !strings.Contains(string(ao), "level:s0:c600,c601") || !strings.Contains(string(bo), "level:s0:c602,c603") {
 		t.Errorf("levels:\n%s\n%s", ao, bo)
 	}
@@ -580,7 +580,7 @@ func TestAppsReportTheirHealthAndContainersRunningWithoutTheirUnitAreDrift(t *te
 	}
 
 	// Someone stops the unit, and starts the containers by hand: the engine runs them without their unit.
-	h.StopUnit("homerslab-app-bentopdf.service")
+	h.StopUnit("homeward-app-bentopdf.service")
 	h.Project(engine.State{Name: "homerslab-stray", Containers: []engine.Container{{Service: "x", Name: "homerslab-stray-x-1", State: "running"}}})
 	s = apps(t, sock)
 	if len(s.Drift) != 2 || s.Drift[0].Project != "homerslab-bentopdf" || s.Drift[0].What != "running-without-unit" ||
@@ -693,10 +693,10 @@ func TestAnAppWithNativeSignInGetsItsClientsSecretAsAFileOnly(t *testing.T) {
 			"BASE_URL":                "https://recipes.example.test",
 			"OIDC_ADMIN_GROUP":        "homerslab-admins",
 		}}}
-	if got, _ := os.ReadFile(filepath.Join(dir, "homerslab.yaml")); !bytes.Equal(got, appunit.Override(want)) {
+	if got, _ := os.ReadFile(filepath.Join(dir, "homeward.yaml")); !bytes.Equal(got, appunit.Override(want)) {
 		t.Errorf("the agent's compose file:\n%s\nwant\n%s", got, appunit.Override(want))
 	}
-	if unit, _ := os.ReadFile(filepath.Join(h.Root, agent.UnitsDir, "homerslab-app-mealie.service")); !bytes.Equal(unit, appunit.UnitFile(want)) {
+	if unit, _ := os.ReadFile(filepath.Join(h.Root, agent.UnitsDir, "homeward-app-mealie.service")); !bytes.Equal(unit, appunit.UnitFile(want)) {
 		t.Errorf("the unit:\n%s\nwant\n%s", unit, appunit.UnitFile(want))
 	}
 	var cfg struct {

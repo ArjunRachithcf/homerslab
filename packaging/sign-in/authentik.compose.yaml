@@ -1,4 +1,4 @@
-# The household account: Authentik, as HomersLab's packages pin it (ADR 0004, ADR 0014). homerslab-authentik.service
+# The household account: Authentik, as Homeward's packages pin it (ADR 0004, ADR 0014). homeward-authentik.service
 # runs it with the standard compose command, as compose project homerslab-authentik; systemd owns the containers, so
 # no restart policy is set here.
 #
@@ -8,7 +8,7 @@
 #   - no published port: the edge reaches the server at its fixed address on the sign-in network (172.31.250.10:9000),
 #     and the database is on an internal network of its own;
 #   - secrets only as files, through Compose `secrets:`, never in the environment (ADR 0011): the unit copies its
-#     systemd credentials into /run/homerslab-authentik, readable only by the container user that needs each one,
+#     systemd credentials into /run/homeward-authentik, readable only by the container user that needs each one,
 #     labelled for the sign-in's own SELinux level. Authentik reads them through its file:// values; its bootstrap
 #     token, which Authentik reads only from the environment, is exported inside the server's own entrypoint while the
 #     file holds one, and is never in the container's configuration;
@@ -17,10 +17,10 @@
 #   - no telemetry: no error reporting, no startup analytics, no update check;
 #   - warnings and errors logged only: Authentik logs each request's URL at info, an enrolment link's token with it,
 #     and the unit's log is the journal;
-#   - HomersLab's LDAP outpost (#204), in profile ldap, only once an app signs in over LDAP: Authentik's own image for
+#   - Homeward's LDAP outpost (#204), in profile ldap, only once an app signs in over LDAP: Authentik's own image for
 #     it, at its fixed address on the sign-in network (172.31.250.11), plain LDAP on 3389, which only the node's LDAPS
 #     listener reaches (ADR 0020). Its token is a file like the others, exported in its own entrypoint. Its own unit
-#     runs it (homerslab-ldap.service), so its exit restarts the outpost alone, never the sign-in.
+#     runs it (homeward-ldap.service), so its exit restarts the outpost alone, never the sign-in.
 name: homerslab-authentik
 
 networks:
@@ -34,15 +34,15 @@ networks:
 
 secrets:
   secret-key:
-    file: /run/homerslab-authentik/secret-key
+    file: /run/homeward-authentik/secret-key
   postgres-password:
-    file: /run/homerslab-authentik/postgres-password
+    file: /run/homeward-authentik/postgres-password
   postgres-password-db:
-    file: /run/homerslab-authentik/postgres-password-db
+    file: /run/homeward-authentik/postgres-password-db
   bootstrap-token:
-    file: /run/homerslab-authentik/bootstrap-token
+    file: /run/homeward-authentik/bootstrap-token
   ldap-token:
-    file: /run/homerslab-ldap/ldap-token
+    file: /run/homeward-ldap/ldap-token
 
 volumes:
   database: {}

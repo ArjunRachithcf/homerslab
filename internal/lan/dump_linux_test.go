@@ -8,7 +8,7 @@ import (
 
 	"golang.org/x/sys/unix"
 
-	"github.com/ArjunRachithcf/homerslab/internal/testenv"
+	"github.com/ArjunRachithcf/homeward/internal/testenv"
 )
 
 // A dump the kernel marks interrupted (NLM_F_DUMP_INTR: the table changed while it was read) may have missed or

@@ -14,21 +14,21 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ArjunRachithcf/homerslab/internal/agent"
-	"github.com/ArjunRachithcf/homerslab/internal/agent/agenttest"
-	"github.com/ArjunRachithcf/homerslab/internal/engine"
+	"github.com/ArjunRachithcf/homeward/internal/agent"
+	"github.com/ArjunRachithcf/homeward/internal/agent/agenttest"
+	"github.com/ArjunRachithcf/homeward/internal/engine"
 )
 
 // The agent reads compose files in children it starts from its own executable: here, this test binary. As
-// HOMERSLAB_TEST_PARENT, the binary stands in for an agent that starts a read's child, says its pid, and waits to be
-// killed (TestAReadsChildDiesWithTheAgent). As HOMERSLAB_TEST_PEEK, it stands in for another process of a read's own
+// HOMEWARD_TEST_PARENT, the binary stands in for an agent that starts a read's child, says its pid, and waits to be
+// killed (TestAReadsChildDiesWithTheAgent). As HOMEWARD_TEST_PEEK, it stands in for another process of a read's own
 // user, the child's parent even, that tries to read its memory and to trace it (TestAReadsChildCantBeTraced).
 func TestMain(m *testing.M) {
-	if os.Getenv("HOMERSLAB_TEST_PARENT") != "" {
+	if os.Getenv("HOMEWARD_TEST_PARENT") != "" {
 		os.Exit(parent())
 	}
 	// Never in a read's child, which peek starts from this binary: that would start another, and so on.
-	if os.Getenv("HOMERSLAB_TEST_PEEK") != "" && (len(os.Args) < 2 || os.Args[1] != "agent") {
+	if os.Getenv("HOMEWARD_TEST_PEEK") != "" && (len(os.Args) < 2 || os.Args[1] != "agent") {
 		os.Exit(peek())
 	}
 	// Read children that misbehave, confined as the real one is: one burns CPU, one allocates until it can't.
@@ -71,7 +71,7 @@ func parent() int {
 	if err != nil {
 		return 1
 	}
-	cmd, control, err := agent.ChildCommand(context.Background(), os.Getenv("HOMERSLAB_TEST_EXE"), dir, "homerslab-web", 60)
+	cmd, control, err := agent.ChildCommand(context.Background(), os.Getenv("HOMEWARD_TEST_EXE"), dir, "homerslab-web", 60)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
@@ -92,7 +92,7 @@ func parent() int {
 func peek() int {
 	child := exec.Command(os.Args[0], "agent", "read-project-hold", "--deadline", "10s", "--", "homerslab-web")
 	child.Stdin = strings.NewReader("services: {web: {image: x}}\n")
-	child.Env = []string{"PATH=/usr/bin:/bin"} // as the agent gives a read's child; not HOMERSLAB_TEST_PEEK
+	child.Env = []string{"PATH=/usr/bin:/bin"} // as the agent gives a read's child; not HOMEWARD_TEST_PEEK
 	stderr, err := child.StderrPipe()
 	if err == nil {
 		err = child.Start()

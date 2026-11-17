@@ -6,9 +6,9 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/ArjunRachithcf/homerslab/internal/catalog"
-	"github.com/ArjunRachithcf/homerslab/internal/idp"
-	"github.com/ArjunRachithcf/homerslab/internal/manager/plan"
+	"github.com/ArjunRachithcf/homeward/internal/catalog"
+	"github.com/ArjunRachithcf/homeward/internal/idp"
+	"github.com/ArjunRachithcf/homeward/internal/manager/plan"
 )
 
 // ensureLDAPApps puts each LDAP app's directory back as its plan says, at every pass of the schedule (#204): its

@@ -10,7 +10,7 @@ import (
 	"golang.org/x/mod/modfile"
 	"golang.org/x/mod/semver"
 
-	"github.com/ArjunRachithcf/homerslab/internal/testenv"
+	"github.com/ArjunRachithcf/homeward/internal/testenv"
 )
 
 // The SDK is pinned exactly, from v5.7.0 on, and the modules it is built against come from its own go.mod: nothing

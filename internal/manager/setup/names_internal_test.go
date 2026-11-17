@@ -3,7 +3,7 @@ package setup
 import (
 	"testing"
 
-	"github.com/ArjunRachithcf/homerslab/internal/testenv"
+	"github.com/ArjunRachithcf/homeward/internal/testenv"
 )
 
 // Every recommended (RGI) emoji sequence of Unicode 17.0 is a name, or part of one: alone, and after a word (#99, the

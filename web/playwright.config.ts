@@ -1,7 +1,7 @@
 import { defineConfig, devices } from '@playwright/test';
 
-// The flow tests open first-time setup in a real browser, against the real binary (../bin/homerslab, from
-// `go build -o bin/homerslab ./cmd/homerslab`): each test starts its own agent and manager in its own directory.
+// The flow tests open first-time setup in a real browser, against the real binary (../bin/homeward, from
+// `go build -o bin/homeward ./cmd/homeward`): each test starts its own agent and manager in its own directory.
 export default defineConfig({
   testDir: 'e2e',
   fullyParallel: true,

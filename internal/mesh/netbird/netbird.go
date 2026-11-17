@@ -1,4 +1,4 @@
-// Package netbird is the mesh contract's NetBird adapter, cloud or self-hosted: its management API as HomersLab's own
+// Package netbird is the mesh contract's NetBird adapter, cloud or self-hosted: its management API as Homeward's own
 // service user (this file), and NetBird's client on a node (node.go). Every call is from the NetBird spike
 // (docs/research/2026-11-09-spike-netbird-api.md), and the contract suite runs it against a real self-hosted NetBird.
 //
@@ -23,7 +23,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/ArjunRachithcf/homerslab/internal/mesh"
+	"github.com/ArjunRachithcf/homeward/internal/mesh"
 )
 
 // CloudURL is NetBird's cloud.
@@ -34,10 +34,10 @@ const CloudURL = "https://api.netbird.io"
 // manual release checklist tries it again (docs/manual-checks.md).
 const CloudPort = 9443
 
-// ServiceUser is the name of HomersLab's own user on a NetBird account.
+// ServiceUser is the name of Homeward's own user on a NetBird account.
 const ServiceUser = "homerslab"
 
-// tokenDays is the life HomersLab asks for its own token: NetBird's maximum, and mesh.MaxTokenLife.
+// tokenDays is the life Homeward asks for its own token: NetBird's maximum, and mesh.MaxTokenLife.
 const tokenDays = 365
 
 // APIError is a call the management API refused. It holds no part of the answer's body.
@@ -108,7 +108,7 @@ func (a *api) call(ctx context.Context, method, path string, body, out any) erro
 		return fmt.Errorf("%w: %s", mesh.ErrUnreachable, a.base.Host)
 	}
 	if resp.StatusCode/100 == 3 {
-		return fmt.Errorf("%w: %s %s answered with a redirect, which HomersLab doesn't follow", mesh.ErrNotAMesh, method, path)
+		return fmt.Errorf("%w: %s %s answered with a redirect, which Homeward doesn't follow", mesh.ErrNotAMesh, method, path)
 	}
 	if resp.StatusCode/100 != 2 {
 		// A revoked or unknown token gets 404 "invalid token", not 401 (the spike).
@@ -126,7 +126,7 @@ func (a *api) call(ctx context.Context, method, path string, body, out any) erro
 	return nil
 }
 
-// Mesh is a NetBird account, as HomersLab's service user.
+// Mesh is a NetBird account, as Homeward's service user.
 type Mesh struct {
 	api   *api
 	token mesh.Token
@@ -134,7 +134,7 @@ type Mesh struct {
 
 var _ mesh.Mesh = (*Mesh)(nil)
 
-// Open is the account at rawURL with HomersLab's own token.
+// Open is the account at rawURL with Homeward's own token.
 func Open(rawURL string, t mesh.Token) (*Mesh, error) {
 	a, err := newAPI(rawURL, t.Value)
 	if err != nil {
@@ -143,7 +143,7 @@ func Open(rawURL string, t mesh.Token) (*Mesh, error) {
 	return &Mesh{api: a, token: t}, nil
 }
 
-// Probe says whether a self-hosted NetBird at rawURL waits for its first setup, which HomersLab can then do itself.
+// Probe says whether a self-hosted NetBird at rawURL waits for its first setup, which Homeward can then do itself.
 func Probe(ctx context.Context, rawURL string) (setupRequired bool, err error) {
 	a, err := newAPI(rawURL, "")
 	if err != nil {
@@ -175,7 +175,7 @@ type Owner struct {
 
 // SetupToken is the owner's token from a new self-hosted NetBird's first setup: it lasts a day. The caller seals it
 // before anything else happens, so a setup that stops half-way resumes from it, and revokes it (RevokeSetup) once
-// HomersLab's own token works.
+// Homeward's own token works.
 type SetupToken struct {
 	Value  mesh.Secret
 	UserID string
@@ -218,7 +218,7 @@ func Setup(ctx context.Context, rawURL string, o Owner) (SetupToken, error) {
 	return SetupToken{Value: mesh.Secret(setup.PAT), UserID: setup.UserID}, nil
 }
 
-// RevokeSetup revokes the owner's tokens with the setup token itself: HomersLab's own token has taken over.
+// RevokeSetup revokes the owner's tokens with the setup token itself: Homeward's own token has taken over.
 func RevokeSetup(ctx context.Context, rawURL string, st SetupToken) error {
 	owner, err := newAPI(rawURL, st.Value)
 	if err != nil {
@@ -236,14 +236,14 @@ func RevokeSetup(ctx context.Context, rawURL string, st SetupToken) error {
 	return nil
 }
 
-// Adopted is HomersLab's new token, and its older ones: the caller revokes those (Mesh.Revoke) only once the new
+// Adopted is Homeward's new token, and its older ones: the caller revokes those (Mesh.Revoke) only once the new
 // token is sealed and has worked.
 type Adopted struct {
 	Token mesh.Token
 	Stale []mesh.Token
 }
 
-// Adopt takes the token the admin gave once (or a new NetBird's setup token) and makes HomersLab's own: its service
+// Adopt takes the token the admin gave once (or a new NetBird's setup token) and makes Homeward's own: its service
 // user (made if missing) and that user's new 365-day token. The given token is never kept.
 func Adopt(ctx context.Context, rawURL string, given mesh.Secret) (Adopted, error) {
 	a, err := newAPI(rawURL, given)
@@ -330,17 +330,17 @@ func (a *api) newToken(ctx context.Context, userID string) (mesh.Token, error) {
 // Token is the token this Mesh uses.
 func (m *Mesh) Token() mesh.Token { return m.token }
 
-// With is this account with another of HomersLab's tokens.
+// With is this account with another of Homeward's tokens.
 func (m *Mesh) With(t mesh.Token) mesh.Mesh {
 	return &Mesh{api: &api{base: m.api.base, token: t.Value, http: m.api.http, now: m.api.now}, token: t}
 }
 
-// Rotate mints HomersLab's next token as the service user itself. The caller keeps it, then revokes the old one.
+// Rotate mints Homeward's next token as the service user itself. The caller keeps it, then revokes the old one.
 func (m *Mesh) Rotate(ctx context.Context) (mesh.Token, error) {
 	return m.api.newToken(ctx, m.token.UserID)
 }
 
-// Revoke revokes one of HomersLab's own tokens.
+// Revoke revokes one of Homeward's own tokens.
 func (m *Mesh) Revoke(ctx context.Context, t mesh.Token) error {
 	return m.api.call(ctx, http.MethodDelete, "/api/users/"+url.PathEscape(t.UserID)+"/tokens/"+url.PathEscape(t.ID), nil, nil)
 }
@@ -384,7 +384,7 @@ type group struct {
 	Name string `json:"name"`
 }
 
-// groups makes every group HomersLab needs and returns all of them by name.
+// groups makes every group Homeward needs and returns all of them by name.
 func (m *Mesh) groups(ctx context.Context) (map[string]string, error) {
 	var list []group
 	if err := m.api.call(ctx, http.MethodGet, "/api/groups", nil, &list); err != nil {
@@ -417,7 +417,7 @@ type policy struct {
 	Description string       `json:"description"`
 	Enabled     bool         `json:"enabled"`
 	Rules       []policyRule `json:"rules"`
-	// SourcePostureChecks are the checks a device must pass first; HomersLab's policies have none.
+	// SourcePostureChecks are the checks a device must pass first; Homeward's policies have none.
 	SourcePostureChecks []string `json:"source_posture_checks"`
 }
 
@@ -433,7 +433,7 @@ type policyRule struct {
 	Destinations  groupRefs `json:"destinations"`
 	SourceRes     *resource `json:"sourceResource,omitempty"`
 	DestRes       *resource `json:"destinationResource,omitempty"`
-	// PortRanges and AuthorizedGroups widen or change what a rule lets through; HomersLab's rules have none.
+	// PortRanges and AuthorizedGroups widen or change what a rule lets through; Homeward's rules have none.
 	PortRanges       []json.RawMessage `json:"port_ranges"`
 	AuthorizedGroups json.RawMessage   `json:"authorized_groups,omitempty"`
 }
@@ -493,9 +493,9 @@ func sortedEqual(a, b []string) bool {
 	return slices.Equal(a, b)
 }
 
-// EnsurePolicies makes HomersLab's groups and policies for the household's port, and puts back any that drifted. The
+// EnsurePolicies makes Homeward's groups and policies for the household's port, and puts back any that drifted. The
 // household's own policies and groups stay as they are: NetBird's Default among them, which Conflicts lists for the
-// admin's yes, and RemoveDefault deletes only on a NetBird that HomersLab set up itself.
+// admin's yes, and RemoveDefault deletes only on a NetBird that Homeward set up itself.
 func (m *Mesh) EnsurePolicies(ctx context.Context, port int) error {
 	ids, err := m.groups(ctx)
 	if err != nil {
@@ -537,7 +537,7 @@ func isDefault(p policy, all string) bool {
 }
 
 // RemoveDefault deletes the policies shaped like NetBird's Default ("everyone reaches everything"). Only for a
-// NetBird that HomersLab set up itself, which holds nothing of the household's yet.
+// NetBird that Homeward set up itself, which holds nothing of the household's yet.
 func (m *Mesh) RemoveDefault(ctx context.Context) error {
 	ids, err := m.groups(ctx)
 	if err != nil {
@@ -562,7 +562,7 @@ type resource struct {
 	Type string `json:"type"`
 }
 
-// Conflicts are the accept rules of policies that aren't HomersLab's, are enabled, and reach a node: through the
+// Conflicts are the accept rules of policies that aren't Homeward's, are enabled, and reach a node: through the
 // group All, through any group a node is in (homerslab-nodes, and any the household put a node in), or through a
 // node as a peer resource. A drop rule is never listed: switching it off would widen access.
 func (m *Mesh) Conflicts(ctx context.Context) ([]mesh.Policy, error) {
@@ -705,7 +705,7 @@ func NewPassword() mesh.Secret {
 	return mesh.Secret(base64.RawURLEncoding.EncodeToString(b) + "-Aa1")
 }
 
-// zoneName is the name of HomersLab's DNS zone for a domain, as NetBird's dashboard shows it.
+// zoneName is the name of Homeward's DNS zone for a domain, as NetBird's dashboard shows it.
 func zoneName(domain string) string { return "homerslab-" + domain }
 
 type zone struct {
@@ -725,7 +725,7 @@ type zoneRecord struct {
 	TTL     int    `json:"ttl"`
 }
 
-// EnsureNames makes the household's domain a DNS zone on the mesh, given only to HomersLab's groups, with a wildcard
+// EnsureNames makes the household's domain a DNS zone on the mesh, given only to Homeward's groups, with a wildcard
 // record at the node's address: every app's name reaches it, and a specific record added later beats the wildcard.
 func (m *Mesh) EnsureNames(ctx context.Context, domain string, to netip.Addr) error {
 	if !to.IsValid() {

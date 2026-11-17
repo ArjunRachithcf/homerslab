@@ -48,20 +48,24 @@ jobs:
         env:
           GOPROXY: https://proxy.golang.org,direct
         run: sh .github/scripts/stop-commands.sh go mod tidy -diff
-      # A root agent's compose reads run as homerslab-read, which the packages make (packaging/sysusers.d), and it
+      # A root agent's compose reads run as homeward-read, which the packages make (packaging/sysusers.d), and it
       # refuses to read without it (#183), with its fixed uid and gid (#190). The container has no systemd-sysusers:
       # these are that file's lines, which the step checks are still the file's, so the two can't drift.
       - name: The reads' own user, as the packages make it
         run: |
-          grep -qxF 'g homerslab-read 60602' packaging/sysusers.d/homerslab.conf
-          grep -qxF 'u homerslab-read 60602:homerslab-read "HomersLab compose reads" / /usr/sbin/nologin' packaging/sysusers.d/homerslab.conf
-          groupadd --system --gid 60602 homerslab-read
-          useradd --system --uid 60602 --gid homerslab-read --no-create-home --home-dir / --shell /usr/sbin/nologin --comment "HomersLab compose reads" homerslab-read
+          grep -qxF 'g homeward-read 60602' packaging/sysusers.d/homeward.conf
+          grep -qxF 'u homeward-read 60602:homeward-read "Homeward compose reads" / /usr/sbin/nologin' packaging/sysusers.d/homeward.conf
+          groupadd --system --gid 60602 homeward-read
+          useradd --system --uid 60602 --gid homeward-read --no-create-home --home-dir / --shell /usr/sbin/nologin --comment "Homeward compose reads" homeward-read
       - name: gofmt
         run: test -z "$(gofmt -l . | tee /dev/stderr)"
       - name: go vet
         run: go vet ./...
+      # HOMEWARD_TEST_SHADOW: the migration from HomersLab's names (#250) renames users of its own with the real shadow
+      # tools, on this throwaway container's /etc.
       - name: go test
+        env:
+          HOMEWARD_TEST_SHADOW: "1"
         run: go test -race -count=1 ./...
       # The race detector leaves out a compose read's memory limit (its shadow memory needs more), so the agent's
       # tests run once more as the release is built, without cgo or the race detector, with the limit on.
@@ -92,17 +96,17 @@ jobs:
       # built from a copy of the checkout in a folder everyone may read (they find their testdata by its source path).
       - name: Build the agent's tests, as released
         run: |
-          src=$(mktemp -d /tmp/homerslab-XXXXXX)
+          src=$(mktemp -d /tmp/homeward-XXXXXX)
           chmod 755 "$src"
           cp -a . "$src"
           cd "$src" && CGO_ENABLED=0 go test -c -o agent.test ./internal/agent
           echo "SRC=$src" >> "$GITHUB_ENV"
-      # The packages' users, from their own sysusers.d file: a root agent's reads run as homerslab-read (#183).
+      # The packages' users, from their own sysusers.d file: a root agent's reads run as homeward-read (#183).
       - name: The packages' users
-        run: sudo systemd-sysusers "$PWD/packaging/sysusers.d/homerslab.conf"
+        run: sudo systemd-sysusers "$PWD/packaging/sysusers.d/homeward.conf"
       # The Go job's root holds Docker's capabilities (CAP_KILL among them, not CAP_NET_ADMIN); the agent's unit gives
       # it far fewer. As root on the runner with exactly the unit's set, read from the unit file (#138), the agent's
-      # tests run again: a read's child, which runs as homerslab-read, must still end at its deadline and with the
+      # tests run again: a read's child, which runs as homeward-read, must still end at its deadline and with the
       # agent, and a stopped one must not hold the read slot (#183).
       - name: The agent's tests, under the agent unit's capabilities
         env:
@@ -111,7 +115,7 @@ jobs:
         run: |
           cd "$SRC"
           sudo --preserve-env=DOCKER_HOST,CONTAINER_HOST \
-            sh .github/scripts/as-unit.sh packaging/systemd/homerslab-agent.service \
+            sh .github/scripts/as-unit.sh packaging/systemd/homeward-agent.service \
             "$SRC/agent.test" -test.v -test.count=1 -test.timeout=5m
 
   home-unit:
@@ -132,30 +136,30 @@ jobs:
         env:
           GOPROXY: https://proxy.golang.org,direct
         run: sh .github/scripts/stop-commands.sh go mod download
-      - name: Build HomersLab and the packaging tests
+      - name: Build Homeward and the packaging tests
         env:
           CGO_ENABLED: "0"
         run: |
-          go build -trimpath -o homerslab ./cmd/homerslab
+          go build -trimpath -o homeward ./cmd/homeward
           go test -c -o packaging.test ./packaging
-      # Where Home's unit finds them: HomersLab where its ExecStart says, the test (which is also the probe it runs in
+      # Where Home's unit finds them: Homeward where its ExecStart says, the test (which is also the probe it runs in
       # Home's unit) under /usr, which the unit sees; and the packages' users, from their own sysusers.d file.
       - name: Install them, and the packages' users
         run: |
-          sudo install -m 0755 homerslab /usr/bin/homerslab
-          sudo install -D -m 0755 packaging.test /usr/local/libexec/homerslab-test/packaging.test
-          sudo systemd-sysusers "$PWD/packaging/sysusers.d/homerslab.conf"
+          sudo install -m 0755 homeward /usr/bin/homeward
+          sudo install -D -m 0755 packaging.test /usr/local/libexec/homeward-test/packaging.test
+          sudo systemd-sysusers "$PWD/packaging/sysusers.d/homeward.conf"
       # A probe in Home's unit can't connect to a world-writable Unix socket in /run, under /var/lib or in the abstract
       # namespace, each of the unit's two fences alone holds, and Home answers on its activated socket (#21).
       - name: Home's unit reaches no Unix socket
         env:
-          HOMERSLAB_TEST_HOME_UNIT: "1"
+          HOMEWARD_TEST_HOME_UNIT: "1"
           DOCKER_HOST: unix:///nonexistent
           CONTAINER_HOST: unix:///nonexistent
         working-directory: packaging
         run: |
-          sudo --preserve-env=HOMERSLAB_TEST_HOME_UNIT,DOCKER_HOST,CONTAINER_HOST \
-            /usr/local/libexec/homerslab-test/packaging.test -test.v -test.count=1 -test.run '^TestHomesUnitReachesNoUnixSocket$'
+          sudo --preserve-env=HOMEWARD_TEST_HOME_UNIT,DOCKER_HOST,CONTAINER_HOST \
+            /usr/local/libexec/homeward-test/packaging.test -test.v -test.count=1 -test.run '^TestHomesUnitReachesNoUnixSocket$'
 
   firewall:
     name: Firewall table (network namespaces)
@@ -182,20 +186,20 @@ jobs:
       # one that holds more than loopback: the runner's own firewall stays as it is.
       - name: The table in throwaway namespaces
         env:
-          HOMERSLAB_REQUIRE_NETNS: "1"
+          HOMEWARD_REQUIRE_NETNS: "1"
           DOCKER_HOST: unix:///nonexistent
           CONTAINER_HOST: unix:///nonexistent
-        run: sudo --preserve-env=HOMERSLAB_REQUIRE_NETNS,DOCKER_HOST,CONTAINER_HOST ./fw.test -test.v -test.count=1
+        run: sudo --preserve-env=HOMEWARD_REQUIRE_NETNS,DOCKER_HOST,CONTAINER_HOST ./fw.test -test.v -test.count=1
       # The LAN as the kernel reports it over netlink (#108), in a fresh namespace the same way: a full-tunnel VPN, the
       # mesh's WireGuard interface and a rogue router advertisement.
       - name: Build the LAN's test
         run: CGO_ENABLED=0 go test -c -o lan.test ./internal/lan
       - name: The LAN in throwaway namespaces
         env:
-          HOMERSLAB_REQUIRE_NETNS: "1"
+          HOMEWARD_REQUIRE_NETNS: "1"
           DOCKER_HOST: unix:///nonexistent
           CONTAINER_HOST: unix:///nonexistent
-        run: sudo --preserve-env=HOMERSLAB_REQUIRE_NETNS,DOCKER_HOST,CONTAINER_HOST ./lan.test -test.v -test.count=1
+        run: sudo --preserve-env=HOMEWARD_REQUIRE_NETNS,DOCKER_HOST,CONTAINER_HOST ./lan.test -test.v -test.count=1
 
   mesh:
     name: Mesh contract (self-hosted NetBird in containers)
@@ -217,11 +221,11 @@ jobs:
         run: sh .github/scripts/stop-commands.sh go mod download
       - name: Kernel WireGuard, for the clients in their containers
         run: sudo modprobe wireguard
-      # The harness, and only the harness, reaches the runner's Docker (HOMERSLAB_TEST_DOCKER_HOST), for compose project
+      # The harness, and only the harness, reaches the runner's Docker (HOMEWARD_TEST_DOCKER_HOST), for compose project
       # hltest-15; the code under test points at nowhere. Images are pinned by digest in testdata/compose.yaml.
       - name: The contract suite
         env:
-          HOMERSLAB_TEST_DOCKER_HOST: unix:///var/run/docker.sock
+          HOMEWARD_TEST_DOCKER_HOST: unix:///var/run/docker.sock
           DOCKER_HOST: unix:///nonexistent
           CONTAINER_HOST: unix:///nonexistent
         # The containers' logs, which the suite prints when it fails, are third-party text too.
@@ -230,7 +234,7 @@ jobs:
       # reaches their control sockets (#200). Labelled for compose project hltest-200; the agent points at nowhere.
       - name: The mesh clients' control sockets, with the real daemons
         env:
-          HOMERSLAB_TEST_DOCKER_HOST: unix:///var/run/docker.sock
+          HOMEWARD_TEST_DOCKER_HOST: unix:///var/run/docker.sock
           DOCKER_HOST: unix:///nonexistent
           CONTAINER_HOST: unix:///nonexistent
         run: sh .github/scripts/stop-commands.sh go test -count=1 -v -run TestTheMeshClientsControlSocketsAreRootsOnlyWithTheRealDaemons ./internal/agent/
@@ -253,12 +257,12 @@ jobs:
         env:
           GOPROXY: https://proxy.golang.org,direct
         run: sh .github/scripts/stop-commands.sh go mod download
-      # The harness, and only the harness, reaches the runner's Docker (HOMERSLAB_TEST_DOCKER_HOST), for compose projects
+      # The harness, and only the harness, reaches the runner's Docker (HOMEWARD_TEST_DOCKER_HOST), for compose projects
       # hltest-16 and hltest-16-edge; the code under test points at nowhere. Images are pinned by digest in each suite's
       # testdata/compose.yaml. The suites copy their own test binary into the containers, so it is built static.
       - name: The DNS provider contract suite and the edge's request matrix
         env:
-          HOMERSLAB_TEST_DOCKER_HOST: unix:///var/run/docker.sock
+          HOMEWARD_TEST_DOCKER_HOST: unix:///var/run/docker.sock
           DOCKER_HOST: unix:///nonexistent
           CONTAINER_HOST: unix:///nonexistent
           CGO_ENABLED: "0"
@@ -285,15 +289,15 @@ jobs:
         run: sh .github/scripts/stop-commands.sh go mod download
       # Storage locations' folders (#28) may not be under /home or /tmp: a throwaway folder of the runner's own in /srv.
       - name: A folder for the storage locations
-        run: sudo install -d -o "$(id -u)" -g "$(id -g)" /srv/homerslab-test
+        run: sudo install -d -o "$(id -u)" -g "$(id -g)" /srv/homeward-test
       # Apps' compose projects run as their units run them (the standard compose command on the catalog's file and the
       # agent's), on the runner's Docker, which nothing else uses; the adapter reads their state, health and logs through
       # the Compose SDK (#19). Only the harness and the adapter under test reach that engine, by its endpoint
-      # (HOMERSLAB_TEST_DOCKER_HOST); DOCKER_HOST points at nowhere. The image is pinned by digest in the test.
+      # (HOMEWARD_TEST_DOCKER_HOST); DOCKER_HOST points at nowhere. The image is pinned by digest in the test.
       - name: The contract suite
         env:
-          HOMERSLAB_TEST_DOCKER_HOST: unix:///var/run/docker.sock
-          HOMERSLAB_TEST_STORAGE_DIR: /srv/homerslab-test
+          HOMEWARD_TEST_DOCKER_HOST: unix:///var/run/docker.sock
+          HOMEWARD_TEST_STORAGE_DIR: /srv/homeward-test
           DOCKER_HOST: unix:///nonexistent
           CONTAINER_HOST: unix:///nonexistent
         # The containers' logs, which the suite reads, are third-party text too.
@@ -317,12 +321,12 @@ jobs:
         env:
           GOPROXY: https://proxy.golang.org,direct
         run: sh .github/scripts/stop-commands.sh go mod download
-      # The harness, and only the harness, reaches the runner's Docker (HOMERSLAB_TEST_DOCKER_HOST), for compose project
+      # The harness, and only the harness, reaches the runner's Docker (HOMEWARD_TEST_DOCKER_HOST), for compose project
       # hltest-22-targets; the code under test points at nowhere. Images are pinned by digest in testdata/compose.yaml.
       # The suite copies its own test binary into restic's image, so it is built static.
       - name: The contract suite
         env:
-          HOMERSLAB_TEST_DOCKER_HOST: unix:///var/run/docker.sock
+          HOMEWARD_TEST_DOCKER_HOST: unix:///var/run/docker.sock
           DOCKER_HOST: unix:///nonexistent
           CONTAINER_HOST: unix:///nonexistent
           CGO_ENABLED: "0"
@@ -390,16 +394,16 @@ jobs:
           sudo systemctl restart docker
           sh .github/scripts/stop-commands.sh sh .github/scripts/pull-images.sh packaging/sign-in/authentik.compose.yaml \
             internal/idp/authentik/native_test.go catalogs/official/apps/mealie/compose.yaml
-      # The harness, and only the harness, reaches the runner's Docker (HOMERSLAB_TEST_DOCKER_HOST), for compose project
+      # The harness, and only the harness, reaches the runner's Docker (HOMEWARD_TEST_DOCKER_HOST), for compose project
       # hltest-17; the code under test points at nowhere. Images are pinned by digest in packaging/sign-in. The suite
-      # runs web/e2e/passkey.idp.spec.ts against the Authentik it set up (HOMERSLAB_TEST_BROWSER). It copies its own
+      # runs web/e2e/passkey.idp.spec.ts against the Authentik it set up (HOMEWARD_TEST_BROWSER). It copies its own
       # test binary into a container, as the LDAP app's server and the LDAPS port (#204), so it is built static.
       - name: The contract suite
         env:
           CGO_ENABLED: "0"
-          HOMERSLAB_TEST_DOCKER_HOST: unix:///var/run/docker.sock
-          HOMERSLAB_TEST_BROWSER: ${{ matrix.browser }}
-          HOMERSLAB_TEST_BROWSER_RUNS: ${{ inputs.browser_runs || '1' }}
+          HOMEWARD_TEST_DOCKER_HOST: unix:///var/run/docker.sock
+          HOMEWARD_TEST_BROWSER: ${{ matrix.browser }}
+          HOMEWARD_TEST_BROWSER_RUNS: ${{ inputs.browser_runs || '1' }}
           PLAYWRIGHT_BROWSERS_PATH: /home/runner/ms-playwright
           DOCKER_HOST: unix:///nonexistent
           CONTAINER_HOST: unix:///nonexistent
@@ -463,7 +467,7 @@ jobs:
       - name: Build the pages, then the binary that carries them
         run: |
           (cd web && sh ../.github/scripts/stop-commands.sh npm ci --ignore-scripts && npm run build)
-          CGO_ENABLED=0 go build -trimpath -o bin/homerslab ./cmd/homerslab
+          CGO_ENABLED=0 go build -trimpath -o bin/homeward ./cmd/homeward
       - name: Install the browser
         working-directory: web
         run: sh ../.github/scripts/stop-commands.sh npx playwright install --with-deps chromium

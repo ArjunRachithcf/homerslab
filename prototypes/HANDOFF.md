@@ -1,6 +1,6 @@
-# HomersLab prototypes: handoff
+# Homeward prototypes: handoff
 
-For the engineers who build HomersLab from these designs. The prototypes are clickable, throwaway HTML: they decide
+For the engineers who build Homeward from these designs. The prototypes are clickable, throwaway HTML: they decide
 how things look, read and move, not how they are built. Everything that is a decision is in `docs/spec.md` and the
 ADRs; this file says which screens exist, where each lives, what the design system offers, and what is prototype-only.
 

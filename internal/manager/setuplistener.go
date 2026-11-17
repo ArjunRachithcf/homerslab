@@ -16,8 +16,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/ArjunRachithcf/homerslab/internal/lan"
-	"github.com/ArjunRachithcf/homerslab/internal/manager/setup"
+	"github.com/ArjunRachithcf/homeward/internal/lan"
+	"github.com/ArjunRachithcf/homeward/internal/manager/setup"
 )
 
 // Setup is the API and the page on the setup listener. Every request must come from this machine or its LAN, and name

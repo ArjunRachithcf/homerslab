@@ -10,13 +10,13 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/ArjunRachithcf/homerslab/internal/testenv"
+	"github.com/ArjunRachithcf/homeward/internal/testenv"
 )
 
-const module = "github.com/ArjunRachithcf/homerslab"
+const module = "github.com/ArjunRachithcf/homeward"
 
 // privileged are the packages that reach something Home must never reach (story 69, ADR 0013): the manager and its
-// database, the agent and the host, the sign-in's and the mesh's APIs with HomersLab's own tokens, the edge's admin
+// database, the agent and the host, the sign-in's and the mesh's APIs with Homeward's own tokens, the edge's admin
 // API and the firewall, the CLI's control socket. Home's process is built from none of them, so no flaw in it can
 // call them.
 var privileged = []string{

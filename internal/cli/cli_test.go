@@ -13,14 +13,14 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ArjunRachithcf/homerslab/internal/agent/agenttest"
-	"github.com/ArjunRachithcf/homerslab/internal/cli"
-	"github.com/ArjunRachithcf/homerslab/internal/cli/qrterm/qrtermtest"
-	"github.com/ArjunRachithcf/homerslab/internal/lan"
-	"github.com/ArjunRachithcf/homerslab/internal/manager"
-	"github.com/ArjunRachithcf/homerslab/internal/manager/setup"
-	"github.com/ArjunRachithcf/homerslab/internal/manager/store"
-	"github.com/ArjunRachithcf/homerslab/internal/testenv"
+	"github.com/ArjunRachithcf/homeward/internal/agent/agenttest"
+	"github.com/ArjunRachithcf/homeward/internal/cli"
+	"github.com/ArjunRachithcf/homeward/internal/cli/qrterm/qrtermtest"
+	"github.com/ArjunRachithcf/homeward/internal/lan"
+	"github.com/ArjunRachithcf/homeward/internal/manager"
+	"github.com/ArjunRachithcf/homeward/internal/manager/setup"
+	"github.com/ArjunRachithcf/homeward/internal/manager/store"
+	"github.com/ArjunRachithcf/homeward/internal/testenv"
 )
 
 // running starts an agent and a manager in the test's own directories, and returns the manager's control socket. The
@@ -99,7 +99,7 @@ func TestTheCLIShowsThePrimaryAsItsAgentReportsIt(t *testing.T) {
 
 	code, out, errOut := run(t, "node", "--json", "--control-socket", ctl)
 	if code != 0 {
-		t.Fatalf("homerslab node --json: %d %s", code, errOut)
+		t.Fatalf("homeward node --json: %d %s", code, errOut)
 	}
 	rec := new(bytes.Buffer)
 	agentResp := serveAgent(t)
@@ -110,11 +110,11 @@ func TestTheCLIShowsThePrimaryAsItsAgentReportsIt(t *testing.T) {
 
 	code, out, errOut = run(t, "node", "--control-socket", ctl)
 	if code != 0 {
-		t.Fatalf("homerslab node: %d %s", code, errOut)
+		t.Fatalf("homeward node: %d %s", code, errOut)
 	}
 	for _, want := range []string{"study-pc", "Fedora Linux 43 (Workstation Edition)", "x86_64", "32 GB", "Samsung SSD 980 PRO 1TB, 1 TB", "WDC WD40EFRX-68N, 4 TB, spinning", "TPM 2.0", "NVIDIA GeForce RTX 3060 Lite Hash Rate"} {
 		if !strings.Contains(out, want) {
-			t.Errorf("homerslab node doesn't say %q:\n%s", want, out)
+			t.Errorf("homeward node doesn't say %q:\n%s", want, out)
 		}
 	}
 }
@@ -142,7 +142,7 @@ func TestSetupLinkPrintsTheLinkAndAQRCodeOfIt(t *testing.T) {
 	ctl := running(t)
 	code, out, errOut := run(t, "setup", "link", "--control-socket", ctl)
 	if code != 0 {
-		t.Fatalf("homerslab setup link: %d %s", code, errOut)
+		t.Fatalf("homeward setup link: %d %s", code, errOut)
 	}
 	link := linkRe.FindString(out)
 	if link == "" {
@@ -208,7 +208,7 @@ func TestSetupLinkGivesTheLinkAsJSONForScripts(t *testing.T) {
 	ctl := running(t)
 	code, out, errOut := run(t, "setup", "link", "--json", "--control-socket", ctl)
 	if code != 0 {
-		t.Fatalf("homerslab setup link --json: %d %s", code, errOut)
+		t.Fatalf("homeward setup link --json: %d %s", code, errOut)
 	}
 	var l struct{ URL, LocalURL string }
 	if err := json.Unmarshal([]byte(out), &l); err != nil {
@@ -278,10 +278,10 @@ func TestSetupLinkSaysWhenTheManagersDiskIsFull(t *testing.T) {
 	testenv.Isolate(t)
 	ctl := stubManager(t, func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusInsufficientStorage)
-		_, _ = w.Write([]byte(`{"error":"disk-full","folder":"/var/lib/homerslab"}`))
+		_, _ = w.Write([]byte(`{"error":"disk-full","folder":"/var/lib/homeward"}`))
 	})
 	code, _, errOut := run(t, "setup", "link", "--control-socket", ctl)
-	if want := "The disk that holds /var/lib/homerslab is full: free some space and try again"; code == 0 || !strings.Contains(errOut, want) {
+	if want := "The disk that holds /var/lib/homeward is full: free some space and try again"; code == 0 || !strings.Contains(errOut, want) {
 		t.Errorf("setup link on a full disk: %d %q, want %q", code, errOut, want)
 	}
 }
@@ -292,7 +292,7 @@ func TestSetupLinkCarriesTheLANsIPv6Address(t *testing.T) {
 	ctl := running(t, netip.MustParseAddr("fd00:1::20"))
 	code, out, errOut := run(t, "setup", "link", "--control-socket", ctl)
 	if code != 0 {
-		t.Fatalf("homerslab setup link: %d %s", code, errOut)
+		t.Fatalf("homeward setup link: %d %s", code, errOut)
 	}
 	link := regexp.MustCompile(`http://\[fd00:1::20\]:7020/setup#k=[A-Za-z0-9_-]{43}`).FindString(out)
 	if link == "" {
@@ -309,7 +309,7 @@ func TestSetupLinkSaysWhenItWorksOnlyOnThisMachine(t *testing.T) {
 	ctl := running(t, netip.Addr{})
 	code, out, errOut := run(t, "setup", "link", "--control-socket", ctl)
 	if code != 0 {
-		t.Fatalf("homerslab setup link: %d %s", code, errOut)
+		t.Fatalf("homeward setup link: %d %s", code, errOut)
 	}
 	if !regexp.MustCompile(`http://127\.0\.0\.1:7020/setup#k=[A-Za-z0-9_-]{43}`).MatchString(out) {
 		t.Errorf("no link on this machine in:\n%s", out)

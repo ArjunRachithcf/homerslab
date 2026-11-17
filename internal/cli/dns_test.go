@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/ArjunRachithcf/homerslab/internal/testenv"
+	"github.com/ArjunRachithcf/homeward/internal/testenv"
 )
 
 const dnsTok = "ik_FROMTHETERMINAL00000000000000000000000000000000000"
@@ -100,7 +100,7 @@ func TestSetupSecretDNSSaysWhatToDoWhenRefused(t *testing.T) {
 	}
 }
 
-// `homerslab dns token` replaces the DNS token from the console, outside first-time setup (#80).
+// `homeward dns token` replaces the DNS token from the console, outside first-time setup (#80).
 func TestDNSTokenReplacesTheTokenFromTheConsole(t *testing.T) {
 	testenv.Isolate(t)
 	sock, got := routedControl(t, map[string][2]string{
@@ -126,7 +126,7 @@ func TestDNSTokenReplacesTheTokenFromTheConsole(t *testing.T) {
 	}
 
 	sock, _ = routedControl(t, map[string][2]string{"GET /api/v1/dns": {"409", `{"error":"no-domain"}`}})
-	if code, _, errOut := runWith(t, dnsTok, "dns", "token", "--control-socket", sock); code != 1 || !strings.Contains(errOut, "sudo homerslab setup secret dns") {
+	if code, _, errOut := runWith(t, dnsTok, "dns", "token", "--control-socket", sock); code != 1 || !strings.Contains(errOut, "sudo homeward setup secret dns") {
 		t.Errorf("before first-time setup's domain: exit %d %q", code, errOut)
 	}
 }

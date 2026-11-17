@@ -19,8 +19,8 @@ type Provider interface {
 	libdns.RecordDeleter
 }
 
-// Record is one record HomersLab created, as the manager's database keeps it: the source of truth for what is
-// HomersLab's in a zone (#79). Name is relative to the zone. (The spec's provider ID isn't kept: neither provider's
+// Record is one record Homeward created, as the manager's database keeps it: the source of truth for what is
+// Homeward's in a zone (#79). Name is relative to the zone. (The spec's provider ID isn't kept: neither provider's
 // libdns package gives one back.)
 type Record struct {
 	Name  string        `json:"name"`
@@ -29,7 +29,7 @@ type Record struct {
 	TTL   time.Duration `json:"ttl"`
 }
 
-// Book keeps the records HomersLab created, per zone.
+// Book keeps the records Homeward created, per zone.
 type Book interface {
 	Records(ctx context.Context, zone string) ([]Record, error)
 	Keep(ctx context.Context, zone string, r Record) error
@@ -39,9 +39,9 @@ type Book interface {
 // The ways a change is refused.
 var (
 	// ErrTaken is a name that holds someone else's record.
-	ErrTaken = errors.New("the name holds a record that isn't HomersLab's")
-	// ErrNotOurs is a record HomersLab didn't create: it is never changed or deleted.
-	ErrNotOurs = errors.New("the record isn't HomersLab's")
+	ErrTaken = errors.New("the name holds a record that isn't Homeward's")
+	// ErrNotOurs is a record Homeward didn't create: it is never changed or deleted.
+	ErrNotOurs = errors.New("the record isn't Homeward's")
 	// ErrNoValue is a record without its value: with libdns, a delete without one deletes every value at the name.
 	ErrNoValue = errors.New("a record needs its value")
 	// ErrNotDeleted is a delete the provider did nothing for, or that no listing after it shows done: the record stays
@@ -55,19 +55,19 @@ var (
 	ErrListingEmpty = errors.New("the provider's listing of the zone was empty")
 )
 
-// Drift is a note for the drift report: HomersLab's record and the provider's zone no longer agree, and the manager
+// Drift is a note for the drift report: Homeward's record and the provider's zone no longer agree, and the manager
 // put its own side right; or, for DriftListingLookedEmpty, the provider's listing couldn't say, the book was left as it
-// is, and a record that was asked for (not yet HomersLab's, it may be) wasn't written.
+// is, and a record that was asked for (not yet Homeward's, it may be) wasn't written.
 type Drift struct {
 	Zone   string
 	Record Record
 	What   string
 }
 
-// DriftDeletedByHand is a record of HomersLab's that was deleted at the provider by hand: the book dropped it.
+// DriftDeletedByHand is a record of Homeward's that was deleted at the provider by hand: the book dropped it.
 const DriftDeletedByHand = "record-deleted-at-the-provider"
 
-// DriftReplacedByHand is a record of HomersLab's that the provider no longer has, with another value at its name and
+// DriftReplacedByHand is a record of Homeward's that the provider no longer has, with another value at its name and
 // type: someone replaced it by hand. The book dropped it, and the other value is left as it is (#153).
 const DriftReplacedByHand = "record-replaced-at-the-provider"
 
@@ -76,14 +76,14 @@ const DriftReplacedByHand = "record-replaced-at-the-provider"
 // nothing for, the book kept the record (#166); before a create, the record wasn't written (#171).
 const DriftListingLookedEmpty = "provider-listing-looked-empty"
 
-// Inventory is the name, under the domain, of the one TXT record that lists HomersLab's records by name and type, so
+// Inventory is the name, under the domain, of the one TXT record that lists Homeward's records by name and type, so
 // a restored primary finds them again (#79).
 const Inventory = "_homerslab"
 
 // Challenge is the name, under the domain, of the ACME DNS challenge's records.
 const Challenge = "_acme-challenge"
 
-// Owned is a zone as HomersLab may change it: only the records it created, which the Book lists.
+// Owned is a zone as Homeward may change it: only the records it created, which the Book lists.
 type Owned struct {
 	Provider Provider
 	Zone     string // as libdns names it, with a trailing dot
@@ -150,7 +150,7 @@ func (r Record) canonical() (Record, error) {
 
 // look lists the zone's records at a name (in its one form): with their names in that form, and as the provider listed
 // them (raw), which is the form its deletes match; and whether the provider listed nothing at all in the zone. A name
-// the provider lists that isn't valid is never at the name: HomersLab's own names are valid, and a name is never
+// the provider lists that isn't valid is never at the name: Homeward's own names are valid, and a name is never
 // compared in another form. A zone is never empty, so a listing that is proves nothing: it is read like a failed one
 // wherever it would drop a record from the book (#166), and refused before a write (listed, #171).
 func (e *edit) look(ctx context.Context, name string) (there, raw []libdns.RR, empty bool, err error) {
@@ -174,7 +174,7 @@ func (e *edit) look(ctx context.Context, name string) (there, raw []libdns.RR, e
 // listed is look, for a write: a listing in which the provider listed nothing is refused (ErrListingEmpty), never read
 // as a free name. A zone holds its apex's SOA and NS, which RFC 2136's zone transfer lists (BIND); that Infomaniak's
 // API lists the apex too isn't verified. Either way a zone is never empty, so such a listing is a moment's answer, and
-// the name may hold someone else's record; that holds for a zone HomersLab has never written to as well (#171).
+// the name may hold someone else's record; that holds for a zone Homeward has never written to as well (#171).
 func (e *edit) listed(ctx context.Context, name string) ([]libdns.RR, error) {
 	there, _, empty, err := e.look(ctx, name)
 	if err == nil && empty {
@@ -212,8 +212,8 @@ func (o *Owned) Free(ctx context.Context, name string) (bool, error) {
 	return err == nil && len(there) == 0, err
 }
 
-// Create adds a record and keeps it as HomersLab's; a record that is already there and HomersLab's is left as it is.
-// It is refused when the name holds a CNAME, or anything that isn't HomersLab's; only an ACME challenge's TXT records,
+// Create adds a record and keeps it as Homeward's; a record that is already there and Homeward's is left as it is.
+// It is refused when the name holds a CNAME, or anything that isn't Homeward's; only an ACME challenge's TXT records,
 // which several clients may hold at once (RFC 8555 §8.4), share their name. A listing in which the provider listed
 // nothing is refused too (ErrListingEmpty), with a drift note, and the record isn't written. When only the inventory
 // record's listing comes back empty, the record is written and kept, the inventory isn't changed, and Create fails all
@@ -250,7 +250,7 @@ func (e *edit) create(ctx context.Context, r Record) error {
 	if err != nil {
 		return err
 	}
-	// Already there, and HomersLab's: nothing to write, a CNAME included.
+	// Already there, and Homeward's: nothing to write, a CNAME included.
 	if slices.ContainsFunc(there, func(rr libdns.RR) bool {
 		return r.matches(rr) && slices.ContainsFunc(ours, func(k Record) bool { return k.matches(rr) })
 	}) {
@@ -272,7 +272,7 @@ func (e *edit) create(ctx context.Context, r Record) error {
 	return e.Book.Keep(ctx, e.zone, r)
 }
 
-// Delete deletes one of HomersLab's records, and refuses any other. Trying again a delete whose inventory update failed
+// Delete deletes one of Homeward's records, and refuses any other. Trying again a delete whose inventory update failed
 // is a success that writes the inventory, when the book's inventory still lists the record (#176).
 func (o *Owned) Delete(ctx context.Context, r Record) error {
 	e, err := o.edit()
@@ -309,7 +309,7 @@ func (e *edit) delete(ctx context.Context, r Record) error {
 	// Looked up first, and again after (settle): a provider such as RFC 2136's reports every delete as done, so only a
 	// listing says whether the record was there, and whether it is gone. Gone before, from a listing that holds the
 	// zone's other records, means someone deleted it by hand. An empty listing, like a failed one, says nothing: the
-	// record is deleted as HomersLab wrote it, and never left at the provider untracked (#166).
+	// record is deleted as Homeward wrote it, and never left at the provider untracked (#166).
 	there, raw, empty, err := e.look(ctx, r.Name)
 	if err == nil && empty && e.Log != nil {
 		e.Log.Warn("the DNS provider listed nothing in the zone: that isn't taken as the record deleted by hand", "zone", e.zone, "name", r.Name, "type", r.Type)
@@ -319,8 +319,8 @@ func (e *edit) delete(ctx context.Context, r Record) error {
 		return e.drop(ctx, ours[i], kept[i], DriftDeletedByHand)
 	}
 	// The record as the provider lists it (its name in Unicode, its value in quotes, it may be), which is what its
-	// delete matches; HomersLab's own form when the listing failed. Any TTL: a provider may keep its own (a minimum of
-	// its own), and the record is HomersLab's all the same. Never without its value, which would delete every value at
+	// delete matches; Homeward's own form when the listing failed. Any TTL: a provider may keep its own (a minimum of
+	// its own), and the record is Homeward's all the same. Never without its value, which would delete every value at
 	// the name.
 	exact := ours[i].libdns().RR()
 	if j := slices.IndexFunc(there, ours[i].matches); known && j >= 0 && raw[j].Data != "" {
@@ -339,14 +339,14 @@ func (e *edit) delete(ctx context.Context, r Record) error {
 // record's strings as one value, so a record someone else's tool stored in its other form (two strings) lists as ours
 // and isn't matched by the delete (internal/certs's contract suite, against BIND; #179). The name is looked up again:
 //   - our value is still there (in the provider's own form, it may be): when that form isn't the one the delete was
-//     sent in (HomersLab's own, after a listing that failed or came back empty) and resend allows it, the delete is sent
+//     sent in (Homeward's own, after a listing that failed or came back empty) and resend allows it, the delete is sent
 //     once more in it, and settled again without another; otherwise the record stays in the book (ErrNotDeleted);
 //   - the lookup fails: nothing is known, and the record stays too;
 //   - the provider lists nothing in the zone: nothing is known either, the record stays, the drift report says the
 //     listing looked empty (#166), and the error is ErrListingEmpty too, which callers try again quietly (#175);
 //   - our value is gone, after a delete the provider reported done: it is deleted, and leaves the book;
 //   - our value is gone, after a delete the provider did nothing for: nothing of that name and type is left, or only
-//     HomersLab's other values (or, at the challenge's name, which other ACME clients share, anyone's), so someone
+//     Homeward's other values (or, at the challenge's name, which other ACME clients share, anyone's), so someone
 //     deleted it by hand; or someone else's value of that name and type is, so someone replaced it by hand (#153). Both
 //     drop it from the book, and the drift report says so.
 //
@@ -361,12 +361,12 @@ func (e *edit) settle(ctx context.Context, ours []Record, i int, kept Record, se
 	switch {
 	case err != nil:
 		if e.Log != nil {
-			e.Log.Warn("the DNS provider's listing after a delete failed: the record stays listed as HomersLab's", "zone", e.zone, "name", r.Name, "type", r.Type, "err", err)
+			e.Log.Warn("the DNS provider's listing after a delete failed: the record stays listed as Homeward's", "zone", e.zone, "name", r.Name, "type", r.Type, "err", err)
 		}
 		return fmt.Errorf("%w: %s %s (%v)", ErrNotDeleted, r.Type, r.Name, err)
 	case empty:
 		if e.Log != nil {
-			e.Log.Warn("the DNS provider listed nothing in the zone after a delete: the record stays listed as HomersLab's", "zone", e.zone, "name", r.Name, "type", r.Type)
+			e.Log.Warn("the DNS provider listed nothing in the zone after a delete: the record stays listed as Homeward's", "zone", e.zone, "name", r.Name, "type", r.Type)
 		}
 		e.note(r, DriftListingLookedEmpty)
 		return fmt.Errorf("%w: %s %s (%w)", ErrNotDeleted, r.Type, r.Name, ErrListingEmpty) // tried again, as an empty listing
@@ -382,7 +382,7 @@ func (e *edit) settle(ctx context.Context, ours []Record, i int, kept Record, se
 			}
 		}
 		if e.Log != nil {
-			e.Log.Warn("the DNS provider deleted nothing: the record stays listed as HomersLab's", "zone", e.zone, "name", r.Name, "type", r.Type)
+			e.Log.Warn("the DNS provider deleted nothing: the record stays listed as Homeward's", "zone", e.zone, "name", r.Name, "type", r.Type)
 		}
 		return fmt.Errorf("%w: %s %s", ErrNotDeleted, r.Type, r.Name)
 	case reported:
@@ -405,7 +405,7 @@ func (e *edit) drop(ctx context.Context, r, kept Record, what string) error {
 		if what == DriftReplacedByHand {
 			how = "replaced by another value"
 		}
-		e.Log.Warn("a record of HomersLab's was "+how+" at the provider by hand: the book dropped it", "zone", e.zone, "name", r.Name, "type", r.Type)
+		e.Log.Warn("a record of Homeward's was "+how+" at the provider by hand: the book dropped it", "zone", e.zone, "name", r.Name, "type", r.Type)
 	}
 	e.note(r, what)
 	return nil
@@ -419,7 +419,7 @@ func (e *edit) note(r Record, what string) {
 }
 
 // deletedByUs says whether the book's inventory record lists a name and type that no record of the book has any more:
-// a record HomersLab wrote and deleted, whose inventory update didn't finish (#176). A record at that name and type that
+// a record Homeward wrote and deleted, whose inventory update didn't finish (#176). A record at that name and type that
 // someone else holds is no record of the book's, and nothing is changed for it: only the inventory is rewritten. (The
 // inventory record itself is never one: the book holds it whenever it lists anything. A record of another type at its
 // name is a record like any other.)
@@ -457,7 +457,7 @@ func (o *Owned) Reconcile(ctx context.Context) error {
 	return e.inventory(ctx)
 }
 
-// inventory writes the one record that lists HomersLab's records, or deletes it when there are none.
+// inventory writes the one record that lists Homeward's records, or deletes it when there are none.
 func (e *edit) inventory(ctx context.Context) error {
 	ours, _, err := e.ours(ctx)
 	if err != nil {

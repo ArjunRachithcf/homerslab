@@ -12,12 +12,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/ArjunRachithcf/homerslab/internal/agent"
-	"github.com/ArjunRachithcf/homerslab/internal/certs"
-	"github.com/ArjunRachithcf/homerslab/internal/dns"
-	"github.com/ArjunRachithcf/homerslab/internal/manager/setup"
-	"github.com/ArjunRachithcf/homerslab/internal/manager/store"
-	"github.com/ArjunRachithcf/homerslab/internal/mesh"
+	"github.com/ArjunRachithcf/homeward/internal/agent"
+	"github.com/ArjunRachithcf/homeward/internal/certs"
+	"github.com/ArjunRachithcf/homeward/internal/dns"
+	"github.com/ArjunRachithcf/homeward/internal/manager/setup"
+	"github.com/ArjunRachithcf/homeward/internal/manager/store"
+	"github.com/ArjunRachithcf/homeward/internal/mesh"
 )
 
 // Domains is how the manager reaches the household's DNS provider and its certificate authority: the dns and certs
@@ -29,7 +29,7 @@ type Domains interface {
 	CAA(ctx context.Context, domain string) error
 	// Ensure keeps have while it is valid, and otherwise issues the domain's wildcard certificate.
 	Ensure(ctx context.Context, i Issuance, have *certs.Certificate, now time.Time) (certs.Certificate, bool, error)
-	// Reconcile puts the zone's inventory record right from the book of HomersLab's records, and writes no other record
+	// Reconcile puts the zone's inventory record right from the book of Homeward's records, and writes no other record
 	// (dns.Owned.Reconcile). Of the issuance it takes the settings, the token, the zone, the domain and Drift.
 	Reconcile(ctx context.Context, i Issuance) error
 	// Authority names the certificate authority.
@@ -81,7 +81,7 @@ func (d realDomains) Ensure(ctx context.Context, i Issuance, have *certs.Certifi
 	return d.a.Ensure(ctx, certs.Request{Domain: i.Domain, Zone: d.owned(i, p), AccountKey: i.Account, Contact: i.Contact}, have, now)
 }
 
-// owned is the issuance's zone on the provider, as HomersLab may change it, saying its drift to the issuance.
+// owned is the issuance's zone on the provider, as Homeward may change it, saying its drift to the issuance.
 func (d realDomains) owned(i Issuance, p dns.Provider) *dns.Owned {
 	return &dns.Owned{Provider: p, Zone: i.Zone, Domain: i.Domain, Book: d.book, Log: d.a.Log, Drift: i.Drift}
 }
@@ -134,7 +134,7 @@ func settingsOf(ans map[string]string) dns.Settings {
 }
 
 // domain is the LAN page's domain step: the household's domain and its DNS provider. It carries no secret: the step
-// waits for the DNS token, which the admin gives once in this machine's terminal (`sudo homerslab setup secret dns`,
+// waits for the DNS token, which the admin gives once in this machine's terminal (`sudo homeward setup secret dns`,
 // #64).
 func (m *Manager) domain(ctx context.Context, raw json.RawMessage, earlier map[string]string) (map[string]string, error) {
 	var a struct {
@@ -483,12 +483,12 @@ func (m *Manager) renewalFailed(ctx context.Context, row store.Certificate, why 
 	}
 	expires := row.NotAfter.UTC().Format("2 January 2006")
 	what := fmt.Sprintf("The certificate for *.%s couldn't be renewed, and it expires on %s. If the DNS token no longer "+
-		"works, give a new one on the primary: sudo homerslab dns token", row.Domain, expires)
+		"works, give a new one on the primary: sudo homeward dns token", row.Domain, expires)
 	if empty {
 		what = fmt.Sprintf("The certificate for *.%s hasn't been renewed for a day: the DNS provider's listing of its zone keeps "+
-			"coming back empty, which proves nothing, so HomersLab wrote no record. It keeps trying on its schedule, and the "+
+			"coming back empty, which proves nothing, so Homeward wrote no record. It keeps trying on its schedule, and the "+
 			"certificate expires on %s. If the DNS token can no longer read the zone's records, give a new one on the primary: "+
-			"sudo homerslab dns token", row.Domain, expires)
+			"sudo homeward dns token", row.Domain, expires)
 	}
 	open, err := m.db.OpenWarning(ctx, warnCertificate+row.Domain, what)
 	if err != nil || open {
@@ -515,12 +515,12 @@ func (m *Manager) dnsDrift(ctx context.Context, renewed string) func(dns.Drift) 
 		var what string
 		switch d.What {
 		case dns.DriftDeletedByHand:
-			what = fmt.Sprintf("HomersLab's %s in %s was deleted at the DNS provider by hand: HomersLab no longer counts it as its own", rec, zone)
+			what = fmt.Sprintf("Homeward's %s in %s was deleted at the DNS provider by hand: Homeward no longer counts it as its own", rec, zone)
 		case dns.DriftReplacedByHand:
-			what = fmt.Sprintf("HomersLab's %s in %s was replaced at the DNS provider by another value, by hand: that value was left "+
-				"as it is, and HomersLab no longer counts the record as its own", rec, zone)
+			what = fmt.Sprintf("Homeward's %s in %s was replaced at the DNS provider by another value, by hand: that value was left "+
+				"as it is, and Homeward no longer counts the record as its own", rec, zone)
 		case dns.DriftListingLookedEmpty:
-			what = fmt.Sprintf("The DNS provider's listing of %s came back empty, which proves nothing: HomersLab left %s as it "+
+			what = fmt.Sprintf("The DNS provider's listing of %s came back empty, which proves nothing: Homeward left %s as it "+
 				"was and wrote nothing", zone, rec)
 		default:
 			what = fmt.Sprintf("%s: %s in %s", d.What, rec, zone)
@@ -531,7 +531,7 @@ func (m *Manager) dnsDrift(ctx context.Context, renewed string) func(dns.Drift) 
 	}
 }
 
-// DNSStatus is the main domain, its DNS provider and its certificate, for `homerslab dns token` to show before it reads
+// DNSStatus is the main domain, its DNS provider and its certificate, for `homeward dns token` to show before it reads
 // a token. None of it is secret.
 type DNSStatus struct {
 	Domain      string             `json:"domain"`
@@ -560,7 +560,7 @@ func (m *Manager) getDNS(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, st)
 }
 
-// putDNSToken is `homerslab dns token`, on the control socket only: the console's way to replace the DNS token when an
+// putDNSToken is `homeward dns token`, on the control socket only: the console's way to replace the DNS token when an
 // expired certificate keeps everyone out of Admin (#80). Root on the primary can already do anything, so it grants
 // nothing new; from Admin, the same change is a risky change. The new token is checked against the zone, sealed, and a
 // renewal that is due or failing runs right away.
@@ -580,7 +580,7 @@ func (m *Manager) putDNSToken(w http.ResponseWriter, r *http.Request) {
 	}
 	row, err := m.db.Certificate(ctx, ans[ansDomain])
 	if ans[ansDomain] == "" || errors.Is(err, store.ErrNotFound) {
-		fail(w, http.StatusConflict, "no-domain") // first-time setup takes it: `homerslab setup secret dns`
+		fail(w, http.StatusConflict, "no-domain") // first-time setup takes it: `homeward setup secret dns`
 		return
 	}
 	if err != nil {

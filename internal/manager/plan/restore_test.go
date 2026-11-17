@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ArjunRachithcf/homerslab/internal/manager/plan"
-	"github.com/ArjunRachithcf/homerslab/internal/testenv"
+	"github.com/ArjunRachithcf/homeward/internal/manager/plan"
+	"github.com/ArjunRachithcf/homeward/internal/testenv"
 )
 
 // An app's backups are listed as points it can be restored to, latest first: each run's backups of its things, with

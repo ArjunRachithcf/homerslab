@@ -249,7 +249,7 @@ test('every Go job fetches its modules under the wrapper first, then runs with t
 
 // A suite that drives containers prints their logs when it fails.
 test('every suite that drives containers runs under the wrapper', () => {
-  const suites = jobs().filter(([, job]) => JSON.stringify(job).includes('HOMERSLAB_TEST_DOCKER_HOST'));
+  const suites = jobs().filter(([, job]) => JSON.stringify(job).includes('HOMEWARD_TEST_DOCKER_HOST'));
   assert.ok(suites.length >= 2);
   for (const [id, job] of suites) {
     const runs = job.steps.map((step) => step.run).filter((run) => typeof run === 'string' && /\bgo test\b/.test(run));

@@ -14,11 +14,11 @@ import (
 	"sync"
 	"time"
 
-	"github.com/ArjunRachithcf/homerslab/internal/idp"
-	"github.com/ArjunRachithcf/homerslab/internal/manager/setup"
-	"github.com/ArjunRachithcf/homerslab/internal/manager/store"
-	"github.com/ArjunRachithcf/homerslab/internal/mesh"
-	"github.com/ArjunRachithcf/homerslab/internal/oidc"
+	"github.com/ArjunRachithcf/homeward/internal/idp"
+	"github.com/ArjunRachithcf/homeward/internal/manager/setup"
+	"github.com/ArjunRachithcf/homeward/internal/manager/store"
+	"github.com/ArjunRachithcf/homeward/internal/mesh"
+	"github.com/ArjunRachithcf/homeward/internal/oidc"
 )
 
 // Admin signs people in with the household account: it is an OIDC client of the sign-in, whose flow for it takes a
@@ -304,7 +304,7 @@ func (m *Manager) accountSetup(w http.ResponseWriter, r *http.Request) {
 	}
 	ans := st.Answers
 	out := map[string]any{"current": st.Current, "half": st.Half, "steps": st.Steps, "admin": AdminURL(ans),
-		"household": ans["household"], "command": "sudo homerslab setup passkey"}
+		"household": ans["household"], "command": "sudo homeward setup passkey"}
 	if p, err := m.provider(ctx, ans); err == nil && !done(st, "done") {
 		if keys, err := p.Passkeys(ctx, ans[ansAdminUser]); err == nil {
 			out["passkeys"] = len(keys)

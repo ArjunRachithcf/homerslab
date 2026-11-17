@@ -1,4 +1,4 @@
-// HomersLab prototypes: the Store, shared by Admin (where apps are got) and Home (where members ask for them). PROTOTYPE.
+// Homeward prototypes: the Store, shared by Admin (where apps are got) and Home (where members ask for them). PROTOTYPE.
 // "Store" is the place you browse; the catalog is the signed collection of app definitions behind it. Buttons say Get,
 // Open, Update (Admin) or Ask for it (Home); plans and progress say install.
 // Requests and what was installed for them live in this tab's sessionStorage, so an answer given in Admin reaches the

@@ -1,1 +1,1 @@
-{"admin":{"listen":"unix//run/homerslab-edge/admin.sock|0660","config":{"persist":false}}}
+{"admin":{"listen":"unix//run/homeward-edge/admin.sock|0660","config":{"persist":false}}}

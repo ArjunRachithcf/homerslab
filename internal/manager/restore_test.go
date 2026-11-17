@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ArjunRachithcf/homerslab/internal/testenv"
+	"github.com/ArjunRachithcf/homeward/internal/testenv"
 )
 
 const bentoDocuments = "/var/lib/docker/volumes/homerslab-bentopdf_documents/_data"
@@ -125,7 +125,7 @@ func TestApplyingARestorePlanFromAdminNeedsAStepUp(t *testing.T) {
 		t.Error("a restore without a step-up ran restic")
 	}
 	for _, c := range p.host.Cmds()[cmds:] {
-		if strings.Contains(c.String(), "stop homerslab-app-bentopdf") {
+		if strings.Contains(c.String(), "stop homeward-app-bentopdf") {
 			t.Errorf("a restore without a step-up stopped the app: %s", c)
 		}
 	}
@@ -182,7 +182,7 @@ func TestARestorePlanAppliedPutsTheAppBackAsItWas(t *testing.T) {
 		t.Errorf("the snapshot first: %q", first)
 	}
 	want := []string{"restore " + documents + ":" + bentoDocuments + " " + bentoDocuments, "run web", "dump " + dump + " /bento.sql",
-		"command web psql --username=postgres bento", "remove /var/lib/homerslab/restore/bentopdf.bento.sql"}
+		"command web psql --username=postgres bento", "remove /var/lib/homeward/restore/bentopdf.bento.sql"}
 	if put := p.host.Restored(); !slices.Equal(put, want) {
 		t.Errorf("put back:\n got %q\nwant %q", put, want)
 	}

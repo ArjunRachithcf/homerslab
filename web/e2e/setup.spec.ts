@@ -6,7 +6,7 @@ test('the link opens first-time setup, which shows the machine as its agent repo
   const link = await primary.newLink();
   await page.goto(link.localUrl);
 
-  await expect(page.getByRole('heading', { level: 1 })).toContainText('Let’s set up HomersLab');
+  await expect(page.getByRole('heading', { level: 1 })).toContainText('Let’s set up Homeward');
   await expect(page.getByText('study-pc', { exact: true }).first()).toBeVisible();
   await expect(page).toHaveURL(/\/setup(#\/welcome)?$/); // the one-time key is gone from the address bar
   expect(await page.context().cookies()).toEqual([]); // the session rides in this tab, not in a cookie
@@ -68,12 +68,12 @@ test('a link works once', async ({ browser, primary }) => {
   const link = await primary.newLink();
   const first = await browser.newPage();
   await first.goto(link.localUrl);
-  await expect(first.getByRole('heading', { level: 1 })).toContainText('Let’s set up HomersLab');
+  await expect(first.getByRole('heading', { level: 1 })).toContainText('Let’s set up Homeward');
 
   const second = await (await browser.newContext()).newPage();
   await second.goto(link.localUrl);
   await expect(second.getByRole('heading', { level: 1 })).toContainText('This link doesn’t work any more');
-  await expect(second.getByText('sudo homerslab setup link')).toBeVisible();
+  await expect(second.getByText('sudo homeward setup link')).toBeVisible();
 });
 
 test('the page without a link says how to get one', async ({ page, primary }) => {
@@ -102,7 +102,7 @@ test('a new link opened in the tab that shows setup is claimed there', async ({ 
   await expect(page.getByRole('heading', { level: 1 })).toContainText('What’s your name?');
 });
 
-// A full disk under the manager's database (#70): the page says so, instead of "can't reach HomersLab".
+// A full disk under the manager's database (#70): the page says so, instead of "can't reach Homeward".
 test('a full disk is said as such, and the answer typed stays', async ({ page, primary }) => {
   await page.goto((await primary.newLink()).localUrl);
   await page.getByRole('button', { name: 'Get started' }).click();
@@ -125,7 +125,7 @@ test('a full disk when the page opens is said as such', async ({ page, primary }
     route.fulfill({ status: 507, contentType: 'application/json', body: '{"error":"disk-full"}' }));
   await page.goto((await primary.newLink()).localUrl);
   await expect(page.getByRole('heading', { level: 1 })).toContainText('This machine’s disk is full');
-  await expect(page.getByText('Setup can’t reach HomersLab')).toHaveCount(0);
+  await expect(page.getByText('Setup can’t reach Homeward')).toHaveCount(0);
 });
 
 // The first request is answered, but not with setup (#109): the title doesn't say the manager is silent.
@@ -134,8 +134,8 @@ test('a first request the manager answers 500 says setup didn’t open', async (
     route.fulfill({ status: 500, contentType: 'application/json', body: '{"error":"internal"}' }));
   await page.goto((await primary.newLink()).localUrl);
   await expect(page.getByRole('heading', { level: 1 })).toHaveText('Setup didn’t open');
-  await expect(page.getByText('HomersLab couldn’t open setup. Try again in a moment.')).toBeVisible();
-  await expect(page.getByText('Setup can’t reach HomersLab')).toHaveCount(0);
+  await expect(page.getByText('Homeward couldn’t open setup. Try again in a moment.')).toBeVisible();
+  await expect(page.getByText('Setup can’t reach Homeward')).toHaveCount(0);
 });
 
 // Each refused answer says why, in plain words (#69).

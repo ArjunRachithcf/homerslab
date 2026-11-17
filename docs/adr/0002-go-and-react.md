@@ -3,6 +3,9 @@ status: accepted
 date: 2026-11-09
 ---
 
+> Written when the product was called HomersLab. It is **Homeward** now, and HomersLab the maker's name
+> ([ADR 0022](0022-homeward-the-product-homerslab-the-maker.md)); the text below is as it was decided.
+
 # Go for the manager and the agents, React for the surfaces
 
 The manager and the agents are written in Go:

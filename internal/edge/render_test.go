@@ -12,8 +12,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/ArjunRachithcf/homerslab/internal/edge"
-	"github.com/ArjunRachithcf/homerslab/internal/testenv"
+	"github.com/ArjunRachithcf/homeward/internal/edge"
+	"github.com/ArjunRachithcf/homeward/internal/testenv"
 )
 
 var update = flag.Bool("update", false, "write the golden renders anew")
@@ -22,12 +22,12 @@ var update = flag.Bool("update", false, "write the golden renders anew")
 // port, the wildcard certificate from the agent's sealed credentials, and Admin.
 func thePrimary() edge.Config {
 	return edge.Config{
-		AdminSocket:  "/run/homerslab-edge/admin.sock",
-		Storage:      "/var/lib/homerslab-edge",
+		AdminSocket:  "/run/homeward-edge/admin.sock",
+		Storage:      "/var/lib/homeward-edge",
 		Listen:       []netip.Addr{netip.MustParseAddr("100.88.7.186")},
 		Port:         443,
-		Certificates: []edge.Certificate{{Domain: "example.test", CertFile: "/run/credentials/homerslab-edge.service/tls-example.test.crt", KeyFile: "/run/credentials/homerslab-edge.service/tls-example.test.key"}},
-		Admin:        &edge.Site{Name: "admin.example.test", Upstream: "/run/homerslab-admin.sock"},
+		Certificates: []edge.Certificate{{Domain: "example.test", CertFile: "/run/credentials/homeward-edge.service/tls-example.test.crt", KeyFile: "/run/credentials/homeward-edge.service/tls-example.test.key"}},
+		Admin:        &edge.Site{Name: "admin.example.test", Upstream: "/run/homeward-admin.sock"},
 	}
 }
 
@@ -46,7 +46,7 @@ func TestTheEdgesConfigurationIsItsGoldenRender(t *testing.T) {
 		"sign-in-listener": withTheSignInListener(),
 		"with-home":        withHome(),
 		"cloud-port-two":   twoAddresses,
-		"before-the-cert": {AdminSocket: "/run/homerslab-edge/admin.sock", Storage: "/var/lib/homerslab-edge",
+		"before-the-cert": {AdminSocket: "/run/homeward-edge/admin.sock", Storage: "/var/lib/homeward-edge",
 			Listen: []netip.Addr{netip.MustParseAddr("100.88.7.186")}, Port: 443},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -96,7 +96,7 @@ func TestTheEdgeNeverHoldsAKeyInItsConfiguration(t *testing.T) {
 	if p := c.Admin.Config.Persist; p == nil || *p {
 		t.Errorf("admin.config.persist = %v, want false: Caddy would autosave the configuration", p)
 	}
-	if !strings.HasPrefix(c.Admin.Listen, "unix//run/homerslab-edge/") {
+	if !strings.HasPrefix(c.Admin.Listen, "unix//run/homeward-edge/") {
 		t.Errorf("the admin API listens on %q, want a Unix socket in the edge's own directory", c.Admin.Listen)
 	}
 	for loader := range c.Apps.TLS.Certificates {
@@ -166,7 +166,7 @@ func TestTheEdgeListensOnTheMeshOnlyAndAnswersOtherNames421(t *testing.T) {
 		{Listen: []netip.Addr{netip.MustParseAddr("192.168.1.20")}, Port: 0},
 		{Listen: []netip.Addr{netip.MustParseAddr("100.88.7.186")}, Port: 80}, // port 80 only redirects
 	} {
-		bad.AdminSocket, bad.Storage = "/run/homerslab-edge/admin.sock", "/var/lib/homerslab-edge"
+		bad.AdminSocket, bad.Storage = "/run/homeward-edge/admin.sock", "/var/lib/homeward-edge"
 		if _, err := edge.Render(bad); err == nil {
 			t.Errorf("rendered %+v, want it refused", bad)
 		}
@@ -269,7 +269,7 @@ func withSignIn() edge.Config {
 // socket, which only the edge may open.
 func withHome() edge.Config {
 	c := withSignIn()
-	c.Home = &edge.Site{Name: "home.example.test", Upstream: "/run/homerslab-home.sock"}
+	c.Home = &edge.Site{Name: "home.example.test", Upstream: "/run/homeward-home.sock"}
 	return c
 }
 
@@ -555,7 +555,7 @@ func TestPort80OnlyRedirectsAndEveryNameHasHSTSAndSecureCookies(t *testing.T) {
 			t.Errorf("port %d: Admin's cookies aren't made Secure", port)
 		}
 		if catchAll := cfg.Apps.HTTP.Servers["mesh"].Routes[len(cfg.Apps.HTTP.Servers["mesh"].Routes)-1]; len(catchAll.Handle) != 1 {
-			t.Errorf("port %d: the catch-all has %+v, want its 421 alone, no HSTS for names that aren't HomersLab's here", port, catchAll.Handle)
+			t.Errorf("port %d: the catch-all has %+v, want its 421 alone, no HSTS for names that aren't Homeward's here", port, catchAll.Handle)
 		}
 	}
 }
@@ -682,14 +682,14 @@ func TestEveryCookieThroughTheEdgeIsSecure(t *testing.T) {
 	}
 }
 
-// Every name the edge serves deletes every header under HomersLab's prefix a client sends (#236), before anything
+// Every name the edge serves deletes every header under Homeward's prefix a client sends (#236), before anything
 // answers it: Admin, Home, the sign-in (on the sign-in listener too) and every app. Caddy compares a name by its prefix
 // as Go's server spells it, and an app behind CGI, WSGI or PHP reads an underscore as a dash, so each spelling is there;
 // an app's site deletes every provider's identity headers in each spelling too.
 func TestEverySiteDeletesHomersLabsOwnHeaders(t *testing.T) {
 	testenv.Isolate(t)
 	every := withTheSignInListener()
-	every.Home = &edge.Site{Name: "home.example.test", Upstream: "/run/homerslab-home.sock"}
+	every.Home = &edge.Site{Name: "home.example.test", Upstream: "/run/homeward-home.sock"}
 	every.Apps = withBothApps().Apps
 	b, err := edge.Render(every)
 	if err != nil {

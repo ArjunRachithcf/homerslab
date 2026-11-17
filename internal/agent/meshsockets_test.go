@@ -10,13 +10,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ArjunRachithcf/homerslab/internal/agent"
-	"github.com/ArjunRachithcf/homerslab/internal/agent/agenttest"
-	"github.com/ArjunRachithcf/homerslab/internal/host"
-	"github.com/ArjunRachithcf/homerslab/internal/mesh"
-	"github.com/ArjunRachithcf/homerslab/internal/mesh/netbird"
-	"github.com/ArjunRachithcf/homerslab/internal/mesh/tailscale"
-	"github.com/ArjunRachithcf/homerslab/internal/testenv"
+	"github.com/ArjunRachithcf/homeward/internal/agent"
+	"github.com/ArjunRachithcf/homeward/internal/agent/agenttest"
+	"github.com/ArjunRachithcf/homeward/internal/host"
+	"github.com/ArjunRachithcf/homeward/internal/mesh"
+	"github.com/ArjunRachithcf/homeward/internal/mesh/netbird"
+	"github.com/ArjunRachithcf/homeward/internal/mesh/tailscale"
+	"github.com/ArjunRachithcf/homeward/internal/testenv"
 )
 
 func meshStatus(t *testing.T, sock string) agent.MeshStatus {

@@ -2,8 +2,8 @@ package edge_test
 
 // Kanidm's group names, against a real Kanidm in a container (#236): the edge reads a person's role from the groups
 // oauth2-proxy joins with commas (KanidmGuard), which is unambiguous only while no group's name can hold a comma. Like
-// the request matrix, it needs Docker: it runs when HOMERSLAB_TEST_DOCKER_HOST names the engine to use. Its container
-// and volume are named hltest-236-kanidm (or HOMERSLAB_TEST_KANIDM_NAME), labelled, published on 127.0.0.1 only, and
+// the request matrix, it needs Docker: it runs when HOMEWARD_TEST_DOCKER_HOST names the engine to use. Its container
+// and volume are named hltest-236-kanidm (or HOMEWARD_TEST_KANIDM_NAME), labelled, published on 127.0.0.1 only, and
 // removed with the volume when it ends.
 
 import (
@@ -22,18 +22,18 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ArjunRachithcf/homerslab/internal/testenv"
+	"github.com/ArjunRachithcf/homeward/internal/testenv"
 )
 
 const kanidmImage = "kanidm/server:1.12.0@sha256:71b6ff5a9c9c32b632894d8acef5a2afc77941b35a0aa95dcee959fe688d5ce9"
 
 func TestKanidmsGroupNamesHoldNoComma(t *testing.T) {
 	testenv.Isolate(t)
-	engine := os.Getenv("HOMERSLAB_TEST_DOCKER_HOST")
+	engine := os.Getenv("HOMEWARD_TEST_DOCKER_HOST")
 	if engine == "" {
-		t.Skip("set HOMERSLAB_TEST_DOCKER_HOST to the engine for Kanidm's container")
+		t.Skip("set HOMEWARD_TEST_DOCKER_HOST to the engine for Kanidm's container")
 	}
-	name := cmp.Or(os.Getenv("HOMERSLAB_TEST_KANIDM_NAME"), "hltest-236-kanidm")
+	name := cmp.Or(os.Getenv("HOMEWARD_TEST_KANIDM_NAME"), "hltest-236-kanidm")
 	docker := func(args ...string) (string, error) {
 		cmd := exec.Command("docker", args...)
 		cmd.Env = append(os.Environ(), "DOCKER_HOST="+engine)

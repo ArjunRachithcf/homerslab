@@ -14,7 +14,7 @@ const run = promisify(execFile);
 export type EdgeTLS = { key: Buffer; cert: Buffer; spki: string };
 
 export async function edgeCertificate(domain: string): Promise<EdgeTLS> {
-  const dir = await mkdtemp(path.join(tmpdir(), 'homerslab-edge-'));
+  const dir = await mkdtemp(path.join(tmpdir(), 'homeward-edge-'));
   try {
     const [key, cert] = [path.join(dir, 'tls.key'), path.join(dir, 'tls.crt')];
     await run('openssl', ['req', '-x509', '-newkey', 'ec', '-pkeyopt', 'ec_paramgen_curve:P-256', '-nodes', '-keyout', key, '-out', cert,

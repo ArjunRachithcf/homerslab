@@ -3,7 +3,7 @@ package manager_test
 import (
 	"testing"
 
-	"github.com/ArjunRachithcf/homerslab/internal/agent/agenttest"
+	"github.com/ArjunRachithcf/homeward/internal/agent/agenttest"
 )
 
 // The agent reads compose files in children it starts from its own executable: here, this test binary.

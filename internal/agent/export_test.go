@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ArjunRachithcf/homerslab/internal/engine"
+	"github.com/ArjunRachithcf/homeward/internal/engine"
 )
 
 // ShellReads gives reads d, and runs every read's child as script under sh. It returns a function that puts the
@@ -77,7 +77,7 @@ func ReadProjectWith(args []string, stdin io.Reader, stdout io.Writer, read func
 	return readProjectMain(args, stdin, stdout, read)
 }
 
-// ReadIDs is the uid and gid of the user the agent's reads run as when it is root (homerslab-read).
+// ReadIDs is the uid and gid of the user the agent's reads run as when it is root (homeward-read).
 func ReadIDs() (uid, gid uint32, err error) { return readIDs() }
 
 // ReadIDsFrom is ReadIDs, with passwd and group in place of /etc/passwd and /etc/group.

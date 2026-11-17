@@ -1,0 +1,25 @@
+# A node installed as HomersLab takes Homeward's names (#250, ADR 0022): its users and groups (renamed in place, their
+# fixed ids kept), its folders (the agent's with the sealed credentials in it, the manager's, the edge's, the shares'
+# mount points, the apps' units), and its units' links. It runs before systemd-sysusers, so sysusers finds the users
+# already renamed, never makes them again with other ids; before the sockets, which belong to those users; before the
+# firewall table, which is read from the agent's folder; and before the agent, which requires it. On a node with
+# nothing of HomersLab's left it does nothing, at every boot; each step leaves a node the next run finishes, wherever
+# a run stopped. One release only: the release after it drops this unit.
+[Unit]
+Description=Homeward, on a node installed as HomersLab
+Documentation=https://github.com/ArjunRachithcf/homeward
+DefaultDependencies=no
+After=local-fs.target
+Before=systemd-sysusers.service homeward-firewall-restore.service sysinit.target sockets.target shutdown.target
+Conflicts=shutdown.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/bin/homeward agent migrate
+# Stopping an old node's apps can take their units' own stop timeouts.
+TimeoutStartSec=15min
+UMask=0077
+
+[Install]
+WantedBy=sysinit.target

@@ -123,7 +123,7 @@ services:
       mesh:
         ipv4_address: 10.215.0.31
 
-  # A peer the household made by hand, in none of HomersLab's groups.
+  # A peer the household made by hand, in none of Homeward's groups.
   guest:
     <<: *client
     hostname: guest

@@ -12,8 +12,8 @@ import (
 
 	mdns "github.com/miekg/dns"
 
-	"github.com/ArjunRachithcf/homerslab/internal/dns"
-	"github.com/ArjunRachithcf/homerslab/internal/testenv"
+	"github.com/ArjunRachithcf/homeward/internal/dns"
+	"github.com/ArjunRachithcf/homeward/internal/testenv"
 )
 
 // The household's public zone with the public path's wildcard CNAME to NetBird's cluster, which lives in a zone of

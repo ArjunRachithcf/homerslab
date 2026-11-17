@@ -10,19 +10,19 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { expect, test } from '@playwright/test';
 
 test('the binary, the sysroot and the gallery are found in a checkout under "hl test ä"', async () => {
-  const base = await mkdtemp(path.join(tmpdir(), 'homerslab-paths-'));
+  const base = await mkdtemp(path.join(tmpdir(), 'homeward-paths-'));
   try {
     const checkout = path.join(base, 'hl test ä');
     await mkdir(path.join(checkout, 'web', 'e2e'), { recursive: true });
     await mkdir(path.join(checkout, 'bin'));
     await mkdir(path.join(checkout, 'testdata', 'primary'), { recursive: true });
     await mkdir(path.join(checkout, 'design'));
-    await writeFile(path.join(checkout, 'bin', 'homerslab'), '');
+    await writeFile(path.join(checkout, 'bin', 'homeward'), '');
     await writeFile(path.join(checkout, 'design', 'index.html'), '');
     await copyFile(path.join(path.dirname(fileURLToPath(import.meta.url)), 'paths.ts'), path.join(checkout, 'web', 'e2e', 'paths.ts'));
 
     const env = { ...process.env };
-    delete env.HOMERSLAB_BIN;
+    delete env.HOMEWARD_BIN;
     // loaded by a node of its own: Playwright's loader can't import a second copy of a module
     const loader = `import(${JSON.stringify(pathToFileURL(path.join(checkout, 'web', 'e2e', 'paths.ts')).href)}).then((m) => console.log(JSON.stringify(m)))`;
     const { stdout } = await promisify(execFile)(process.execPath, ['--input-type=module', '-e', loader], { env });

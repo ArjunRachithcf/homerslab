@@ -6,10 +6,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/ArjunRachithcf/homerslab/internal/agent"
-	"github.com/ArjunRachithcf/homerslab/internal/idp/authentik"
-	"github.com/ArjunRachithcf/homerslab/internal/ldaps"
-	"github.com/ArjunRachithcf/homerslab/internal/testenv"
+	"github.com/ArjunRachithcf/homeward/internal/agent"
+	"github.com/ArjunRachithcf/homeward/internal/idp/authentik"
+	"github.com/ArjunRachithcf/homeward/internal/ldaps"
+	"github.com/ArjunRachithcf/homeward/internal/testenv"
 )
 
 // The sign-in listener's LDAPS port (#204): systemd binds it at the listener's own address, and the process behind it
@@ -17,15 +17,15 @@ import (
 // to the packaged LDAP outpost's address.
 func TestTheLDAPSPortIsASocketAndAnUnprivilegedProcess(t *testing.T) {
 	testenv.Isolate(t)
-	s := section(t, "homerslab-ldaps.socket", "[Socket]")
+	s := section(t, "homeward-ldaps.socket", "[Socket]")
 	for k, want := range map[string]string{"ListenStream": fmt.Sprintf("%s:%d", agent.SignInListen, ldaps.Port), "FreeBind": "yes",
-		"Service": "homerslab-ldaps.service", "IPAddressDeny": "any", "IPAddressAllow": "172.31.240.0/20"} {
+		"Service": "homeward-ldaps.service", "IPAddressDeny": "any", "IPAddressAllow": "172.31.240.0/20"} {
 		if got := s[k]; len(got) != 1 || got[0] != want {
 			t.Errorf("the socket's %s = %v, want %s", k, got, want)
 		}
 	}
-	u := unit(t, "homerslab-ldaps.service")
-	for k, want := range map[string]string{"User": "homerslab-ldaps", "Group": "homerslab-ldaps", "CapabilityBoundingSet": "",
+	u := unit(t, "homeward-ldaps.service")
+	for k, want := range map[string]string{"User": "homeward-ldaps", "Group": "homeward-ldaps", "CapabilityBoundingSet": "",
 		"AmbientCapabilities": "", "NoNewPrivileges": "yes", "ProtectSystem": "strict", "ProtectHome": "yes", "PrivateDevices": "yes",
 		"RestrictAddressFamilies": "AF_UNIX AF_INET", "IPAddressDeny": "any", "IPAddressAllow": "172.31.240.0/20",
 		"SystemCallFilter": "@system-service", "MemoryDenyWriteExecute": "yes"} {
@@ -38,8 +38,8 @@ func TestTheLDAPSPortIsASocketAndAnUnprivilegedProcess(t *testing.T) {
 			t.Errorf("%s=%v in the packaged unit: the certificate and the name come from the agent's drop-in", k, u[k])
 		}
 	}
-	if c := section(t, "homerslab-ldaps.service", "[Unit]")["ConditionPathExists"]; len(c) != 1 ||
-		c[0] != "/etc/systemd/system/homerslab-ldaps.service.d/50-homerslab-certificates.conf" {
+	if c := section(t, "homeward-ldaps.service", "[Unit]")["ConditionPathExists"]; len(c) != 1 ||
+		c[0] != "/etc/systemd/system/homeward-ldaps.service.d/50-homeward-certificates.conf" {
 		t.Errorf("ConditionPathExists=%v, want the agent's drop-in", c)
 	}
 	exec := one(t, u, "ExecStart")
@@ -55,7 +55,7 @@ func TestTheLDAPSPortIsASocketAndAnUnprivilegedProcess(t *testing.T) {
 	if addr != agent.LDAPOutpost.String() {
 		t.Errorf("the outpost is at %s; the agent's firewall keeps %s", addr, agent.LDAPOutpost)
 	}
-	if want := "/usr/bin/homerslab edge ldaps --name ${HOMERSLAB_SIGN_IN} --cert %d/tls.crt --key %d/tls.key --upstream " + addr + ":3389"; addr == "" || exec != want {
+	if want := "/usr/bin/homeward edge ldaps --name ${HOMEWARD_SIGN_IN} --cert %d/tls.crt --key %d/tls.key --upstream " + addr + ":3389"; addr == "" || exec != want {
 		t.Errorf("ExecStart=%s\nwant %s", exec, want)
 	}
 	for _, want := range []string{"profiles: [ldap]", "image: ghcr.io/goauthentik/ldap@sha256:", "# ghcr.io/goauthentik/ldap:" + authentik.Version + "\n", "- ldap-token"} {
@@ -75,21 +75,21 @@ func TestTheLDAPSPortIsASocketAndAnUnprivilegedProcess(t *testing.T) {
 // Its token comes only from the agent's drop-in, into a runtime directory of its own.
 func TestTheLDAPOutpostIsAUnitOfItsOwn(t *testing.T) {
 	testenv.Isolate(t)
-	u := unit(t, "homerslab-ldap.service")
-	const compose = "/usr/bin/docker compose --project-name homerslab-authentik --file /usr/share/homerslab/sign-in/authentik.compose.yaml --profile ldap "
+	u := unit(t, "homeward-ldap.service")
+	const compose = "/usr/bin/docker compose --project-name homerslab-authentik --file /usr/share/homeward/sign-in/authentik.compose.yaml --profile ldap "
 	if s := one(t, u, "ExecStart"); s != compose+"up --no-deps --no-log-prefix --quiet-pull --abort-on-container-exit ldap" {
 		t.Errorf("ExecStart=%s", s)
 	}
 	if s := one(t, u, "ExecStopPost"); s != compose+"stop ldap" {
 		t.Errorf("ExecStopPost=%s, want the outpost stopped alone", s)
 	}
-	for k, want := range map[string]string{"Restart": "always", "SuccessExitStatus": "130", "RuntimeDirectory": "homerslab-ldap", "RuntimeDirectoryMode": "0700"} {
+	for k, want := range map[string]string{"Restart": "always", "SuccessExitStatus": "130", "RuntimeDirectory": "homeward-ldap", "RuntimeDirectoryMode": "0700"} {
 		if got := one(t, u, k); got != want {
 			t.Errorf("%s=%s, want %s", k, got, want)
 		}
 	}
-	if c := section(t, "homerslab-ldap.service", "[Unit]")["ConditionPathExists"]; len(c) != 1 ||
-		c[0] != "/etc/systemd/system/homerslab-ldap.service.d/50-homerslab-credentials.conf" {
+	if c := section(t, "homeward-ldap.service", "[Unit]")["ConditionPathExists"]; len(c) != 1 ||
+		c[0] != "/etc/systemd/system/homeward-ldap.service.d/50-homeward-credentials.conf" {
 		t.Errorf("ConditionPathExists=%v, want the agent's drop-in", c)
 	}
 	for _, k := range []string{"LoadCredentialEncrypted", "Environment", "PartOf", "BindsTo"} {
@@ -98,7 +98,7 @@ func TestTheLDAPOutpostIsAUnitOfItsOwn(t *testing.T) {
 		}
 	}
 	// The sign-in's own command starts and watches the sign-in's services, never the outpost's profile.
-	if s := one(t, unit(t, "homerslab-authentik.service"), "ExecStart"); strings.Contains(s, "--profile") || strings.Contains(s, "ldap") {
+	if s := one(t, unit(t, "homeward-authentik.service"), "ExecStart"); strings.Contains(s, "--profile") || strings.Contains(s, "ldap") {
 		t.Errorf("the sign-in's ExecStart=%s: it would watch the outpost", s)
 	}
 	// One unit makes the sign-in's network, the sign-in's (#245): at boot the two start together, and two compose
@@ -113,7 +113,7 @@ func TestTheLDAPOutpostIsAUnitOfItsOwn(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(b), "  ldap-token:\n    file: /run/homerslab-ldap/ldap-token\n") {
+	if !strings.Contains(string(b), "  ldap-token:\n    file: /run/homeward-ldap/ldap-token\n") {
 		t.Error("the outpost's token isn't read from its own unit's runtime directory")
 	}
 }

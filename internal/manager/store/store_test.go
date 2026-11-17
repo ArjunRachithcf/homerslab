@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ArjunRachithcf/homerslab/internal/testenv"
+	"github.com/ArjunRachithcf/homeward/internal/testenv"
 )
 
 // SQLite's own "database or disk is full" is ErrDiskFull, whatever the write: here the database may not grow.

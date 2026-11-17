@@ -18,9 +18,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ArjunRachithcf/homerslab/internal/ldaps"
-	"github.com/ArjunRachithcf/homerslab/internal/ldaps/ldaptest"
-	"github.com/ArjunRachithcf/homerslab/internal/testenv"
+	"github.com/ArjunRachithcf/homeward/internal/ldaps"
+	"github.com/ArjunRachithcf/homeward/internal/ldaps/ldaptest"
+	"github.com/ArjunRachithcf/homeward/internal/testenv"
 )
 
 // certificate writes a certificate for names, signed by a root of the test's own, and returns its files and the root.

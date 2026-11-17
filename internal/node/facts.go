@@ -29,7 +29,7 @@ type Facts struct {
 	Space *Space `json:"space,omitempty"`
 }
 
-// Space is the free and total size of the filesystem that holds HomersLab's folder, /var/lib/homerslab, where apps
+// Space is the free and total size of the filesystem that holds Homeward's folder, /var/lib/homeward, where apps
 // keep their data until storage locations and disks are chosen.
 type Space struct {
 	Path      string `json:"path"`
@@ -37,8 +37,8 @@ type Space struct {
 	SizeBytes uint64 `json:"sizeBytes"`
 }
 
-// DataPath is HomersLab's own folder.
-const DataPath = "/var/lib/homerslab"
+// DataPath is Homeward's own folder.
+const DataPath = "/var/lib/homeward"
 
 // StatFS is a system root that can say how much space a filesystem has.
 type StatFS interface {
@@ -172,7 +172,7 @@ func memory(root fs.FS) (total, available uint64, err error) {
 	return total, available, nil
 }
 
-// architecture names the machine's architecture as HomersLab does: x86_64 or arm64.
+// architecture names the machine's architecture as Homeward does: x86_64 or arm64.
 func architecture(kernel string) string {
 	if kernel == "" {
 		kernel = map[string]string{"amd64": "x86_64", "arm64": "aarch64"}[runtime.GOARCH]
@@ -228,7 +228,7 @@ func tpm(root fs.FS) TPM {
 	return t
 }
 
-// vendors are the short names HomersLab uses for the GPU makers it supports.
+// vendors are the short names Homeward uses for the GPU makers it supports.
 var vendors = map[string]string{"10de": "NVIDIA", "1002": "AMD", "8086": "Intel"}
 
 // gpus lists the PCI display controllers (class 0x03), named from the system's pci.ids when it has one.

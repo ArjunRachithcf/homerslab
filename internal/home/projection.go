@@ -2,7 +2,7 @@
 // process, unprivileged, which reads only a projection of apps, audiences and health that the manager writes, and
 // signs people in with the household account through an OIDC client of its own.
 //
-// Home holds no token of HomersLab's and opens nothing of the manager's or the agent's: it is built from none of their
+// Home holds no token of Homeward's and opens nothing of the manager's or the agent's: it is built from none of their
 // packages (deps_test.go), and its unit gives it no way to the manager's sockets or database (packaging/).
 package home
 

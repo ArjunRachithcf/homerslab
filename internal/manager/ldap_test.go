@@ -15,8 +15,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/ArjunRachithcf/homerslab/internal/idp"
-	"github.com/ArjunRachithcf/homerslab/internal/testenv"
+	"github.com/ArjunRachithcf/homeward/internal/idp"
+	"github.com/ArjunRachithcf/homeward/internal/testenv"
 )
 
 // ldapCatalog is the official catalog with BentoPDF signing people in over LDAP instead of behind the guard (#204):
@@ -75,7 +75,7 @@ func TestApplyingAnLDAPPlanMakesTheAppsOwnDirectory(t *testing.T) {
 	if err != nil || string(cred) != "sealed:"+base64.StdEncoding.EncodeToString([]byte(outpostToken)) {
 		t.Errorf("the outpost's token, sealed by the agent: %q %v", cred, err)
 	}
-	override, err := os.ReadFile(filepath.Join(agentDir, "state", "apps", "bentopdf", "homerslab.yaml"))
+	override, err := os.ReadFile(filepath.Join(agentDir, "state", "apps", "bentopdf", "homeward.yaml"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -176,7 +176,7 @@ func TestAnLDAPInstallThatFailsDeletesItsNewDirectory(t *testing.T) {
 	testenv.Isolate(t)
 	p, fs := installable(t, ldapCatalog(t))
 	made := planFor(t, p, "bentopdf")
-	p.host.Fail("systemctl enable /etc/homerslab/units")
+	p.host.Fail("systemctl enable /etc/homeward/units")
 	if r := p.control("POST", "/api/v1/plans/"+made.ID+"/apply", nil); r.Code/100 == 2 {
 		t.Fatalf("applying with systemd failing: %d %s", r.Code, r.Body)
 	}

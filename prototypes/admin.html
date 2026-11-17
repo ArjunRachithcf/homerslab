@@ -1,5 +1,5 @@
 <!doctype html>
-<!-- PROTOTYPE, throwaway. HomersLab Admin: the household admin's web app (mesh only), on the design system (design/ here is a copy of the repository’s design/),
+<!-- PROTOTYPE, throwaway. Homeward Admin: the household admin's web app (mesh only), on the design system (design/ here is a copy of the repository’s design/),
      with fake data and no network. One static page, hash routes, state in memory. The install plan is a page of its own
      whose address carries the plan's id (#/plans/p-…). -->
 <html lang="en">
@@ -16,7 +16,7 @@
     (() => { const g = new URLSearchParams(location.search).get('glass') || window.HL_GLASS_DEFAULT(); if (/^(clear|balanced|frosted|solid)$/.test(g)) document.documentElement.dataset.glass = g; else if (!isNaN(+g)) { document.documentElement.dataset.glass = 'custom'; document.documentElement.style.setProperty('--glass', g); } })();
     (() => { const q = new URLSearchParams(location.search).get('theme'); const t = q === 'light' || q === 'dark' ? q : window.HL_THEME_DEFAULT(); if (t) document.documentElement.dataset.theme = t; })();
   </script>
-  <title>Admin · HomersLab</title>
+  <title>Admin · Homeward</title>
   <link rel="icon" href="icons/favicon.svg" type="image/svg+xml">
   <link rel="icon" href="icons/favicon.ico" sizes="32x32">
   <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">

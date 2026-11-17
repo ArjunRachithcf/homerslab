@@ -1,4 +1,4 @@
-// Package cli is the homerslab command: one binary that is the manager, the agent, and the CLI that talks to the
+// Package cli is the homeward command: one binary that is the manager, the agent, and the CLI that talks to the
 // manager's API.
 package cli
 
@@ -11,22 +11,22 @@ import (
 	"os"
 	"strings"
 
-	"github.com/ArjunRachithcf/homerslab/internal/agent"
-	"github.com/ArjunRachithcf/homerslab/internal/backup"
-	"github.com/ArjunRachithcf/homerslab/internal/ldaps"
+	"github.com/ArjunRachithcf/homeward/internal/agent"
+	"github.com/ArjunRachithcf/homeward/internal/backup"
+	"github.com/ArjunRachithcf/homeward/internal/ldaps"
 )
 
 // Defaults: where the packaged units put things.
 const (
-	DefaultAgentSocket   = "/run/homerslab-agent/agent.sock"
-	DefaultControlSocket = "/run/homerslab/manager.sock"
-	DefaultDB            = "/var/lib/homerslab/manager.db"
+	DefaultAgentSocket   = "/run/homeward-agent/agent.sock"
+	DefaultControlSocket = "/run/homeward/manager.sock"
+	DefaultDB            = "/var/lib/homeward/manager.db"
 	DefaultListen        = ":7020"
 	DefaultSetupPort     = 7020
-	DefaultAgentState    = "/var/lib/homerslab-agent"
-	DefaultGroup         = "homerslab"
+	DefaultAgentState    = "/var/lib/homeward-agent"
+	DefaultGroup         = "homeward"
 	// DefaultProjection is Home's projection, which the manager writes and Home reads (#21).
-	DefaultProjection = "/run/homerslab-projection/home.json"
+	DefaultProjection = "/run/homeward-projection/home.json"
 )
 
 // Env is what a command reaches of the world.
@@ -40,29 +40,29 @@ type Env struct {
 func OS() Env { return Env{Stdin: os.Stdin, Stdout: os.Stdout, Stderr: os.Stderr, Euid: os.Geteuid} }
 
 const usage = `Usage:
-  homerslab agent      run the agent (as root, from homerslab-agent.service)
-  homerslab manager    run the manager (unprivileged, from homerslab-manager.service)
-  homerslab home       run Home, where people open their apps (unprivileged, from homerslab-home.service)
-  homerslab setup link make a one-time link to first-time setup, and show it with its QR code
-  homerslab setup secret mesh|dns
+  homeward agent      run the agent (as root, from homeward-agent.service)
+  homeward manager    run the manager (unprivileged, from homeward-manager.service)
+  homeward home       run Home, where people open their apps (unprivileged, from homeward-home.service)
+  homeward setup link make a one-time link to first-time setup, and show it with its QR code
+  homeward setup secret mesh|dns
                        give first-time setup the mesh's or the DNS provider's token, from this machine's terminal
                        (read from stdin, never shown)
-  homerslab setup join show, in this machine's terminal only, a key for your device and a one-time link to your first
+  homeward setup join show, in this machine's terminal only, a key for your device and a one-time link to your first
                        passkey, as QR codes: first-time setup's second half
-  homerslab setup passkey
+  homeward setup passkey
                        a one-time link to a second passkey, until first-time setup is done
-  homerslab dns token  replace the DNS provider's token, from this machine's console, and renew the certificate if it
+  homeward dns token  replace the DNS provider's token, from this machine's console, and renew the certificate if it
                        is due
-  homerslab node       show this primary as its agent reports it
-  homerslab catalog    list the apps in the catalog
-  homerslab plan APP   make an install plan for an app, and show it in plain words
-  homerslab plan show ID
+  homeward node       show this primary as its agent reports it
+  homeward catalog    list the apps in the catalog
+  homeward plan APP   make an install plan for an app, and show it in plain words
+  homeward plan show ID
                        show an install plan by its id
-  homerslab mesh owner-password
-                       show the owner's password of a NetBird HomersLab set up, for its dashboard (as root)
-  homerslab firewall restore
+  homeward mesh owner-password
+                       show the owner's password of a NetBird Homeward set up, for its dashboard (as root)
+  homeward firewall restore
                        load the firewall table the agent last applied, or a closed one on the first boot (as root,
-                       from homerslab-firewall-restore.service)
+                       from homeward-firewall-restore.service)
 
 Each command takes --help.
 `
@@ -80,6 +80,8 @@ func Main(ctx context.Context, args []string, env Env) int {
 		return agent.ReadProjectMain(args[2:], os.Stdin, env.Stdout)
 	case "agent backup-lock": // a backup target's lock run, in restic's unit; not for people
 		return backup.LockMain(args[2:], os.Getenv("CREDENTIALS_DIRECTORY"), os.Stdin, env.Stdout, env.Stderr)
+	case "agent migrate": // homeward-migrate.service's: a node installed as HomersLab takes Homeward's names (#250)
+		err = agentMigrate(ctx, args[2:], env)
 	case "agent check-storage": // an app's unit's own check before each start; not for people
 		return agent.CheckStorageMain(args[2:], env.Stderr)
 	case "edge ldaps": // the sign-in listener's LDAPS port, its unit's process (#204); not for people
@@ -125,7 +127,7 @@ func Main(ctx context.Context, args []string, env Env) int {
 	case errors.Is(err, flag.ErrHelp):
 		return 0
 	default:
-		fmt.Fprintf(env.Stderr, "homerslab: %v\n", err)
+		fmt.Fprintf(env.Stderr, "homeward: %v\n", err)
 		return 1
 	}
 }
@@ -139,7 +141,7 @@ func first(args []string, n int) []string {
 
 // flags is a command's flag set, writing its errors to stderr.
 func flags(name string, env Env) *flag.FlagSet {
-	fs := flag.NewFlagSet("homerslab "+name, flag.ContinueOnError)
+	fs := flag.NewFlagSet("homeward "+name, flag.ContinueOnError)
 	fs.SetOutput(env.Stderr)
 	return fs
 }

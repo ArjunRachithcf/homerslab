@@ -93,7 +93,7 @@ var ErrStale = errors.New("stale")
 // terminal, which finishes whatever step is waiting for it.
 const AnyRevision int64 = -1
 
-// Drift is one thing HomersLab found changed behind its back.
+// Drift is one thing Homeward found changed behind its back.
 type Drift struct {
 	At     time.Time `json:"at"`
 	Source string    `json:"source"`
@@ -170,7 +170,7 @@ var migrations = []string{
 		revoked_at INTEGER
 	);`,
 	// A step that waits: for a secret, which only the terminal on this machine gives (#64), by its name and never the
-	// secret itself; or for the admin's yes to something the step found. And what HomersLab found changed behind its
+	// secret itself; or for the admin's yes to something the step found. And what Homeward found changed behind its
 	// back, and put back or reported.
 	`CREATE TABLE setup_wait (
 		step TEXT PRIMARY KEY REFERENCES setup_step (id) ON DELETE CASCADE,
@@ -182,7 +182,7 @@ var migrations = []string{
 		source TEXT NOT NULL,
 		what   TEXT NOT NULL
 	);`,
-	// The DNS records HomersLab created: the source of truth for what is its own in a zone (#79). A domain's wildcard
+	// The DNS records Homeward created: the source of truth for what is its own in a zone (#79). A domain's wildcard
 	// certificate, which isn't secret (its key is sealed by the agent), and how its renewals go. And warnings for
 	// admins, such as a renewal that failed for the first time (#80).
 	`CREATE TABLE dns_record (

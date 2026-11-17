@@ -1,4 +1,4 @@
-// Package mesh is the mesh contract: what HomersLab needs from NetBird, Tailscale and Headscale alike (spec: Adapter
+// Package mesh is the mesh contract: what Homeward needs from NetBird, Tailscale and Headscale alike (spec: Adapter
 // contracts → Meshes; ADR 0005). Each mesh is an adapter in its own package, and every adapter passes the same
 // contract suite against the real software in containers.
 package mesh
@@ -23,7 +23,7 @@ const (
 // Roles are every role, in order.
 var Roles = []Role{Admin, Adult, Kid}
 
-// Group names on the mesh. They carry HomersLab's prefix, so a household's own groups are never touched.
+// Group names on the mesh. They carry Homeward's prefix, so a household's own groups are never touched.
 const (
 	NodesGroup = "homerslab-nodes"
 )
@@ -85,7 +85,7 @@ func (Secret) MarshalJSON() ([]byte, error) { return nil, errors.New("a secret i
 // Reveal is the secret itself.
 func (s Secret) Reveal() string { return string(s) }
 
-// Token is HomersLab's own credential on a mesh: what it is, and which of the mesh's users and tokens it is. Only
+// Token is Homeward's own credential on a mesh: what it is, and which of the mesh's users and tokens it is. Only
 // Value is secret.
 type Token struct {
 	Value     Secret    `json:"-"`
@@ -94,7 +94,7 @@ type Token struct {
 	ExpiresAt time.Time `json:"expiresAt"`
 }
 
-// MaxTokenLife is how long HomersLab's own mesh token may live: NetBird allows 365 days at most, and HomersLab asks
+// MaxTokenLife is how long Homeward's own mesh token may live: NetBird allows 365 days at most, and Homeward asks
 // for no more whatever a server would accept. RotateBefore is how long before it expires the scheduler replaces it.
 const (
 	MaxTokenLife = 365 * 24 * time.Hour
@@ -109,7 +109,7 @@ type JoinKey struct {
 }
 
 // JoinKeyLife is how long a node's join key works: long enough to install the machine, short enough that a key left
-// in a terminal's history is spent or dead. HomersLab sets it itself; servers' own minimums vary.
+// in a terminal's history is spent or dead. Homeward sets it itself; servers' own minimums vary.
 const JoinKeyLife = 24 * time.Hour
 
 // Report is what a mesh can do, as its adapter finds it.
@@ -134,21 +134,21 @@ type Report struct {
 	Port int `json:"port"`
 }
 
-// Mesh is one mesh's API, as HomersLab's own service user.
+// Mesh is one mesh's API, as Homeward's own service user.
 type Mesh interface {
 	// Report says what the mesh can do.
 	Report(ctx context.Context) (Report, error)
 	// EnsurePolicies makes the groups and Policies for the household's port, and corrects any that drifted. It
-	// changes nothing that isn't HomersLab's.
+	// changes nothing that isn't Homeward's.
 	EnsurePolicies(ctx context.Context, port int) error
 	// RemoveDefault deletes the mesh's own "everyone reaches everything" policy, recognised by its shape. Only on a
-	// control plane HomersLab set up itself; elsewhere it is one of the Conflicts.
+	// control plane Homeward set up itself; elsewhere it is one of the Conflicts.
 	RemoveDefault(ctx context.Context) error
 	// EnsureNames makes the household's domain resolve on the mesh, for the NameGroups' machines only: every name
-	// under it (a wildcard) at the node's address to. Records of HomersLab's that drifted are put back.
+	// under it (a wildcard) at the node's address to. Records of Homeward's that drifted are put back.
 	EnsureNames(ctx context.Context, domain string, to netip.Addr) error
-	// Conflicts are the household's own policies that would let devices reach HomersLab's nodes past the policies per
-	// role: enabled accept rules, not HomersLab's, reaching every peer or any group or peer that is a node. Disable
+	// Conflicts are the household's own policies that would let devices reach Homeward's nodes past the policies per
+	// role: enabled accept rules, not Homeward's, reaching every peer or any group or peer that is a node. Disable
 	// switches them off, keeping each exactly as it was otherwise; only with the admin's yes.
 	Conflicts(ctx context.Context) ([]Policy, error)
 	Disable(ctx context.Context, ids []string) error
@@ -159,11 +159,11 @@ type Mesh interface {
 	NewDeviceKey(ctx context.Context, r Role, device string) (JoinKey, error)
 	// RevokeKey ends a join or device key that hasn't been used, by its ID: one that a newer key replaced.
 	RevokeKey(ctx context.Context, id string) error
-	// Rotate makes HomersLab's next token, which the caller keeps before calling Revoke on the current one.
+	// Rotate makes Homeward's next token, which the caller keeps before calling Revoke on the current one.
 	Rotate(ctx context.Context) (Token, error)
-	// Revoke revokes one of HomersLab's own tokens.
+	// Revoke revokes one of Homeward's own tokens.
 	Revoke(ctx context.Context, t Token) error
-	// Token is the token this Mesh uses; With is the same mesh with another of HomersLab's tokens.
+	// Token is the token this Mesh uses; With is the same mesh with another of Homeward's tokens.
 	Token() Token
 	With(t Token) Mesh
 }
@@ -176,10 +176,10 @@ var (
 	ErrNotAMesh      = errors.New("no mesh control plane answers at this address")
 	ErrInsecureURL   = errors.New("a control plane is reached over HTTPS only")
 	ErrNeedsNewSetup = errors.New("the control plane needs its first setup")
-	ErrNamesTaken    = errors.New("the mesh already serves this domain in a zone that isn't HomersLab's")
+	ErrNamesTaken    = errors.New("the mesh already serves this domain in a zone that isn't Homeward's")
 )
 
-// CheckURL is a control plane's address as HomersLab will use it: HTTPS, or plain HTTP to this machine itself only
+// CheckURL is a control plane's address as Homeward will use it: HTTPS, or plain HTTP to this machine itself only
 // (a test's server). Tokens never cross a network in the clear.
 func CheckURL(raw string) (*url.URL, error) {
 	u, err := url.Parse(raw)

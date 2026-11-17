@@ -1,4 +1,4 @@
-/* HomersLab design tokens: colour (light and dark), type, space, radii, shadows, motion, layers, layout.
+/* Homeward design tokens: colour (light and dark), type, space, radii, shadows, motion, layers, layout.
    One look for Home and Admin (ADR 0013). The direction is classic's Apple style (classic's site/index.html, its
    tokens and spring): the system font (SF on Apple devices, Inter elsewhere), Apple's system neutrals, inset grouped
    lists, widgets, frosted bars and spring motion. The accent is teal; status is iOS green, orange and red, never the

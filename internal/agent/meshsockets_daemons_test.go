@@ -2,7 +2,7 @@ package agent_test
 
 // The mesh clients' real daemons, NetBird v0.82.0 and tailscaled v1.104.4, each in a container labelled for compose
 // project hltest-200, started as their units start them with the drop-ins the agent wrote. It needs Docker: it runs
-// when HOMERSLAB_TEST_DOCKER_HOST names the engine to use, and is skipped otherwise. The agent never sees that engine
+// when HOMEWARD_TEST_DOCKER_HOST names the engine to use, and is skipped otherwise. The agent never sees that engine
 // (testenv points DOCKER_HOST at nowhere); only this harness does, explicitly.
 
 import (
@@ -16,12 +16,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ArjunRachithcf/homerslab/internal/agent"
-	"github.com/ArjunRachithcf/homerslab/internal/agent/agenttest"
-	"github.com/ArjunRachithcf/homerslab/internal/mesh"
-	"github.com/ArjunRachithcf/homerslab/internal/mesh/netbird"
-	"github.com/ArjunRachithcf/homerslab/internal/mesh/tailscale"
-	"github.com/ArjunRachithcf/homerslab/internal/testenv"
+	"github.com/ArjunRachithcf/homeward/internal/agent"
+	"github.com/ArjunRachithcf/homeward/internal/agent/agenttest"
+	"github.com/ArjunRachithcf/homeward/internal/mesh"
+	"github.com/ArjunRachithcf/homeward/internal/mesh/netbird"
+	"github.com/ArjunRachithcf/homeward/internal/mesh/tailscale"
+	"github.com/ArjunRachithcf/homeward/internal/testenv"
 )
 
 // daemon is a mesh client's daemon in its image, with its packaged unit's [Service] lines (made to run in a
@@ -98,9 +98,9 @@ func startScript(t *testing.T, unit []string, dropIn []byte) string {
 
 func TestTheMeshClientsControlSocketsAreRootsOnlyWithTheRealDaemons(t *testing.T) {
 	testenv.Isolate(t)
-	engine := os.Getenv("HOMERSLAB_TEST_DOCKER_HOST")
+	engine := os.Getenv("HOMEWARD_TEST_DOCKER_HOST")
 	if engine == "" {
-		t.Skip("set HOMERSLAB_TEST_DOCKER_HOST to the engine for the daemons' containers")
+		t.Skip("set HOMEWARD_TEST_DOCKER_HOST to the engine for the daemons' containers")
 	}
 	docker := func(args ...string) ([]byte, error) {
 		cmd := exec.Command("docker", args...)

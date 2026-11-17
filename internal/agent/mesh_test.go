@@ -18,12 +18,12 @@ import (
 	"testing/fstest"
 	"time"
 
-	"github.com/ArjunRachithcf/homerslab/internal/agent"
-	"github.com/ArjunRachithcf/homerslab/internal/agent/agenttest"
-	"github.com/ArjunRachithcf/homerslab/internal/atomicfile"
-	"github.com/ArjunRachithcf/homerslab/internal/firewall"
-	"github.com/ArjunRachithcf/homerslab/internal/lan"
-	"github.com/ArjunRachithcf/homerslab/internal/testenv"
+	"github.com/ArjunRachithcf/homeward/internal/agent"
+	"github.com/ArjunRachithcf/homeward/internal/agent/agenttest"
+	"github.com/ArjunRachithcf/homeward/internal/atomicfile"
+	"github.com/ArjunRachithcf/homeward/internal/firewall"
+	"github.com/ArjunRachithcf/homeward/internal/lan"
+	"github.com/ArjunRachithcf/homeward/internal/testenv"
 )
 
 const setupKey = "A1B2C3D4-0000-4000-8000-SETUPKEY0001"
@@ -1080,7 +1080,7 @@ func TestTheDropInAndASealedCredentialAreSyncedBeforeTheyCount(t *testing.T) {
 	})()
 	sock, h := agenttest.StartWith(t, agent.Config{StateDir: state})
 	call(t, sock, "POST", "/v1/mesh/join", joinBody())
-	dropIn := filepath.Join(h.Root, "etc/systemd/system/netbird.service.d", "10-homerslab.conf")
+	dropIn := filepath.Join(h.Root, "etc/systemd/system/netbird.service.d", "10-homeward.conf")
 	if fi, err := os.Stat(dropIn); err != nil || fi.Mode().Perm() != 0o644 {
 		t.Fatalf("the drop-in: %v, %v; want mode 644", fi, err)
 	}

@@ -4,9 +4,9 @@ import (
 	"io/fs"
 	"testing"
 
-	"github.com/ArjunRachithcf/homerslab/catalogs"
-	"github.com/ArjunRachithcf/homerslab/internal/catalog"
-	"github.com/ArjunRachithcf/homerslab/internal/testenv"
+	"github.com/ArjunRachithcf/homeward/catalogs"
+	"github.com/ArjunRachithcf/homeward/internal/catalog"
+	"github.com/ArjunRachithcf/homeward/internal/testenv"
 )
 
 // The official catalog starts with three apps: BentoPDF, which the edge guards; Mealie, which takes the household

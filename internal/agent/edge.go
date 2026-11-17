@@ -14,15 +14,15 @@ import (
 	"strings"
 	"time"
 
-	"github.com/ArjunRachithcf/homerslab/internal/certs"
-	"github.com/ArjunRachithcf/homerslab/internal/edge"
-	"github.com/ArjunRachithcf/homerslab/internal/mesh"
+	"github.com/ArjunRachithcf/homeward/internal/certs"
+	"github.com/ArjunRachithcf/homeward/internal/edge"
+	"github.com/ArjunRachithcf/homeward/internal/mesh"
 )
 
-// EdgeConfig is where the node's edge lives: the packaged unit homerslab-edge.service (packaging/systemd), which runs
+// EdgeConfig is where the node's edge lives: the packaged unit homeward-edge.service (packaging/systemd), which runs
 // Caddy as its own unprivileged user.
 type EdgeConfig struct {
-	Unit string // homerslab-edge.service
+	Unit string // homeward-edge.service
 	// AdminSocket is Caddy's admin API, in the edge's runtime directory (0750: the edge's user, and its group, which
 	// only the agent is in).
 	AdminSocket string
@@ -37,12 +37,12 @@ type EdgeConfig struct {
 
 // The packaged edge.
 var DefaultEdge = EdgeConfig{
-	Unit:          "homerslab-edge.service",
-	AdminSocket:   "/run/homerslab-edge/admin.sock",
-	Storage:       "/var/lib/homerslab-edge",
-	Credentials:   "/run/credentials/homerslab-edge.service",
-	AdminUpstream: "/run/homerslab-admin.sock",
-	HomeUpstream:  "/run/homerslab-home.sock",
+	Unit:          "homeward-edge.service",
+	AdminSocket:   "/run/homeward-edge/admin.sock",
+	Storage:       "/var/lib/homeward-edge",
+	Credentials:   "/run/credentials/homeward-edge.service",
+	AdminUpstream: "/run/homeward-admin.sock",
+	HomeUpstream:  "/run/homeward-home.sock",
 }
 
 // EdgeSites are the edge's sites, as the manager wants them. None of it is secret.
@@ -336,14 +336,14 @@ func (a *Agent) saveEdge(w http.ResponseWriter, r *http.Request, next edgeState,
 }
 
 func (a *Agent) edgeDropIn() string {
-	return filepath.Join("etc/systemd/system", a.cfg.Edge.Unit+".d", "50-homerslab-certificates.conf")
+	return filepath.Join("etc/systemd/system", a.cfg.Edge.Unit+".d", "50-homeward-certificates.conf")
 }
 
 // edgeCredentials is the edge unit's drop-in: each domain's certificate and key, sealed by the agent, decrypted by
 // systemd into the unit's own credentials directory as it starts.
 func (a *Agent) edgeCredentials() []byte {
 	var b strings.Builder
-	b.WriteString("# Written by HomersLab's agent: the edge's certificates, sealed by the agent (ADR 0011).\n[Service]\n")
+	b.WriteString("# Written by Homeward's agent: the edge's certificates, sealed by the agent (ADR 0011).\n[Service]\n")
 	for _, d := range a.state.Edge.Domains {
 		for _, id := range []string{certID(d), keyID(d)} {
 			fmt.Fprintf(&b, "LoadCredentialEncrypted=%s:%s\n", id, filepath.Join(a.edgeDir(), id+".cred"))

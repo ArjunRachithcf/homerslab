@@ -1,4 +1,4 @@
-module github.com/ArjunRachithcf/homerslab
+module github.com/ArjunRachithcf/homeward
 
 go 1.27.4
 

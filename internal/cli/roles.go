@@ -18,11 +18,11 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/ArjunRachithcf/homerslab/internal/agent"
-	"github.com/ArjunRachithcf/homerslab/internal/certs"
-	"github.com/ArjunRachithcf/homerslab/internal/lan"
-	"github.com/ArjunRachithcf/homerslab/internal/manager"
-	"github.com/ArjunRachithcf/homerslab/internal/node"
+	"github.com/ArjunRachithcf/homeward/internal/agent"
+	"github.com/ArjunRachithcf/homeward/internal/certs"
+	"github.com/ArjunRachithcf/homeward/internal/lan"
+	"github.com/ArjunRachithcf/homeward/internal/manager"
+	"github.com/ArjunRachithcf/homeward/internal/node"
 )
 
 func runAgent(ctx context.Context, args []string, env Env) error {
@@ -34,6 +34,9 @@ func runAgent(ctx context.Context, args []string, env Env) error {
 	setupPort := fs.Int("setup-port", DefaultSetupPort, "the setup listener's port: the firewall table's one LAN exception until it closes")
 	if err := parse(fs, args); err != nil {
 		return err
+	}
+	if *state == DefaultAgentState && pending() {
+		return errNotMigrated
 	}
 	gid, err := groupID(*group)
 	if err != nil {
@@ -62,7 +65,7 @@ func runManager(ctx context.Context, args []string, env Env) error {
 	agentSocket := fs.String("agent-socket", DefaultAgentSocket, "the primary's agent")
 	control := fs.String("control-socket", DefaultControlSocket, "the control socket, for the CLI on this machine")
 	listen := fs.String("listen", DefaultListen, "the setup listener, on this machine and its LAN")
-	adminSocket := fs.String("admin-socket", "", "Admin's socket for the edge, when systemd doesn't hand it over (homerslab-admin.socket)")
+	adminSocket := fs.String("admin-socket", "", "Admin's socket for the edge, when systemd doesn't hand it over (homeward-admin.socket)")
 	ca := fs.String("certificate-authority", "letsencrypt", "the ACME certificate authority: letsencrypt, letsencrypt-staging (rehearsals), or a directory URL")
 	caRoots := fs.String("certificate-authority-roots", "", "a PEM file of roots that a test certificate authority's directory is served with")
 	resolvers := fs.String("dns-resolvers", "", "public DNS resolvers for the certificate's DNS challenge, host:port, comma-separated (Quad9's and Cloudflare's when empty)")
@@ -74,8 +77,11 @@ func runManager(ctx context.Context, args []string, env Env) error {
 	if err != nil {
 		return err
 	}
+	if *db == DefaultDB && pending() {
+		return errNotMigrated
+	}
 	if env.Euid() == 0 {
-		return errors.New("the manager runs unprivileged, as the homerslab user; it reaches the host only through the agent")
+		return errors.New("the manager runs unprivileged, as the homeward user; it reaches the host only through the agent")
 	}
 	setupLn, err := net.Listen("tcp", *listen)
 	if err != nil {
@@ -181,7 +187,7 @@ func certificateAuthority(name, rootsFile, resolvers string) (certs.Authority, e
 	return a, nil
 }
 
-// adminListener is Admin's socket: handed over by systemd (homerslab-admin.socket, for the edge's group only), or
+// adminListener is Admin's socket: handed over by systemd (homeward-admin.socket, for the edge's group only), or
 // made at path for the edge's group (a group this user is in). Without either, Admin isn't served.
 func adminListener(path string) (net.Listener, error) {
 	if ln, err := activated("admin"); ln != nil || err != nil {

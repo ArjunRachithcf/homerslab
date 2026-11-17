@@ -3,6 +3,9 @@ status: accepted
 date: 2026-11-11
 ---
 
+> Written when the product was called HomersLab. It is **Homeward** now, and HomersLab the maker's name
+> ([ADR 0022](0022-homeward-the-product-homerslab-the-maker.md)); the text below is as it was decided.
+
 # Only the edge reaches an app; apps reach only the internet
 
 Accepted (#82, the maintainer, 2026-11-11).

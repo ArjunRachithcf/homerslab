@@ -1,4 +1,4 @@
-// HomersLab illustrations: calm pictures made of the design system's own shapes and glass (tiles, orbs, chips and
+// Homeward illustrations: calm pictures made of the design system's own shapes and glass (tiles, orbs, chips and
 // lines on a glow), never stock art. Each returns HTML for an .illo stage, 300 x 172; pieces are placed by their offset
 // from the centre (--x, --y), sized by --s (or --w and --h), and arrive in the order --i on the bouncy spring.
 // Decorative: every stage is aria-hidden, so the words around it carry the meaning. Needs icons.js first.

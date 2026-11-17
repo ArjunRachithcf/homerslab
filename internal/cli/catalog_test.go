@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/ArjunRachithcf/homerslab/internal/testenv"
+	"github.com/ArjunRachithcf/homeward/internal/testenv"
 )
 
 func TestTheCLIListsTheCatalog(t *testing.T) {
@@ -14,7 +14,7 @@ func TestTheCLIListsTheCatalog(t *testing.T) {
 	ctl := running(t)
 	code, out, errOut := run(t, "catalog", "--control-socket", ctl)
 	if code != 0 {
-		t.Fatalf("homerslab catalog: %d %s", code, errOut)
+		t.Fatalf("homeward catalog: %d %s", code, errOut)
 	}
 	for _, want := range []string{"The official catalog, from HomersLab", "BentoPDF", "PDF tools", "Community, guarded at the edge", "Immich", "Photos", "Verified, native sign-in"} {
 		if !strings.Contains(out, want) {
@@ -29,7 +29,7 @@ func TestTheCLIShowsAPlanByItsID(t *testing.T) {
 	ctl := running(t, true)
 	code, out, errOut := run(t, "plan", "immich", "--json", "--control-socket", ctl)
 	if code != 0 {
-		t.Fatalf("homerslab plan immich --json: %d %s", code, errOut)
+		t.Fatalf("homeward plan immich --json: %d %s", code, errOut)
 	}
 	var p struct{ ID string }
 	if err := json.Unmarshal([]byte(out), &p); err != nil || !strings.HasPrefix(p.ID, "p-") {
@@ -41,7 +41,7 @@ func TestTheCLIShowsAPlanByItsID(t *testing.T) {
 
 	code, words, errOut := run(t, "plan", "show", p.ID, "--control-socket", ctl)
 	if code != 0 {
-		t.Fatalf("homerslab plan show: %d %s", code, errOut)
+		t.Fatalf("homeward plan show: %d %s", code, errOut)
 	}
 	for _, want := range []string{"Install Immich v3.3.5, from the official catalog", "Verified, published by HomersLab", "Plan " + p.ID,
 		"photos.ferreira.family", "on NetBird", "Adults: \u2068Inês Ferreira\u2069", "an OIDC client in Authentik",
@@ -54,7 +54,7 @@ func TestTheCLIShowsAPlanByItsID(t *testing.T) {
 	}
 	code, again, _ := run(t, "plan", "immich", "--control-socket", ctl)
 	if code != 0 || again != words {
-		t.Errorf("homerslab plan immich shows another plan than plan show:\n%s", again)
+		t.Errorf("homeward plan immich shows another plan than plan show:\n%s", again)
 	}
 }
 

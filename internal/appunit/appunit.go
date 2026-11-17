@@ -1,6 +1,6 @@
 // Package appunit is what the agent writes for an app it installs (#19): the app's one systemd unit, which runs the
 // standard compose command (ADR 0014), and the second compose file it runs the app's own with, which wires what
-// HomersLab adds. Both are rendered from the app as the agent keeps it, byte for byte the same each time, so they can
+// Homeward adds. Both are rendered from the app as the agent keeps it, byte for byte the same each time, so they can
 // be compared with a golden render and rewritten at every apply.
 //
 //   - systemd owns the app: every service's restart policy is off, and the unit restarts the app (ADR 0011, amended);
@@ -22,9 +22,9 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/ArjunRachithcf/homerslab/internal/catalog"
-	"github.com/ArjunRachithcf/homerslab/internal/engine"
-	"github.com/ArjunRachithcf/homerslab/internal/storage"
+	"github.com/ArjunRachithcf/homeward/internal/catalog"
+	"github.com/ArjunRachithcf/homeward/internal/engine"
+	"github.com/ArjunRachithcf/homeward/internal/storage"
 )
 
 // UpstreamNetwork is the network of the app's one upstream, in its compose project.
@@ -148,7 +148,7 @@ func folders(mounts []Mount) []string {
 
 // RefusedMount is the bind a mount no check passed is written as: a folder that is never there, so the engine refuses
 // to start the app, rather than start it without its storage.
-const RefusedMount = "/nonexistent/homerslab-refused-mount"
+const RefusedMount = "/nonexistent/homeward-refused-mount"
 
 // ID is an app's id as the agent takes it: what a unit, a project and a runtime directory can be named after.
 var ID = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,38}[a-z0-9])?$`)
@@ -160,13 +160,13 @@ var PlanID = regexp.MustCompile(`^p-[0-9a-f]{32}$`)
 var SecretName = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,62}[a-z0-9])?$`)
 
 // Unit is the app's unit's name.
-func Unit(id string) string { return "homerslab-app-" + id + ".service" }
+func Unit(id string) string { return "homeward-app-" + id + ".service" }
 
 // Project is the app's compose project's name.
 func Project(id string) string { return engine.ProjectPrefix + id }
 
 // RunDir is the unit's runtime directory, where it puts the files its containers mount: 0700, gone when it stops.
-func RunDir(id string) string { return "/run/homerslab-app-" + id }
+func RunDir(id string) string { return "/run/homeward-app-" + id }
 
 // Credential is a secret's credential ID, which is also the name sealed inside it: <app>.<name>, so one app's file
 // can't stand in for another's (ADR 0011).
@@ -177,7 +177,7 @@ func (a App) CredentialFile(name string) string { return path.Join(a.Dir, "crede
 
 // ComposeFile is the catalog's compose file, as it is; OverrideFile the agent's, which Override renders.
 func (a App) ComposeFile() string  { return path.Join(a.Dir, "compose.yaml") }
-func (a App) OverrideFile() string { return path.Join(a.Dir, "homerslab.yaml") }
+func (a App) OverrideFile() string { return path.Join(a.Dir, "homeward.yaml") }
 
 // Bridge is the name of an app's bridge: the upstream's (network -1), or the project's i-th network's, in name order.
 func Bridge(slot, network int) string {
@@ -213,8 +213,8 @@ func Override(a App) []byte {
 	var b strings.Builder
 	w := func(f string, args ...any) { fmt.Fprintf(&b, f+"\n", args...) }
 	// No free text: comments carry only the app's id and the plan's, which can't end a line (#195's review).
-	w("# Written by HomersLab's agent, from install plan %s. Never edit by hand.", plan(a.Plan))
-	w("# What HomersLab adds to app %s's own compose file, as the second file of the standard compose command (ADR 0014):", id(a))
+	w("# Written by Homeward's agent, from install plan %s. Never edit by hand.", plan(a.Plan))
+	w("# What Homeward adds to app %s's own compose file, as the second file of the standard compose command (ADR 0014):", id(a))
 	w("#   - every service: no restart policy, the engine's nor swarm's (the app's unit restarts the app), at the app's own")
 	w("#     SELinux level;")
 	w("#   - the app's one upstream, a fixed address on a network of its own, which only the edge and the agent may open;")
@@ -329,22 +329,22 @@ func UnitFile(a App) []byte {
 	run := RunDir(a.ID)
 	compose := strings.Join(a.Compose(), " ")
 	// No free text: the app's id and the plan's only, which no line of a unit can be ended or continued by.
-	w("# Written by HomersLab's agent, from install plan %s. Never edit by hand.", plan(a.Plan))
+	w("# Written by Homeward's agent, from install plan %s. Never edit by hand.", plan(a.Plan))
 	w("# App %s, run by the standard compose command on its catalog's compose file and the agent's (ADR 0014).", id(a))
 	w("# systemd owns the containers: their restart policies are off, and this unit restarts them; a container that stops")
 	w("# ends the compose command, which stops the others. The app's secrets are credentials the agent sealed (ADR 0011),")
 	w("# copied into the runtime directory for the one container user that reads each, at the app's own SELinux level.")
 	w("# No mount sandboxing: Docker's daemon must see that directory.")
 	w("[Unit]")
-	w("Description=HomersLab app %s", id(a))
-	w("Documentation=https://github.com/ArjunRachithcf/homerslab")
+	w("Description=Homeward app %s", id(a))
+	w("Documentation=https://github.com/ArjunRachithcf/homeward")
 	shares := a.shares()
 	var units string
 	for _, m := range shares {
 		units += " " + m.Unit
 	}
 	w("Requires=docker.service")
-	w("After=docker.service network-online.target homerslab-agent.service%s", units)
+	w("After=docker.service network-online.target homeward-agent.service%s", units)
 	w("Wants=network-online.target%s", units)
 	if units != "" {
 		// Stopped and restarted with its shares, so it never runs on a mount that went away.
@@ -408,7 +408,7 @@ func (a App) startProperties() []string {
 	out = append(out, a.secretProperties()...)
 	for _, p := range folders(a.Mounts) {
 		// Before every start: the folder is still one, reached without a symlink through folders only root can change.
-		out = append(out, "ExecStartPre=/usr/bin/homerslab agent check-storage "+strconv.Quote(p))
+		out = append(out, "ExecStartPre=/usr/bin/homeward agent check-storage "+strconv.Quote(p))
 	}
 	return out
 }

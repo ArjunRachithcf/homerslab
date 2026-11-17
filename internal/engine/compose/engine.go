@@ -13,14 +13,14 @@ import (
 	"github.com/moby/moby/api/types/mount"
 	"github.com/moby/moby/client"
 
-	"github.com/ArjunRachithcf/homerslab/internal/engine"
+	"github.com/ArjunRachithcf/homeward/internal/engine"
 )
 
 // runtimeOptions make the engine's service: no dry run, so no dry run with a stream either (ErrDryRunWithStreams), and
 // no stream, since it only reads.
 var runtimeOptions = options{}
 
-// Engine reads HomersLab's running compose projects through the SDK, on one engine endpoint: their containers' state and
+// Engine reads Homeward's running compose projects through the SDK, on one engine endpoint: their containers' state and
 // health, many projects at once, and their logs. It changes nothing: the app's unit runs and stops the project with the
 // standard compose command (ADR 0014).
 type Engine struct {
@@ -47,7 +47,7 @@ var ErrEngine = errors.New("the container engine didn't answer")
 // maxAsks is how many projects' containers are asked at once.
 const maxAsks = 4
 
-// States are every project of HomersLab's (homerslab-<app>) that the engine has a container of, running or not, by
+// States are every project of Homeward's (homerslab-<app>) that the engine has a container of, running or not, by
 // name: one listing of the projects, then each one's containers, a few at once.
 func (e *Engine) States(ctx context.Context) (map[string]engine.State, error) {
 	stacks, err := e.svc.List(ctx, api.ListOptions{All: true})

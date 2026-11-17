@@ -14,14 +14,14 @@ import (
 var names = idna.New(idna.MapForLookup(), idna.StrictDomainName(false), idna.CheckHyphens(false), idna.Transitional(false),
 	idna.VerifyDNSLength(true))
 
-// Canonical is a name in the one form HomersLab compares names in: ASCII (A-labels), in lower case, without a trailing
+// Canonical is a name in the one form Homeward compares names in: ASCII (A-labels), in lower case, without a trailing
 // dot. libdns's "@" (the zone's apex) stays "@", and a "*" is allowed as the first label (#153).
 //
 // A name is read in two forms only, each with or without its trailing dot: its A-labels in any ASCII case, or exactly
 // its U-labels as IDNA writes them (lower case, NFC). Anything IDNA's mapping would have to fold first (a fullwidth
 // letter, an ideographic full stop, a soft hyphen, capitals outside ASCII) is refused, like a name that isn't valid
 // IDNA or holds anything but letters, digits, hyphens and underscores once in ASCII (ErrBadName): a provider that keeps
-// names as they are typed holds those as names of their own, so they are never taken for HomersLab's (#164's review).
+// names as they are typed holds those as names of their own, so they are never taken for Homeward's (#164's review).
 func Canonical(name string) (string, error) {
 	n := strings.TrimSuffix(name, ".")
 	if n == "@" {
@@ -56,7 +56,7 @@ func ascii(s string) bool {
 	return true
 }
 
-// sameValue is a value of HomersLab's as a provider may list it in its own form: a TXT in quotes (one string or
+// sameValue is a value of Homeward's as a provider may list it in its own form: a TXT in quotes (one string or
 // several, as a long one is split), a CNAME's target in another case, without its trailing dot or in Unicode. Anything
 // else must be the very value.
 func sameValue(typ, ours, theirs string) bool {
@@ -77,7 +77,7 @@ func sameValue(typ, ours, theirs string) bool {
 
 // quoted is a TXT value in its presentation form (RFC 1035 §5.1), one or more quoted strings with \X and \DDD
 // escapes, as one text; ok is false for anything else. (A value someone else wrote as a literal "tok", quotes and
-// all, reads as tok: HomersLab's values are random tokens and its inventory, which nobody else writes.)
+// all, reads as tok: Homeward's values are random tokens and its inventory, which nobody else writes.)
 func quoted(v string) (text string, ok bool) {
 	var b strings.Builder
 	for v = strings.TrimSpace(v); v != ""; v = strings.TrimLeft(v, " ") {

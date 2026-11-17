@@ -13,22 +13,22 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/ArjunRachithcf/homerslab/internal/appunit"
-	"github.com/ArjunRachithcf/homerslab/internal/atomicfile"
-	"github.com/ArjunRachithcf/homerslab/internal/catalog"
-	"github.com/ArjunRachithcf/homerslab/internal/certs"
-	"github.com/ArjunRachithcf/homerslab/internal/firewall"
-	"github.com/ArjunRachithcf/homerslab/internal/idp"
-	"github.com/ArjunRachithcf/homerslab/internal/ldaps"
-	"github.com/ArjunRachithcf/homerslab/internal/mesh"
-	"github.com/ArjunRachithcf/homerslab/internal/text"
+	"github.com/ArjunRachithcf/homeward/internal/appunit"
+	"github.com/ArjunRachithcf/homeward/internal/atomicfile"
+	"github.com/ArjunRachithcf/homeward/internal/catalog"
+	"github.com/ArjunRachithcf/homeward/internal/certs"
+	"github.com/ArjunRachithcf/homeward/internal/firewall"
+	"github.com/ArjunRachithcf/homeward/internal/idp"
+	"github.com/ArjunRachithcf/homeward/internal/ldaps"
+	"github.com/ArjunRachithcf/homeward/internal/mesh"
+	"github.com/ArjunRachithcf/homeward/internal/text"
 )
 
 // LDAP apps on this node (#204, ADR 0020). An app that signs people in over LDAP binds at auth.<main domain>:636, the
 // sign-in listener's LDAPS port, from its own network; nothing else of the machine is open to it. The agent:
 //   - seals the LDAP outpost's token, which the manager hands it inward only, for the outpost's own unit
-//     (homerslab-ldap.service), and writes that unit's drop-in;
-//   - seals the sign-in's certificate and key again under the names the LDAPS port's unit (homerslab-ldaps.service)
+//     (homeward-ldap.service), and writes that unit's drop-in;
+//   - seals the sign-in's certificate and key again under the names the LDAPS port's unit (homeward-ldaps.service)
 //     loads them by, writes its drop-in with the sign-in's name, enables its socket once an LDAP app is installed, and
 //     restarts it when the certificate is renewed, so it serves the new one;
 //   - hands the app its directory as environment variables of its upstream's service: the listener's URL, its own base
@@ -36,13 +36,13 @@ import (
 //     own app password, made for that app alone;
 //   - lets that app's network, and no other, reach the LDAPS port in the firewall table.
 const (
-	LDAPUnit    = "homerslab-ldap.service"
-	LDAPSUnit   = "homerslab-ldaps.service"
-	LDAPSSocket = "homerslab-ldaps.socket"
+	LDAPUnit    = "homeward-ldap.service"
+	LDAPSUnit   = "homeward-ldaps.service"
+	LDAPSSocket = "homeward-ldaps.socket"
 	// credLDAPToken is the outpost's token, as its unit loads it; ldapRun the unit's RuntimeDirectory, where its
 	// container reads it, as Authentik's image's user (outpostUID).
 	credLDAPToken = "authentik.ldap-token"
-	ldapRun       = "/run/homerslab-ldap"
+	ldapRun       = "/run/homeward-ldap"
 	outpostUID    = "1000"
 	// The LDAPS port's unit's credentials: the sign-in's certificate chain and its key.
 	credLDAPSCert = "tls.crt"
@@ -67,11 +67,11 @@ type AppLDAP struct {
 }
 
 func (a *Agent) ldapDropIn() string {
-	return filepath.Join("etc/systemd/system", LDAPUnit+".d", "50-homerslab-credentials.conf")
+	return filepath.Join("etc/systemd/system", LDAPUnit+".d", "50-homeward-credentials.conf")
 }
 
 func (a *Agent) ldapsDropIn() string {
-	return filepath.Join("etc/systemd/system", LDAPSUnit+".d", "50-homerslab-certificates.conf")
+	return filepath.Join("etc/systemd/system", LDAPSUnit+".d", "50-homeward-certificates.conf")
 }
 
 func (a *Agent) ldapsDir() string { return filepath.Join(a.cfg.StateDir, "ldaps") }
@@ -83,7 +83,7 @@ var tokenText = regexp.MustCompile(`^[\x21-\x7e]{16,512}$`)
 // starts, copied for the outpost's container user, and labelled at the sign-in's level.
 func (a *Agent) ldapCredentials() []byte {
 	var b strings.Builder
-	b.WriteString("# Written by HomersLab's agent: the LDAP outpost's token, sealed by the agent (ADR 0011). Never edit by hand.\n[Service]\n")
+	b.WriteString("# Written by Homeward's agent: the LDAP outpost's token, sealed by the agent (ADR 0011). Never edit by hand.\n[Service]\n")
 	fmt.Fprintf(&b, "LoadCredentialEncrypted=%s:%s\n", credLDAPToken, a.signInCred(credLDAPToken))
 	fmt.Fprintf(&b, "ExecStartPre=/usr/bin/install -m 0400 -o %s -g %s %%d/%s %s/ldap-token\n", outpostUID, outpostUID, credLDAPToken, ldapRun)
 	if a.selinux() {
@@ -242,8 +242,8 @@ func (a *Agent) ldapInUse() bool {
 // sealed by the agent under the names the unit loads them by.
 func (a *Agent) ldapsCertificates(name string) []byte {
 	var b strings.Builder
-	b.WriteString("# Written by HomersLab's agent: the sign-in's name, and its certificate, sealed by the agent (ADR 0011). Never edit by hand.\n[Service]\n")
-	fmt.Fprintf(&b, "Environment=HOMERSLAB_SIGN_IN=%s\n", name)
+	b.WriteString("# Written by Homeward's agent: the sign-in's name, and its certificate, sealed by the agent (ADR 0011). Never edit by hand.\n[Service]\n")
+	fmt.Fprintf(&b, "Environment=HOMEWARD_SIGN_IN=%s\n", name)
 	for _, id := range []string{credLDAPSCert, credLDAPSKey} {
 		fmt.Fprintf(&b, "LoadCredentialEncrypted=%s:%s\n", id, filepath.Join(a.ldapsDir(), id+".cred"))
 	}

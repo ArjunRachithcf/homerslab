@@ -11,8 +11,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/ArjunRachithcf/homerslab/internal/catalog"
-	"github.com/ArjunRachithcf/homerslab/internal/engine"
+	"github.com/ArjunRachithcf/homeward/internal/catalog"
+	"github.com/ArjunRachithcf/homeward/internal/engine"
 )
 
 // The ways a definition can't be planned.
@@ -177,7 +177,7 @@ func taken(name string, h Household) string {
 }
 
 // signIn is the first of the app's methods, in its order, that the provider provides (spec: Adapter contracts, the
-// sign-in method), whether or not HomersLab can set it up today: the plan says which (wired).
+// sign-in method), whether or not Homeward can set it up today: the plan says which (wired).
 func signIn(methods []catalog.SignIn, provides []catalog.SignInMethod) (catalog.SignIn, bool) {
 	for _, m := range methods {
 		if slices.Contains(provides, m.Method) {
@@ -187,7 +187,7 @@ func signIn(methods []catalog.SignIn, provides []catalog.SignInMethod) (catalog.
 	return catalog.SignIn{}, false
 }
 
-// wired says whether HomersLab can set an app up with a sign-in method today: a guard always; an OIDC client when the
+// wired says whether Homeward can set an app up with a sign-in method today: a guard always; an OIDC client when the
 // manifest says how the app takes it (#20); LDAP when the manifest says how the app takes its directory (#204).
 func wired(m catalog.SignIn) bool {
 	switch m.Method {

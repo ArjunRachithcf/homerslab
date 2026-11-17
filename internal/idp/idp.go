@@ -1,4 +1,4 @@
-// Package idp is the identity provider contract: what HomersLab needs from Authentik and Kanidm alike (spec: Adapter
+// Package idp is the identity provider contract: what Homeward needs from Authentik and Kanidm alike (spec: Adapter
 // contracts → Identity providers; ADR 0004, amended). Each provider is an adapter in its own package, and every
 // adapter passes the same contract suite (idptest) against the real software in containers.
 //
@@ -14,7 +14,7 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/ArjunRachithcf/homerslab/internal/mesh"
+	"github.com/ArjunRachithcf/homeward/internal/mesh"
 )
 
 // Role is what a person may do; every role is a group in the provider.
@@ -30,7 +30,7 @@ const (
 // Roles are every role, in order.
 func Roles() []Role { return []Role{Admin, Adult, Kid} }
 
-// RoleGroup is a role's group in the provider. It carries HomersLab's prefix, so a household's own groups are never
+// RoleGroup is a role's group in the provider. It carries Homeward's prefix, so a household's own groups are never
 // touched.
 func RoleGroup(r Role) string { return "homerslab-" + string(r) + "s" }
 
@@ -85,7 +85,7 @@ type Passkey struct {
 // kinds of anything else (a password, TOTP, recovery codes, an app password or API token, a linked account at another
 // sign-in, another kind of device). None of it is secret.
 //
-// Before accepting a step-up, HomersLab reads an admin's credentials and refuses it when anything but passkeys is
+// Before accepting a step-up, Homeward reads an admin's credentials and refuses it when anything but passkeys is
 // there (ADR 0004, amended; #84): no claim of the ID token says what the admin holds, and a password or second factor
 // a stolen session added could otherwise stand in for the passkey somewhere.
 type Credentials struct {
@@ -170,13 +170,13 @@ type Report struct {
 	PasskeyOnlySignIn bool `json:"passkeyOnlySignIn"`
 }
 
-// Provider is one identity provider's API, as HomersLab's own account in it.
+// Provider is one identity provider's API, as Homeward's own account in it.
 type Provider interface {
 	// Report says what the provider can do.
 	Report(ctx context.Context) (Report, error)
-	// Prepare makes the household's sign-in: the groups for roles, HomersLab's passkey-only sign-in flow and its
+	// Prepare makes the household's sign-in: the groups for roles, Homeward's passkey-only sign-in flow and its
 	// passkey-enrolment flow, the household's name. It corrects what drifted and changes nothing that isn't
-	// HomersLab's. It is idempotent.
+	// Homeward's. It is idempotent.
 	Prepare(ctx context.Context, h Household) error
 	// EnsurePerson makes a person, or brings their name, mail and role's group in line. They have no password and no
 	// passkey: one comes only from an enrolment link.
@@ -188,7 +188,7 @@ type Provider interface {
 	// Credentials are everything the person holds that can sign them in. It reads the provider each time, never a copy.
 	Credentials(ctx context.Context, username string) (Credentials, error)
 	// EnrolmentLink mints a one-time link that adds a passkey to a person's account at the sign-in's own address. It
-	// works once, for EnrolmentLife, and runs HomersLab's own flow with only a passkey-enrolment stage, never the
+	// works once, for EnrolmentLife, and runs Homeward's own flow with only a passkey-enrolment stage, never the
 	// provider's recovery flow.
 	EnrolmentLink(ctx context.Context, username string) (Link, error)
 	// EnsureClient makes an app's OIDC client, or brings it in line: its redirect addresses exactly the ones given
@@ -203,7 +203,7 @@ type Provider interface {
 
 // Errors an adapter returns, so callers can say what to fix.
 var (
-	ErrTokenRefused = errors.New("the identity provider refused HomersLab's token")
+	ErrTokenRefused = errors.New("the identity provider refused Homeward's token")
 	ErrUnreachable  = errors.New("the identity provider can't be reached")
 	ErrNoPerson     = errors.New("no such person in the household account")
 	ErrNotReady     = errors.New("the identity provider isn't ready yet")

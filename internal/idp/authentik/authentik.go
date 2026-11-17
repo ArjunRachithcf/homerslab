@@ -1,8 +1,8 @@
-// Package authentik is the identity provider adapter for Authentik (ADR 0004): the household account, as HomersLab's
+// Package authentik is the identity provider adapter for Authentik (ADR 0004): the household account, as Homeward's
 // own service account in it, through Authentik's REST API. It passes the identity provider contract suite against a
 // real Authentik in containers (contract_test.go).
 //
-// HomersLab owns these objects, named homerslab-*, and corrects them when they drift:
+// Homeward owns these objects, named homerslab-*, and corrects them when they drift:
 //   - the groups for roles;
 //   - the passkey-only sign-in flow: identification without a password, then a passkey with user verification
 //     required, then the session. It is the brand's sign-in, and every client's that is passkey-only;
@@ -11,7 +11,7 @@
 //   - the brand of the sign-in's own name;
 //   - in every other flow that signs a person in or sets up a way to (Authentik's default authentication flow and
 //     its authenticator setup flows among them), a refusal for the household's people before the first stage that
-//     does: they sign in with their passkey, through HomersLab's flow, and get a passkey only from an enrolment
+//     does: they sign in with their passkey, through Homeward's flow, and get a passkey only from an enrolment
 //     link.
 //
 // Authentik's own first-admin flow (initial-setup) applies to nobody: akadmin has a random password and is inactive,
@@ -32,13 +32,13 @@ import (
 	"strings"
 	"time"
 
-	"github.com/ArjunRachithcf/homerslab/internal/idp"
+	"github.com/ArjunRachithcf/homeward/internal/idp"
 )
 
-// Version is the Authentik that HomersLab's packages pin (packaging/sign-in/authentik.compose.yaml).
+// Version is the Authentik that Homeward's packages pin (packaging/sign-in/authentik.compose.yaml).
 const Version = "2026.8.5"
 
-// HomersLab's objects in Authentik.
+// Homeward's objects in Authentik.
 const (
 	ServiceUser = "homerslab"
 	tokenID     = "homerslab-manager"
@@ -73,7 +73,7 @@ const (
 	enrolmentPrefix     = "homerslab-enrol-"
 )
 
-// Authentik is the household account, as HomersLab's service account.
+// Authentik is the household account, as Homeward's service account.
 type Authentik struct {
 	api *api
 	h   idp.Household
@@ -84,7 +84,7 @@ type Authentik struct {
 }
 
 // Open is Authentik at its upstream base (http://<its bridge address>:9000), as the sign-in of household h, with
-// HomersLab's own token. landing is where a finished enrolment sends the person.
+// Homeward's own token. landing is where a finished enrolment sends the person.
 func Open(base string, h idp.Household, token idp.Secret, landing string) (*Authentik, error) {
 	a, err := newAPI(base, h, token)
 	if err != nil {
@@ -134,8 +134,8 @@ type group struct {
 	Name string `json:"name"`
 }
 
-// Bootstrap makes HomersLab's own service account and token with Authentik's bootstrap token, and closes Authentik's
-// own way to a first admin. HomersLab's token goes to keep (the caller seals it) before anything else changes; only
+// Bootstrap makes Homeward's own service account and token with Authentik's bootstrap token, and closes Authentik's
+// own way to a first admin. Homeward's token goes to keep (the caller seals it) before anything else changes; only
 // then are akadmin closed and the bootstrap token deleted, so a token that couldn't be kept is never the only one. A bootstrap token that is refused means bootstrap is done already (or
 // never was given): ErrTokenRefused.
 //
@@ -193,10 +193,10 @@ func Bootstrap(ctx context.Context, base string, h idp.Household, bootstrap idp.
 		} `json:"user"`
 	}
 	if err := o.call(ctx, http.MethodGet, "/core/users/me/", nil, &check); err != nil || check.User.Username != ServiceUser {
-		return "", fmt.Errorf("authentik: HomersLab's new token doesn't work: %v", err)
+		return "", fmt.Errorf("authentik: Homeward's new token doesn't work: %v", err)
 	}
 	if err := keep(own); err != nil {
-		return "", fmt.Errorf("keeping HomersLab's new token: %w", err) // the bootstrap token still works: try again
+		return "", fmt.Errorf("keeping Homeward's new token: %w", err) // the bootstrap token still works: try again
 	}
 	a := &Authentik{api: o, h: h}
 	if err := a.closeFirstAdmin(ctx); err != nil {
@@ -208,7 +208,7 @@ func Bootstrap(ctx context.Context, base string, h idp.Household, bootstrap idp.
 	return own, nil
 }
 
-// DefaultFlows are the flows Authentik's own default blueprints make, at Version: those HomersLab builds on (consent,
+// DefaultFlows are the flows Authentik's own default blueprints make, at Version: those Homeward builds on (consent,
 // invalidation), closes (initial-setup), and guards (Prepare's refusal goes into every one that signs a person in or
 // sets something up for them).
 var DefaultFlows = []string{"default-authentication-flow", "default-authenticator-static-setup", "default-authenticator-totp-setup",
@@ -219,7 +219,7 @@ var DefaultFlows = []string{"default-authentication-flow", "default-authenticato
 // retryEvery is how long a failed default blueprint is left before it is applied again.
 const retryEvery = 20 * time.Second
 
-// defaultsReady says whether Authentik's worker has made its default objects, which HomersLab's own build on or
+// defaultsReady says whether Authentik's worker has made its default objects, which Homeward's own build on or
 // guard: every flow of its default blueprints, with every default and system blueprint applied (they come one by one,
 // a fresh Authentik answers before they are), and the signing key. Prepare guards the flows it finds, so it must not
 // run before they all are there.
@@ -553,7 +553,7 @@ func (a *Authentik) bindStages(ctx context.Context, flowPK string, want []stageB
 	return nil
 }
 
-// ensureFlow makes a flow of HomersLab's, by slug, or brings it in line.
+// ensureFlow makes a flow of Homeward's, by slug, or brings it in line.
 func (a *Authentik) ensureFlow(ctx context.Context, slug string, body map[string]any) (string, error) {
 	body["slug"] = slug
 	f, err := a.flow(ctx, slug)
@@ -571,7 +571,7 @@ func (a *Authentik) ensureFlow(ctx context.Context, slug string, body map[string
 }
 
 // enrolmentPerson is the policy that makes an enrolment link's person the flow's pending user: only from a valid,
-// unexpired invitation for HomersLab's enrolment flow, for an active person of the household. Anything else refuses.
+// unexpired invitation for Homeward's enrolment flow, for an active person of the household. Anything else refuses.
 // Authentik doesn't check an invitation's expiry when it is used, only when a cleanup task runs, so this does.
 const enrolmentPerson = `# HomersLab: an enrolment link's person, from its invitation, and nothing else.
 from django.utils import timezone
@@ -597,7 +597,7 @@ plan.context["pending_user"] = person
 return True
 `
 
-// householdPerson is the policy that knows the household's people: HomersLab's users, and anyone in a role's group.
+// householdPerson is the policy that knows the household's people: Homeward's users, and anyone in a role's group.
 var householdPerson = `# HomersLab: a person of the household, who signs in with a passkey through HomersLab's sign-in only.
 user = request.user
 if not getattr(user, "pk", None):
@@ -691,12 +691,12 @@ func (a *Authentik) Prepare(ctx context.Context, h idp.Household) error {
 		return err
 	}
 	// Nothing but an enrolment link starts the enrolment flow: it needs no other binding, and only invitations
-	// HomersLab minted (for this flow, with a person) get past its first stages.
+	// Homeward minted (for this flow, with a person) get past its first stages.
 	household, err := a.ensure(ctx, "/policies/expression/", policyHousehold, map[string]any{"name": policyHousehold, "expression": householdPerson})
 	if err != nil {
 		return err
 	}
-	// The one bind flow of LDAP's first part, which took any app's app password, is no flow of HomersLab's now: it goes,
+	// The one bind flow of LDAP's first part, which took any app's app password, is no flow of Homeward's now: it goes,
 	// before it could count as a login elsewhere (#204, part 2b).
 	if err := gone(a.api.call(ctx, http.MethodDelete, "/flows/instances/"+ldapOldFlow+"/", nil, nil)); err != nil {
 		return err
@@ -717,7 +717,7 @@ func (a *Authentik) Prepare(ctx context.Context, h idp.Household) error {
 			errs = append(errs, fmt.Errorf("authentik: the LDAP bind flow of %s: %w", obj, err))
 		}
 	}
-	// The LDAP outpost back to HomersLab's providers alone, each with its own application: orphaned providers are
+	// The LDAP outpost back to Homeward's providers alone, each with its own application: orphaned providers are
 	// removed.
 	if _, err := a.ldapTidy(ctx, true); err != nil {
 		errs = append(errs, err)
@@ -743,7 +743,7 @@ func guarded(model string) bool {
 	return model == loginStageModel || model == writeStageModel || strings.HasPrefix(model, authenticatorModels)
 }
 
-// loginsElsewhere is every flow but HomersLab's own two that signs a person in or sets something up for them, with
+// loginsElsewhere is every flow but Homeward's own two that signs a person in or sets something up for them, with
 // its stage bindings and the order a refusal must have there: just before the first stage that does, after whatever
 // it asks first (so it tells no one who isn't past a password that the person is the household's).
 func (a *Authentik) loginsElsewhere(ctx context.Context, signIn string) (map[string][]flowBinding, map[string]int, error) {
@@ -816,7 +816,7 @@ func (a *Authentik) refuseElsewhere(ctx context.Context, signIn, refusal, househ
 }
 
 // refusedElsewhere says whether every other flow that signs a person in or sets something up for them refuses the
-// household's people first, with HomersLab's own policy, unchanged.
+// household's people first, with Homeward's own policy, unchanged.
 func (a *Authentik) refusedElsewhere(ctx context.Context) (bool, error) {
 	refusal, err1 := find[struct {
 		PK string `json:"pk"`
@@ -861,7 +861,7 @@ func (a *Authentik) refusedElsewhere(ctx context.Context) (bool, error) {
 	return true, nil
 }
 
-// ensureBrand makes the brand of the sign-in's own name: the household's name, HomersLab's passkey-only sign-in, and
+// ensureBrand makes the brand of the sign-in's own name: the household's name, Homeward's passkey-only sign-in, and
 // no recovery flow.
 func (a *Authentik) ensureBrand(ctx context.Context, signIn string) error {
 	type brand struct {
@@ -877,7 +877,7 @@ func (a *Authentik) ensureBrand(ctx context.Context, signIn string) error {
 	if err != nil {
 		return err
 	}
-	// The brand of the sign-in's name, or else the one serving HomersLab's sign-in under another name; any other that
+	// The brand of the sign-in's name, or else the one serving Homeward's sign-in under another name; any other that
 	// serves it goes, so the sign-in has one name.
 	var have *brand
 	for _, b := range all {
@@ -1047,7 +1047,7 @@ func (a *Authentik) Credentials(ctx context.Context, username string) (idp.Crede
 		}
 	}
 	// A password: Authentik stamps password_change_date at every password set, and at the account's making, which
-	// sets none (HomersLab's people get an unusable one).
+	// sets none (Homeward's people get an unusable one).
 	var self struct {
 		Joined  time.Time `json:"date_joined"`
 		Changed time.Time `json:"password_change_date"`
@@ -1088,7 +1088,7 @@ func (a *Authentik) Credentials(ctx context.Context, username string) (idp.Crede
 	return out, nil
 }
 
-// EnrolmentLink mints an invitation for HomersLab's enrolment flow, for one person, single use, for
+// EnrolmentLink mints an invitation for Homeward's enrolment flow, for one person, single use, for
 // idp.EnrolmentLife. A new link ends the person's earlier ones.
 func (a *Authentik) EnrolmentLink(ctx context.Context, username string) (idp.Link, error) {
 	u, err := a.person(ctx, username)
@@ -1167,7 +1167,7 @@ func validRedirect(u string) bool {
 	}
 }
 
-// newClientSecret is a client's secret: 64 characters, which HomersLab makes and Authentik keeps.
+// newClientSecret is a client's secret: 64 characters, which Homeward makes and Authentik keeps.
 func newClientSecret() string {
 	b := make([]byte, 48)
 	_, _ = rand.Read(b)
@@ -1177,7 +1177,7 @@ func newClientSecret() string {
 // EnsureClient makes an app's confidential OIDC client and its application, which only the client's roles may open
 // (#20). A new client is made in one call, Authentik's transactional application API: the provider, the application
 // and the policy bindings that limit it to its audience, all or nothing. Its id is its slug, and its secret one
-// HomersLab makes. An existing one is brought in line in place, its id and secret kept.
+// Homeward makes. An existing one is brought in line in place, its id and secret kept.
 func (a *Authentik) EnsureClient(ctx context.Context, c idp.Client) (idp.ClientCredentials, error) {
 	if !strings.HasPrefix(c.Slug, "homerslab-") || len(c.RedirectURIs) == 0 || slices.ContainsFunc(c.RedirectURIs, func(u string) bool { return !validRedirect(u) }) {
 		return idp.ClientCredentials{}, errors.New("authentik: a client needs a homerslab- slug and exact https redirect addresses")
@@ -1258,7 +1258,7 @@ func (a *Authentik) EnsureClient(ctx context.Context, c idp.Client) (idp.ClientC
 		case err != nil:
 			return idp.ClientCredentials{}, err
 		}
-		// An application without its provider, from an older HomersLab: its provider is made, and the two put in line.
+		// An application without its provider, from an older Homeward: its provider is made, and the two put in line.
 		p = &provider{}
 		if err := a.api.call(ctx, http.MethodPost, "/providers/oauth2/", body, p); err != nil {
 			return idp.ClientCredentials{}, err
@@ -1408,7 +1408,7 @@ const RoleHeader = "X-Authentik-Homerslab-Role"
 // person is in directly, by their exact names, one of them or none. A group below a role's group (which its audience
 // counts) gives no role. Its scope sorts after ak_proxy, Authentik's own proxy mapping, which merges the person's and
 // their groups' attributes into the same additionalHeaders before it, so an attribute under RoleHeader's own name can't
-// stand in for it. An attribute under any other spelling of a header of Authentik's or HomersLab's (another case,
+// stand in for it. An attribute under any other spelling of a header of Authentik's or Homeward's (another case,
 // underscores) would: the outpost sets each, and the last one wins, even over X-Authentik-Uid (review round 2). So when
 // any is there, the mapping fails closed: it empties each of them and the role, and the edge refuses the person.
 const roleMapping = "HomersLab: the person's role at the edge"
@@ -1435,7 +1435,7 @@ func roleExpression() string {
 
 // EnsureGuard makes an app's guard: a proxy provider of its own in forward_single mode, at the app's one URL, its
 // application, which only the guard's roles may open, on Authentik's embedded outpost (#83: never forward_domain). Its
-// provider carries HomersLab's role mapping beside the ones Authentik gives every proxy provider.
+// provider carries Homeward's role mapping beside the ones Authentik gives every proxy provider.
 func (a *Authentik) EnsureGuard(ctx context.Context, g idp.Guard) error {
 	if u, err := url.Parse(g.URL); !strings.HasPrefix(g.Slug, "homerslab-") || err != nil || u.Scheme != "https" || u.Hostname() == "" ||
 		u.User != nil || u.Path != "" || u.RawQuery != "" || u.Fragment != "" || strings.Contains(u.Host, "*") {
@@ -1538,7 +1538,7 @@ func (a *Authentik) neverPK(ctx context.Context) (string, error) {
 		"expression": "# HomersLab: this flow applies to nobody.\nreturn False\n"})
 }
 
-// Report says what Authentik can do, as HomersLab finds it now.
+// Report says what Authentik can do, as Homeward finds it now.
 func (a *Authentik) Report(ctx context.Context) (idp.Report, error) {
 	var v struct {
 		Current string `json:"version_current"`
@@ -1548,7 +1548,7 @@ func (a *Authentik) Report(ctx context.Context) (idp.Report, error) {
 	}
 	r := idp.Report{Provider: "authentik", Version: v.Current, OIDC: true, ForwardAuth: true, LDAP: true}
 	// Authentik binds a passkey to the name a flow is served under, and checks the origin it is served at: for
-	// HomersLab's sign-in, that is the domain of the brand that serves it. The port is the edge's.
+	// Homeward's sign-in, that is the domain of the brand that serves it. The port is the edge's.
 	if f, err := a.flow(ctx, SignInFlow); err != nil {
 		return idp.Report{}, err
 	} else if f != nil {
@@ -1602,7 +1602,7 @@ func (a *Authentik) Report(ctx context.Context) (idp.Report, error) {
 		if err != nil {
 			return idp.Report{}, err
 		}
-		// Every bind flow of HomersLab's as it should be: one that isn't would take another password than its own app's.
+		// Every bind flow of Homeward's as it should be: one that isn't would take another password than its own app's.
 		objs, err := a.ldapFlows(ctx)
 		if err != nil {
 			return idp.Report{}, err
@@ -1615,7 +1615,7 @@ func (a *Authentik) Report(ctx context.Context) (idp.Report, error) {
 			}
 			ldap = ldap && ok
 		}
-		// A provider the outpost serves without HomersLab's application for it would bind people that application
+		// A provider the outpost serves without Homeward's application for it would bind people that application
 		// never let in.
 		tidy, err := a.ldapTidy(ctx, false)
 		if err != nil {

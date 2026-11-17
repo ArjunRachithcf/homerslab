@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/ArjunRachithcf/homerslab/internal/testenv"
+	"github.com/ArjunRachithcf/homeward/internal/testenv"
 )
 
 // managerSharePassword is a share's password, as the admin types it: it reaches the agent's sealed credential only.
@@ -124,7 +124,7 @@ func TestAPlanNamesTheStorageLocationAndApplyingBindsIt(t *testing.T) {
 		t.Fatalf("applying: %d %s", r.Code, r.Body)
 	}
 	// agenttest keeps the agent's state beside the machine's root.
-	o, err := os.ReadFile(filepath.Join(filepath.Dir(p.host.Root), "state", "apps", "bentopdf", "homerslab.yaml"))
+	o, err := os.ReadFile(filepath.Join(filepath.Dir(p.host.Root), "state", "apps", "bentopdf", "homeward.yaml"))
 	if err != nil || !strings.Contains(string(o), "        source: \"/srv/documents\"\n        target: \"/pdfs\"\n        read_only: true\n") {
 		t.Errorf("the app's compose file: %v\n%s", err, o)
 	}

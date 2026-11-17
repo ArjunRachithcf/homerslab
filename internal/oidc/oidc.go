@@ -1,4 +1,4 @@
-// Package oidc is the relying party side of OpenID Connect that HomersLab's own surfaces use to sign people in with
+// Package oidc is the relying party side of OpenID Connect that Homeward's own surfaces use to sign people in with
 // the household account: the authorization code flow with PKCE, a state and a nonce, and the ID token checked here
 // (its signature from the issuer's keys, the issuer, the audience, its lifetime and the nonce) before anything in it
 // is believed. Admin is the first such client (#17).
@@ -29,7 +29,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/ArjunRachithcf/homerslab/internal/mesh"
+	"github.com/ArjunRachithcf/homeward/internal/mesh"
 )
 
 // Client is one relying party: its credentials at the issuer, and where the issuer sends people back.
@@ -171,7 +171,7 @@ func (c Client) AuthorizeURL(e Endpoints, a Attempt) string {
 	return e.Authorize + sep + v.Encode()
 }
 
-// Claims are what HomersLab takes from a verified ID token.
+// Claims are what Homeward takes from a verified ID token.
 type Claims struct {
 	Subject  string    `json:"sub"`
 	Username string    `json:"preferred_username"`

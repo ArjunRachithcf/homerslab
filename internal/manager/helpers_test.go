@@ -22,11 +22,11 @@ import (
 	"testing/fstest"
 	"time"
 
-	"github.com/ArjunRachithcf/homerslab/internal/agent"
-	"github.com/ArjunRachithcf/homerslab/internal/agent/agenttest"
-	"github.com/ArjunRachithcf/homerslab/internal/lan"
-	"github.com/ArjunRachithcf/homerslab/internal/manager"
-	"github.com/ArjunRachithcf/homerslab/internal/manager/setup"
+	"github.com/ArjunRachithcf/homeward/internal/agent"
+	"github.com/ArjunRachithcf/homeward/internal/agent/agenttest"
+	"github.com/ArjunRachithcf/homeward/internal/lan"
+	"github.com/ArjunRachithcf/homeward/internal/manager"
+	"github.com/ArjunRachithcf/homeward/internal/manager/setup"
 )
 
 // The addresses a request can come from.

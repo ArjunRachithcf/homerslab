@@ -22,8 +22,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/ArjunRachithcf/homerslab/internal/mesh"
-	"github.com/ArjunRachithcf/homerslab/internal/oidc"
+	"github.com/ArjunRachithcf/homeward/internal/mesh"
+	"github.com/ArjunRachithcf/homeward/internal/oidc"
 )
 
 // Home's cookies are __Host- prefixed: Secure, Path=/, no Domain, so no app of the household, same-site with Home, can

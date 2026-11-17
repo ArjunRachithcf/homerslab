@@ -14,14 +14,14 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ArjunRachithcf/homerslab/internal/idp"
-	"github.com/ArjunRachithcf/homerslab/internal/idp/webauthntest"
-	"github.com/ArjunRachithcf/homerslab/internal/oidc"
+	"github.com/ArjunRachithcf/homeward/internal/idp"
+	"github.com/ArjunRachithcf/homeward/internal/idp/webauthntest"
+	"github.com/ArjunRachithcf/homeward/internal/oidc"
 )
 
 // World is a provider in containers, as a contract test builds it.
 type World interface {
-	// Provider is the adapter, with HomersLab's own token, for Household.
+	// Provider is the adapter, with Homeward's own token, for Household.
 	Provider() idp.Provider
 	Household() idp.Household
 	// Browser is a new browser, with its own cookies, on the sign-in's origin, holding the passkeys of a.
@@ -31,7 +31,7 @@ type World interface {
 	FirstAdmin(t *testing.T) []string
 	// Expire makes every outstanding enrolment link of the person expire now, as the clock passing would.
 	Expire(t *testing.T, username string)
-	// Drift changes HomersLab's sign-in behind its back, as an admin in the provider's own console could: user
+	// Drift changes Homeward's sign-in behind its back, as an admin in the provider's own console could: user
 	// verification relaxed to "preferred" on its passkey stages, the sign-in served under another name, and the
 	// provider's own sign-in open to the household's people again.
 	Drift(t *testing.T)
@@ -510,7 +510,7 @@ func Run(t *testing.T, w World, version string) {
 			t.Error("a sign-in to the deleted client sent a code")
 		}
 		if err := p.DeleteClient(ctx, "authentik"); err == nil {
-			t.Error("deleted a client that isn't HomersLab's")
+			t.Error("deleted a client that isn't Homeward's")
 		}
 		if _, err := signIn(t, phone, "ines"); err != nil {
 			t.Errorf("Admin's client, after an app's was deleted: %v", err)

@@ -27,13 +27,13 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/ArjunRachithcf/homerslab/internal/atomicfile"
-	"github.com/ArjunRachithcf/homerslab/internal/engine"
-	"github.com/ArjunRachithcf/homerslab/internal/engine/compose"
-	"github.com/ArjunRachithcf/homerslab/internal/firewall"
-	"github.com/ArjunRachithcf/homerslab/internal/host"
-	"github.com/ArjunRachithcf/homerslab/internal/lan"
-	"github.com/ArjunRachithcf/homerslab/internal/node"
+	"github.com/ArjunRachithcf/homeward/internal/atomicfile"
+	"github.com/ArjunRachithcf/homeward/internal/engine"
+	"github.com/ArjunRachithcf/homeward/internal/engine/compose"
+	"github.com/ArjunRachithcf/homeward/internal/firewall"
+	"github.com/ArjunRachithcf/homeward/internal/host"
+	"github.com/ArjunRachithcf/homeward/internal/lan"
+	"github.com/ArjunRachithcf/homeward/internal/node"
 )
 
 // Sysroot is the system root the agent reads its facts from: "/" on a real machine.
@@ -138,6 +138,7 @@ type Agent struct {
 	restoringApps              map[string]bool  // apps being restored, under mu: never installed meanwhile
 	edgeDown                   string           // the edge's last check's error, so a down edge is logged once
 	ldapsDown                  string           // the LDAPS port's likewise
+	renameDown                 string           // why the units couldn't be written under Homeward's names (#250)
 	// ldapsReseal: a sealing of the LDAPS port's copy failed, so the next ldapsFollow seals the edge's again;
 	// ldapsVerify: one succeeded, and its pair isn't checked yet. The steady state unseals nothing (#246's review).
 	ldapsReseal, ldapsVerify bool
@@ -199,6 +200,11 @@ func readState(dir string) (state, error) {
 	}
 	if err := json.Unmarshal(b, &s); err != nil {
 		return state{}, fmt.Errorf("%s: %w: %w", StateFile, errUnparsable, err)
+	}
+	for _, app := range s.Apps {
+		for i, m := range app.Mounts {
+			app.Mounts[i] = renamedMount(m)
+		}
 	}
 	if len(s.OldBridges) > 0 && s.Bridges == nil {
 		s.Bridges = map[string][]string{docker: s.OldBridges}
@@ -316,7 +322,7 @@ func New(ctx context.Context, c Config) (*Agent, error) {
 		s, err := a.readStateWaiting(ctx)
 		switch {
 		case errors.Is(err, errUnparsable):
-			// Starting anyway, and saying so, rather than failing again at every restart: the table homerslab-firewall-
+			// Starting anyway, and saying so, rather than failing again at every restart: the table homeward-firewall-
 			// restore loaded at boot stays as it is. The file is put aside before anything is saved over it.
 			a.log.Error("the agent's state is lost: it starts without it, and leaves the firewall table as boot loaded it", "err", err)
 			a.stateErr, a.brokenFile = err, true
@@ -528,6 +534,7 @@ func (a *Agent) Watch(ctx context.Context) {
 			if err := a.checkMeshSockets(ctx, false); err != nil {
 				a.log.Error("checking the mesh clients' control sockets", "err", err)
 			}
+			a.followRename(ctx)
 			a.check(ctx)
 		}
 	}
@@ -683,7 +690,7 @@ func Serve(ctx context.Context, c Config) error {
 	served := make(chan error, 1)
 	go func() { served <- serveUntil(ctx, srv, ln) }()
 	// Nothing before READY asks an engine or waits on a systemd job: the engines start after the table is restored
-	// (homerslab-firewall-restore), and a socket-activated engine would otherwise wait for the agent.
+	// (homeward-firewall-restore), and a socket-activated engine would otherwise wait for the agent.
 	// Ready only once the table is in place: systemd starts the network, the engines and the mesh client after this.
 	watched := make(chan struct{})
 	if err := a.waitForTable(ctx); err == nil {
@@ -894,7 +901,7 @@ func execOnlyDir(was string) (string, error) {
 			return dir, nil
 		}
 	}
-	dir, err := os.MkdirTemp("", "homerslab-reader-")
+	dir, err := os.MkdirTemp("", "homeward-reader-")
 	if err != nil {
 		return "", err
 	}
@@ -1016,7 +1023,7 @@ func newReads(exe string) *reads {
 	return &reads{slot: make(chan struct{}, 1), live: make(chan struct{}, maxLiveReads), exe: exe}
 }
 
-// readCredential is who a read's child runs as: when the agent is root, homerslab-read (readUser) with no groups, or
+// readCredential is who a read's child runs as: when the agent is root, homeward-read (readUser) with no groups, or
 // errNoReadUser, so that the agent refuses to read rather than run the child as anyone else, and an error where the
 // child would start dumpable (execOnlyHolds); otherwise nil, the agent's own user.
 func readCredential() (*syscall.Credential, error) {
@@ -1077,7 +1084,7 @@ func (c controlEnds) Close() error {
 
 // childDir is a read's own empty folder, owned by the user its child runs as, cred (readCredential) if not nil.
 func childDir(cred *syscall.Credential) (string, error) {
-	dir, err := os.MkdirTemp("", "homerslab-read-")
+	dir, err := os.MkdirTemp("", "homeward-read-")
 	if err != nil {
 		return "", err
 	}

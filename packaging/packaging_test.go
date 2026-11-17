@@ -8,9 +8,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/ArjunRachithcf/homerslab/internal/agent"
-	"github.com/ArjunRachithcf/homerslab/internal/idp/authentik"
-	"github.com/ArjunRachithcf/homerslab/internal/testenv"
+	"github.com/ArjunRachithcf/homeward/internal/agent"
+	"github.com/ArjunRachithcf/homeward/internal/idp/authentik"
+	"github.com/ArjunRachithcf/homeward/internal/testenv"
 )
 
 // unit reads a systemd unit's [Service] settings.
@@ -51,19 +51,19 @@ func one(t *testing.T, u map[string][]string, k string) string {
 	return u[k][0]
 }
 
-// The one binary runs twice on the primary: the manager as the unprivileged homerslab user, the agent as root.
+// The one binary runs twice on the primary: the manager as the unprivileged homeward user, the agent as root.
 func TestTheManagerRunsUnprivilegedAndTheAgentAsRoot(t *testing.T) {
 	testenv.Isolate(t)
-	manager, agent := unit(t, "homerslab-manager.service"), unit(t, "homerslab-agent.service")
+	manager, agent := unit(t, "homeward-manager.service"), unit(t, "homeward-agent.service")
 
-	if got := one(t, manager, "ExecStart"); got != "/usr/bin/homerslab manager" {
+	if got := one(t, manager, "ExecStart"); got != "/usr/bin/homeward manager" {
 		t.Errorf("manager ExecStart = %q", got)
 	}
-	if got := one(t, agent, "ExecStart"); got != "/usr/bin/homerslab agent" {
+	if got := one(t, agent, "ExecStart"); got != "/usr/bin/homeward agent" {
 		t.Errorf("agent ExecStart = %q", got)
 	}
-	if one(t, manager, "User") != "homerslab" || one(t, manager, "Group") != "homerslab" {
-		t.Errorf("the manager runs as %v:%v, want homerslab", manager["User"], manager["Group"])
+	if one(t, manager, "User") != "homeward" || one(t, manager, "Group") != "homeward" {
+		t.Errorf("the manager runs as %v:%v, want homeward", manager["User"], manager["Group"])
 	}
 	for _, k := range []string{"NoNewPrivileges", "ProtectSystem", "ProtectHome", "PrivateTmp", "PrivateDevices", "CapabilityBoundingSet", "UMask"} {
 		if len(manager[k]) == 0 {
@@ -85,7 +85,7 @@ func TestTheManagerRunsUnprivilegedAndTheAgentAsRoot(t *testing.T) {
 		"ProtectKernelTunables": "yes", "ProtectControlGroups": "yes", "RestrictSUIDSGID": "yes",
 		"CapabilityBoundingSet": "CAP_CHOWN CAP_NET_ADMIN CAP_SETUID CAP_SETGID", "RestrictAddressFamilies": "AF_UNIX AF_NETLINK AF_INET AF_INET6",
 		"PrivateNetwork": "no", "SystemCallFilter": "@system-service", "SystemCallErrorNumber": "EPERM",
-		"MemoryDenyWriteExecute": "yes", "LockPersonality": "yes", "StateDirectory": "homerslab-agent",
+		"MemoryDenyWriteExecute": "yes", "LockPersonality": "yes", "StateDirectory": "homeward-agent",
 		"StateDirectoryMode": "0700", "Type": "notify", "NotifyAccess": "main", "ExecStartPre": "+/usr/bin/systemd-creds setup", "TimeoutStartSec": "30s",
 		"DevicePolicy": "closed", "DeviceAllow": "/dev/tpmrm0 rw", "PrivateIPC": "yes", "ProtectProc": "invisible",
 		"RestrictNamespaces": "yes", "RestrictRealtime": "yes",
@@ -94,7 +94,7 @@ func TestTheManagerRunsUnprivilegedAndTheAgentAsRoot(t *testing.T) {
 		// A read's child killed for memory is the child's end, not the agent's.
 		"OOMPolicy": "continue",
 		// The exec-only copy of the agent its reads run, which their user may enter but not list (#190).
-		"CacheDirectory": "homerslab-agent", "CacheDirectoryMode": "0711"} {
+		"CacheDirectory": "homeward-agent", "CacheDirectoryMode": "0711"} {
 		if got := agent[k]; len(got) != 1 || got[0] != want {
 			t.Errorf("the agent's %s = %v, want %s", k, got, want)
 		}
@@ -112,9 +112,9 @@ func TestTheManagerRunsUnprivilegedAndTheAgentAsRoot(t *testing.T) {
 	}
 
 	// The agent orders itself against nothing of the engines' or the network's (a socket-activated engine would wait
-	// for it, and it for the engine): homerslab-firewall-restore loads the table before them instead.
-	agentUnit, _ := os.ReadFile("systemd/homerslab-agent.service")
-	for _, want := range []string{"\nWants=homerslab-firewall-restore.service\n", "\nAfter=homerslab-firewall-restore.service\n", "\nBefore=homerslab-manager.service\n"} {
+	// for it, and it for the engine): homeward-firewall-restore loads the table before them instead.
+	agentUnit, _ := os.ReadFile("systemd/homeward-agent.service")
+	for _, want := range []string{"\nWants=homeward-firewall-restore.service\n", "\nAfter=homeward-firewall-restore.service\n", "\nBefore=homeward-manager.service\n"} {
 		if !strings.Contains(string(agentUnit), want) {
 			t.Errorf("the agent's unit lacks %q", strings.TrimSpace(want))
 		}
@@ -125,21 +125,21 @@ func TestTheManagerRunsUnprivilegedAndTheAgentAsRoot(t *testing.T) {
 		}
 	}
 	for _, u := range []string{"docker", "podman", "netbird"} {
-		b, err := os.ReadFile("systemd/" + u + ".service.d/05-homerslab-firewall.conf")
-		if err != nil || !strings.Contains(string(b), "\n[Unit]\nRequires=homerslab-firewall-restore.service\nAfter=homerslab-firewall-restore.service\n") {
+		b, err := os.ReadFile("systemd/" + u + ".service.d/05-homeward-firewall.conf")
+		if err != nil || !strings.Contains(string(b), "\n[Unit]\nRequires=homeward-firewall-restore.service\nAfter=homeward-firewall-restore.service\n") {
 			t.Errorf("%s doesn't require the restored table: %v", u, err)
 		}
 	}
-	if b, err := os.ReadFile("tmpfiles.d/homerslab.conf"); err != nil || !strings.Contains(string(b), "d /etc/systemd/system/netbird.service.d 0755 root root -") {
+	if b, err := os.ReadFile("tmpfiles.d/homeward.conf"); err != nil || !strings.Contains(string(b), "d /etc/systemd/system/netbird.service.d 0755 root root -") {
 		t.Errorf("tmpfiles.d doesn't make the folder for NetBird's drop-in: %v", err)
 	}
 
-	sysusers, err := os.ReadFile("sysusers.d/homerslab.conf")
-	if err != nil || !strings.Contains(string(sysusers), "u homerslab ") {
-		t.Errorf("sysusers.d/homerslab.conf should create the homerslab user: %v %q", err, sysusers)
+	sysusers, err := os.ReadFile("sysusers.d/homeward.conf")
+	if err != nil || !strings.Contains(string(sysusers), "u homeward ") {
+		t.Errorf("sysusers.d/homeward.conf should create the homeward user: %v %q", err, sysusers)
 	}
 	// The agent's compose reads run as a user of their own, never the shared nobody (#183): no home, no login.
-	if !strings.Contains(string(sysusers), "\nu homerslab-read 60602:homerslab-read \"HomersLab compose reads\" / /usr/sbin/nologin\n") {
+	if !strings.Contains(string(sysusers), "\nu homeward-read 60602:homeward-read \"Homeward compose reads\" / /usr/sbin/nologin\n") {
 		t.Errorf("sysusers.d doesn't make the reads' own user:\n%s", sysusers)
 	}
 }
@@ -153,7 +153,7 @@ func unitSection(unit, name string) string {
 // The firewall table is loaded at boot before the network, by a oneshot the engines require.
 func TestTheFirewallTableIsRestoredBeforeTheNetwork(t *testing.T) {
 	testenv.Isolate(t)
-	b, err := os.ReadFile("systemd/homerslab-firewall-restore.service")
+	b, err := os.ReadFile("systemd/homeward-firewall-restore.service")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -164,8 +164,8 @@ func TestTheFirewallTableIsRestoredBeforeTheNetwork(t *testing.T) {
 			t.Errorf("[Unit] lacks %q", want)
 		}
 	}
-	svc := unit(t, "homerslab-firewall-restore.service")
-	for k, want := range map[string]string{"Type": "oneshot", "RemainAfterExit": "yes", "ExecStart": "/usr/bin/homerslab firewall restore",
+	svc := unit(t, "homeward-firewall-restore.service")
+	for k, want := range map[string]string{"Type": "oneshot", "RemainAfterExit": "yes", "ExecStart": "/usr/bin/homeward firewall restore",
 		"CapabilityBoundingSet": "CAP_NET_ADMIN", "PrivateNetwork": "no"} {
 		if got := one(t, svc, k); got != want {
 			t.Errorf("%s = %q, want %q", k, got, want)
@@ -182,8 +182,8 @@ func TestTheFirewallTableIsRestoredBeforeTheNetwork(t *testing.T) {
 // The agent may write that drop-in and nothing else of it (agent.RootWrites).
 func TestTheSignInIsOneUnitRunningTheStandardComposeCommand(t *testing.T) {
 	testenv.Isolate(t)
-	u := unit(t, "homerslab-authentik.service")
-	const file = "--file /usr/share/homerslab/sign-in/authentik.compose.yaml"
+	u := unit(t, "homeward-authentik.service")
+	const file = "--file /usr/share/homeward/sign-in/authentik.compose.yaml"
 	// One container that stops ends the command, and systemd starts it again (the contract test checks the command
 	// against the real containers).
 	if s := one(t, u, "ExecStart"); s != "/usr/bin/docker compose --project-name homerslab-authentik "+file+" up --no-log-prefix --quiet-pull --abort-on-container-exit" {
@@ -192,7 +192,7 @@ func TestTheSignInIsOneUnitRunningTheStandardComposeCommand(t *testing.T) {
 	if one(t, u, "SuccessExitStatus") != "130" {
 		t.Errorf("SuccessExitStatus=%v, want 130: systemctl stop leaves the unit failed otherwise", u["SuccessExitStatus"])
 	}
-	if s := one(t, u, "RuntimeDirectory"); s != "homerslab-authentik" || one(t, u, "RuntimeDirectoryMode") != "0700" {
+	if s := one(t, u, "RuntimeDirectory"); s != "homeward-authentik" || one(t, u, "RuntimeDirectoryMode") != "0700" {
 		t.Errorf("the secrets' folder: %s %s", s, u["RuntimeDirectoryMode"])
 	}
 	if one(t, u, "Restart") != "always" {
@@ -203,7 +203,7 @@ func TestTheSignInIsOneUnitRunningTheStandardComposeCommand(t *testing.T) {
 			t.Errorf("%s=%v in the packaged unit: secrets come from the agent's drop-in, and Docker must see them (no mount sandboxing)", k, u[k])
 		}
 	}
-	if c := section(t, "homerslab-authentik.service", "[Unit]")["ConditionPathExists"]; len(c) != 1 || c[0] != "/etc/systemd/system/homerslab-authentik.service.d/50-homerslab-credentials.conf" {
+	if c := section(t, "homeward-authentik.service", "[Unit]")["ConditionPathExists"]; len(c) != 1 || c[0] != "/etc/systemd/system/homeward-authentik.service.d/50-homeward-credentials.conf" {
 		t.Errorf("ConditionPathExists=%v, want the agent's drop-in", c)
 	}
 	b, err := os.ReadFile("sign-in/authentik.compose.yaml")
@@ -233,14 +233,14 @@ func TestTheSignInIsOneUnitRunningTheStandardComposeCommand(t *testing.T) {
 	if strings.Count(compose, `restart: "no"`) != 3 { // the anchor, PostgreSQL, and the LDAP outpost
 		t.Errorf("not every service has its engine restart policy off")
 	}
-	tmp, _ := os.ReadFile("tmpfiles.d/homerslab.conf")
-	if !strings.Contains(string(tmp), "d /etc/systemd/system/homerslab-authentik.service.d 0755 root root -") {
+	tmp, _ := os.ReadFile("tmpfiles.d/homeward.conf")
+	if !strings.Contains(string(tmp), "d /etc/systemd/system/homeward-authentik.service.d 0755 root root -") {
 		t.Error("tmpfiles.d doesn't make the folder for the sign-in's drop-in")
 	}
-	if rw := strings.Join(unit(t, "homerslab-agent.service")["ReadWritePaths"], " "); !strings.Contains(rw, "/etc/systemd/system/homerslab-authentik.service.d") {
+	if rw := strings.Join(unit(t, "homeward-agent.service")["ReadWritePaths"], " "); !strings.Contains(rw, "/etc/systemd/system/homeward-authentik.service.d") {
 		t.Errorf("the agent can't write the sign-in's drop-in: ReadWritePaths=%s", rw)
 	}
-	if !slices.Contains(agent.RootWrites, "etc/systemd/system/homerslab-authentik.service.d") {
+	if !slices.Contains(agent.RootWrites, "etc/systemd/system/homeward-authentik.service.d") {
 		t.Error("agent.RootWrites lacks the sign-in's drop-in folder")
 	}
 }
@@ -252,7 +252,7 @@ func TestTheSignInIsOneUnitRunningTheStandardComposeCommand(t *testing.T) {
 // DynamicUser's (61184–65519), nobody, and the ranges rootless engines map containers to.
 func TestThePackagesUsersHaveFixedIDsOutsideAppImages(t *testing.T) {
 	testenv.Isolate(t)
-	b, err := os.ReadFile("sysusers.d/homerslab.conf")
+	b, err := os.ReadFile("sysusers.d/homeward.conf")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -267,7 +267,7 @@ func TestThePackagesUsersHaveFixedIDsOutsideAppImages(t *testing.T) {
 		}
 	}
 	seen := map[string]string{}
-	for _, name := range []string{"homerslab", "homerslab-edge", "homerslab-read", "homerslab-home", "homerslab-ldaps"} {
+	for _, name := range []string{"homeward", "homeward-edge", "homeward-read", "homeward-home", "homeward-ldaps"} {
 		gid, id := groups[name], users[name]
 		// A user's own group, made first with the same fixed ID: "uid:group", so sysusers never picks another gid.
 		if id != gid+":"+name {
@@ -284,7 +284,7 @@ func TestThePackagesUsersHaveFixedIDsOutsideAppImages(t *testing.T) {
 		seen[gid] = name
 	}
 	// The agent refuses a read user with any other ids than these.
-	if want := strconv.Itoa(agent.ReadID); groups["homerslab-read"] != want {
-		t.Errorf("homerslab-read's gid is %q, the agent's ReadID %s", groups["homerslab-read"], want)
+	if want := strconv.Itoa(agent.ReadID); groups["homeward-read"] != want {
+		t.Errorf("homeward-read's gid is %q, the agent's ReadID %s", groups["homeward-read"], want)
 	}
 }

@@ -4,10 +4,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ArjunRachithcf/homerslab/internal/testenv"
+	"github.com/ArjunRachithcf/homeward/internal/testenv"
 )
 
-// The first admin's username is their mail address's local part, never one of the provider's or HomersLab's own
+// The first admin's username is their mail address's local part, never one of the provider's or Homeward's own
 // accounts (review of #17).
 func TestTheFirstAdminsUsernameIsNeverAReservedOne(t *testing.T) {
 	testenv.Isolate(t)

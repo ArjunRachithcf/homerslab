@@ -2,7 +2,7 @@ package certs_test
 
 // The DNS provider contract suite: a test ACME CA (Pebble) and a test DNS server (BIND, through libdns's RFC 2136
 // provider), in containers (testdata/compose.yaml, compose project hltest-16). It needs Docker: it runs when
-// HOMERSLAB_TEST_DOCKER_HOST names the engine to use, and is skipped otherwise. The code under test never sees that
+// HOMEWARD_TEST_DOCKER_HOST names the engine to use, and is skipped otherwise. The code under test never sees that
 // engine (testenv points DOCKER_HOST at nowhere); only this harness does, explicitly.
 //
 // The suite runs on the world's primary: the harness copies this test binary into that container and runs
@@ -36,10 +36,10 @@ import (
 	"github.com/libdns/libdns"
 	mdns "github.com/miekg/dns"
 
-	"github.com/ArjunRachithcf/homerslab/internal/certs"
-	"github.com/ArjunRachithcf/homerslab/internal/dns"
-	"github.com/ArjunRachithcf/homerslab/internal/mesh"
-	"github.com/ArjunRachithcf/homerslab/internal/testenv"
+	"github.com/ArjunRachithcf/homeward/internal/certs"
+	"github.com/ArjunRachithcf/homeward/internal/dns"
+	"github.com/ArjunRachithcf/homeward/internal/mesh"
+	"github.com/ArjunRachithcf/homeward/internal/testenv"
 )
 
 const project = "hltest-16"
@@ -53,9 +53,9 @@ const (
 
 func TestTheDNSProviderContract(t *testing.T) {
 	testenv.Isolate(t)
-	engine := os.Getenv("HOMERSLAB_TEST_DOCKER_HOST")
+	engine := os.Getenv("HOMEWARD_TEST_DOCKER_HOST")
 	if engine == "" || os.Getenv("HLTEST16_INSIDE") == "1" {
-		t.Skip("set HOMERSLAB_TEST_DOCKER_HOST to the engine for the contract suite's containers")
+		t.Skip("set HOMEWARD_TEST_DOCKER_HOST to the engine for the contract suite's containers")
 	}
 	w := up(t, engine)
 	self, err := os.Executable()
@@ -135,7 +135,7 @@ func TestTheDNSProviderContractOnThePrimary(t *testing.T) {
 		}
 	})
 
-	t.Run("only HomersLab's own records are written, and an inventory lists them", func(t *testing.T) {
+	t.Run("only Homeward's own records are written, and an inventory lists them", func(t *testing.T) {
 		o, _ := open(t, tsig, theBook)
 		if err := o.Create(ctx, dns.Record{Name: "www", Type: "TXT", Value: "beside a CNAME"}); !errors.Is(err, dns.ErrTaken) {
 			t.Errorf("a TXT beside the household's CNAME: %v, want ErrTaken", err)
@@ -146,7 +146,7 @@ func TestTheDNSProviderContractOnThePrimary(t *testing.T) {
 		if free, err := o.Free(ctx, "photos"); err != nil || !free {
 			t.Errorf("photos is free in the provider's listing: %v %v (the wildcard answers it in DNS)", free, err)
 		}
-		// A CNAME that is already HomersLab's is created again as a no-op (#171).
+		// A CNAME that is already Homeward's is created again as a no-op (#171).
 		photos := dns.Record{Name: "photos", Type: "CNAME", Value: "proxy.cluster.test.", TTL: time.Minute}
 		for range 2 {
 			if err := o.Create(ctx, photos); err != nil {
@@ -182,7 +182,7 @@ func TestTheDNSProviderContractOnThePrimary(t *testing.T) {
 			}
 		}
 		if hasRR(recs, "_homerslab", "TXT") || hasRR(recs, "_acme-challenge", "TXT") {
-			t.Errorf("HomersLab's records stayed: %v", recs)
+			t.Errorf("Homeward's records stayed: %v", recs)
 		}
 	})
 
@@ -194,7 +194,7 @@ func TestTheDNSProviderContractOnThePrimary(t *testing.T) {
 		if err := o.Create(ctx, r); err != nil {
 			t.Fatal(err)
 		}
-		// Behind HomersLab's back, straight at BIND.
+		// Behind Homeward's back, straight at BIND.
 		if _, err := o.Provider.DeleteRecords(ctx, "example.test.", []libdns.Record{libdns.RR{Name: r.Name, Type: r.Type, Data: r.Value}}); err != nil {
 			t.Fatal(err)
 		}
@@ -209,7 +209,7 @@ func TestTheDNSProviderContractOnThePrimary(t *testing.T) {
 		}
 		recs, _ := o.Provider.GetRecords(ctx, "example.test.")
 		if hasRR(recs, "_homerslab", "TXT") || hasRR(recs, "_acme-challenge", "TXT") {
-			t.Errorf("HomersLab's records stayed: %v", recs)
+			t.Errorf("Homeward's records stayed: %v", recs)
 		}
 	})
 
@@ -245,7 +245,7 @@ func TestTheDNSProviderContractOnThePrimary(t *testing.T) {
 				t.Errorf("after an empty listing %v: the delete %v, at the provider %v, in the book %v; want ErrNotDeleted, there and kept",
 					emptyFirst, err, there, inBook)
 			}
-			// Once it is gone (by hand), the next delete drops it from the book, and nothing of HomersLab's is left.
+			// Once it is gone (by hand), the next delete drops it from the book, and nothing of Homeward's is left.
 			update(t, tsig, []mdns.RR{split}, nil)
 			if err := o.Delete(ctx, r); err != nil {
 				t.Errorf("the delete once the record is gone: %v", err)
@@ -254,7 +254,7 @@ func TestTheDNSProviderContractOnThePrimary(t *testing.T) {
 				t.Errorf("the book still lists %v", kept)
 			}
 			if recs, _ := p.GetRecords(ctx, "example.test."); hasRR(recs, "_homerslab", "TXT") || hasRR(recs, "_acme-challenge", "TXT") {
-				t.Errorf("HomersLab's records stayed: %v", recs)
+				t.Errorf("Homeward's records stayed: %v", recs)
 			}
 		}
 	})
@@ -429,7 +429,7 @@ func update(t *testing.T, tsig mesh.Secret, remove, insert []mdns.RR) {
 	}
 }
 
-// book is the manager's list of HomersLab's records, in memory.
+// book is the manager's list of Homeward's records, in memory.
 type book struct {
 	mu   sync.Mutex
 	recs map[string][]dns.Record

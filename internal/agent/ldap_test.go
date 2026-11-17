@@ -10,11 +10,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ArjunRachithcf/homerslab/internal/agent"
-	"github.com/ArjunRachithcf/homerslab/internal/agent/agenttest"
-	"github.com/ArjunRachithcf/homerslab/internal/appunit"
-	"github.com/ArjunRachithcf/homerslab/internal/catalog"
-	"github.com/ArjunRachithcf/homerslab/internal/testenv"
+	"github.com/ArjunRachithcf/homeward/internal/agent"
+	"github.com/ArjunRachithcf/homeward/internal/agent/agenttest"
+	"github.com/ArjunRachithcf/homeward/internal/appunit"
+	"github.com/ArjunRachithcf/homeward/internal/catalog"
+	"github.com/ArjunRachithcf/homeward/internal/testenv"
 )
 
 // outpostToken stands in for the LDAP outpost's token, which the manager hands the agent inward only.
@@ -22,7 +22,7 @@ const outpostToken = "OUTPOST-TOKEN-PLACEHOLDER-0123456789abcdefghijklmnop"
 
 // withLDAPS is the machine's users, the LDAPS port's among them.
 func withLDAPS(name string) (uint32, bool) {
-	uid, ok := map[string]uint32{"homerslab-edge": 981, "homerslab": 980, "homerslab-home": 982, "homerslab-ldaps": 60604}[name]
+	uid, ok := map[string]uint32{"homeward-edge": 981, "homeward": 980, "homeward-home": 982, "homeward-ldaps": 60604}[name]
 	return uid, ok
 }
 
@@ -70,9 +70,9 @@ func lastRan(h *agenttest.Host, line string) int {
 func TestAnLDAPAppBindsAtTheSignInsLDAPSPortFromItsOwnNetworkAlone(t *testing.T) {
 	testenv.Isolate(t)
 	sock, h, state := signedIn(t, agent.Config{Users: withLDAPS})
-	dropIn := filepath.Join(h.Root, "etc/systemd/system/homerslab-ldaps.service.d/50-homerslab-certificates.conf")
+	dropIn := filepath.Join(h.Root, "etc/systemd/system/homeward-ldaps.service.d/50-homeward-certificates.conf")
 	install(t, sock, "bentopdf", bentoPDF(t))
-	if _, err := os.Stat(dropIn); err == nil || h.Ran("systemctl enable --now homerslab-ldaps.socket") >= 0 {
+	if _, err := os.Stat(dropIn); err == nil || h.Ran("systemctl enable --now homeward-ldaps.socket") >= 0 {
 		t.Error("the LDAPS port, before any app signs in over LDAP")
 	}
 	if table, _ := h.Table(); strings.Contains(table, ". 636 }") {
@@ -84,7 +84,7 @@ func TestAnLDAPAppBindsAtTheSignInsLDAPSPortFromItsOwnNetworkAlone(t *testing.T)
 		t.Fatalf("the LDAP app: %+v", s)
 	}
 	dir := filepath.Join(state, "apps", "books")
-	o, _ := os.ReadFile(filepath.Join(dir, "homerslab.yaml"))
+	o, _ := os.ReadFile(filepath.Join(dir, "homeward.yaml"))
 	for k, v := range map[string]string{"LDAP_URL": "ldaps://auth.example.test:636", "LDAP_HOST": "auth.example.test", "LDAP_PORT": "636",
 		"LDAP_BASE_DN": "dc=books,dc=homerslab", "LDAP_USER_DN": "cn=%s,ou=users,dc=books,dc=homerslab",
 		"LDAP_ADMIN_GROUP": "cn=homerslab-admins,ou=groups,dc=books,dc=homerslab"} {
@@ -101,7 +101,7 @@ func TestAnLDAPAppBindsAtTheSignInsLDAPSPortFromItsOwnNetworkAlone(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"Environment=HOMERSLAB_SIGN_IN=auth.example.test\n",
+	for _, want := range []string{"Environment=HOMEWARD_SIGN_IN=auth.example.test\n",
 		"LoadCredentialEncrypted=tls.crt:" + filepath.Join(state, "ldaps", "tls.crt.cred") + "\n",
 		"LoadCredentialEncrypted=tls.key:" + filepath.Join(state, "ldaps", "tls.key.cred") + "\n"} {
 		if !strings.Contains(string(d), want) {
@@ -119,7 +119,7 @@ func TestAnLDAPAppBindsAtTheSignInsLDAPSPortFromItsOwnNetworkAlone(t *testing.T)
 			t.Errorf("sealed for the LDAPS port under another name: %s", c)
 		}
 	}
-	if reload, enable := lastRan(h, "systemctl daemon-reload"), h.Ran("systemctl enable --now homerslab-ldaps.socket"); enable < 0 || reload > enable {
+	if reload, enable := lastRan(h, "systemctl daemon-reload"), h.Ran("systemctl enable --now homeward-ldaps.socket"); enable < 0 || reload > enable {
 		t.Errorf("reload %d, socket enabled %d", reload, enable)
 	}
 
@@ -151,9 +151,9 @@ func TestAnLDAPAppBindsAtTheSignInsLDAPSPortFromItsOwnNetworkAlone(t *testing.T)
 	}
 
 	// Installed again, nothing of the LDAPS port changes: no restart of a port that serves.
-	before := h.Times("systemctl --no-block try-restart homerslab-ldaps.service")
+	before := h.Times("systemctl --no-block try-restart homeward-ldaps.service")
 	install(t, sock, "books", books(t))
-	if h.Times("systemctl --no-block try-restart homerslab-ldaps.service") != before {
+	if h.Times("systemctl --no-block try-restart homeward-ldaps.service") != before {
 		t.Error("the LDAPS port restarted though nothing of it changed")
 	}
 }
@@ -168,7 +168,7 @@ func TestTheLDAPSPortServesTheRenewedCertificate(t *testing.T) {
 	if code, body := call(t, sock, "PUT", "/v1/edge/certificates/example.test", map[string]string{"chain": chain, "key": key}); code != http.StatusOK {
 		t.Fatalf("a renewal: %d %s", code, body)
 	}
-	if h.Ran("systemctl --no-block try-restart homerslab-ldaps.service") >= 0 {
+	if h.Ran("systemctl --no-block try-restart homeward-ldaps.service") >= 0 {
 		t.Error("a renewal restarted the LDAPS port before any LDAP app")
 	}
 	if _, err := os.Stat(filepath.Join(state, "ldaps")); err == nil {
@@ -188,7 +188,7 @@ func TestTheLDAPSPortServesTheRenewedCertificate(t *testing.T) {
 	if sealedAt(t, filepath.Join(state, "ldaps", "tls.key.cred")) != key {
 		t.Error("the LDAPS port's key isn't the renewed one")
 	}
-	sealed, restarted := lastRan(h, "systemd-creds encrypt --with-key=host+tpm2 --name=tls.key"), lastRan(h, "systemctl --no-block try-restart homerslab-ldaps.service")
+	sealed, restarted := lastRan(h, "systemd-creds encrypt --with-key=host+tpm2 --name=tls.key"), lastRan(h, "systemctl --no-block try-restart homeward-ldaps.service")
 	if sealed < 0 || restarted < sealed {
 		t.Errorf("the key sealed at %d, the LDAPS port restarted at %d: it would serve the old certificate", sealed, restarted)
 	}
@@ -218,22 +218,22 @@ func TestTheLDAPOutpostGetsItsTokenSealedForItsOwnUnit(t *testing.T) {
 	if h.Ran("systemd-creds encrypt --with-key=host+tpm2 --name=authentik.ldap-token - "+cred+".new") < 0 {
 		t.Error("the token wasn't sealed under its own name")
 	}
-	b, err := os.ReadFile(filepath.Join(h.Root, "etc/systemd/system/homerslab-ldap.service.d/50-homerslab-credentials.conf"))
+	b, err := os.ReadFile(filepath.Join(h.Root, "etc/systemd/system/homeward-ldap.service.d/50-homeward-credentials.conf"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, want := range []string{"LoadCredentialEncrypted=authentik.ldap-token:" + cred + "\n",
-		"ExecStartPre=/usr/bin/install -m 0400 -o 1000 -g 1000 %d/authentik.ldap-token /run/homerslab-ldap/ldap-token\n",
-		"ExecStartPre=/usr/bin/chcon -t container_file_t -l s0:c1000,c1001 /run/homerslab-ldap/ldap-token\n"} {
+		"ExecStartPre=/usr/bin/install -m 0400 -o 1000 -g 1000 %d/authentik.ldap-token /run/homeward-ldap/ldap-token\n",
+		"ExecStartPre=/usr/bin/chcon -t container_file_t -l s0:c1000,c1001 /run/homeward-ldap/ldap-token\n"} {
 		if !strings.Contains(string(b), want) {
 			t.Errorf("the outpost's drop-in lacks %q:\n%s", want, b)
 		}
 	}
-	reload, enable, restart := lastRan(h, "systemctl daemon-reload"), h.Ran("systemctl enable homerslab-ldap.service"), h.Ran("systemctl --no-block restart homerslab-ldap.service")
+	reload, enable, restart := lastRan(h, "systemctl daemon-reload"), h.Ran("systemctl enable homeward-ldap.service"), h.Ran("systemctl --no-block restart homeward-ldap.service")
 	if enable < 0 || restart < enable || reload > enable {
 		t.Errorf("reload %d, enable %d, restart %d: the unit gets its token only as it starts", reload, enable, restart)
 	}
-	restarts := func() int { return h.Times("systemctl --no-block restart homerslab-ldap.service") }
+	restarts := func() int { return h.Times("systemctl --no-block restart homeward-ldap.service") }
 	n := restarts()
 	if code, _ := call(t, sock, "PUT", "/v1/sign-in/ldap", agent.LDAPRequest{Token: outpostToken}); code != http.StatusNoContent || restarts() != n {
 		t.Errorf("the same token again: %d, restarts %d → %d: the outpost would drop its binds for nothing", code, n, restarts())
@@ -315,7 +315,7 @@ func TestAnLDAPDirectoryIsTakenOnlyAsTheAppsOwn(t *testing.T) {
 func TestAnLDAPStepThatFailedIsDoneAgain(t *testing.T) {
 	testenv.Isolate(t)
 	sock, h, _ := signedIn(t, agent.Config{Users: withLDAPS, CheckEvery: 50 * time.Millisecond})
-	enable := "systemctl enable --now homerslab-ldaps.socket"
+	enable := "systemctl enable --now homeward-ldaps.socket"
 	h.Fail(enable)
 	if s := install(t, sock, "books", books(t)); !strings.Contains(strings.Join(s.Pending, " "), "ldaps") {
 		t.Errorf("the LDAPS port didn't take, and the answer doesn't say so: %+v", s)
@@ -328,7 +328,7 @@ func TestAnLDAPStepThatFailedIsDoneAgain(t *testing.T) {
 		}
 	}
 
-	start := "systemctl enable homerslab-ldap.service"
+	start := "systemctl enable homeward-ldap.service"
 	h.Fail(start)
 	if code, _ := call(t, sock, "PUT", "/v1/sign-in/ldap", agent.LDAPRequest{Token: outpostToken}); code == http.StatusNoContent {
 		t.Error("the outpost's unit didn't start, and the answer says it did")
@@ -336,7 +336,7 @@ func TestAnLDAPStepThatFailedIsDoneAgain(t *testing.T) {
 	h.Mend()
 	n := h.Times(start)
 	if code, body := call(t, sock, "PUT", "/v1/sign-in/ldap", agent.LDAPRequest{Token: outpostToken}); code != http.StatusNoContent || h.Times(start) != n+1 ||
-		h.Times("systemctl --no-block restart homerslab-ldap.service") != 1 {
+		h.Times("systemctl --no-block restart homeward-ldap.service") != 1 {
 		t.Errorf("the same token after a failed start: %d %s, enabled %d → %d", code, body, n, h.Times(start))
 	}
 }
@@ -372,7 +372,7 @@ func TestAnLDAPSSealingThatFailsHalfwayLeavesThePairWhole(t *testing.T) {
 	if sealedAt(t, crt) != oldCrt || sealedAt(t, key) != oldKey {
 		t.Error("a sealing that failed halfway changed the LDAPS port's pair")
 	}
-	restarts := h.Times("systemctl --no-block try-restart homerslab-ldaps.service")
+	restarts := h.Times("systemctl --no-block try-restart homeward-ldaps.service")
 	h.Mend()
 	for deadline := time.Now().Add(5 * time.Second); sealedAt(t, key) != newKey; time.Sleep(20 * time.Millisecond) {
 		if time.Now().After(deadline) {
@@ -382,7 +382,7 @@ func TestAnLDAPSSealingThatFailsHalfwayLeavesThePairWhole(t *testing.T) {
 	if sealedAt(t, crt) != sealedAt(t, filepath.Join(state, "edge", "tls-example.test.crt.cred")) {
 		t.Error("the LDAPS port's certificate isn't the edge's after the reseal")
 	}
-	for deadline := time.Now().Add(5 * time.Second); h.Times("systemctl --no-block try-restart homerslab-ldaps.service") == restarts; time.Sleep(20 * time.Millisecond) {
+	for deadline := time.Now().Add(5 * time.Second); h.Times("systemctl --no-block try-restart homeward-ldaps.service") == restarts; time.Sleep(20 * time.Millisecond) {
 		if time.Now().After(deadline) {
 			t.Fatal("the LDAPS port never restarted to serve the pair sealed again")
 		}
@@ -398,7 +398,7 @@ func TestAnLDAPSCopyLeftHalfCommittedIsSealedAgain(t *testing.T) {
 	keyCred := filepath.Join(state, "ldaps", "tls.key.cred")
 	edgeKey := sealedAt(t, filepath.Join(state, "edge", "tls-example.test.key.cred"))
 	_, other := wildcard(t, "example.test")
-	restarts := h.Times("systemctl --no-block try-restart homerslab-ldaps.service")
+	restarts := h.Times("systemctl --no-block try-restart homeward-ldaps.service")
 	stray := []byte("sealed:" + base64.StdEncoding.EncodeToString([]byte(other)))
 	if err := os.WriteFile(keyCred, stray, 0o600); err != nil {
 		t.Fatal(err)
@@ -411,7 +411,7 @@ func TestAnLDAPSCopyLeftHalfCommittedIsSealedAgain(t *testing.T) {
 			t.Fatal("the LDAPS port's copy, left half-committed, was never sealed again")
 		}
 	}
-	for deadline := time.Now().Add(5 * time.Second); h.Times("systemctl --no-block try-restart homerslab-ldaps.service") == restarts; time.Sleep(20 * time.Millisecond) {
+	for deadline := time.Now().Add(5 * time.Second); h.Times("systemctl --no-block try-restart homeward-ldaps.service") == restarts; time.Sleep(20 * time.Millisecond) {
 		if time.Now().After(deadline) {
 			t.Fatal("the LDAPS port never restarted to serve the pair sealed again")
 		}
@@ -445,7 +445,7 @@ func TestAnLDAPSCheckThatCantUnsealRestartsNothing(t *testing.T) {
 	if code, body := call(t, sock, "PUT", "/v1/edge/certificates/example.test", map[string]string{"chain": chain, "key": key}); code != http.StatusOK {
 		t.Fatalf("a renewal: %d %s", code, body)
 	}
-	restart := "systemctl --no-block try-restart homerslab-ldaps.service"
+	restart := "systemctl --no-block try-restart homeward-ldaps.service"
 	restarts, seals := h.Times(restart), lastRan(h, "systemd-creds encrypt --with-key=host+tpm2 --name=tls.key")
 	for deadline := time.Now().Add(5 * time.Second); h.Times(unseal+" "+filepath.Join(state, "ldaps", "tls.key.cred")+" -") < 2; time.Sleep(20 * time.Millisecond) {
 		if time.Now().After(deadline) {

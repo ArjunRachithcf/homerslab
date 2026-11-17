@@ -1,4 +1,4 @@
-// Package text says which free text HomersLab takes from a catalog or a request: a name shown to people is one line
+// Package text says which free text Homeward takes from a catalog or a request: a name shown to people is one line
 // of printable text, so it can't end a line of any file it might reach. YAML breaks lines at U+0085, U+2028 and
 // U+2029 too, not only at \n and \r (#195's review).
 package text

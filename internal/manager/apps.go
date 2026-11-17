@@ -9,13 +9,13 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/ArjunRachithcf/homerslab/internal/agent"
-	"github.com/ArjunRachithcf/homerslab/internal/appunit"
-	"github.com/ArjunRachithcf/homerslab/internal/catalog"
-	"github.com/ArjunRachithcf/homerslab/internal/engine"
-	"github.com/ArjunRachithcf/homerslab/internal/idp"
-	"github.com/ArjunRachithcf/homerslab/internal/manager/plan"
-	"github.com/ArjunRachithcf/homerslab/internal/manager/store"
+	"github.com/ArjunRachithcf/homeward/internal/agent"
+	"github.com/ArjunRachithcf/homeward/internal/appunit"
+	"github.com/ArjunRachithcf/homeward/internal/catalog"
+	"github.com/ArjunRachithcf/homeward/internal/engine"
+	"github.com/ArjunRachithcf/homeward/internal/idp"
+	"github.com/ArjunRachithcf/homeward/internal/manager/plan"
+	"github.com/ArjunRachithcf/homeward/internal/manager/store"
 )
 
 // Applying an install plan (#19, #20; spec: The install plan). Applying takes the plan's id and does what the plan
@@ -171,7 +171,7 @@ func (m *Manager) apply(w http.ResponseWriter, r *http.Request, terminal bool) {
 		fail(w, http.StatusServiceUnavailable, errAgent.Error())
 		return
 	}
-	if !p.SignIn.Wired { // after the stale check: a plan made before HomersLab could set its sign-in up is stale
+	if !p.SignIn.Wired { // after the stale check: a plan made before Homeward could set its sign-in up is stale
 		fail(w, http.StatusUnprocessableEntity, errNotBuilt.Error())
 		return
 	}

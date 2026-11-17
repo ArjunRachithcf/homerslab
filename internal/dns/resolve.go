@@ -1,5 +1,5 @@
 // Package dns is the DNS provider contract (spec: Adapter contracts → DNS provider; ADR 0016): the household's DNS
-// provider through libdns, the records HomersLab owns there and nothing else (owned.go), and the lookups the
+// provider through libdns, the records Homeward owns there and nothing else (owned.go), and the lookups the
 // certificate's DNS challenge needs.
 //
 // Lookups ask public resolvers, never the machine's own (#79): on the primary, the household's domain resolves
@@ -20,7 +20,7 @@ import (
 	mdns "github.com/miekg/dns"
 )
 
-// Public are the resolvers HomersLab asks by default: Quad9's and Cloudflare's, over IPv4 and IPv6.
+// Public are the resolvers Homeward asks by default: Quad9's and Cloudflare's, over IPv4 and IPv6.
 var Public = []string{"9.9.9.9:53", "1.1.1.1:53", "149.112.112.112:53", "[2620:fe::fe]:53", "[2606:4700:4700::1111]:53"}
 
 // Resolver looks names up in the public DNS.

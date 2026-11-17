@@ -13,7 +13,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/ArjunRachithcf/homerslab/internal/testenv"
+	"github.com/ArjunRachithcf/homeward/internal/testenv"
 )
 
 // In v5.5–v5.7, the SDK's dry run combined with an output or error stream applies the changes for real (Compose SDK

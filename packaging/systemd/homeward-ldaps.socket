@@ -4,14 +4,14 @@
 # listener is wanted. The agent enables this socket once an LDAP app is installed. Only the apps' networks and the
 # sign-in network are peers it talks to; the firewall table lets only LDAP apps' networks reach it.
 [Unit]
-Description=HomersLab sign-in listener, LDAPS
-Documentation=https://github.com/ArjunRachithcf/homerslab
+Description=Homeward sign-in listener, LDAPS
+Documentation=https://github.com/ArjunRachithcf/homeward
 
 [Socket]
 ListenStream=172.31.255.241:636
 FreeBind=yes
 NoDelay=yes
-Service=homerslab-ldaps.service
+Service=homeward-ldaps.service
 IPAddressDeny=any
 IPAddressAllow=172.31.240.0/20
 

@@ -16,13 +16,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ArjunRachithcf/homerslab/internal/mesh"
-	"github.com/ArjunRachithcf/homerslab/internal/mesh/netbird"
-	"github.com/ArjunRachithcf/homerslab/internal/testenv"
+	"github.com/ArjunRachithcf/homeward/internal/mesh"
+	"github.com/ArjunRachithcf/homeward/internal/mesh/netbird"
+	"github.com/ArjunRachithcf/homeward/internal/testenv"
 )
 
 // The tokens in these tests: the one the admin brings from NetBird's dashboard, and the ones NetBird makes for
-// HomersLab's own service user.
+// Homeward's own service user.
 const (
 	givenToken = "nbp_GIVEN0000000000000000000000000000000"
 	wrongToken = "nbp_WRONG0000000000000000000000000000000"
@@ -38,7 +38,7 @@ type fakeNetBird struct {
 	setupTokens   []string // the setup tokens made, by value
 	setupRevoked  []string
 	adopted       []string
-	stale         []mesh.Token // HomersLab's older tokens, which Adopt hands back
+	stale         []mesh.Token // Homeward's older tokens, which Adopt hands back
 	failAdopts    int          // how many of the next Adopts fail, as a network would
 	failRevokes   int          // how many of the next RevokeSetups fail
 	setupExpired  bool         // the setup token is refused (it lasts a day)
@@ -225,7 +225,7 @@ func atNetwork(t *testing.T, nb *fakeNetBird) (*primary, *browser) {
 	return p, b
 }
 
-// secret is `homerslab setup secret`: it gives a secret at the revision of the answers it was shown with.
+// secret is `homeward setup secret`: it gives a secret at the revision of the answers it was shown with.
 func (p *primary) secret(name, value string) response {
 	return p.secretAt(name, value, p.controlState().Revision)
 }
@@ -257,7 +257,7 @@ func TestTheLANPageRefusesEverySecretAndPointsToTheCommand(t *testing.T) {
 		r := b.answer("network", body)
 		var e struct{ Error, Command string }
 		r.json(t, &e)
-		if r.Code != http.StatusBadRequest || e.Error != "secret-over-http" || e.Command != "sudo homerslab setup secret mesh" {
+		if r.Code != http.StatusBadRequest || e.Error != "secret-over-http" || e.Command != "sudo homeward setup secret mesh" {
 			t.Errorf("PUT network %v: %d %s, want 400 secret-over-http with the command", body, r.Code, r.Body)
 		}
 	}
@@ -285,7 +285,7 @@ func TestOnTheCloudTheTokenIsGivenOnceInTheTerminal(t *testing.T) {
 		t.Fatalf("after choosing NetBird's cloud: at %q, network %q, want it waiting", s.Current, stepState(s, "network"))
 	}
 	r := b.do("GET", "/api/v1/setup", nil)
-	if !bytes.Contains(r.Body, []byte(`"secret":"mesh"`)) || !bytes.Contains(r.Body, []byte(`"command":"sudo homerslab setup secret mesh"`)) {
+	if !bytes.Contains(r.Body, []byte(`"secret":"mesh"`)) || !bytes.Contains(r.Body, []byte(`"command":"sudo homeward setup secret mesh"`)) {
 		t.Errorf("the page isn't told which command to show: %s", r.Body)
 	}
 	if r := b.do("PUT", "/api/v1/setup/secrets/mesh", map[string]string{"value": givenToken}); r.Code != http.StatusBadRequest ||
@@ -324,9 +324,9 @@ func TestOnTheCloudTheTokenIsGivenOnceInTheTerminal(t *testing.T) {
 	if table, on := p.host.Table(); !on || !strings.Contains(table, "tcp dport 7020 accept") {
 		t.Errorf("the firewall table (%v):\n%s", on, table)
 	}
-	// What the agent sealed is HomersLab's own token, never the one the admin gave.
+	// What the agent sealed is Homeward's own token, never the one the admin gave.
 	if got := p.unseal(t, "manager-mesh-token"); !strings.HasPrefix(got, "nbp_OWN") {
-		t.Errorf("the sealed mesh token is %.7s…, want HomersLab's own", got)
+		t.Errorf("the sealed mesh token is %.7s…, want Homeward's own", got)
 	}
 	assertNoSecretAt(t, p, givenToken, "nbp_OWN", "JOINKEY")
 	if r := p.secret("mesh", givenToken); r.Code != http.StatusConflict {
@@ -358,7 +358,7 @@ func TestANewSelfHostedNetBirdIsSetUpInOneStep(t *testing.T) {
 	}
 	assertNoSecretAt(t, p, nb.bootstrapped[0].Password.Reveal(), "nbp_OWN", setupToken)
 	if nb.defaults != 1 {
-		t.Errorf("RemoveDefault ran %d times on a NetBird HomersLab set up, want once", nb.defaults)
+		t.Errorf("RemoveDefault ran %d times on a NetBird Homeward set up, want once", nb.defaults)
 	}
 	if !slices.Equal(nb.setupRevoked, []string{setupToken}) {
 		t.Errorf("setup tokens revoked: %d, want the one", len(nb.setupRevoked))
@@ -379,7 +379,7 @@ func TestAStoppedBootstrapResumesFromItsSealedSetupToken(t *testing.T) {
 	if p.unseal(t, "manager-mesh-setup-token") != setupToken || len(nb.setupRevoked) != 0 {
 		t.Fatal("the setup token wasn't kept for the retry")
 	}
-	// NetBird now says it is set up: only the sealed setup token gets HomersLab back in.
+	// NetBird now says it is set up: only the sealed setup token gets Homeward back in.
 	s := b.mustAnswer("network", body)
 	if stepState(s, "network") != "done" || len(nb.bootstrapped) != 1 {
 		t.Fatalf("the retry: network %q, set up %d times", stepState(s, "network"), len(nb.bootstrapped))
@@ -392,9 +392,9 @@ func TestAStoppedBootstrapResumesFromItsSealedSetupToken(t *testing.T) {
 	}
 }
 
-func TestABootstrapThatStoppedAfterHomersLabHadItsTokenCarriesOnWithIt(t *testing.T) {
+func TestABootstrapThatStoppedAfterHomewardHadItsTokenCarriesOnWithIt(t *testing.T) {
 	testenv.Isolate(t)
-	// HomersLab's own token is kept and works, then revoking the setup token fails and the join waits for a yes.
+	// Homeward's own token is kept and works, then revoking the setup token fails and the join waits for a yes.
 	nb := &fakeNetBird{setupRequired: true, failRevokes: 1, conflicts: []mesh.Policy{{ID: "p1", Name: "ssh-for-everyone"}}}
 	p, b := atNetwork(t, nb)
 	body := map[string]any{"mesh": "netbird", "controlPlane": "self-hosted", "url": "https://netbird.ferreira.family"}
@@ -404,7 +404,7 @@ func TestABootstrapThatStoppedAfterHomersLabHadItsTokenCarriesOnWithIt(t *testin
 	body["switchOff"] = true
 	s := b.mustAnswer("network", body)
 	if stepState(s, "network") != "done" || len(nb.adopted) != 1 {
-		t.Fatalf("the retry: network %q, adopted %d times; want done with HomersLab's own token", stepState(s, "network"), len(nb.adopted))
+		t.Fatalf("the retry: network %q, adopted %d times; want done with Homeward's own token", stepState(s, "network"), len(nb.adopted))
 	}
 	if !slices.Equal(nb.setupRevoked, []string{setupToken}) || s.Answers["meshSetupUser"] != "" {
 		t.Errorf("the setup token: revoked %d times, answers say %q", len(nb.setupRevoked), s.Answers["meshSetupUser"])
@@ -447,7 +447,7 @@ func TestARefusedSetupTokenFallsBackToAskingForAToken(t *testing.T) {
 	}
 }
 
-func TestOnAnAccountHomersLabDidntSetUpDefaultTakesTheAdminsYes(t *testing.T) {
+func TestOnAnAccountHomewardDidntSetUpDefaultTakesTheAdminsYes(t *testing.T) {
 	testenv.Isolate(t)
 	nb := &fakeNetBird{conflicts: []mesh.Policy{{ID: "d", Name: "Default"}}}
 	p, b := atNetwork(t, nb)
@@ -462,7 +462,7 @@ func TestOnAnAccountHomersLabDidntSetUpDefaultTakesTheAdminsYes(t *testing.T) {
 	}
 }
 
-func TestHomersLabsOlderTokensGoOnlyOnceTheNewOneIsKeptAndWorks(t *testing.T) {
+func TestHomewardsOlderTokensGoOnlyOnceTheNewOneIsKeptAndWorks(t *testing.T) {
 	testenv.Isolate(t)
 	old := mesh.Token{UserID: "svc", ID: "pat-old"}
 	nb := &fakeNetBird{stale: []mesh.Token{old}, broken: map[string]bool{"pat-1": true}}
@@ -702,7 +702,7 @@ func TestPoliciesThatReachEveryPeerAreSwitchedOffOnlyWithTheAdminsYes(t *testing
 		t.Errorf("after the yes: network %q, disabled %v", stepState(s, "network"), nb.disabled)
 	}
 	if len(nb.adopted) != 1 {
-		t.Errorf("the token was adopted %d times; the yes carries on with HomersLab's own", len(nb.adopted))
+		t.Errorf("the token was adopted %d times; the yes carries on with Homeward's own", len(nb.adopted))
 	}
 }
 
@@ -729,7 +729,7 @@ func TestADriftCheckReportsNewPoliciesThatReachEveryPeer(t *testing.T) {
 		t.Error("the drift check switched a policy off without the admin's yes")
 	}
 	if nb.ensured != ensured+2 { // each hourly check
-		t.Error("the drift check didn't put HomersLab's own policies back")
+		t.Error("the drift check didn't put Homeward's own policies back")
 	}
 }
 

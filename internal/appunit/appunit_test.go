@@ -13,9 +13,9 @@ import (
 
 	"go.yaml.in/yaml/v4"
 
-	"github.com/ArjunRachithcf/homerslab/internal/appunit"
-	"github.com/ArjunRachithcf/homerslab/internal/engine"
-	"github.com/ArjunRachithcf/homerslab/internal/testenv"
+	"github.com/ArjunRachithcf/homeward/internal/appunit"
+	"github.com/ArjunRachithcf/homeward/internal/engine"
+	"github.com/ArjunRachithcf/homeward/internal/testenv"
 )
 
 var update = flag.Bool("update", false, "write the golden renders anew")
@@ -57,7 +57,7 @@ func bentoPDF() appunit.App {
 		Project: engine.Project{Name: "homerslab-bentopdf", Services: []engine.Service{{Name: "web", Image: "ghcr.io/alam00000/bentopdf-simple:2.8.10@sha256:b5227a308e796d2bd00d2eb6da9d7296093107a8be7efef38a006d06506dc3c0"}},
 			Networks: []engine.Network{{Name: "default"}}},
 		Service: "web", Upstream: netip.MustParseAddrPort("172.31.240.2:8080"), Subnet: netip.MustParsePrefix("172.31.240.0/28"),
-		Level: "s0:c600,c601", SELinux: true, Dir: "/var/lib/homerslab-agent/apps/bentopdf"}
+		Level: "s0:c600,c601", SELinux: true, Dir: "/var/lib/homeward-agent/apps/bentopdf"}
 }
 
 // withSecrets is an app of several services with a secret two of them read, and networks of its own.
@@ -67,7 +67,7 @@ func withSecrets() appunit.App {
 			{Name: "web", Networks: []string{"back", "front"}}, {Name: "db", Networks: []string{"back"}}, {Name: "worker"}},
 			Networks: []engine.Network{{Name: "back"}, {Name: "default"}, {Name: "front"}}},
 		Service: "web", Upstream: netip.MustParseAddrPort("172.31.240.18:8080"), Subnet: netip.MustParsePrefix("172.31.240.16/28"),
-		Level: "s0:c602,c603", Slot: 1, SELinux: true, Dir: "/var/lib/homerslab-agent/apps/everything",
+		Level: "s0:c602,c603", Slot: 1, SELinux: true, Dir: "/var/lib/homeward-agent/apps/everything",
 		SignIn: "auth.example.test", SignInAt: netip.MustParseAddr("172.31.255.241"),
 		Secrets: []appunit.Secret{{Name: "secret-key", UID: 1000}, {Name: "db-password", UID: 999}}}
 }
@@ -77,7 +77,7 @@ func withStorage() appunit.App {
 	a := withSecrets()
 	a.Mounts = []appunit.Mount{
 		{Location: "films", Service: "web", Source: "/srv/media/Films", Target: "/media", ReadOnly: true},
-		{Location: "uploads", Service: "worker", Source: "/var/lib/homerslab-storage/uploads", Target: "/uploads", Unit: "homerslab-storage-uploads.service"},
+		{Location: "uploads", Service: "worker", Source: "/var/lib/homeward-storage/uploads", Target: "/uploads", Unit: "homeward-storage-uploads.service"},
 	}
 	return a
 }
@@ -89,7 +89,7 @@ func mealie() appunit.App {
 		Project: engine.Project{Name: "homerslab-mealie", Services: []engine.Service{{Name: "web", Image: "ghcr.io/mealie-recipes/mealie:v3.30.0@sha256:90f83da6f3ab0a421efc827118a556168573930105f13fa3321768f42163d784"}},
 			Networks: []engine.Network{{Name: "default"}}},
 		Service: "web", Upstream: netip.MustParseAddrPort("172.31.240.34:9000"), Subnet: netip.MustParsePrefix("172.31.240.32/28"),
-		Level: "s0:c604,c605", Slot: 2, SELinux: true, Dir: "/var/lib/homerslab-agent/apps/mealie",
+		Level: "s0:c604,c605", Slot: 2, SELinux: true, Dir: "/var/lib/homeward-agent/apps/mealie",
 		OIDC: &appunit.OIDC{SecretUID: 911, Env: map[string]string{
 			"OIDC_CONFIGURATION_URL":  "https://auth.ferreira.family:9443/application/o/homerslab-mealie/.well-known/openid-configuration",
 			"OIDC_CLIENT_ID":          "homerslab-mealie",
@@ -157,17 +157,17 @@ func TestSecretsReachTheContainersOnlyAsFilesAtTheAppsLevel(t *testing.T) {
 	a := withSecrets()
 	u, o := string(appunit.UnitFile(a)), string(appunit.Override(a))
 	for _, want := range []string{
-		"LoadCredentialEncrypted=everything.db-password:/var/lib/homerslab-agent/apps/everything/credentials/db-password.cred\n",
-		"ExecStartPre=/usr/bin/install -m 0400 -o 999 -g 999 %d/everything.db-password /run/homerslab-app-everything/db-password\n",
-		"ExecStartPre=/usr/bin/install -m 0400 -o 1000 -g 1000 %d/everything.secret-key /run/homerslab-app-everything/secret-key\n",
-		"ExecStartPre=/usr/bin/chcon -t container_file_t -l s0:c602,c603 /run/homerslab-app-everything/db-password /run/homerslab-app-everything/secret-key\n",
-		"RuntimeDirectory=homerslab-app-everything\nRuntimeDirectoryMode=0700\n",
+		"LoadCredentialEncrypted=everything.db-password:/var/lib/homeward-agent/apps/everything/credentials/db-password.cred\n",
+		"ExecStartPre=/usr/bin/install -m 0400 -o 999 -g 999 %d/everything.db-password /run/homeward-app-everything/db-password\n",
+		"ExecStartPre=/usr/bin/install -m 0400 -o 1000 -g 1000 %d/everything.secret-key /run/homeward-app-everything/secret-key\n",
+		"ExecStartPre=/usr/bin/chcon -t container_file_t -l s0:c602,c603 /run/homeward-app-everything/db-password /run/homeward-app-everything/secret-key\n",
+		"RuntimeDirectory=homeward-app-everything\nRuntimeDirectoryMode=0700\n",
 	} {
 		if !strings.Contains(u, want) {
 			t.Errorf("the unit lacks %q:\n%s", want, u)
 		}
 	}
-	if !strings.Contains(o, "secrets:\n  \"db-password\":\n    file: \"/run/homerslab-app-everything/db-password\"\n  \"secret-key\":\n    file: \"/run/homerslab-app-everything/secret-key\"\n") {
+	if !strings.Contains(o, "secrets:\n  \"db-password\":\n    file: \"/run/homeward-app-everything/db-password\"\n  \"secret-key\":\n    file: \"/run/homeward-app-everything/secret-key\"\n") {
 		t.Errorf("the secrets aren't the unit's copies:\n%s", o)
 	}
 	for _, bad := range []string{"environment", "Environment=", "volumes", ":z", ":Z"} {
@@ -191,9 +191,9 @@ func TestAnOIDCClientsSecretReachesTheAppOnlyAsAFile(t *testing.T) {
 	a.Project.Services = append(a.Project.Services, engine.Service{Name: "worker"})
 	u, o := string(appunit.UnitFile(a)), string(appunit.Override(a))
 	for _, want := range []string{
-		"LoadCredentialEncrypted=mealie.oidc-client-secret:/var/lib/homerslab-agent/apps/mealie/credentials/oidc-client-secret.cred\n",
-		"ExecStartPre=/usr/bin/install -m 0400 -o 911 -g 911 %d/mealie.oidc-client-secret /run/homerslab-app-mealie/oidc-client-secret\n",
-		"ExecStartPre=/usr/bin/chcon -t container_file_t -l s0:c604,c605 /run/homerslab-app-mealie/oidc-client-secret\n",
+		"LoadCredentialEncrypted=mealie.oidc-client-secret:/var/lib/homeward-agent/apps/mealie/credentials/oidc-client-secret.cred\n",
+		"ExecStartPre=/usr/bin/install -m 0400 -o 911 -g 911 %d/mealie.oidc-client-secret /run/homeward-app-mealie/oidc-client-secret\n",
+		"ExecStartPre=/usr/bin/chcon -t container_file_t -l s0:c604,c605 /run/homeward-app-mealie/oidc-client-secret\n",
 	} {
 		if !strings.Contains(u, want) {
 			t.Errorf("the unit lacks %q:\n%s", want, u)
@@ -218,7 +218,7 @@ func TestAnOIDCClientsSecretReachesTheAppOnlyAsAFile(t *testing.T) {
 	if w := doc.Services["worker"]; w.Environment != nil || w.Secrets != nil {
 		t.Errorf("another service got the client: %+v", w)
 	}
-	if f := doc.Secrets["oidc-client-secret"].File; f != "/run/homerslab-app-mealie/oidc-client-secret" {
+	if f := doc.Secrets["oidc-client-secret"].File; f != "/run/homeward-app-mealie/oidc-client-secret" {
 		t.Errorf("the client's secret is %q, want the unit's copy", f)
 	}
 	if strings.Contains(u, "Environment=") || strings.Contains(o, "CLIENT_SECRET\":") && !strings.Contains(o, "\"OIDC_CLIENT_SECRET_FILE\": \"/run/secrets/oidc-client-secret\"") {
@@ -344,7 +344,7 @@ func TestNoTextOfTheAppsEndsALineOfItsFiles(t *testing.T) {
 					t.Errorf("a line that goes on: %q", line)
 				}
 			}
-			if !strings.Contains(u, "\nDescription=HomersLab app everything\n") {
+			if !strings.Contains(u, "\nDescription=Homeward app everything\n") {
 				t.Errorf("the unit's description:\n%s", u)
 			}
 		})
@@ -373,9 +373,9 @@ func TestEveryContainerResolvesTheSignInToItsListener(t *testing.T) {
 func TestSomeServicesRunAsTheUnitRunsThem(t *testing.T) {
 	testenv.Isolate(t)
 	a := withStorage()
-	args := a.ServicesRun("homerslab-restore-1", []string{"db"})
+	args := a.ServicesRun("homeward-restore-1", []string{"db"})
 	at := slices.Index(args, "--")
-	if at < 0 || args[0] != "--unit=homerslab-restore-1" {
+	if at < 0 || args[0] != "--unit=homeward-restore-1" {
 		t.Fatalf("%q", args)
 	}
 	props := strings.Join(args[:at], "\n") + "\n"
@@ -391,8 +391,8 @@ func TestSomeServicesRunAsTheUnitRunsThem(t *testing.T) {
 		t.Errorf("the services' run checks no location, or hands over no secret:\n%s", props)
 	}
 	// It waits for each share's own unit, and starts only once the share is mounted (#28).
-	for _, want := range []string{"\nRequires=homerslab-storage-uploads.service\n", "\nAfter=homerslab-storage-uploads.service\n",
-		"\nExecStartPre=/usr/bin/mountpoint -q /var/lib/homerslab-storage/uploads\n"} {
+	for _, want := range []string{"\nRequires=homeward-storage-uploads.service\n", "\nAfter=homeward-storage-uploads.service\n",
+		"\nExecStartPre=/usr/bin/mountpoint -q /var/lib/homeward-storage/uploads\n"} {
 		if !strings.Contains(props, want) {
 			t.Errorf("the services' run lacks %q:\n%s", want, props)
 		}
@@ -413,7 +413,7 @@ func TestAStorageLocationIsABindOfItsFolderReadOnlyWhereThePlanSays(t *testing.T
 	for _, want := range []string{
 		"  \"web\":\n", "    volumes:\n      - type: \"bind\"\n        source: \"/srv/media/Films\"\n        target: \"/media\"\n        read_only: true\n" +
 			"        bind:\n          create_host_path: false\n",
-		"        source: \"/var/lib/homerslab-storage/uploads\"\n        target: \"/uploads\"\n        read_only: false\n",
+		"        source: \"/var/lib/homeward-storage/uploads\"\n        target: \"/uploads\"\n        read_only: false\n",
 	} {
 		if !strings.Contains(o, want) {
 			t.Errorf("the agent's compose file lacks %q:\n%s", want, o)
@@ -435,12 +435,12 @@ func TestAStorageLocationIsABindOfItsFolderReadOnlyWhereThePlanSays(t *testing.T
 	}
 	// Before every start the unit has each folder checked again: the engine binds the path as root, following symlinks.
 	// A share's mount is root's own folder, which the unit waits for instead.
-	if want := "ExecStartPre=/usr/bin/homerslab agent check-storage \"/srv/media/Films\"\n"; !strings.Contains(u, want) ||
+	if want := "ExecStartPre=/usr/bin/homeward agent check-storage \"/srv/media/Films\"\n"; !strings.Contains(u, want) ||
 		strings.Index(u, want) > strings.Index(u, "ExecStart=") || strings.Count(u, "check-storage") != 1 {
 		t.Errorf("the unit lacks %q before its start, or checks a share's mount:\n%s", want, u)
 	}
-	for _, want := range []string{"\nWants=network-online.target homerslab-storage-uploads.service\n", "\nPartOf=homerslab-storage-uploads.service\n", "homerslab-agent.service homerslab-storage-uploads.service\n",
-		"\nExecStartPre=/usr/bin/mountpoint -q /var/lib/homerslab-storage/uploads\n"} {
+	for _, want := range []string{"\nWants=network-online.target homeward-storage-uploads.service\n", "\nPartOf=homeward-storage-uploads.service\n", "homeward-agent.service homeward-storage-uploads.service\n",
+		"\nExecStartPre=/usr/bin/mountpoint -q /var/lib/homeward-storage/uploads\n"} {
 		if !strings.Contains(u, want) {
 			t.Errorf("the unit lacks %q:\n%s", want, u)
 		}
@@ -454,7 +454,7 @@ func TestAStorageLocationIsABindOfItsFolderReadOnlyWhereThePlanSays(t *testing.T
 		{Location: "films", Service: "web", Source: "/srv/${HOME}", Target: "/media", ReadOnly: true},
 		{Location: "films", Service: "web", Source: "/etc", Target: "/media", ReadOnly: true},
 		{Location: "films", Service: "web", Source: "/srv/media", Target: "/media/../etc", ReadOnly: true},
-		{Location: "x", Service: "web", Source: "/var/lib/homerslab-storage/y", Target: "/media", Unit: "homerslab-storage-y.service"},
+		{Location: "x", Service: "web", Source: "/var/lib/homeward-storage/y", Target: "/media", Unit: "homeward-storage-y.service"},
 		{Location: "../x", Service: "web", Source: "/srv/media", Target: "/media"},
 	} {
 		b := withSecrets()

@@ -1,8 +1,8 @@
 package authentik_test
 
-// The identity provider contract suite against a real Authentik, run from HomersLab's own packaged compose file
+// The identity provider contract suite against a real Authentik, run from Homeward's own packaged compose file
 // (packaging/sign-in/authentik.compose.yaml) as compose project hltest-17, its addresses moved to the test's own
-// range. It needs Docker: it runs when HOMERSLAB_TEST_DOCKER_HOST names the engine to use, and is skipped otherwise.
+// range. It needs Docker: it runs when HOMEWARD_TEST_DOCKER_HOST names the engine to use, and is skipped otherwise.
 // The code under test never sees that engine (testenv points DOCKER_HOST at nowhere); only this harness does,
 // explicitly.
 
@@ -44,23 +44,23 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ArjunRachithcf/homerslab/internal/edge"
-	"github.com/ArjunRachithcf/homerslab/internal/idp"
-	"github.com/ArjunRachithcf/homerslab/internal/idp/authentik"
-	"github.com/ArjunRachithcf/homerslab/internal/idp/idptest"
-	"github.com/ArjunRachithcf/homerslab/internal/idp/webauthntest"
-	"github.com/ArjunRachithcf/homerslab/internal/oidc"
-	"github.com/ArjunRachithcf/homerslab/internal/testenv"
+	"github.com/ArjunRachithcf/homeward/internal/edge"
+	"github.com/ArjunRachithcf/homeward/internal/idp"
+	"github.com/ArjunRachithcf/homeward/internal/idp/authentik"
+	"github.com/ArjunRachithcf/homeward/internal/idp/idptest"
+	"github.com/ArjunRachithcf/homeward/internal/idp/webauthntest"
+	"github.com/ArjunRachithcf/homeward/internal/oidc"
+	"github.com/ArjunRachithcf/homeward/internal/testenv"
 )
 
 // project is the suite's compose project: hltest-17, or another of a test's own on a machine where that one may run
-// beside it (HOMERSLAB_TEST_IDP_PROJECT).
-var project = cmp.Or(os.Getenv("HOMERSLAB_TEST_IDP_PROJECT"), "hltest-17")
+// beside it (HOMEWARD_TEST_IDP_PROJECT).
+var project = cmp.Or(os.Getenv("HOMEWARD_TEST_IDP_PROJECT"), "hltest-17")
 
 // signInNet is the test's own range for the sign-in network (the first three octets of a /28 at .0), instead of the
-// package's 172.31.250.0/28; HOMERSLAB_TEST_IDP_NET names another, for a run beside another one on the same machine.
+// package's 172.31.250.0/28; HOMEWARD_TEST_IDP_NET names another, for a run beside another one on the same machine.
 var (
-	signInNet = cmp.Or(os.Getenv("HOMERSLAB_TEST_IDP_NET"), "10.217.0")
+	signInNet = cmp.Or(os.Getenv("HOMEWARD_TEST_IDP_NET"), "10.217.0")
 	upstream  = "http://" + signInNet + ".10:9000"
 )
 
@@ -73,15 +73,15 @@ var household = idp.Household{Name: "The Ferreiras", Domain: "example.test", Por
 
 func TestTheIdentityProviderContractOnAuthentik(t *testing.T) {
 	testenv.Isolate(t)
-	engine := os.Getenv("HOMERSLAB_TEST_DOCKER_HOST")
+	engine := os.Getenv("HOMEWARD_TEST_DOCKER_HOST")
 	if engine == "" {
-		t.Skip("set HOMERSLAB_TEST_DOCKER_HOST to the engine for the contract suite's containers")
+		t.Skip("set HOMEWARD_TEST_DOCKER_HOST to the engine for the contract suite's containers")
 	}
 	w := up(t, engine)
 	ctx := context.Background()
 
 	var own idp.Secret
-	t.Run("bootstrap: HomersLab's own account from Authentik's bootstrap token, which then stops working", func(t *testing.T) {
+	t.Run("bootstrap: Homeward's own account from Authentik's bootstrap token, which then stops working", func(t *testing.T) {
 		var err error
 		for deadline := time.Now().Add(5 * time.Minute); ; time.Sleep(3 * time.Second) {
 			own, err = authentik.Bootstrap(ctx, upstream, household, w.bootstrap, func(idp.Secret) error { return nil })
@@ -93,7 +93,7 @@ func TestTheIdentityProviderContractOnAuthentik(t *testing.T) {
 			t.Fatal(err)
 		}
 		if own == "" || own == w.bootstrap {
-			t.Fatal("no token of HomersLab's own")
+			t.Fatal("no token of Homeward's own")
 		}
 		// Bootstrap, like Prepare, goes on only once Authentik has made every flow Prepare guards: one made later
 		// would never be guarded.
@@ -134,8 +134,8 @@ func TestTheIdentityProviderContractOnAuthentik(t *testing.T) {
 	}
 
 	t.Run("claim (#84): Authentik's WebAuthn stages don't require user verification unless told to", func(t *testing.T) {
-		// Reported, not verified (spec: Testing Decisions): why HomersLab's stages set it. Read once Authentik has
-		// made its defaults (bootstrap waits for them), with HomersLab's own token, and before Prepare.
+		// Reported, not verified (spec: Testing Decisions): why Homeward's stages set it. Read once Authentik has
+		// made its defaults (bootstrap waits for them), with Homeward's own token, and before Prepare.
 		type setup struct {
 			Name string `json:"name"`
 			UV   string `json:"user_verification"`
@@ -169,7 +169,7 @@ func TestTheIdentityProviderContractOnAuthentik(t *testing.T) {
 			t.Errorf("the bootstrap token after a restart: %d, want refused", code)
 		}
 		if code := w.status(t, own, "/api/v3/core/users/me/"); code != http.StatusOK {
-			t.Errorf("HomersLab's token after a restart: %d", code)
+			t.Errorf("Homeward's token after a restart: %d", code)
 		}
 	})
 
@@ -287,7 +287,7 @@ func TestTheIdentityProviderContractOnAuthentik(t *testing.T) {
 			w.raw(t, own, "DELETE", "/api/v3/core/groups/"+g.PK+"/", nil, nil)
 		}
 
-		// Attributes that would set a header of Authentik's or HomersLab's under another spelling (review round 2): the
+		// Attributes that would set a header of Authentik's or Homeward's under another spelling (review round 2): the
 		// outpost sets each, the last one winning, the person's id too. The mapping then names no role, and empties them,
 		// so the edge refuses the person rather than take a forged role or id.
 		w.raw(t, own, "POST", "/api/v3/core/groups/"+kids.PK+"/add_user/", map[string]int{"pk": theo}, nil)
@@ -330,7 +330,7 @@ func TestTheIdentityProviderContractOnAuthentik(t *testing.T) {
 	})
 
 	// Authentik applies its own blueprints again when its worker likes (at its start, after an upgrade, hourly). Its
-	// first-admin blueprint must apply over HomersLab's closing of that flow, and the flow stay closed (#195's CI:
+	// first-admin blueprint must apply over Homeward's closing of that flow, and the flow stay closed (#195's CI:
 	// the sign-in waited on that blueprint, which had failed at Authentik's first start).
 	t.Run("Authentik applies its first-admin blueprint again: it succeeds, and the flow still applies to nobody (#84)", func(t *testing.T) {
 		var bs struct {
@@ -387,8 +387,8 @@ func TestTheIdentityProviderContractOnAuthentik(t *testing.T) {
 	})
 
 	t.Run("in a real browser: Chromium's virtual authenticator enrols at the sign-in's own name and signs in to Admin (#83, #84)", func(t *testing.T) {
-		if os.Getenv("HOMERSLAB_TEST_BROWSER") == "" {
-			t.Skip("set HOMERSLAB_TEST_BROWSER to run web/e2e/passkey.idp.spec.ts in Chromium (CI's identity job does)")
+		if os.Getenv("HOMEWARD_TEST_BROWSER") == "" {
+			t.Skip("set HOMEWARD_TEST_BROWSER to run web/e2e/passkey.idp.spec.ts in Chromium (CI's identity job does)")
 		}
 		inABrowser(t, w, a)
 	})
@@ -497,8 +497,8 @@ func TestTheIdentityProviderContractOnAuthentik(t *testing.T) {
 	// and is in it, with no second login, in Chromium with its virtual authenticator (web/e2e/native-sign-in.idp.spec.ts).
 	// Mealie's server reaches the sign-in only through the edge's sign-in listener (#19, ADR 0020): native_test.go.
 	t.Run("in a real browser: a signed-in person opens an app with native sign-in, with no second login (#20)", func(t *testing.T) {
-		if os.Getenv("HOMERSLAB_TEST_BROWSER") == "" {
-			t.Skip("set HOMERSLAB_TEST_BROWSER to run web/e2e/native-sign-in.idp.spec.ts in Chromium (CI's identity job does)")
+		if os.Getenv("HOMEWARD_TEST_BROWSER") == "" {
+			t.Skip("set HOMEWARD_TEST_BROWSER to run web/e2e/native-sign-in.idp.spec.ts in Chromium (CI's identity job does)")
 		}
 		nativeSignIn(t, w, a)
 	})
@@ -516,7 +516,7 @@ func TestTheIdentityProviderContractOnAuthentik(t *testing.T) {
 		}
 	})
 
-	t.Run("the enrolment flow is HomersLab's own: only an invitation and a passkey, never the recovery flow (#84, #87)", func(t *testing.T) {
+	t.Run("the enrolment flow is Homeward's own: only an invitation and a passkey, never the recovery flow (#84, #87)", func(t *testing.T) {
 		var brands struct {
 			Results []struct {
 				Domain   string  `json:"domain"`
@@ -526,7 +526,7 @@ func TestTheIdentityProviderContractOnAuthentik(t *testing.T) {
 		}
 		w.raw(t, own, "GET", "/api/v3/core/brands/?domain="+household.SignIn(), nil, &brands)
 		if len(brands.Results) != 1 || brands.Results[0].Recovery != nil || brands.Results[0].SignIn == nil {
-			t.Errorf("the sign-in's brand: %+v, want HomersLab's sign-in and no recovery flow", brands.Results)
+			t.Errorf("the sign-in's brand: %+v, want Homeward's sign-in and no recovery flow", brands.Results)
 		}
 		var flows struct {
 			Results []struct {
@@ -556,7 +556,7 @@ func TestTheIdentityProviderContractOnAuthentik(t *testing.T) {
 		// The packaged unit's own command, on the test's project and file, attached to the running containers. Last: it
 		// stops them all.
 		_, self, _, _ := runtime.Caller(0)
-		u, err := os.ReadFile(filepath.Join(filepath.Dir(self), "..", "..", "..", "packaging", "systemd", "homerslab-authentik.service"))
+		u, err := os.ReadFile(filepath.Join(filepath.Dir(self), "..", "..", "..", "packaging", "systemd", "homeward-authentik.service"))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -570,7 +570,7 @@ func TestTheIdentityProviderContractOnAuthentik(t *testing.T) {
 			switch args[i] {
 			case "homerslab-authentik":
 				args[i] = project
-			case "/usr/share/homerslab/sign-in/authentik.compose.yaml":
+			case "/usr/share/homeward/sign-in/authentik.compose.yaml":
 				args[i] = filepath.Join(w.dir, "compose.yaml")
 			}
 		}
@@ -602,13 +602,13 @@ func TestTheIdentityProviderContractOnAuthentik(t *testing.T) {
 // the edge, which Chromium trusts by its key alone. Chromium makes the passkey from a fresh enrolment link and signs in
 // to Admin's client; the code it brings back is exchanged and its ID token verified here.
 //
-// HOMERSLAB_TEST_BROWSER_RUNS runs the browser's side that many times in a row (CI's manual run proves a flake gone
+// HOMEWARD_TEST_BROWSER_RUNS runs the browser's side that many times in a row (CI's manual run proves a flake gone
 // with 20). Each run is a person of its own, with an enrolment link and an authorize attempt of its own: an enrolment
 // link works once, and a run never reuses what another used up.
 func inABrowser(t *testing.T, w *world, a *authentik.Authentik) {
 	ctx := context.Background()
 	runs := 1
-	if n, err := strconv.Atoi(os.Getenv("HOMERSLAB_TEST_BROWSER_RUNS")); err == nil && n > 1 {
+	if n, err := strconv.Atoi(os.Getenv("HOMEWARD_TEST_BROWSER_RUNS")); err == nil && n > 1 {
 		runs = n
 	}
 	c := w.OIDC()
@@ -686,10 +686,10 @@ func browserRun(t *testing.T, a *authentik.Authentik, c oidc.Client, e oidc.Endp
 	if err := os.WriteFile(filepath.Join(dir, "world.json"), spec, 0o600); err != nil {
 		return err
 	}
-	if os.Getenv("HOMERSLAB_TEST_BROWSER") == "external" {
+	if os.Getenv("HOMEWARD_TEST_BROWSER") == "external" {
 		// The browser runs elsewhere (a developer's machine, where Go runs in a container): wait for its answer.
 		shareWithTheBrowser(t, dir, filepath.Join(dir, "world.json"))
-		t.Logf("waiting for the browser: HOMERSLAB_TEST_SIGNIN=%s npx playwright test e2e/passkey.idp.spec.ts --project=desktop", filepath.Join(dir, "world.json"))
+		t.Logf("waiting for the browser: HOMEWARD_TEST_SIGNIN=%s npx playwright test e2e/passkey.idp.spec.ts --project=desktop", filepath.Join(dir, "world.json"))
 		for deadline := time.Now().Add(10 * time.Minute); time.Now().Before(deadline); time.Sleep(time.Second) {
 			if _, err := os.Stat(out); err == nil {
 				break
@@ -700,7 +700,7 @@ func browserRun(t *testing.T, a *authentik.Authentik, c oidc.Client, e oidc.Endp
 		cmd := exec.Command("npx", "playwright", "test", "e2e/passkey.idp.spec.ts", "--project=desktop", "--reporter=list",
 			fmt.Sprintf("--output=test-results/passkey-%d", run))
 		cmd.Dir = filepath.Join(filepath.Dir(self), "..", "..", "..", "web")
-		cmd.Env = append(os.Environ(), "HOMERSLAB_TEST_SIGNIN="+filepath.Join(dir, "world.json"))
+		cmd.Env = append(os.Environ(), "HOMEWARD_TEST_SIGNIN="+filepath.Join(dir, "world.json"))
 		got, err := cmd.CombinedOutput()
 		t.Logf("the browser, run %d:\n%s", run, got)
 		if err != nil {
@@ -896,7 +896,7 @@ func up(t *testing.T, engine string) *world {
 		}
 	}
 	file := strings.NewReplacer("name: homerslab-authentik", "name: "+project, "172.31.250.", signInNet+".",
-		"/run/homerslab-authentik/", dir+"/", "/run/homerslab-ldap/", dir+"/").Replace(string(packaged))
+		"/run/homeward-authentik/", dir+"/", "/run/homeward-ldap/", dir+"/").Replace(string(packaged))
 	if err := os.WriteFile(filepath.Join(dir, "compose.yaml"), []byte(file), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -906,7 +906,7 @@ func up(t *testing.T, engine string) *world {
 			out, _ := w.composeOut("logs", "--no-color", "--tail", "80")
 			t.Logf("the containers' logs:\n%s", out)
 		}
-		if os.Getenv("HOMERSLAB_TEST_KEEP") == "" {
+		if os.Getenv("HOMEWARD_TEST_KEEP") == "" {
 			w.composeQuiet("--profile", "ldap", "down", "-v", "--remove-orphans") // the outpost too
 		}
 	})
@@ -1109,7 +1109,7 @@ func (w *world) GiveOthers(t *testing.T, username string) {
 	}
 }
 
-// SetUpAuthenticators signs in with the passkey through HomersLab's sign-in, then runs Authentik's default setup flows
+// SetUpAuthenticators signs in with the passkey through Homeward's sign-in, then runs Authentik's default setup flows
 // for a passkey (with a), TOTP, recovery codes and a password, and reads through the API which of them set anything up.
 func (w *world) SetUpAuthenticators(t *testing.T, ib idptest.Browser, username string, a *webauthntest.Authenticator) []string {
 	t.Helper()

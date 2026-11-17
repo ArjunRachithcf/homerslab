@@ -17,14 +17,14 @@ import (
 
 	"golang.org/x/sys/unix"
 
-	"github.com/ArjunRachithcf/homerslab/internal/engine"
-	"github.com/ArjunRachithcf/homerslab/internal/engine/compose"
+	"github.com/ArjunRachithcf/homeward/internal/engine"
+	"github.com/ArjunRachithcf/homeward/internal/engine/compose"
 )
 
 // readUser is the user a compose read runs as when the agent is root: one that only the agent's reads use, which the
 // packages make (packaging/sysusers.d), so no other process shares its uid to signal or trace a read's child. Never
 // nobody, whom many share (#183).
-const readUser = "homerslab-read"
+const readUser = "homeward-read"
 
 // ReadID is readUser's uid and gid, fixed by the packages (packaging/sysusers.d) outside the ranges app images commonly
 // run as (#190). The agent refuses any other: a uid sysusers handed out before, 999 say, could be an app's.
@@ -165,13 +165,13 @@ type Confined struct {
 	DumpableAtStart int
 }
 
-// ReadProjectMain is the agent's read-project mode (homerslab agent read-project [--cpu-seconds N] [--deadline D]
+// ReadProjectMain is the agent's read-project mode (homeward agent read-project [--cpu-seconds N] [--deadline D]
 // [--control-fd FD] -- PROJECT): the child the agent starts for each compose read, with the file on its standard input
 // and the result, as JSON, on its standard output.
 //
 // What the child can do: read its standard input, and write in its own empty folder (its working directory, HOME
 // and TMPDIR), where the reader puts the compose file it loads. What it can't:
-//   - act as root: when the agent is root, the child starts as homerslab-read (readUser), a user only the agent's
+//   - act as root: when the agent is root, the child starts as homeward-read (readUser), a user only the agent's
 //     reads use, with no supplementary groups, set in the fork before it runs any of its own code, so it holds no
 //     capability and reads only what everyone may read; it never starts another program;
 //   - be traced: a root agent's child runs a copy of the agent it can't read (mode 0711), so the kernel starts it
@@ -210,12 +210,12 @@ func readProjectMain(args []string, stdin io.Reader, stdout io.Writer, read func
 		fmt.Fprintln(os.Stderr, "confining the read:", err)
 		return 1
 	}
-	fs := flag.NewFlagSet("homerslab agent read-project", flag.ContinueOnError)
+	fs := flag.NewFlagSet("homeward agent read-project", flag.ContinueOnError)
 	cpu := fs.Int("cpu-seconds", 10, "the CPU time the read may use")
 	deadline := fs.Duration("deadline", ReadDeadline, "how long the read may take, from the child's start")
 	controlFD := fs.Int("control-fd", -1, "a pipe whose write end closing ends the read")
 	if err := fs.Parse(args); err != nil || fs.NArg() != 1 {
-		fmt.Fprintln(os.Stderr, "usage: homerslab agent read-project [--cpu-seconds N] [--deadline D] [--control-fd FD] -- PROJECT < compose.yaml")
+		fmt.Fprintln(os.Stderr, "usage: homeward agent read-project [--cpu-seconds N] [--deadline D] [--control-fd FD] -- PROJECT < compose.yaml")
 		return 2
 	}
 	var res readResult

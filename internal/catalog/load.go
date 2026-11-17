@@ -16,9 +16,9 @@ import (
 
 	"go.yaml.in/yaml/v3"
 
-	"github.com/ArjunRachithcf/homerslab/internal/backup"
-	"github.com/ArjunRachithcf/homerslab/internal/storage"
-	"github.com/ArjunRachithcf/homerslab/internal/text"
+	"github.com/ArjunRachithcf/homeward/internal/backup"
+	"github.com/ArjunRachithcf/homeward/internal/storage"
+	"github.com/ArjunRachithcf/homeward/internal/text"
 )
 
 var (
@@ -300,7 +300,7 @@ func checkIdentity(p *problems, id *Identity, methods []SignIn) {
 }
 
 var (
-	// EnvName is an environment variable's name, as HomersLab sets one for an app.
+	// EnvName is an environment variable's name, as Homeward sets one for an app.
 	EnvName = regexp.MustCompile(`^[A-Z_][A-Z0-9_]{0,63}$`)
 	// A path on the app's own URL: no other host (//), no way out (..), no query or fragment, no wildcard or pattern.
 	appPath = regexp.MustCompile(`^/[A-Za-z0-9._~!&',;=:@%/-]{0,200}$`)
@@ -313,7 +313,7 @@ var (
 var refusableMethods = []string{"GET", "HEAD", "POST", "PUT", "PATCH", "DELETE"}
 
 // SplitRefused is a refused route as its method ("" for every method) and its path: "/x" or "PUT /x". ok is false for
-// a method HomersLab doesn't refuse by name, or anything else that isn't one of the two forms.
+// a method Homeward doesn't refuse by name, or anything else that isn't one of the two forms.
 func SplitRefused(r string) (method, path string, ok bool) {
 	method, path, two := strings.Cut(r, " ")
 	if !two {
@@ -328,7 +328,7 @@ func ownPath(p string) bool {
 }
 
 // checkOIDC checks an OIDC method's redirect addresses, and how the app takes its client (#20; adversarial review round
-// 2): a redirect address is a callback path on the app's own URL, which HomersLab puts on the app's canonical URL, or
+// 2): a redirect address is a callback path on the app's own URL, which Homeward puts on the app's canonical URL, or
 // one of the app's own apps' addresses; never a wildcard, another site or plain HTTP.
 func checkOIDC(p *problems, m SignIn) {
 	if len(m.RedirectURIs) == 0 {
@@ -415,7 +415,7 @@ func checkData(p *problems, data []Data) {
 		if d.Dump != nil && d.Dump.File != "" && !backup.ValidFile(d.Dump.File) {
 			p.add("data %q: a dump's file, a plain name", d.What)
 		}
-		// A dump that is backed up can be put back: the app's own command, never one HomersLab guesses.
+		// A dump that is backed up can be put back: the app's own command, never one Homeward guesses.
 		if d.Dump != nil && d.BackedUp() && !backup.ValidCommand(d.Dump.Restore) {
 			p.add("data %q: a dump's restore command, which reads the dump on its standard input, of plain arguments, no shell", d.What)
 		}

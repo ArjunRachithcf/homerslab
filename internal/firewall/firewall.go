@@ -49,9 +49,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/ArjunRachithcf/homerslab/internal/atomicfile"
-	"github.com/ArjunRachithcf/homerslab/internal/engine"
-	"github.com/ArjunRachithcf/homerslab/internal/host"
+	"github.com/ArjunRachithcf/homeward/internal/atomicfile"
+	"github.com/ArjunRachithcf/homeward/internal/engine"
+	"github.com/ArjunRachithcf/homeward/internal/host"
 )
 
 // Table is the table's family and name.
@@ -493,7 +493,7 @@ type Status struct {
 type Firewall struct {
 	Run host.Runner
 	Now func() time.Time
-	// SavePath is where the table, once applied, is written (0600, atomically) for homerslab-firewall-restore, which
+	// SavePath is where the table, once applied, is written (0600, atomically) for homeward-firewall-restore, which
 	// loads it at boot before the network comes up; "" for none.
 	SavePath string
 
@@ -582,7 +582,7 @@ func Closed(setupPort int) string {
 	return b.String()
 }
 
-// RestoreScript is what homerslab-firewall-restore loads at boot: the table the agent last applied, or Closed when
+// RestoreScript is what homeward-firewall-restore loads at boot: the table the agent last applied, or Closed when
 // it never applied one. A saved file that can't be used (unreadable, cut short by a power cut, or not a table Render
 // wrote) is never loaded: Closed is, and unusable says why.
 func RestoreScript(savePath string, setupPort int) (script string, unusable error) {
@@ -593,7 +593,7 @@ func RestoreScript(savePath string, setupPort int) (script string, unusable erro
 	case err != nil:
 		return Closed(setupPort), err
 	case !whole(string(b)):
-		return Closed(setupPort), fmt.Errorf("%s isn't a whole HomersLab firewall table", savePath)
+		return Closed(setupPort), fmt.Errorf("%s isn't a whole Homeward firewall table", savePath)
 	}
 	return string(b), nil
 }

@@ -1,4 +1,4 @@
-// HomersLab motion: screen changes and shared elements with the View Transitions API, lists that gain or lose a row,
+// Homeward motion: screen changes and shared elements with the View Transitions API, lists that gain or lose a row,
 // the tab bar's lens, and the light that follows a pointer across Home's glass. Framework-free, no dependencies.
 // Every function makes its change at once where the API is missing. Under reduced motion (the system setting, or
 // data-motion="reduce" on <html>) screens only cross-fade and lists and shared elements change instantly.

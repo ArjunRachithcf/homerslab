@@ -13,9 +13,9 @@ import (
 	"testing/fstest"
 	"time"
 
-	"github.com/ArjunRachithcf/homerslab/internal/home"
-	"github.com/ArjunRachithcf/homerslab/internal/idp"
-	"github.com/ArjunRachithcf/homerslab/internal/testenv"
+	"github.com/ArjunRachithcf/homeward/internal/home"
+	"github.com/ArjunRachithcf/homeward/internal/idp"
+	"github.com/ArjunRachithcf/homeward/internal/testenv"
 )
 
 // world is Home with its projection, the sign-in's stand-in, and the built pages.

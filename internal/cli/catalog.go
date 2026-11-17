@@ -12,9 +12,9 @@ import (
 	"unicode"
 	"unicode/utf8"
 
-	"github.com/ArjunRachithcf/homerslab/internal/bidi"
-	"github.com/ArjunRachithcf/homerslab/internal/catalog"
-	"github.com/ArjunRachithcf/homerslab/internal/manager/plan"
+	"github.com/ArjunRachithcf/homeward/internal/bidi"
+	"github.com/ArjunRachithcf/homeward/internal/catalog"
+	"github.com/ArjunRachithcf/homeward/internal/manager/plan"
 )
 
 // leading takes a command's one positional argument, which comes before its flags.
@@ -61,7 +61,7 @@ func showCatalog(ctx context.Context, args []string, env Env) error {
 		}
 		fmt.Fprintf(env.Stdout, "  %-10s %-10s %-20s %s, %s\n", a.Name, a.Purpose, categories[a.Category], upperFirst(string(a.Tier)), how)
 	}
-	fmt.Fprint(env.Stdout, "\nTo see what installing one would do: homerslab plan <app>\n")
+	fmt.Fprint(env.Stdout, "\nTo see what installing one would do: homeward plan <app>\n")
 	return nil
 }
 
@@ -71,7 +71,7 @@ func makePlan(ctx context.Context, args []string, env Env) error {
 	socket := fs.String("control-socket", DefaultControlSocket, "the manager's control socket")
 	asJSON := fs.Bool("json", false, "print the API's resource as it is")
 	fs.Usage = func() {
-		fmt.Fprint(fs.Output(), "Usage: homerslab plan <app> [--json]\n       homerslab plan show <plan id> [--json]\n")
+		fmt.Fprint(fs.Output(), "Usage: homeward plan <app> [--json]\n       homeward plan show <plan id> [--json]\n")
 	}
 	if err := parse(fs, rest); err != nil {
 		return err
@@ -80,7 +80,7 @@ func makePlan(ctx context.Context, args []string, env Env) error {
 		fs.Usage()
 		return errUsage
 	}
-	return showPlan(ctx, env, *socket, *asJSON, "POST", "/api/v1/plans", map[string]string{"app": app}, "no app "+app+" in the catalog: homerslab catalog lists them")
+	return showPlan(ctx, env, *socket, *asJSON, "POST", "/api/v1/plans", map[string]string{"app": app}, "no app "+app+" in the catalog: homeward catalog lists them")
 }
 
 func showPlanByID(ctx context.Context, args []string, env Env) error {
@@ -92,7 +92,7 @@ func showPlanByID(ctx context.Context, args []string, env Env) error {
 		return err
 	}
 	if id == "" {
-		fmt.Fprint(fs.Output(), "Usage: homerslab plan show <plan id> [--json]\n")
+		fmt.Fprint(fs.Output(), "Usage: homeward plan show <plan id> [--json]\n")
 		return errUsage
 	}
 	return showPlan(ctx, env, *socket, *asJSON, "GET", "/api/v1/plans/"+id, nil, "no plan "+id)
@@ -115,7 +115,7 @@ func showPlan(ctx context.Context, env Env, socket string, asJSON bool, method, 
 		case "no-such-app", "no-such-plan":
 			return errors.New(notFound)
 		case "household-not-set-up":
-			return errors.New("the household isn't set up yet: first-time setup comes first (sudo homerslab setup link)")
+			return errors.New("the household isn't set up yet: first-time setup comes first (sudo homeward setup link)")
 		}
 	}
 	if err != nil {
@@ -144,7 +144,7 @@ func planWords(w io.Writer, p plan.Plan) {
 	row("Its name", fmt.Sprintf("%s, on %s. %s", p.Name.Host, strings.Join(p.Name.Meshes, " and "), exposure))
 	if p.Name.Why != "" {
 		more(fmt.Sprintf("It asked for %q, which %s.", p.Name.Asked, map[string]string{
-			"platform": "is HomersLab's own: the sign-in, Admin or Home", "mesh": "the mesh uses to check the domain",
+			"platform": "is Homeward's own: the sign-in, Admin or Home", "mesh": "the mesh uses to check the domain",
 			"dns": "starts with _, as DNS's own names do", "web": "is the web's usual name for the domain", "mail": "mail uses",
 			"node": "is a node's name", "app": "another app has",
 		}[p.Name.Why]))
@@ -261,7 +261,7 @@ func planWords(w io.Writer, p plan.Plan) {
 			row("Warning", fmt.Sprintf("No build for %s on %s: %s.", p.Placement.Architecture, upperFirst(string(p.Placement.Engine)), strings.Join(x.Services, ", ")))
 		}
 	}
-	fmt.Fprint(w, "\nNothing happens until the plan is applied; applying comes with a later version of HomersLab.\n")
+	fmt.Fprint(w, "\nNothing happens until the plan is applied; applying comes with a later version of Homeward.\n")
 }
 
 // gb is memory in whole gigabytes (GiB), rounded, or in megabytes (MiB) below one.

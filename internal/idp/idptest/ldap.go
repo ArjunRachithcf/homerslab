@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ArjunRachithcf/homerslab/internal/idp"
-	"github.com/ArjunRachithcf/homerslab/internal/ldaps/ldaptest"
+	"github.com/ArjunRachithcf/homeward/internal/idp"
+	"github.com/ArjunRachithcf/homeward/internal/ldaps/ldaptest"
 )
 
 // LDAPWorld is a provider that serves apps over LDAP, with its outpost in containers (#204).

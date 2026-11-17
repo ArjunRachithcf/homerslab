@@ -1,4 +1,4 @@
-// HomersLab Admin prototype: uptime and incidents (ADR 0018). A year of uptime and response times per app, node and the
+// Homeward Admin prototype: uptime and incidents (ADR 0018). A year of uptime and response times per app, node and the
 // public path; the incident log; the outside heartbeat. PROTOTYPE, throwaway: figures come from data-ops.js, where
 // uptime is computed from the incidents.
 (() => {

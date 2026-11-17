@@ -10,15 +10,15 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ArjunRachithcf/homerslab/internal/agent"
-	"github.com/ArjunRachithcf/homerslab/internal/agent/agenttest"
-	"github.com/ArjunRachithcf/homerslab/internal/engine"
-	"github.com/ArjunRachithcf/homerslab/internal/testenv"
+	"github.com/ArjunRachithcf/homeward/internal/agent"
+	"github.com/ArjunRachithcf/homeward/internal/agent/agenttest"
+	"github.com/ArjunRachithcf/homeward/internal/engine"
+	"github.com/ArjunRachithcf/homeward/internal/testenv"
 )
 
 const (
 	libraryVolume = "/var/lib/docker/volumes/homerslab-ledger_library/_data"
-	appUnit       = "homerslab-app-ledger.service"
+	appUnit       = "homeward-app-ledger.service"
 )
 
 var yesterday = time.Date(2026, 11, 13, 9, 0, 0, 0, time.UTC)
@@ -113,7 +113,7 @@ func TestARestoreSnapshotsFirstThenPutsBackExactlyTheAppsOwnData(t *testing.T) {
 		"run db", // the dump's service alone, the app's own unit still stopped
 		"dump " + dump + " /ledger.sql",
 		"command db psql --set=ON_ERROR_STOP=1 --username=postgres ledger",
-		"remove /var/lib/homerslab/restore/ledger.ledger.sql",
+		"remove /var/lib/homeward/restore/ledger.ledger.sql",
 	}) {
 		t.Errorf("what was put back: %q", got)
 	}
@@ -142,7 +142,7 @@ func TestARestoreSnapshotsFirstThenPutsBackExactlyTheAppsOwnData(t *testing.T) {
 			cmd = c.String()
 		}
 	}
-	if !strings.Contains(cmd, "StandardInput=file:/var/lib/homerslab/restore/ledger.ledger.sql") || !strings.Contains(cmd, "exec -T db psql") {
+	if !strings.Contains(cmd, "StandardInput=file:/var/lib/homeward/restore/ledger.ledger.sql") || !strings.Contains(cmd, "exec -T db psql") {
 		t.Errorf("the app's restore command: %s", cmd)
 	}
 }
@@ -322,17 +322,17 @@ func TestAFailedRestoreRollsBackToTheSnapshotTakenFirst(t *testing.T) {
 	// A rollback that works leaves the app as it was, and says so.
 	t.Run("the rollback's own dump goes back too", func(t *testing.T) {
 		sock, h, library, dump := restorable(t, agent.Config{HealthWait: 50 * time.Millisecond})
-		h.FailRestic("dump --target /var/lib/homerslab/restore/ledger.ledger.sql -- "+dump, 1)
+		h.FailRestic("dump --target /var/lib/homeward/restore/ledger.ledger.sql -- "+dump, 1)
 		_, res, body := restore(t, sock, agent.RestoreItem{Data: "web:/data/library", Snapshot: library}, agent.RestoreItem{Data: "db:ledger.sql", Snapshot: dump})
 		if res.State != "rolled-back" || res.Error != "dump-restore-failed" {
 			t.Fatalf("the restore: %s", body)
 		}
 		want := []string{
-			"restore " + library + ":" + libraryVolume + " " + libraryVolume, "run db", "remove /var/lib/homerslab/restore/ledger.ledger.sql",
+			"restore " + library + ":" + libraryVolume + " " + libraryVolume, "run db", "remove /var/lib/homeward/restore/ledger.ledger.sql",
 			"restore " + res.Before[0].Snapshot + ":" + libraryVolume + " " + libraryVolume, "run db",
 			"dump " + res.Before[1].Snapshot + " /ledger.sql",
 			"command db psql --set=ON_ERROR_STOP=1 --username=postgres ledger",
-			"remove /var/lib/homerslab/restore/ledger.ledger.sql",
+			"remove /var/lib/homeward/restore/ledger.ledger.sql",
 		}
 		if got := h.Restored(); !slices.Equal(got, want) {
 			t.Errorf("put back:\n got %q\nwant %q", got, want)

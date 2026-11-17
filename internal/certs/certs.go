@@ -2,7 +2,7 @@
 // a DNS challenge (spec: Names and certificates; ADR 0006). The household's app names never reach public Certificate
 // Transparency logs: only *.<domain> does.
 //
-// The challenge's record goes through the household's DNS provider as one of HomersLab's own records (internal/dns),
+// The challenge's record goes through the household's DNS provider as one of Homeward's own records (internal/dns),
 // and its propagation is checked at the zone's authoritative servers, found through public resolvers, never the
 // machine's own (#79).
 package certs
@@ -26,8 +26,8 @@ import (
 	"github.com/mholt/acmez/v3"
 	"github.com/mholt/acmez/v3/acme"
 
-	"github.com/ArjunRachithcf/homerslab/internal/dns"
-	"github.com/ArjunRachithcf/homerslab/internal/mesh"
+	"github.com/ArjunRachithcf/homeward/internal/dns"
+	"github.com/ArjunRachithcf/homeward/internal/mesh"
 )
 
 // Authority is an ACME certificate authority.
@@ -150,7 +150,7 @@ func (a Authority) CheckCAA(ctx context.Context, domain string) error {
 	return &CAAForbids{Domain: domain, Authority: a.Name, Allowed: dns.Issuers(set)}
 }
 
-// Request is one issuance: the domain, its zone as HomersLab may change it, and the ACME account.
+// Request is one issuance: the domain, its zone as Homeward may change it, and the ACME account.
 type Request struct {
 	Domain     string
 	Zone       *dns.Owned
@@ -186,7 +186,7 @@ func (a Authority) Issue(ctx context.Context, r Request) (Certificate, error) {
 		log = slog.New(slog.DiscardHandler)
 	}
 	client := &acmez.Client{
-		Client: &acme.Client{Directory: a.Directory, HTTPClient: a.HTTP, UserAgent: "HomersLab", Logger: log},
+		Client: &acme.Client{Directory: a.Directory, HTTPClient: a.HTTP, UserAgent: "Homeward", Logger: log},
 		ChallengeSolvers: map[string]acmez.Solver{
 			acme.ChallengeTypeDNS01: &solver{a: a, zone: r.Zone},
 		},
@@ -215,7 +215,7 @@ func (a Authority) Issue(ctx context.Context, r Request) (Certificate, error) {
 	return Parse(r.Domain, chains[0].ChainPEM, key)
 }
 
-// solver answers the DNS challenge with one of HomersLab's own records, and waits until every authoritative server
+// solver answers the DNS challenge with one of Homeward's own records, and waits until every authoritative server
 // holds it.
 type solver struct {
 	a    Authority

@@ -1,6 +1,6 @@
 # The loop
 
-The loop works HomersLab's GitHub issues from the map of tickets to merged PRs, and never waits on the maintainer.
+The loop works Homeward's GitHub issues from the map of tickets to merged PRs, and never waits on the maintainer.
 It asks him only for decisions and for one review of the security core: security-core work stacks on the
 **integration branch**, which reaches `main` as a single squash that he merges. Each **iteration** runs these steps in order. An iteration is done
 when its ticket is merged, waiting for the maintainer, or parked, and the tracker says which.

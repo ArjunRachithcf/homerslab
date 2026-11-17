@@ -19,10 +19,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ArjunRachithcf/homerslab/internal/agent"
-	"github.com/ArjunRachithcf/homerslab/internal/idp"
-	"github.com/ArjunRachithcf/homerslab/internal/manager"
-	"github.com/ArjunRachithcf/homerslab/internal/testenv"
+	"github.com/ArjunRachithcf/homeward/internal/agent"
+	"github.com/ArjunRachithcf/homeward/internal/idp"
+	"github.com/ArjunRachithcf/homeward/internal/manager"
+	"github.com/ArjunRachithcf/homeward/internal/testenv"
 )
 
 const (
@@ -466,7 +466,7 @@ func sameOrigin(r *http.Request) {
 }
 
 // First-time setup's second half, up to the admin's first sign-in over the mesh (#17):
-//   - `sudo homerslab setup join` sets up the household account and hands over, in the terminal only, a key for the
+//   - `sudo homeward setup join` sets up the household account and hands over, in the terminal only, a key for the
 //     admin's device and a one-time link for their first passkey (#64, #84);
 //   - Authentik is bootstrapped before the edge serves its name, and the bootstrap token is forgotten;
 //   - Admin signs in with the household account, admins only, and the first sign-in closes the LAN listener for good.
@@ -512,7 +512,7 @@ func TestTheSecondHalfEndsAtTheAdminsFirstSignInOverTheMesh(t *testing.T) {
 			t.Error("the manager still keeps the bootstrap token")
 		}
 		if p.unseal(t, "manager-sign-in-token") != ownToken || p.unseal(t, "manager-admin-client-secret") != clientSecret {
-			t.Error("HomersLab's token and Admin's client secret aren't sealed")
+			t.Error("Homeward's token and Admin's client secret aren't sealed")
 		}
 		if fs.people["ines"].Role != idp.Admin || fs.people["ines"].Mail != "ines@ferreira.family" {
 			t.Errorf("the first admin: %+v", fs.people["ines"])
@@ -782,7 +782,7 @@ func TestSettingUpTheHouseholdAccountResumes(t *testing.T) {
 	}
 }
 
-// HomersLab's new token is sealed before the bootstrap token stops working: a seal that fails leaves the bootstrap
+// Homeward's new token is sealed before the bootstrap token stops working: a seal that fails leaves the bootstrap
 // token working, and the next try bootstraps with it (review of #17).
 func TestANewTokenThatCouldntBeKeptIsNeverTheOnlyOne(t *testing.T) {
 	testenv.Isolate(t)
@@ -800,7 +800,7 @@ func TestANewTokenThatCouldntBeKeptIsNeverTheOnlyOne(t *testing.T) {
 		t.Fatalf("again: %d %s", r.Code, r.Body)
 	}
 	if p.unseal(t, "manager-sign-in-token") != ownToken || len(fs.bootstrap) != 1 {
-		t.Error("the second try didn't keep HomersLab's token")
+		t.Error("the second try didn't keep Homeward's token")
 	}
 }
 

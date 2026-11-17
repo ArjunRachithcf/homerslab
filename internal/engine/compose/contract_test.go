@@ -3,9 +3,9 @@ package compose_test
 // The container-engine contract suite (spec: Adapter contracts, Testing Decisions), on Docker: a throwaway engine runs
 // two apps' compose projects as their units do (the standard compose command, the catalog's file and the agent's,
 // appunit), and the adapter reads their state, health and logs, many projects at once, and nothing that isn't
-// HomersLab's. It needs an engine nobody else uses: it runs when HOMERSLAB_TEST_DOCKER_HOST names one (CI's runner, or a
+// Homeward's. It needs an engine nobody else uses: it runs when HOMEWARD_TEST_DOCKER_HOST names one (CI's runner, or a
 // throwaway Docker in a container), and is skipped otherwise. The code under test reaches only that engine, by its
-// endpoint; testenv points DOCKER_HOST at nowhere. Its storage locations' folders are in HOMERSLAB_TEST_STORAGE_DIR.
+// endpoint; testenv points DOCKER_HOST at nowhere. Its storage locations' folders are in HOMEWARD_TEST_STORAGE_DIR.
 
 import (
 	"context"
@@ -19,11 +19,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ArjunRachithcf/homerslab/internal/appunit"
-	"github.com/ArjunRachithcf/homerslab/internal/engine"
-	"github.com/ArjunRachithcf/homerslab/internal/engine/compose"
-	"github.com/ArjunRachithcf/homerslab/internal/storage"
-	"github.com/ArjunRachithcf/homerslab/internal/testenv"
+	"github.com/ArjunRachithcf/homeward/internal/appunit"
+	"github.com/ArjunRachithcf/homeward/internal/engine"
+	"github.com/ArjunRachithcf/homeward/internal/engine/compose"
+	"github.com/ArjunRachithcf/homeward/internal/storage"
+	"github.com/ArjunRachithcf/homeward/internal/testenv"
 )
 
 // contractImage is the apps' one image: alpine 3.22, pinned by its index digest.
@@ -55,18 +55,18 @@ volumes:
 
 func TestTheContainerEngineContractOnDocker(t *testing.T) {
 	testenv.Isolate(t)
-	host := os.Getenv("HOMERSLAB_TEST_DOCKER_HOST")
+	host := os.Getenv("HOMEWARD_TEST_DOCKER_HOST")
 	if host == "" {
-		t.Skip("set HOMERSLAB_TEST_DOCKER_HOST to a throwaway engine for the contract suite")
+		t.Skip("set HOMEWARD_TEST_DOCKER_HOST to a throwaway engine for the contract suite")
 	}
 	ctx := context.Background()
 	dir := t.TempDir()
 	r := reader(t)
-	// Two storage locations (#28), a folder the app only reads and one it writes, in HOMERSLAB_TEST_STORAGE_DIR, a folder
+	// Two storage locations (#28), a folder the app only reads and one it writes, in HOMEWARD_TEST_STORAGE_DIR, a folder
 	// the engine's machine sees at the same path, where a location may be (not under /home or /tmp: CI's is in /srv).
-	locations := os.Getenv("HOMERSLAB_TEST_STORAGE_DIR")
+	locations := os.Getenv("HOMEWARD_TEST_STORAGE_DIR")
 	if err := storage.Allowed(locations); err != nil {
-		t.Fatalf("HOMERSLAB_TEST_STORAGE_DIR %q: %v; name a folder where a storage location may be", locations, err)
+		t.Fatalf("HOMEWARD_TEST_STORAGE_DIR %q: %v; name a folder where a storage location may be", locations, err)
 	}
 	media, err := os.MkdirTemp(locations, "storage-media-")
 	if err != nil {
@@ -121,7 +121,7 @@ func TestTheContainerEngineContractOnDocker(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	t.Run("every HomersLab project's containers, with their state and health, many at once", func(t *testing.T) {
+	t.Run("every Homeward project's containers, with their state and health, many at once", func(t *testing.T) {
 		st, err := e.States(ctx)
 		if err != nil {
 			t.Fatal(err)
@@ -134,7 +134,7 @@ func TestTheContainerEngineContractOnDocker(t *testing.T) {
 		}
 		for name := range st {
 			if !strings.HasPrefix(name, engine.ProjectPrefix) {
-				t.Errorf("a project that isn't HomersLab's: %s", name)
+				t.Errorf("a project that isn't Homeward's: %s", name)
 			}
 		}
 	})
@@ -189,7 +189,7 @@ func TestTheContainerEngineContractOnDocker(t *testing.T) {
 			}
 		}
 		if _, err := e.Mounts(ctx, "hltest-other"); err == nil {
-			t.Error("the mounts of a project that isn't HomersLab's")
+			t.Error("the mounts of a project that isn't Homeward's")
 		}
 		a := apps["contract-a"]
 		cmd := exec.Command("docker", append(a.Compose()[1:], "exec", "-T", "web", "printf", "the-dump")...)
@@ -240,7 +240,7 @@ func TestTheContainerEngineContractOnDocker(t *testing.T) {
 			t.Errorf("contract-b's logs: %q", said)
 		}
 		if _, err := e.Logs(ctx, "hltest-other", 10); err == nil {
-			t.Error("the logs of a project that isn't HomersLab's")
+			t.Error("the logs of a project that isn't Homeward's")
 		}
 	})
 

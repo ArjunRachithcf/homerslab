@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ArjunRachithcf/homerslab/internal/mesh"
+	"github.com/ArjunRachithcf/homeward/internal/mesh"
 )
 
 // Machine is one machine in a World: the primary, a second node, or a person's device.
@@ -20,7 +20,7 @@ type Machine string
 
 // World is a mesh's control plane with machines around it, as a contract test builds it.
 type World interface {
-	// Mesh is the adapter, with HomersLab's own token.
+	// Mesh is the adapter, with Homeward's own token.
 	Mesh() mesh.Mesh
 	// Join joins a node machine with a key, the way the agent does, and returns its mesh address.
 	Join(t *testing.T, m Machine, k mesh.JoinKey) (netip.Addr, error)
@@ -39,7 +39,7 @@ type World interface {
 	Resolves(t *testing.T, m Machine, name string) bool
 	// Lookup is what a machine's own resolver answers for a name, asked once: its addresses, or none.
 	Lookup(t *testing.T, m Machine, name string) []netip.Addr
-	// JoinOutsider joins a machine that is in none of HomersLab's groups: a peer the household made by hand.
+	// JoinOutsider joins a machine that is in none of Homeward's groups: a peer the household made by hand.
 	JoinOutsider(t *testing.T, m Machine) netip.Addr
 	// MeshName is a joined machine's name on the mesh; OutsideName is a name the mesh doesn't serve, from the
 	// machine's own DNS.
@@ -55,11 +55,11 @@ type Machines struct {
 	Primary Machine // a node with the client as the agent configures it
 	Second  Machine // a node whose resolver is systemd-resolved
 	Device  Machine // a person's device, with the client's own defaults
-	// Outsider is a machine on the mesh that isn't HomersLab's: in none of its groups.
+	// Outsider is a machine on the mesh that isn't Homeward's: in none of its groups.
 	Outsider Machine
 }
 
-// Run runs the contract against a World, and returns the adapter with HomersLab's token as the suite left it
+// Run runs the contract against a World, and returns the adapter with Homeward's token as the suite left it
 // (rotated).
 func Run(t *testing.T, w World, ms Machines, want mesh.Report) mesh.Mesh {
 	ctx := context.Background()
@@ -75,7 +75,7 @@ func Run(t *testing.T, w World, ms Machines, want mesh.Report) mesh.Mesh {
 		}
 	})
 
-	t.Run("policies per role, and the mesh's own default removed where HomersLab set the mesh up", func(t *testing.T) {
+	t.Run("policies per role, and the mesh's own default removed where Homeward set the mesh up", func(t *testing.T) {
 		if err := m.EnsurePolicies(ctx, want.Port); err != nil {
 			t.Fatal(err)
 		}
@@ -151,7 +151,7 @@ func Run(t *testing.T, w World, ms Machines, want mesh.Report) mesh.Mesh {
 		}
 	})
 
-	t.Run("the household's names reach the node, for HomersLab's groups only", func(t *testing.T) {
+	t.Run("the household's names reach the node, for Homeward's groups only", func(t *testing.T) {
 		for range 2 { // again: nothing changes
 			if err := m.EnsureNames(ctx, Domain, primary); err != nil {
 				t.Fatal(err)
@@ -179,7 +179,7 @@ func Run(t *testing.T, w World, ms Machines, want mesh.Report) mesh.Mesh {
 		}
 		// The outsider joined before the household's machines were asked: had the zone reached it, it would answer now.
 		if got := w.Lookup(t, ms.Outsider, "admin."+Domain); len(got) != 0 {
-			t.Errorf("a peer in none of HomersLab's groups resolves admin.%s to %v", Domain, got)
+			t.Errorf("a peer in none of Homeward's groups resolves admin.%s to %v", Domain, got)
 		}
 	})
 
@@ -212,7 +212,7 @@ func Run(t *testing.T, w World, ms Machines, want mesh.Report) mesh.Mesh {
 		}
 	})
 
-	t.Run("HomersLab's token rotates by itself", func(t *testing.T) {
+	t.Run("Homeward's token rotates by itself", func(t *testing.T) {
 		next, err := m.Rotate(ctx)
 		if err != nil {
 			t.Fatal(err)
@@ -238,7 +238,7 @@ func Run(t *testing.T, w World, ms Machines, want mesh.Report) mesh.Mesh {
 	return m
 }
 
-// checkPolicies wants HomersLab's policies for the household's port exactly, none other of its name, and none of the
+// checkPolicies wants Homeward's policies for the household's port exactly, none other of its name, and none of the
 // mesh's own default.
 func checkPolicies(t *testing.T, have map[string]mesh.Rule, port int) {
 	t.Helper()
@@ -260,7 +260,7 @@ func checkPolicies(t *testing.T, have map[string]mesh.Rule, port int) {
 	}
 	for name := range have {
 		if strings.HasPrefix(name, "homerslab-") && !want[name] {
-			t.Errorf("a policy %s that HomersLab doesn't make", name)
+			t.Errorf("a policy %s that Homeward doesn't make", name)
 		}
 	}
 }

@@ -22,15 +22,15 @@ async function kept(page: Page) {
 
 // The manager's answers to a step (internal/manager: putStep, and the listener's checks), each with what it says.
 const failures: { name: string; status: number; error: string; says: string; reload?: boolean }[] = [
-  { name: 'the manager fails to keep it', status: 500, error: 'internal', says: 'HomersLab couldn’t save this' },
-  { name: 'the manager is busy', status: 503, error: 'unknown', says: 'HomersLab couldn’t save this' },
+  { name: 'the manager fails to keep it', status: 500, error: 'internal', says: 'Homeward couldn’t save this' },
+  { name: 'the manager is busy', status: 503, error: 'unknown', says: 'Homeward couldn’t save this' },
   { name: 'setup moved on elsewhere', status: 409, error: 'earlier-step-open', says: 'Setup moved on in another tab or browser', reload: true },
   { name: 'the home network’s half is done', status: 409, error: 'lan-half-done', says: 'carry on over the mesh', reload: true },
-  { name: 'the step isn’t built yet', status: 501, error: 'not-built', says: 'This step comes with a later version of HomersLab' },
+  { name: 'the step isn’t built yet', status: 501, error: 'not-built', says: 'This step comes with a later version of Homeward' },
   { name: 'the step is answered over the mesh', status: 403, error: 'over-the-mesh', says: 'This step is answered over the mesh' },
   { name: 'it comes from outside the home network', status: 403, error: 'not-from-lan', says: 'only from this machine or your home network' },
   { name: 'it comes from another page', status: 403, error: 'cross-origin', says: 'only from this machine or your home network' },
-  { name: 'the manager doesn’t know the step', status: 404, error: 'unknown-step', says: 'HomersLab didn’t take this answer', reload: true },
+  { name: 'the manager doesn’t know the step', status: 404, error: 'unknown-step', says: 'Homeward didn’t take this answer', reload: true },
 ];
 
 for (const f of failures) {
@@ -49,7 +49,7 @@ test('an answer that gets no answer says the device is offline, and keeps the an
   await atYou(page, await primary.newLink());
   await page.route(STEP, (route) => route.abort('internetdisconnected'));
   await page.getByRole('button', { name: 'Continue' }).click();
-  await expect(page.getByRole('alert')).toContainText('This device couldn’t reach HomersLab');
+  await expect(page.getByRole('alert')).toContainText('This device couldn’t reach Homeward');
   await kept(page);
 });
 
@@ -86,6 +86,6 @@ test('the welcome screen says so too', async ({ page, primary }) => {
   await page.goto((await primary.newLink()).localUrl);
   await page.route('**/api/v1/setup/steps/welcome', (route) => route.abort('internetdisconnected'));
   await page.getByRole('button', { name: 'Get started' }).click();
-  await expect(page.getByRole('alert')).toContainText('This device couldn’t reach HomersLab');
-  await expect(page.getByRole('heading', { level: 1 })).toContainText('Let’s set up HomersLab');
+  await expect(page.getByRole('alert')).toContainText('This device couldn’t reach Homeward');
+  await expect(page.getByRole('heading', { level: 1 })).toContainText('Let’s set up Homeward');
 });

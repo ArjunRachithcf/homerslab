@@ -10,8 +10,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/ArjunRachithcf/homerslab/internal/backup"
-	"github.com/ArjunRachithcf/homerslab/internal/testenv"
+	"github.com/ArjunRachithcf/homeward/internal/backup"
+	"github.com/ArjunRachithcf/homeward/internal/testenv"
 )
 
 const hostKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIK7mZ7hM0bQ9t9n3cWl2b2Y1xq4m0Jc0m7f3QH9uYq1D"
@@ -180,8 +180,8 @@ func TestSecretsAreFilesNeverArgumentsOrEnvironment(t *testing.T) {
 		rec := &recorder{answer: func(argv []string) ([]byte, error) {
 			return []byte(`{"message_type":"summary","snapshot_id":"1f2e3d4c"}` + "\n"), nil
 		}}
-		r := backup.Repo{Restic: "/usr/libexec/homerslab/restic", Target: tg, Node: "primary", Dir: "/run/credentials/hl.service",
-			Cache: "/var/lib/homerslab/backup-cache", Run: rec.run}
+		r := backup.Repo{Restic: "/usr/libexec/homeward/restic", Target: tg, Node: "primary", Dir: "/run/credentials/hl.service",
+			Cache: "/var/lib/homeward/backup-cache", Run: rec.run}
 		if _, err := r.Backup(context.Background(), backup.Item{Tags: []string{"app=immich", "data=server:/data"}, Paths: []string{"/var/lib/docker/volumes/x/_data"}}); err != nil {
 			t.Fatalf("%s: %v", name, err)
 		}
@@ -210,7 +210,7 @@ func TestEveryRunClearsStaleLocksAndPruneBoundsItsRepack(t *testing.T) {
 	rec := &recorder{answer: func(argv []string) ([]byte, error) {
 		return []byte(`{"message_type":"summary","snapshot_id":"1f2e3d4c"}` + "\n"), nil
 	}}
-	r := backup.Repo{Restic: "restic", Target: targets["disk"], Node: "primary", Dir: "/creds", Cache: "/var/lib/homerslab/backup-cache", Run: rec.run}
+	r := backup.Repo{Restic: "restic", Target: targets["disk"], Node: "primary", Dir: "/creds", Cache: "/var/lib/homeward/backup-cache", Run: rec.run}
 	if err := r.Unlock(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -222,7 +222,7 @@ func TestEveryRunClearsStaleLocksAndPruneBoundsItsRepack(t *testing.T) {
 	}
 	var subs []string
 	for _, a := range rec.argv {
-		if !slices.Contains(a, "--cache-dir") || a[slices.Index(a, "--cache-dir")+1] != "/var/lib/homerslab/backup-cache" {
+		if !slices.Contains(a, "--cache-dir") || a[slices.Index(a, "--cache-dir")+1] != "/var/lib/homeward/backup-cache" {
 			t.Errorf("restic's cache isn't on the app-data disk: %q", a)
 		}
 		for _, s := range []string{"unlock", "backup", "forget"} {
@@ -316,10 +316,10 @@ func TestARestoreTakesOnlyASnapshotAndPlainFolders(t *testing.T) {
 	if got := rec.sub("restore"); len(got) != 1 || !slices.Equal(got[0][slices.Index(got[0], "restore"):], []string{"restore", "--target", vol, "--delete", "--", snap + ":" + vol}) {
 		t.Errorf("restore: %q", got)
 	}
-	if err := r.Dump(ctx, snap, "immich.sql", "/var/lib/homerslab/restore/immich.sql"); err != nil {
+	if err := r.Dump(ctx, snap, "immich.sql", "/var/lib/homeward/restore/immich.sql"); err != nil {
 		t.Fatal(err)
 	}
-	if got := rec.sub("dump"); len(got) != 1 || !slices.Equal(got[0][slices.Index(got[0], "dump"):], []string{"dump", "--target", "/var/lib/homerslab/restore/immich.sql", "--", snap, "/immich.sql"}) {
+	if got := rec.sub("dump"); len(got) != 1 || !slices.Equal(got[0][slices.Index(got[0], "dump"):], []string{"dump", "--target", "/var/lib/homeward/restore/immich.sql", "--", snap, "/immich.sql"}) {
 		t.Errorf("dump: %q", got)
 	}
 	before := len(rec.sub("restore")) + len(rec.sub("dump"))

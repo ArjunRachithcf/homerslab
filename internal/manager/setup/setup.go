@@ -17,7 +17,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/ArjunRachithcf/homerslab/internal/manager/store"
+	"github.com/ArjunRachithcf/homeward/internal/manager/store"
 )
 
 // Half is where a step is done: over the one-time link on this machine's LAN, or over the mesh.
@@ -73,7 +73,7 @@ func (e *Invalid) add(field, why string) {
 func (e *Invalid) Error() string { return fmt.Sprintf("invalid answer: %v", e.Fields) }
 
 // NeedsSecret is a handler's answer when its step can't be finished without a secret: the step keeps Keep and waits
-// for the secret named Secret, which arrives through `homerslab setup secret <Secret>` (#64).
+// for the secret named Secret, which arrives through `homeward setup secret <Secret>` (#64).
 type NeedsSecret struct {
 	Secret string
 	Keep   map[string]string
@@ -97,11 +97,11 @@ type SecretOverHTTP struct{ Command string }
 func (e *SecretOverHTTP) Error() string { return "secret-over-http" }
 
 // Secrets are the names of the secrets setup asks for, by the step that needs them. Each is given with
-// `sudo homerslab setup secret <name>`.
+// `sudo homeward setup secret <name>`.
 var Secrets = map[string]string{"network": "mesh", "domain": "dns", "mail": "mail"}
 
 // Command is the terminal command that gives a secret.
-func Command(secret string) string { return "sudo homerslab setup secret " + secret }
+func Command(secret string) string { return "sudo homeward setup secret " + secret }
 
 // AnyCommand is the command for a secret sent where no step names which: it lists them.
 var AnyCommand = Command("mesh|dns|mail")
@@ -144,7 +144,7 @@ var (
 	ErrUnknownStep     = errors.New("unknown-step")
 	ErrOverTheMesh     = errors.New("over-the-mesh")     // a mesh step, asked over the LAN link
 	ErrEarlierStepOpen = errors.New("earlier-step-open") // steps are taken in order
-	ErrNotBuilt        = errors.New("not-built")         // a step a later version of HomersLab brings
+	ErrNotBuilt        = errors.New("not-built")         // a step a later version of Homeward brings
 	ErrLinkRefused     = errors.New("link-refused")      // unknown, used, ended or expired
 	ErrNoSession       = errors.New("no-session")
 	ErrLANHalfDone     = errors.New("lan-half-done") // setup continues over the mesh

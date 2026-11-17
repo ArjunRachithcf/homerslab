@@ -4,7 +4,7 @@ import (
 	"context"
 	"time"
 
-	"github.com/ArjunRachithcf/homerslab/internal/dns"
+	"github.com/ArjunRachithcf/homeward/internal/dns"
 )
 
 // FillDisk makes every later write to the manager's database fail as on a full disk.

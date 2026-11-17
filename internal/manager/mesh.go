@@ -12,12 +12,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/ArjunRachithcf/homerslab/internal/agent"
-	"github.com/ArjunRachithcf/homerslab/internal/dns"
-	"github.com/ArjunRachithcf/homerslab/internal/manager/setup"
-	"github.com/ArjunRachithcf/homerslab/internal/manager/store"
-	"github.com/ArjunRachithcf/homerslab/internal/mesh"
-	"github.com/ArjunRachithcf/homerslab/internal/mesh/netbird"
+	"github.com/ArjunRachithcf/homeward/internal/agent"
+	"github.com/ArjunRachithcf/homeward/internal/dns"
+	"github.com/ArjunRachithcf/homeward/internal/manager/setup"
+	"github.com/ArjunRachithcf/homeward/internal/manager/store"
+	"github.com/ArjunRachithcf/homeward/internal/mesh"
+	"github.com/ArjunRachithcf/homeward/internal/mesh/netbird"
 )
 
 // NetBird is how the manager reaches NetBird's management API: the netbird package, or a test's stand-in.
@@ -49,7 +49,7 @@ func (realNetBird) Open(url string, t mesh.Token) (mesh.Mesh, error) { return ne
 const (
 	credMeshToken = "manager-mesh-token"
 	credMeshOwner = "manager-mesh-owner-password"
-	// credMeshSetup is a new NetBird's one-day setup token, kept only until HomersLab's own token works, so a setup
+	// credMeshSetup is a new NetBird's one-day setup token, kept only until Homeward's own token works, so a setup
 	// that stopped half-way resumes.
 	credMeshSetup = "manager-mesh-setup-token"
 )
@@ -64,14 +64,14 @@ const (
 	ansTokenExpires = "meshTokenExpires"
 	ansPrimaryIP    = "primaryMeshIp"
 	// ansSetupUser is the owner whose setup token is sealed, while a bootstrap is under way; ansBootstrapped says
-	// HomersLab set this NetBird up itself, so its Default policy is HomersLab's to delete.
+	// Homeward set this NetBird up itself, so its Default policy is Homeward's to delete.
 	ansSetupUser    = "meshSetupUser"
 	ansBootstrapped = "meshBootstrapped"
 )
 
 // network is the LAN page's network step: the mesh and where its control plane is. It carries no secret. A new
 // self-hosted NetBird is set up right here, in one step; otherwise the step waits for the token, which the admin
-// gives once in this machine's terminal (`sudo homerslab setup secret mesh`, #64). When the account has policies of
+// gives once in this machine's terminal (`sudo homeward setup secret mesh`, #64). When the account has policies of
 // its own that reach every peer, the step waits for the admin's yes (switchOff) before the primary joins.
 func (m *Manager) network(ctx context.Context, raw json.RawMessage, earlier map[string]string) (map[string]string, error) {
 	var a struct {
@@ -111,7 +111,7 @@ func (m *Manager) network(ctx context.Context, raw json.RawMessage, earlier map[
 	}
 	bootstrapped := earlier[ansURL] == url && earlier[ansBootstrapped] == "true"
 	if earlier[ansURL] == url && earlier[ansTokenID] != "" {
-		// HomersLab has its own token here already (the step waits for the admin's yes, or an earlier try stopped
+		// Homeward has its own token here already (the step waits for the admin's yes, or an earlier try stopped
 		// half-way): carry on with it. A setup token still kept from a bootstrap goes, as far as it can.
 		if t, err := m.currentToken(ctx, earlier); err == nil {
 			if earlier[ansSetupUser] != "" {
@@ -165,8 +165,8 @@ func (m *Manager) network(ctx context.Context, raw json.RawMessage, earlier map[
 	keep[ansBootstrapped] = "true"
 	t, err := m.adopt(ctx, url, st.Value, keep)
 	if errors.Is(err, mesh.ErrTokenRefused) {
-		// The setup token died (it lasts a day) before HomersLab had its own: back to asking the admin for a token,
-		// which the owner's password gets at NetBird's dashboard (`sudo homerslab mesh owner-password`).
+		// The setup token died (it lasts a day) before Homeward had its own: back to asking the admin for a token,
+		// which the owner's password gets at NetBird's dashboard (`sudo homeward mesh owner-password`).
 		m.log.Warn("the new NetBird's setup token was refused: asking for a token instead")
 		_ = m.agent.forget(ctx, credMeshSetup)
 		keep[ansSetupUser], keep[ansBootstrapped] = "", ""
@@ -175,14 +175,14 @@ func (m *Manager) network(ctx context.Context, raw json.RawMessage, earlier map[
 	if err != nil {
 		return nil, err
 	}
-	// HomersLab's own token works: the setup token's work is done.
+	// Homeward's own token works: the setup token's work is done.
 	m.endSetupToken(ctx, url, st.UserID)
 	delete(keep, ansSetupUser)
 	return m.joinMesh(ctx, url, t, keep, earlier, a.SwitchOff, true)
 }
 
 // endSetupToken revokes a new NetBird's setup token and forgets it, as far as it can, without holding setup up:
-// HomersLab's own token has taken over. A token that couldn't be revoked is kept, for the next try to revoke; one
+// Homeward's own token has taken over. A token that couldn't be revoked is kept, for the next try to revoke; one
 // that is refused or gone has ended by itself (it lasts a day).
 func (m *Manager) endSetupToken(ctx context.Context, url, userID string) {
 	if value, err := m.agent.unseal(ctx, credMeshSetup); err == nil {
@@ -200,8 +200,8 @@ func (m *Manager) endSetupToken(ctx context.Context, url, userID string) {
 	}
 }
 
-// getOwnerPassword is `sudo homerslab mesh owner-password`, on the control socket only: the new NetBird's owner
-// password, HomersLab's way back into NetBird's dashboard when every token is lost.
+// getOwnerPassword is `sudo homeward mesh owner-password`, on the control socket only: the new NetBird's owner
+// password, Homeward's way back into NetBird's dashboard when every token is lost.
 func (m *Manager) getOwnerPassword(w http.ResponseWriter, r *http.Request) {
 	value, err := m.agent.unseal(r.Context(), credMeshOwner)
 	if err != nil || value == "" {
@@ -212,7 +212,7 @@ func (m *Manager) getOwnerPassword(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"password": value.Reveal()})
 }
 
-// meshSecret takes the mesh token from the terminal: HomersLab makes its own service user and token with it, and
+// meshSecret takes the mesh token from the terminal: Homeward makes its own service user and token with it, and
 // then forgets it.
 func (m *Manager) meshSecret(ctx context.Context, value string, earlier map[string]string) (map[string]string, error) {
 	url := earlier[ansURL]
@@ -224,8 +224,8 @@ func (m *Manager) meshSecret(ctx context.Context, value string, earlier map[stri
 	return m.joinMesh(ctx, url, t, keep, earlier, false, false)
 }
 
-// adopt makes HomersLab's own token from a given one, keeps it sealed, and only once it has worked revokes
-// HomersLab's older tokens: no failure leaves HomersLab without a token that works.
+// adopt makes Homeward's own token from a given one, keeps it sealed, and only once it has worked revokes
+// Homeward's older tokens: no failure leaves Homeward without a token that works.
 func (m *Manager) adopt(ctx context.Context, url string, given mesh.Secret, keep map[string]string) (mesh.Token, error) {
 	a, err := m.netbird.Adopt(ctx, url, given)
 	if err != nil {
@@ -239,17 +239,17 @@ func (m *Manager) adopt(ctx context.Context, url string, given mesh.Secret, keep
 		return mesh.Token{}, err
 	}
 	if _, err := nb.Report(ctx); err != nil {
-		return mesh.Token{}, fmt.Errorf("HomersLab's new mesh token doesn't work: %w", err)
+		return mesh.Token{}, fmt.Errorf("Homeward's new mesh token doesn't work: %w", err)
 	}
 	for _, old := range a.Stale {
 		if err := nb.Revoke(ctx, old); err != nil {
-			m.log.Warn("revoking HomersLab's older mesh token", "err", err) // it expires by itself; never its body
+			m.log.Warn("revoking Homeward's older mesh token", "err", err) // it expires by itself; never its body
 		}
 	}
 	return a.Token, nil
 }
 
-// keepToken seals HomersLab's own token and keeps what isn't secret of it: from here on it is HomersLab's, and the
+// keepToken seals Homeward's own token and keeps what isn't secret of it: from here on it is Homeward's, and the
 // scheduler rotates it.
 func (m *Manager) keepToken(ctx context.Context, t mesh.Token, keep map[string]string) error {
 	if err := m.agent.seal(ctx, credMeshToken, t.Value); err != nil {
@@ -273,7 +273,7 @@ const (
 
 var notLabel = regexp.MustCompile(`[^a-z0-9-]+`)
 
-// joinMesh makes the groups and policies per role, removes the mesh's Default on a NetBird HomersLab set up itself,
+// joinMesh makes the groups and policies per role, removes the mesh's Default on a NetBird Homeward set up itself,
 // switches off the household's own policies that reach a node (NetBird's Default among them, elsewhere) once the
 // admin said yes to exactly those, and has the primary's agent join with a one-time key; the agent's firewall table
 // then keeps the LAN out.
@@ -282,7 +282,7 @@ func (m *Manager) joinMesh(ctx context.Context, url string, t mesh.Token, keep, 
 	if err != nil {
 		return nil, err
 	}
-	// The household's port, chosen once, here (ADR 0021): every URL HomersLab writes carries it from now on.
+	// The household's port, chosen once, here (ADR 0021): every URL Homeward writes carries it from now on.
 	port := householdPort(earlier)
 	if earlier[ansPort] == "" {
 		rep, err := nb.Report(ctx)
@@ -348,7 +348,7 @@ func (m *Manager) joinMesh(ctx context.Context, url string, t mesh.Token, keep, 
 	return keep, nil
 }
 
-// putSecret is `homerslab setup secret <name>`, on the control socket only: the secret arrives from this machine's
+// putSecret is `homeward setup secret <name>`, on the control socket only: the secret arrives from this machine's
 // terminal, is checked, and finishes the step that waits for it. It is never logged, kept or answered.
 func (m *Manager) putSecret(w http.ResponseWriter, r *http.Request) {
 	var body struct {
@@ -382,7 +382,7 @@ func (m *Manager) putSecret(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, m.withGiven(st))
 }
 
-// rotate replaces HomersLab's mesh token before it expires. The two overlap (#88): the old token is revoked only
+// rotate replaces Homeward's mesh token before it expires. The two overlap (#88): the old token is revoked only
 // after the new one has worked once, been sealed and read back from the agent. It runs from the scheduler.
 func (m *Manager) rotate(ctx context.Context) error {
 	ans, err := m.db.Answers(ctx)
@@ -437,7 +437,7 @@ func (m *Manager) rotate(ctx context.Context) error {
 	return nil
 }
 
-// checkMesh puts HomersLab's policies back if they drifted, and reports policies of the household's own that reach
+// checkMesh puts Homeward's policies back if they drifted, and reports policies of the household's own that reach
 // every peer, which appeared since the admin's yes. They stay as they are: switching one off takes the admin's yes.
 func (m *Manager) checkMesh(ctx context.Context) error {
 	ans, err := m.db.Answers(ctx)
@@ -529,7 +529,7 @@ func (m *Manager) getDrift(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, d)
 }
 
-// currentToken is HomersLab's mesh token: its value from the agent, the rest from the answers.
+// currentToken is Homeward's mesh token: its value from the agent, the rest from the answers.
 func (m *Manager) currentToken(ctx context.Context, ans map[string]string) (mesh.Token, error) {
 	expires, err := time.Parse(time.RFC3339, ans[ansTokenExpires])
 	if err != nil {
@@ -604,7 +604,7 @@ const ansLANClosed = "lanClosedAt"
 
 // giveSetupPort gives the primary's agent the setup listener's port, or that it closed for good, at every run (an
 // agent may have lost what it kept): the agent keeps it for the firewall table, and for the closed one
-// homerslab-firewall-restore loads at the next boot. A refusal because the listener closed for good is an answer too.
+// homeward-firewall-restore loads at the next boot. A refusal because the listener closed for good is an answer too.
 func (m *Manager) giveSetupPort(ctx context.Context) error {
 	if m.lanClosed.Load() {
 		return m.agent.closeSetupListener(ctx)

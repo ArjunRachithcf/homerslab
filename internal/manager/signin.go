@@ -12,18 +12,18 @@ import (
 	"strings"
 	"time"
 
-	"github.com/ArjunRachithcf/homerslab/internal/agent"
-	"github.com/ArjunRachithcf/homerslab/internal/idp"
-	"github.com/ArjunRachithcf/homerslab/internal/idp/authentik"
-	"github.com/ArjunRachithcf/homerslab/internal/manager/setup"
-	"github.com/ArjunRachithcf/homerslab/internal/mesh"
+	"github.com/ArjunRachithcf/homeward/internal/agent"
+	"github.com/ArjunRachithcf/homeward/internal/idp"
+	"github.com/ArjunRachithcf/homeward/internal/idp/authentik"
+	"github.com/ArjunRachithcf/homeward/internal/manager/setup"
+	"github.com/ArjunRachithcf/homeward/internal/mesh"
 )
 
 // SignIn is how the manager reaches the household account's provider: the authentik package, or a test's stand-in.
 // upstream is where the provider's server answers on this machine (the sign-in network's address).
 type SignIn interface {
 	Ready(ctx context.Context, upstream string, h idp.Household) error
-	// Bootstrap makes HomersLab's own token with the bootstrap token, and hands it to keep before the bootstrap token
+	// Bootstrap makes Homeward's own token with the bootstrap token, and hands it to keep before the bootstrap token
 	// stops working: a token that couldn't be kept is never the only one.
 	Bootstrap(ctx context.Context, upstream string, h idp.Household, bootstrap idp.Secret, keep func(idp.Secret) error) (idp.Secret, error)
 	Open(upstream string, h idp.Household, token idp.Secret, landing string) (idp.Provider, error)
@@ -43,12 +43,12 @@ func (realSignIn) Open(upstream string, h idp.Household, token idp.Secret, landi
 
 // The manager's credentials for the household account, sealed by the agent.
 const (
-	// credSignInToken is HomersLab's own token in the provider; credBootstrap the bootstrap token the manager made,
+	// credSignInToken is Homeward's own token in the provider; credBootstrap the bootstrap token the manager made,
 	// kept only until Authentik has taken it, so a bootstrap that stopped half-way resumes with it.
 	credSignInToken = "manager-sign-in-token"
 	credBootstrap   = "manager-sign-in-bootstrap"
 	// credAdminClient is the secret of Admin's OIDC client; credHomeClient Home's, which Home's unit loads as a
-	// credential of its own (packaging/systemd/homerslab-home.service).
+	// credential of its own (packaging/systemd/homeward-home.service).
 	credAdminClient = "manager-admin-client-secret"
 	credHomeClient  = "manager-home-client-secret"
 )
@@ -105,7 +105,7 @@ func (m *Manager) upstream() string {
 
 var notUsername = regexp.MustCompile(`[^a-z0-9._-]+`)
 
-// reserved are usernames the provider or HomersLab keep for themselves.
+// reserved are usernames the provider or Homeward keep for themselves.
 var reserved = map[string]bool{"homerslab": true, "akadmin": true, "admin": true, "authentik": true, "root": true}
 
 // adminUsername is the first admin's username: their mail address's local part, as the provider takes it.
@@ -119,7 +119,7 @@ func adminUsername(mail string) string {
 	case u == "":
 		u = "first-admin"
 	case reserved[u] || strings.HasPrefix(u, "ak-"):
-		u += "-admin" // never one of HomersLab's or the provider's own accounts
+		u += "-admin" // never one of Homeward's or the provider's own accounts
 	}
 	return u
 }
@@ -134,7 +134,7 @@ var errSignIn = errors.New("the household account couldn't be set up")
 
 // ensureSignIn makes the household account and puts it on the edge, once the first half is done:
 //  1. the agent installs Authentik with a bootstrap token the manager made;
-//  2. with it, the provider gets HomersLab's own account and token, and its own first-admin flow applies to nobody:
+//  2. with it, the provider gets Homeward's own account and token, and its own first-admin flow applies to nobody:
 //     akadmin has a random password and is deactivated; the bootstrap token is deleted, and the agent forgets it;
 //  3. the household's sign-in: passkey-only sign-in, the passkey-enrolment flow, the groups, the first admin's account
 //     (no password, no passkey), and Admin's OIDC client;
@@ -188,13 +188,13 @@ func (m *Manager) ensureSignIn(ctx context.Context) (idp.Provider, error) {
 		if err := wait("waiting for it to start", func() error { return m.cfg.SignIn.Ready(ctx, up, h) }); err != nil {
 			return nil, err
 		}
-		// HomersLab's own token is sealed, and read back, before the bootstrap token stops working.
+		// Homeward's own token is sealed, and read back, before the bootstrap token stops working.
 		keep := func(own idp.Secret) error {
 			if err := m.agent.seal(ctx, credSignInToken, own); err != nil {
 				return err
 			}
 			if back, err := m.agent.unseal(ctx, credSignInToken); err != nil || back != own {
-				return errors.New("HomersLab's sign-in token didn't read back from the agent")
+				return errors.New("Homeward's sign-in token didn't read back from the agent")
 			}
 			return nil
 		}
@@ -205,7 +205,7 @@ func (m *Manager) ensureSignIn(ctx context.Context) (idp.Provider, error) {
 		if errors.Is(err, idp.ErrTokenRefused) {
 			// Bootstrapped already, before this manager could keep the answer: its own token was sealed then.
 			if own, uerr := m.agent.unseal(ctx, credSignInToken); uerr != nil || own == "" {
-				return nil, fmt.Errorf("%w: the bootstrap token was refused, and HomersLab has no token of its own", errSignIn)
+				return nil, fmt.Errorf("%w: the bootstrap token was refused, and Homeward has no token of its own", errSignIn)
 			}
 		} else if err != nil {
 			return nil, err
@@ -213,7 +213,7 @@ func (m *Manager) ensureSignIn(ctx context.Context) (idp.Provider, error) {
 		if err := m.db.SaveAnswers(ctx, map[string]string{ansSignInBootstrapped: m.cfg.Now().UTC().Format(time.RFC3339)}); err != nil {
 			return nil, err
 		}
-		m.log.Info("the household account is HomersLab's: its own first-admin flow applies to nobody")
+		m.log.Info("the household account is Homeward's: its own first-admin flow applies to nobody")
 	}
 	// The bootstrap token's work is done: the agent and the manager forget it, again at every call until they have.
 	if s, err := m.agent.signInStatus(ctx); err == nil && s.Bootstrapping {
@@ -284,7 +284,7 @@ func (m *Manager) ensureSignIn(ctx context.Context) (idp.Provider, error) {
 	return p, nil
 }
 
-// JoinHandOver is what `sudo homerslab setup join` shows in this machine's terminal: a one-off mesh key for the
+// JoinHandOver is what `sudo homeward setup join` shows in this machine's terminal: a one-off mesh key for the
 // admin's device, and the one-time link that makes the admin's passkey at the sign-in's own address. Both are
 // credentials, so they go only to the control socket, never over the LAN's plain HTTP (#64).
 type JoinHandOver struct {
@@ -309,7 +309,7 @@ func (j JoinHandOver) MarshalJSON() ([]byte, error) {
 	}{plain(j), j.DeviceKey.Reveal(), j.Enrolment.Reveal()})
 }
 
-// postJoin is `sudo homerslab setup join`, on the control socket only: first-time setup's second half begins. The
+// postJoin is `sudo homeward setup join`, on the control socket only: first-time setup's second half begins. The
 // household account is set up (it takes minutes the first time), and the admin gets a key for their device and the
 // link for their first passkey, both once and for a while. Asked again, it makes a new key and a new link, which ends
 // the earlier link.
@@ -317,7 +317,7 @@ func (m *Manager) postJoin(w http.ResponseWriter, r *http.Request) {
 	m.handOver(w, r, true)
 }
 
-// postPasskey is `sudo homerslab setup passkey`: another enrolment link for the first admin, for their second passkey,
+// postPasskey is `sudo homeward setup passkey`: another enrolment link for the first admin, for their second passkey,
 // until first-time setup is done.
 func (m *Manager) postPasskey(w http.ResponseWriter, r *http.Request) {
 	m.handOver(w, r, false)
@@ -335,7 +335,7 @@ func (m *Manager) handOver(w http.ResponseWriter, r *http.Request, join bool) {
 		return
 	}
 	if done(st, "done") {
-		fail(w, http.StatusConflict, "setup-done") // from now on: homerslab admin recover (#87)
+		fail(w, http.StatusConflict, "setup-done") // from now on: homeward admin recover (#87)
 		return
 	}
 	if !join && !done(st, "passkey") {
@@ -399,7 +399,7 @@ func done(st setup.State, id string) bool {
 	return false
 }
 
-// provider is the household account as HomersLab's own account, once it is set up.
+// provider is the household account as Homeward's own account, once it is set up.
 func (m *Manager) provider(ctx context.Context, ans map[string]string) (idp.Provider, error) {
 	if ans[ansSignInBootstrapped] == "" {
 		return nil, errors.New("the household account isn't set up yet")

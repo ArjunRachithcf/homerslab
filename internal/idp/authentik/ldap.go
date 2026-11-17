@@ -12,11 +12,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/ArjunRachithcf/homerslab/internal/idp"
+	"github.com/ArjunRachithcf/homeward/internal/idp"
 )
 
-// LDAP (#204, ADR 0020): one outpost of HomersLab's, homerslab-ldap, which a unit of its own runs beside the sign-in
-// (homerslab-ldap.service) on the sign-in network; the sign-in listener's port 636 leads to its plain LDAP port. Each
+// LDAP (#204, ADR 0020): one outpost of Homeward's, homerslab-ldap, which a unit of its own runs beside the sign-in
+// (homeward-ldap.service) on the sign-in network; the sign-in listener's port 636 leads to its plain LDAP port. Each
 // LDAP app has its own provider there, with a base DN of its own (the outpost picks the provider by the DN a bind
 // names), its own bind flow, and its own application, which only the app's roles may open.
 //
@@ -41,7 +41,7 @@ const (
 	ldapNone     = "homerslab-outpost-ldap"
 	ldapNoneDN   = "ou=outpost,dc=homerslab"
 	appPasswords = "authentik.core.auth.TokenBackend"
-	// ldapClosed marks an app's LDAP application that HomersLab closed to nobody on its way out, with the time it
+	// ldapClosed marks an app's LDAP application that Homeward closed to nobody on its way out, with the time it
 	// closed: a provider leaves the outpost before its application goes.
 	ldapClosed = "homerslab: closed "
 	// ldapRetireAfter is how long a closed application and its provider stay after the provider left the outpost,
@@ -52,13 +52,13 @@ const (
 	outpostTokenFmt = "ak-outpost-%s-api"
 )
 
-// ldapSlug is an LDAP app's slug: HomersLab's prefix, then the app's id; never the outpost's own.
+// ldapSlug is an LDAP app's slug: Homeward's prefix, then the app's id; never the outpost's own.
 var ldapSlug = regexp.MustCompile(`^homerslab-[a-z0-9][a-z0-9-]{0,40}$`)
 
 // ldapOldFlow is the one bind flow every app shared before each had its own; Prepare removes it.
 const ldapOldFlow = "homerslab-ldap-bind"
 
-// ldapFlowSlug is the slug of a bind flow of HomersLab's: an LDAP provider's name (ldapObj, or ldapNone), with -bind.
+// ldapFlowSlug is the slug of a bind flow of Homeward's: an LDAP provider's name (ldapObj, or ldapNone), with -bind.
 var ldapFlowSlug = regexp.MustCompile(`^homerslab-[a-z0-9][a-z0-9-]{0,40}-ldap-bind$`)
 
 // LDAPBaseDN is an app's base DN: dc=<app>,dc=homerslab.
@@ -163,7 +163,7 @@ func (a *Authentik) ldapBindFlow(ctx context.Context, obj string) (string, error
 	return f, nil
 }
 
-// ldapFlows are HomersLab's bind flows, by the names of the providers they are for.
+// ldapFlows are Homeward's bind flows, by the names of the providers they are for.
 func (a *Authentik) ldapFlows(ctx context.Context) ([]string, error) {
 	fs, err := list[flow](ctx, a.api, "/flows/instances/")
 	if err != nil {
@@ -178,11 +178,11 @@ func (a *Authentik) ldapFlows(ctx context.Context) ([]string, error) {
 	return out, nil
 }
 
-// ldapBindIntact says whether an LDAP provider's bind flow, by the provider's name, is exactly HomersLab's, and which
+// ldapBindIntact says whether an LDAP provider's bind flow, by the provider's name, is exactly Homeward's, and which
 // flow it is: at an outpost only, bound to its three stages alone, in order, each as bindStages makes it (never decided
 // at planning, decided again when reached), with no policy bound to the flow, to the username's or to the password's
 // stage (a policy that fails skips its stage: a bind with no password), the session's bound to the provider's own
-// app-password policy alone, as HomersLab writes it, and each stage as it should be (the username with no password of
+// app-password policy alone, as Homeward writes it, and each stage as it should be (the username with no password of
 // its own, an app password only, the session). Otherwise a password from the console, no password at all, or an app
 // password made for another app could sign a person in to an LDAP app (#204). A flow that isn't there isn't intact.
 func (a *Authentik) ldapBindIntact(ctx context.Context, obj string) (bool, string, error) {
@@ -359,7 +359,7 @@ type outpostObj struct {
 	Providers []int  `json:"providers"`
 }
 
-// ldapOutpost makes HomersLab's LDAP outpost with its own provider, or brings it in line, adding provider when it is
+// ldapOutpost makes Homeward's LDAP outpost with its own provider, or brings it in line, adding provider when it is
 // not 0.
 func (a *Authentik) ldapOutpost(ctx context.Context, add int) (*outpostObj, error) {
 	bind, err := a.ldapBindFlow(ctx, ldapNone)
@@ -408,7 +408,7 @@ func (a *Authentik) ldapOutpost(ctx context.Context, add int) (*outpostObj, erro
 	return o, err
 }
 
-// LDAPOutpost makes HomersLab's LDAP outpost, or brings it in line, and returns its token.
+// LDAPOutpost makes Homeward's LDAP outpost, or brings it in line, and returns its token.
 func (a *Authentik) LDAPOutpost(ctx context.Context) (idp.Secret, error) {
 	o, err := a.ldapOutpost(ctx, 0)
 	if err != nil {
@@ -487,7 +487,7 @@ type ldapAppState struct {
 	Provider *int   `json:"provider"`
 }
 
-// closedAt is when HomersLab closed the application, if it did.
+// closedAt is when Homeward closed the application, if it did.
 func (s ldapAppState) closedAt() (time.Time, bool) {
 	t, err := time.Parse(time.RFC3339, strings.TrimPrefix(s.Desc, ldapClosed))
 	return t, strings.HasPrefix(s.Desc, ldapClosed) && err == nil
@@ -503,7 +503,7 @@ func (a *Authentik) ldapApp(ctx context.Context, slug string) (*ldapAppState, er
 	return &s, err
 }
 
-// ldapOwnBindings are the bindings HomersLab gives an LDAP application: a role's group, or the policy that refuses
+// ldapOwnBindings are the bindings Homeward gives an LDAP application: a role's group, or the policy that refuses
 // everyone. Only what is there now is listed, and nothing is made.
 func (a *Authentik) ldapOwnBindings(ctx context.Context) (map[binding]bool, error) {
 	own := map[binding]bool{}
@@ -528,7 +528,7 @@ func (a *Authentik) ldapOwnBindings(ctx context.Context) (map[binding]bool, erro
 	return own, nil
 }
 
-// ldapBoundByUs says whether an application is opened by HomersLab's bindings alone: at least one, each enabled and
+// ldapBoundByUs says whether an application is opened by Homeward's bindings alone: at least one, each enabled and
 // one of own.
 func (a *Authentik) ldapBoundByUs(ctx context.Context, app *ldapAppState, own map[binding]bool) (bool, error) {
 	type pb struct {
@@ -557,10 +557,10 @@ func ptrStr(s *string) string {
 	return *s
 }
 
-// ldapTidy keeps the outpost serving HomersLab's LDAP providers alone (#204): an app's name, exactly that app's base DN
-// (names are unique, so no two share one), its own bind flow as HomersLab makes it (which takes the app's own app
-// passwords alone), and its own application, opened by HomersLab's bindings alone. Anything else leaves the outpost,
-// its application closed first when it is HomersLab's by name (orphaned providers are removed); the app's next
+// ldapTidy keeps the outpost serving Homeward's LDAP providers alone (#204): an app's name, exactly that app's base DN
+// (names are unique, so no two share one), its own bind flow as Homeward makes it (which takes the app's own app
+// passwords alone), and its own application, opened by Homeward's bindings alone. Anything else leaves the outpost,
+// its application closed first when it is Homeward's by name (orphaned providers are removed); the app's next
 // EnsureLDAP puts its own back. Closed ones go once off the outpost for a.ldapRetire, with their bind flows and their
 // app passwords. With repair false it only reports.
 func (a *Authentik) ldapTidy(ctx context.Context, repair bool) (bool, error) {
@@ -709,7 +709,7 @@ func (a *Authentik) ldapForget(ctx context.Context, obj string) error {
 	return gone(a.api.call(ctx, http.MethodDelete, "/policies/expression/"+pol.PK+"/", nil, nil))
 }
 
-// sameDN says whether a base DN is exactly HomersLab's: ASCII only, compared without case.
+// sameDN says whether a base DN is exactly Homeward's: ASCII only, compared without case.
 func sameDN(got, want string) bool {
 	for i := range len(got) {
 		if got[i] >= 0x80 {

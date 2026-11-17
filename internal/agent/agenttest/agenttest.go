@@ -25,16 +25,16 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ArjunRachithcf/homerslab/internal/agent"
-	"github.com/ArjunRachithcf/homerslab/internal/backup"
-	"github.com/ArjunRachithcf/homerslab/internal/engine"
-	"github.com/ArjunRachithcf/homerslab/internal/engine/compose"
-	"github.com/ArjunRachithcf/homerslab/internal/host"
-	"github.com/ArjunRachithcf/homerslab/internal/lan"
-	"github.com/ArjunRachithcf/homerslab/internal/mesh"
-	"github.com/ArjunRachithcf/homerslab/internal/mesh/netbird"
-	"github.com/ArjunRachithcf/homerslab/internal/mesh/tailscale"
-	"github.com/ArjunRachithcf/homerslab/internal/node"
+	"github.com/ArjunRachithcf/homeward/internal/agent"
+	"github.com/ArjunRachithcf/homeward/internal/backup"
+	"github.com/ArjunRachithcf/homeward/internal/engine"
+	"github.com/ArjunRachithcf/homeward/internal/engine/compose"
+	"github.com/ArjunRachithcf/homeward/internal/host"
+	"github.com/ArjunRachithcf/homeward/internal/lan"
+	"github.com/ArjunRachithcf/homeward/internal/mesh"
+	"github.com/ArjunRachithcf/homeward/internal/mesh/netbird"
+	"github.com/ArjunRachithcf/homeward/internal/mesh/tailscale"
+	"github.com/ArjunRachithcf/homeward/internal/node"
 )
 
 // Primary is the system root of the invented primary in testdata/primary, with 412 GB free of 1 TB for apps' data.
@@ -311,7 +311,7 @@ func (h *Host) Mounts(_ context.Context, project string) (map[string][]engine.Mo
 	return out, nil
 }
 
-// BucketLocked makes the lock run (`homerslab agent backup-lock`, in restic's unit) answer im for an S3 or B2 bucket,
+// BucketLocked makes the lock run (`homeward agent backup-lock`, in restic's unit) answer im for an S3 or B2 bucket,
 // as of when it runs.
 func (h *Host) BucketLocked(im backup.Immutability) {
 	h.mu.Lock()
@@ -394,7 +394,7 @@ func (h *Host) runRestic(c host.Cmd) ([]byte, error) {
 	}
 	h.restic = append(h.restic, run)
 	// The lock run, the agent's own program in restic's unit: what the test said of the bucket.
-	if run.Argv[0] == "/usr/bin/homerslab" && slices.Contains(run.Argv, "backup-lock") {
+	if run.Argv[0] == "/usr/bin/homeward" && slices.Contains(run.Argv, "backup-lock") {
 		if err := fails(); err != nil {
 			return nil, err
 		}
@@ -570,9 +570,9 @@ func (h *Host) Probe(_ context.Context, upstream netip.AddrPort, _, _ string) (b
 
 // startApp is systemd starting an app's unit: the engine runs every service of its project, as the agent wrote it.
 func (h *Host) startApp(unit string) {
-	id := strings.TrimSuffix(strings.TrimPrefix(unit, "homerslab-app-"), ".service")
+	id := strings.TrimSuffix(strings.TrimPrefix(unit, "homeward-app-"), ".service")
 	delete(h.stopped, unit)
-	b, err := os.ReadFile(filepath.Join(h.stateDir, "apps", id, "homerslab.yaml"))
+	b, err := os.ReadFile(filepath.Join(h.stateDir, "apps", id, "homeward.yaml"))
 	if err != nil {
 		return
 	}
@@ -739,7 +739,7 @@ func (h *Host) Run(ctx context.Context, c host.Cmd) ([]byte, error) {
 	defer h.mu.Unlock()
 	h.cmds = append(h.cmds, c)
 	line := c.String()
-	if b, err := os.ReadFile(filepath.Join(h.Root, "etc/systemd/system/netbird.service.d/10-homerslab.conf")); err == nil {
+	if b, err := os.ReadFile(filepath.Join(h.Root, "etc/systemd/system/netbird.service.d/10-homeward.conf")); err == nil {
 		h.dropInAt[line] = b
 	}
 	for prefix, err := range h.fail {
@@ -756,22 +756,22 @@ func (h *Host) Run(ctx context.Context, c host.Cmd) ([]byte, error) {
 			return nil, &host.Error{Cmd: line, Err: errors.New("exit status 1"), Stderr: "Error: No such file or directory"}
 		}
 		return []byte(h.table), nil
-	case line == "systemctl restart homerslab-edge.service" && h.Edge != nil:
+	case line == "systemctl restart homeward-edge.service" && h.Edge != nil:
 		h.Edge.Restart()
 		return nil, nil
-	case strings.HasPrefix(line, "systemctl --no-block restart homerslab-app-"):
+	case strings.HasPrefix(line, "systemctl --no-block restart homeward-app-"):
 		h.startApp(c.Args[2])
 		return nil, nil
-	case len(c.Args) == 2 && (c.Args[0] == "start" || c.Args[0] == "restart") && strings.HasPrefix(c.Args[1], "homerslab-app-"):
+	case len(c.Args) == 2 && (c.Args[0] == "start" || c.Args[0] == "restart") && strings.HasPrefix(c.Args[1], "homeward-app-"):
 		h.startApp(c.Args[1])
 		return nil, nil
-	case len(c.Args) == 2 && c.Args[0] == "stop" && strings.HasPrefix(c.Args[1], "homerslab-app-"):
+	case len(c.Args) == 2 && c.Args[0] == "stop" && strings.HasPrefix(c.Args[1], "homeward-app-"):
 		// systemd stops the unit, and compose the containers (they stay, stopped).
 		if h.stopped == nil {
 			h.stopped = map[string]bool{}
 		}
 		h.stopped[c.Args[1]] = true
-		project := "homerslab-" + strings.TrimSuffix(strings.TrimPrefix(c.Args[1], "homerslab-app-"), ".service")
+		project := "homerslab-" + strings.TrimSuffix(strings.TrimPrefix(c.Args[1], "homeward-app-"), ".service")
 		if st, ok := h.projects[project]; ok {
 			for i := range st.Containers {
 				st.Containers[i].State = "exited"
@@ -780,8 +780,8 @@ func (h *Host) Run(ctx context.Context, c host.Cmd) ([]byte, error) {
 		return nil, nil
 	case len(c.Args) == 3 && line == "systemctl is-active --quiet "+c.Args[2] && h.stopped[c.Args[2]]:
 		return nil, &host.Error{Cmd: line, Err: errors.New("exit status 3")}
-	case len(c.Args) == 3 && line == "systemctl is-active --quiet "+c.Args[2] && strings.HasPrefix(c.Args[2], "homerslab-app-") &&
-		h.projects["homerslab-"+strings.TrimSuffix(strings.TrimPrefix(c.Args[2], "homerslab-app-"), ".service")].Name == "":
+	case len(c.Args) == 3 && line == "systemctl is-active --quiet "+c.Args[2] && strings.HasPrefix(c.Args[2], "homeward-app-") &&
+		h.projects["homerslab-"+strings.TrimSuffix(strings.TrimPrefix(c.Args[2], "homeward-app-"), ".service")].Name == "":
 		return nil, &host.Error{Cmd: line, Err: errors.New("exit status 3")} // never started
 	case line == "systemctl daemon-reload":
 		h.loaded, h.listed = h.dropInAt[line], h.dropInAt[line] != nil && !h.ignored
@@ -902,7 +902,7 @@ func (h *Host) Loopback() []string {
 // started, as systemd writes them.
 func (h *Host) showNetBird() []byte {
 	var b strings.Builder
-	path := "/etc/systemd/system/netbird.service.d/10-homerslab.conf"
+	path := "/etc/systemd/system/netbird.service.d/10-homeward.conf"
 	file, err := os.ReadFile(filepath.Join(h.Root, path))
 	fmt.Fprintf(&b, "ExecMainStartTimestamp=")
 	if h.pid > 0 {
@@ -973,7 +973,7 @@ func (h *Host) Table() (string, bool) {
 func (h *Host) RestartNetBirdWithoutItsDropIn() {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	_ = os.Remove(filepath.Join(h.Root, "etc/systemd/system/netbird.service.d/10-homerslab.conf"))
+	_ = os.Remove(filepath.Join(h.Root, "etc/systemd/system/netbird.service.d/10-homeward.conf"))
 	h.loaded, h.listed, h.restartedWith, h.started = nil, false, nil, time.Now()
 	h.pid++
 }
@@ -983,7 +983,7 @@ func (h *Host) RestartNetBirdWithoutItsDropIn() {
 func (h *Host) RestartNetBirdBeforeItsDropIn() {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	path := filepath.Join(h.Root, "etc/systemd/system/netbird.service.d/10-homerslab.conf")
+	path := filepath.Join(h.Root, "etc/systemd/system/netbird.service.d/10-homeward.conf")
 	h.restartedWith = nil
 	h.pid++
 	h.started = time.Now().Add(-time.Minute)
@@ -1005,7 +1005,7 @@ func (h *Host) NetBirdLoadedAnOlderDropIn() {
 func (h *Host) NetBirdIgnoresItsDropIn() {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	h.loaded, _ = os.ReadFile(filepath.Join(h.Root, "etc/systemd/system/netbird.service.d/10-homerslab.conf"))
+	h.loaded, _ = os.ReadFile(filepath.Join(h.Root, "etc/systemd/system/netbird.service.d/10-homeward.conf"))
 	h.listed, h.ignored = false, true
 	h.restartedWith, h.started = nil, time.Now().Add(time.Minute)
 	h.pid++
@@ -1065,7 +1065,7 @@ func Executable(t testing.TB) string {
 		return os.Args[0]
 	}
 	copied.Do(func() {
-		dir, err := os.MkdirTemp("", "homerslab-test-exe-")
+		dir, err := os.MkdirTemp("", "homeward-test-exe-")
 		if err == nil {
 			err = os.Chmod(dir, 0o755)
 		}
@@ -1095,7 +1095,7 @@ type Edge struct {
 }
 
 // Boot is the edge's configuration as it starts (packaging/edge/boot.json).
-const Boot = `{"admin":{"listen":"unix//run/homerslab-edge/admin.sock|0660","config":{"persist":false}}}`
+const Boot = `{"admin":{"listen":"unix//run/homeward-edge/admin.sock|0660","config":{"persist":false}}}`
 
 func startEdge(t testing.TB, sock string) *Edge {
 	e := &Edge{config: []byte(Boot)}

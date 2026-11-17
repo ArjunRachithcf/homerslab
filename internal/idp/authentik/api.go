@@ -13,7 +13,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/ArjunRachithcf/homerslab/internal/idp"
+	"github.com/ArjunRachithcf/homeward/internal/idp"
 )
 
 // api is Authentik's REST API, as one token, reached at its upstream with the sign-in's own Host: the brand, the
@@ -36,7 +36,7 @@ func newAPI(base string, h idp.Household, token idp.Secret) (*api, error) {
 		}}}, nil
 }
 
-// APIError is Authentik saying no: its status and what it said, which never holds a secret HomersLab sent.
+// APIError is Authentik saying no: its status and what it said, which never holds a secret Homeward sent.
 type APIError struct {
 	Method, Path string
 	Status       int

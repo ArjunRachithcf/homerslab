@@ -1,4 +1,4 @@
-// HomersLab Home prototype: the apps a person may open, with their state. PROTOTYPE, throwaway.
+// Homeward Home prototype: the apps a person may open, with their state. PROTOTYPE, throwaway.
 // Home is unprivileged: it reads only a projection of apps, audiences and health, and can't change anything.
 // Prototype options (State in the bar): who is looking, on the mesh or away, and app states. Kids get their own
 // layout: bigger tiles that say what each app is for (decision of round 1).
@@ -133,7 +133,7 @@
       <section class="h-hello" aria-labelledby="h-title"><h1 id="h-title"${first ? ' class="rise"' : ''}>${kid ? `Hi, ${esc(p.short)}.` : `${greet()}, ${esc(p.short)}.`} <span class="fact" id="fact">${esc(lastFact && !first ? lastFact : fact)}</span></h1>${sub ? `<p class="h-sub${R(2)}">${esc(sub)}</p>` : ''}</section>
       ${away1}${answerCards}${look}${newReq}${body}${askTile}${adminSec}${devSec}
       <footer class="h-foot"><span>${esc(D.household.name)} · Home opens your apps; it can’t change anything.</span><span>App icons: selfh.st/icons, CC BY 4.0</span></footer>`;
-    document.title = 'Home · HomersLab';
+    document.title = 'Home · Homeward';
 
     // the dots breathe while each app is checked, then pop into their state; the fact cross-fades if it changed
     setTimeout(() => main.querySelectorAll('.dot[data-dot]').forEach((dot, i) => setTimeout(() => { dot.classList.remove('is-checking'); dot.classList.add('dot-' + dot.dataset.dot, 'is-new'); }, i * 60)), first ? 500 : 250);
