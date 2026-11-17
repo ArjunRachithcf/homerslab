@@ -60,6 +60,7 @@ func setupSecret(ctx context.Context, args []string, env Env) error {
 	}
 	fmt.Fprintln(env.Stderr, context64(name, st))
 	in := lines(env)
+	defer in.restore()
 	if in.terminal {
 		yes, err := in.ask(ctx, env, "Send it there? Type yes: ")
 		if err != nil {
@@ -70,6 +71,7 @@ func setupSecret(ctx context.Context, args []string, env Env) error {
 		}
 	}
 	value, err := in.secret(ctx, env, prompt)
+	in.restore()
 	if err != nil {
 		return err
 	}
@@ -185,7 +187,9 @@ func dnsToken(ctx context.Context, args []string, env Env) error {
 			fmt.Fprintf(env.Stderr, "Renewing it has failed since %s: %s\n", day(c.FailingSince), c.LastError)
 		}
 	}
-	value, err := lines(env).secret(ctx, env, secretPrompts["dns"])
+	in := lines(env)
+	value, err := in.secret(ctx, env, secretPrompts["dns"])
+	in.restore()
 	if err != nil {
 		return err
 	}
@@ -274,6 +278,7 @@ type lineReader struct {
 	in       io.Reader
 	r        *bufio.Reader
 	terminal bool
+	saved    *unix.Termios // the terminal as it was, while quiet keeps its echo off
 }
 
 func lines(env Env) *lineReader {
@@ -327,21 +332,31 @@ func (l *lineReader) ask(ctx context.Context, env Env, question string) (string,
 	return answer, nil
 }
 
-// quiet reads one line with prompt, on stderr. On a terminal it turns echo off meanwhile; Ctrl-C (ctx) gives up, with
-// the terminal as it was.
+// quiet reads one line with prompt, on stderr. On a terminal it turns echo off first, and leaves it off until restore:
+// between two questions echo never comes back, so a secret typed or pasted as the yes is read isn't shown either (#243).
+// Ctrl-C (ctx) gives up; the caller's restore gives the terminal back as it was.
 func (l *lineReader) quiet(ctx context.Context, env Env, prompt string) (string, error) {
-	if f, ok := l.in.(*os.File); ok && l.terminal {
+	if f, ok := l.in.(*os.File); ok && l.terminal && l.saved == nil {
 		if t, err := unix.IoctlGetTermios(int(f.Fd()), unix.TCGETS); err == nil {
-			fmt.Fprint(env.Stderr, prompt)
 			quiet := *t
 			quiet.Lflag &^= unix.ECHO
 			if err := unix.IoctlSetTermios(int(f.Fd()), unix.TCSETS, &quiet); err != nil {
 				return "", err
 			}
-			defer func() { _ = unix.IoctlSetTermios(int(f.Fd()), unix.TCSETS, t) }()
+			l.saved = t
 		}
 	}
+	fmt.Fprint(env.Stderr, prompt)
 	return l.line(ctx)
+}
+
+// restore gives the terminal back its echo, as it was before the first question; it does nothing when quiet changed
+// nothing, or a second time.
+func (l *lineReader) restore() {
+	if f, ok := l.in.(*os.File); ok && l.saved != nil {
+		_ = unix.IoctlSetTermios(int(f.Fd()), unix.TCSETS, l.saved)
+		l.saved = nil
+	}
 }
 
 // secret reads one line, a secret, without echo on a terminal (quiet).

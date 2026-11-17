@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -168,6 +169,9 @@ func TestSetupSecretOnATerminalAsksForAYesFirst(t *testing.T) {
 		case <-time.After(5 * time.Second):
 			t.Fatalf("answering %q: the command didn't end", c.answer)
 		}
+		if tio, err := unix.IoctlGetTermios(int(tty.Fd()), unix.TCGETS); err != nil || tio.Lflag&unix.ECHO == 0 {
+			t.Errorf("answering %q: the terminal was left without echo", c.answer)
+		}
 		if shown := readAll(master); strings.Contains(shown, "FROMTHETERMINAL") || strings.Contains(errOut.String(), "FROMTHETERMINAL") {
 			t.Errorf("answering %q: the token was shown: %q", "the token", shown+errOut.String())
 		}
@@ -210,4 +214,77 @@ func waitForNoEcho(t *testing.T, tty interface{ Fd() uintptr }) {
 		time.Sleep(5 * time.Millisecond)
 	}
 	t.Fatal("the command never turned echo off")
+}
+
+// Echo stays off from the yes to the secret: a token typed or pasted at any moment in between, as the yes is read or
+// as the secret's prompt appears, is never shown (#243). The person types it right then, through stderr's writes.
+func TestSetupSecretOnATerminalShowsNothingTypedBetweenTheYesAndTheSecret(t *testing.T) {
+	testenv.Isolate(t)
+	for _, when := range []string{"yes", "Your mesh's token"} {
+		sock, got := headerControl(t, map[string][2]string{
+			"GET /api/v1/setup":              {"", at("network", "mesh", `,"meshControlPlane":"cloud","meshUrl":"https://api.netbird.io"`)},
+			"PUT /api/v1/setup/secrets/mesh": {"", `{}`},
+		})
+		master, tty := openPTY(t)
+		errOut := &typesAt{t: t, when: when, master: master, tty: tty, typed: token + "\n"}
+		done := make(chan int, 1)
+		go func() {
+			done <- cli.Main(context.Background(), []string{"setup", "secret", "mesh", "--control-socket", sock},
+				cli.Env{Stdin: tty, Stdout: io.Discard, Stderr: errOut, Euid: func() int { return 0 }})
+		}()
+		waitForNoEcho(t, tty)
+		if _, err := master.WriteString("yes\n"); err != nil {
+			t.Fatal(err)
+		}
+		select {
+		case code := <-done:
+			if code != 0 {
+				t.Fatalf("typing at %q: exit %d: %s", when, code, errOut.String())
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatalf("typing at %q: the command didn't end", when)
+		}
+		if shown := readAll(master); strings.Contains(shown, "FROMTHETERMINAL") {
+			t.Errorf("typing at %q: the token was shown: %q", when, shown)
+		}
+		if len(*got) != 2 || !strings.Contains((*got)[1], token) {
+			t.Errorf("typing at %q: requests %d, want the token sent", when, len(*got))
+		}
+	}
+}
+
+// typesAt is stderr that types into the terminal once the command writes a line starting with when: the moment a person types. It returns
+// only once the terminal has taken the line in, so whether it is shown is decided by the echo of that moment.
+type typesAt struct {
+	t           *testing.T
+	when, typed string
+	master, tty *os.File
+	mu          sync.Mutex
+	buf         bytes.Buffer
+	done        bool
+}
+
+func (w *typesAt) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.buf.Write(p)
+	if !w.done && strings.HasPrefix(string(p), w.when) {
+		w.done = true
+		if _, err := w.master.WriteString(w.typed); err != nil {
+			return 0, err
+		}
+		for range 400 {
+			if n, err := unix.IoctlGetInt(int(w.tty.Fd()), unix.TIOCINQ); err == nil && n >= len(w.typed) {
+				break
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+	}
+	return len(p), nil
+}
+
+func (w *typesAt) String() string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.buf.String()
 }
