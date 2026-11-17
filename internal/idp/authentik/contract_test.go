@@ -382,7 +382,7 @@ func TestTheIdentityProviderContractOnAuthentik(t *testing.T) {
 		if r, err := a.Report(ctx); err != nil || r.PasskeyOnlySignIn {
 			t.Errorf("a household policy that knows nobody: %+v %v, want PasskeyOnlySignIn false", r, err)
 		}
-		if err := a.Prepare(ctx, household); err != nil {
+		if err := idptest.Prepare(ctx, a, household); err != nil {
 			t.Fatal(err)
 		}
 		if r, _ := a.Report(ctx); !r.PasskeyOnlySignIn {
@@ -876,8 +876,8 @@ type blueprint struct {
 
 // settle looks at Authentik's default and system blueprints until each has applied (or is orphaned: an upgrade
 // removed its file), and returns, as "path: status", those that haven't by the end of wait. One in error is applied
-// again, not more often than every; any other state at the first look means Bootstrap didn't wait for it, and is
-// returned at once.
+// again, not more often than every; one in warning, or in any other state at the first look (Bootstrap didn't wait for
+// it), is returned at once.
 func settle(list func() []blueprint, apply func(pk string), wait, every time.Duration) []string {
 	deadline := time.Now().Add(wait)
 	applied := map[string]time.Time{}
@@ -889,7 +889,7 @@ func settle(list func() []blueprint, apply func(pk string), wait, every time.Dur
 			}
 			left = append(left, b.Path+": "+b.Status)
 			if b.Status != "error" {
-				if first {
+				if first || b.Status == "warning" {
 					early = append(early, b.Path+": "+b.Status)
 				}
 				continue

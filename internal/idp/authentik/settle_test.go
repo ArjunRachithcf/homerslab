@@ -11,7 +11,7 @@ import (
 
 // The contract's look at Authentik's blueprints once Bootstrap is done (#254) waits out a run of Authentik's own
 // that failed after Bootstrap had seen it succeed, applying it again as the adapter does, but still fails on one that
-// stays in error past its deadline, and at once on one Bootstrap didn't wait for.
+// stays in error past its deadline, and at once on one Bootstrap didn't wait for or one that ends in warning (#259).
 func TestTheBlueprintCheckWaitsOutAFailedRunButNotOneThatStaysFailed(t *testing.T) {
 	testenv.Isolate(t)
 	const wait, every = 300 * time.Millisecond, 20 * time.Millisecond
@@ -61,6 +61,21 @@ func TestTheBlueprintCheckWaitsOutAFailedRunButNotOneThatStaysFailed(t *testing.
 		}
 		if time.Since(start) >= wait || applies != 0 {
 			t.Errorf("waited %v and applied %d times, want neither", time.Since(start), applies)
+		}
+	})
+
+	t.Run("one that ends in warning after it was applied again fails at once, without waiting", func(t *testing.T) {
+		status := "error"
+		list := func() []blueprint {
+			return []blueprint{{PK: "1", Path: "default/flow-oobe.yaml", Status: status}}
+		}
+		start := time.Now()
+		left := settle(list, func(string) { status = "warning" }, wait, every)
+		if len(left) != 1 || !strings.Contains(left[0], "default/flow-oobe.yaml: warning") {
+			t.Errorf("left: %v, want the one in warning", left)
+		}
+		if time.Since(start) >= wait {
+			t.Errorf("waited %v, want it to fail at once", time.Since(start))
 		}
 	})
 
