@@ -9,6 +9,14 @@ for (const look of looks) {
     await wear(page, look);
     const h1 = page.getByRole('heading', { level: 1 });
     const next = page.getByRole('button', { name: 'Continue' });
+    // Clicks what sends a step's answer, then waits until the manager's answer has reached the page, however long that
+    // takes: only then is there a screen to check. The screen's own 5 s never pays for the round trip, which a stall
+    // of the CI's browser (#264: one locator poll in 8 s, the answer never in) can hold up past it.
+    const send = async (step: string, button = next) => {
+      const answered = page.waitForResponse((r) => r.request().method() === 'PUT' && new URL(r.url()).pathname === `/api/v1/setup/steps/${step}`);
+      await button.click();
+      await answered;
+    };
 
     await page.goto((await primary.newLink()).localUrl.replace(/#.*/, ''));
     await expect(h1).toContainText('This link doesn’t work any more');
@@ -28,12 +36,12 @@ for (const look of looks) {
     await page.getByText('About this machine').click();
     await accessible(page, 'welcome, about this machine open');
 
-    await page.getByRole('button', { name: 'Get started' }).click();
+    await send('welcome', page.getByRole('button', { name: 'Get started' }));
     await expect(h1).toContainText('What’s your name?');
     await accessible(page, 'your name, empty');
     await page.getByLabel('Your name', { exact: true }).fill('Inês Ferreira');
     await page.getByLabel('Your mail address', { exact: true }).fill('<ines@ferreira.family>'); // the manager refuses it
-    await next.click();
+    await send('you');
     await expect(page.getByText('Type a mail address, like name@example.org.')).toBeVisible();
     await accessible(page, 'your name, refused');
     // every answer the manager refuses says why, and each of those messages is audited: invisible, too long, too many marks
@@ -41,7 +49,7 @@ for (const look of looks) {
     for (const [typed, says] of [['Inês\u202eevil', 'Your name has an invisible character'], ['I'.repeat(65), 'Your name can be 64 characters at most.'],
       [`A${'\u0316\u0317\u0318\u0319\u031a'.repeat(12)}`, 'Your name has too many accents or marks on one letter']] as const) {
       await name.fill(typed);
-      await next.click();
+      await send('you');
       await expect(page.getByText(says)).toBeVisible();
       await accessible(page, `your name, refused: ${says}`);
     }
@@ -50,25 +58,25 @@ for (const look of looks) {
     await page.getByLabel('Your mail address', { exact: true }).fill('ines@ferreira.family');
     await page.route('**/api/v1/setup/steps/you', (route) =>
       route.fulfill({ status: 507, contentType: 'application/json', body: '{"error":"disk-full"}' }));
-    await next.click();
+    await send('you');
     await expect(page.getByRole('alert')).toContainText('This machine’s disk is full');
     await accessible(page, 'your name, the disk is full');
     await page.unroute('**/api/v1/setup/steps/you');
-    await next.click();
+    await send('you');
 
     await expect(h1).toContainText('Name your household');
     await accessible(page, 'your household');
     const household = page.getByLabel('The household’s name', { exact: true });
     await household.fill('H'.repeat(65));
-    await next.click();
+    await send('household');
     await expect(page.getByText('The household’s name can be 64 characters at most.')).toBeVisible();
     await accessible(page, 'your household, refused');
     await household.fill('Ferreira\u0316\u0317\u0318\u0319\u031a');
-    await next.click();
+    await send('household');
     await expect(page.getByText('The name has too many accents or marks on one letter')).toBeVisible();
     await accessible(page, 'your household, too many marks');
     await household.fill('The Ferreira household');
-    await next.click();
+    await send('household');
 
     await expect(h1).toContainText('How everyone signs in');
     await accessible(page, 'how everyone signs in');
