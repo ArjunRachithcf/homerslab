@@ -1,5 +1,6 @@
 // A step's answer the manager doesn't take: the page says why, in plain words, and keeps what the admin typed.
 import type { Page } from '@playwright/test';
+import { accessible } from './a11y';
 import { expect, test } from './primary';
 
 const STEP = '**/api/v1/setup/steps/you';
@@ -51,6 +52,42 @@ test('an answer that gets no answer says the device is offline, and keeps the an
   await page.getByRole('button', { name: 'Continue' }).click();
   await expect(page.getByRole('alert')).toContainText('This device couldn’t reach Homeward');
   await kept(page);
+});
+
+// A manager that never answers (#268): the request stays open, and the page gives up on it in bounded time.
+test('an answer the manager never gives says Homeward can’t be reached, and Continue tries again', async ({ page, primary }) => {
+  await page.clock.install();
+  await atYou(page, await primary.newLink());
+  await page.route(STEP, () => {}); // never answered
+  const asked = page.waitForRequest(STEP);
+  await page.getByRole('button', { name: 'Continue' }).click();
+  await asked; // the page's clock starts with the request
+  await page.clock.fastForward(29_000);
+  await expect(page.getByRole('alert')).toHaveCount(0); // still waiting: a step's answer gets 30 s
+  await page.clock.fastForward(1_500);
+  await expect(page.getByRole('alert')).toContainText('This device couldn’t reach Homeward');
+  await kept(page);
+  await accessible(page, 'your name, no answer in time');
+
+  await page.unroute(STEP);
+  await page.getByRole('button', { name: 'Continue' }).click();
+  await expect(page.getByRole('heading', { level: 1 })).toContainText('Name your household');
+  await expect(page.getByRole('alert')).toHaveCount(0);
+});
+
+test('setup that never loads says it can’t reach Homeward, and “Try again” opens it', async ({ page, primary }) => {
+  await page.clock.install();
+  await page.route('**/api/v1/setup', () => {}); // never answered
+  const asked = page.waitForRequest('**/api/v1/setup');
+  await page.goto((await primary.newLink()).localUrl);
+  await asked; // after the link's claim: the page's clock starts with this request
+  await page.clock.fastForward(15_500);
+  await expect(page.getByRole('heading', { level: 1 })).toContainText('Setup can’t reach Homeward');
+  await accessible(page, 'setup can’t reach Homeward, no answer in time');
+
+  await page.unroute('**/api/v1/setup');
+  await page.getByRole('button', { name: 'Try again' }).click();
+  await expect(page.getByRole('heading', { level: 1 })).toContainText('Let’s set up Homeward');
 });
 
 test('"Reload" after setup moved on shows where setup is now', async ({ page, primary }) => {
