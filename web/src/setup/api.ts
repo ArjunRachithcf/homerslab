@@ -80,35 +80,73 @@ export class Unreachable extends Error {
 
 /** The manager said no, with its reason: for an invalid answer, each refused field and why. */
 export class Refused extends Error {
-  constructor(readonly status: number, readonly code: string, readonly reasons: Record<string, Reason> = {}) {
+  readonly status: number;
+  readonly code: string;
+  readonly reasons: Record<string, Reason>;
+
+  // plain fields, not parameter properties: Node runs this file's unit tests by stripping its types
+  constructor(status: number, code: string, reasons: Record<string, Reason> = {}) {
     super(code);
+    this.status = status;
+    this.code = code;
+    this.reasons = reasons;
   }
 }
 
-async function call<T>(method: string, path: string, body?: unknown, extra: Record<string, string> = {}): Promise<T> {
+/**
+ * How long the page waits for the manager's answer before it says it can't reach it (#268), in milliseconds. Reading
+ * setup and claiming the link touch only the manager's database; a step's answer may ask the sign-in or the DNS zone
+ * a question; the network step bootstraps and joins the mesh, which the setup listener gives up to 3 minutes (its
+ * WriteTimeout in internal/manager), so the page waits a little past that. A claim waits less: with its three tries
+ * again (App.tsx) it ends inside the minute the manager answers the same claim again (ClaimAgainWithin).
+ */
+export const WAIT = { read: 15_000, claim: 10_000, answer: 30_000, network: 195_000 } as const;
+
+/** Steps whose answer does slow work of its own, and how long each may take. */
+const SLOW: Record<string, number> = { network: WAIT.network };
+
+async function call<T>(method: string, path: string, body?: unknown, extra: Record<string, string> = {}, wait: number = WAIT.read): Promise<T> {
   const headers: Record<string, string> = { ...extra };
   if (body !== undefined) headers['Content-Type'] = 'application/json';
   const t = token();
   if (t) headers.Authorization = `Bearer ${t}`;
-  let resp: Response;
+  // The wait covers the whole answer, its body included, and ends it even where a fetch doesn't heed its signal.
+  const stop = new AbortController();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const late = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      stop.abort();
+      reject(new Unreachable());
+    }, wait);
+  });
   try {
-    resp = await fetch(path, {
-      method,
-      credentials: 'omit',
-      headers,
-      body: body === undefined ? undefined : JSON.stringify(body),
-    });
-  } catch {
-    throw new Unreachable();
+    let resp: Response;
+    try {
+      resp = await Promise.race([fetch(path, {
+        method,
+        credentials: 'omit',
+        headers,
+        body: body === undefined ? undefined : JSON.stringify(body),
+        signal: stop.signal,
+      }), late]);
+    } catch {
+      throw new Unreachable();
+    }
+    if (resp.status === 204) return undefined as T;
+    // A body cut off, or none in time, is no answer; a refusal without a readable body is still a refusal.
+    const data: unknown = await Promise.race([resp.json().catch(() => {
+      if (stop.signal.aborted || resp.ok) throw new Unreachable();
+      return {};
+    }), late]);
+    if (!resp.ok) {
+      const e = data as { error?: string; fields?: string[]; reasons?: Record<string, Reason> };
+      const reasons = { ...Object.fromEntries((e.fields ?? []).map((f) => [f, 'missing' as Reason])), ...e.reasons };
+      throw new Refused(resp.status, e.error ?? 'unknown', reasons);
+    }
+    return data as T;
+  } finally {
+    clearTimeout(timer);
   }
-  if (resp.status === 204) return undefined as T;
-  const data: unknown = await resp.json().catch(() => ({}));
-  if (!resp.ok) {
-    const e = data as { error?: string; fields?: string[]; reasons?: Record<string, Reason> };
-    const reasons = { ...Object.fromEntries((e.fields ?? []).map((f) => [f, 'missing' as Reason])), ...e.reasons };
-    throw new Refused(resp.status, e.error ?? 'unknown', reasons);
-  }
-  return data as T;
 }
 
 const claiming = new Map<string, Promise<string>>();
@@ -118,7 +156,7 @@ export function claim({ key, nonce }: Link): Promise<string> {
   const id = `${key} ${nonce}`;
   let claimed = claiming.get(id);
   if (!claimed) {
-    claimed = call<{ token: string }>('POST', '/api/v1/setup/claim', { key, nonce }).then((r) => r.token)
+    claimed = call<{ token: string }>('POST', '/api/v1/setup/claim', { key, nonce }, {}, WAIT.claim).then((r) => r.token)
       .finally(() => claiming.delete(id));
     claiming.set(id, claimed);
   }
@@ -136,4 +174,4 @@ export const getPrimary = () => call<Facts>('GET', '/api/v1/nodes/primary');
  */
 export const answer = (step: StepState, body: Record<string, string | boolean>) =>
   call<Setup>('PUT', `/api/v1/setup/steps/${encodeURIComponent(step.id)}${step.state === 'done' ? '?edit=true' : ''}`, body,
-    { 'If-Match': `"${step.revision}"` });
+    { 'If-Match': `"${step.revision}"` }, SLOW[step.id] ?? WAIT.answer);
