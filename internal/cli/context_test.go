@@ -247,6 +247,9 @@ func TestSetupSecretOnATerminalShowsNothingTypedBetweenTheYesAndTheSecret(t *tes
 		if shown := readAll(master); strings.Contains(shown, "FROMTHETERMINAL") {
 			t.Errorf("typing at %q: the token was shown: %q", when, shown)
 		}
+		if tio, err := unix.IoctlGetTermios(int(tty.Fd()), unix.TCGETS); err != nil || tio.Lflag&unix.ECHO == 0 {
+			t.Errorf("typing at %q: the terminal was left without echo", when)
+		}
 		if len(*got) != 2 || !strings.Contains((*got)[1], token) {
 			t.Errorf("typing at %q: requests %d, want the token sent", when, len(*got))
 		}
@@ -273,11 +276,16 @@ func (w *typesAt) Write(p []byte) (int, error) {
 		if _, err := w.master.WriteString(w.typed); err != nil {
 			return 0, err
 		}
+		taken := false
 		for range 400 {
 			if n, err := unix.IoctlGetInt(int(w.tty.Fd()), unix.TIOCINQ); err == nil && n >= len(w.typed) {
+				taken = true
 				break
 			}
 			time.Sleep(5 * time.Millisecond)
+		}
+		if !taken {
+			w.t.Errorf("the terminal never took in what was typed at %q", w.when)
 		}
 	}
 	return len(p), nil

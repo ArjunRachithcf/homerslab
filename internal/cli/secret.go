@@ -188,6 +188,7 @@ func dnsToken(ctx context.Context, args []string, env Env) error {
 		}
 	}
 	in := lines(env)
+	defer in.restore()
 	value, err := in.secret(ctx, env, secretPrompts["dns"])
 	in.restore()
 	if err != nil {
@@ -336,14 +337,18 @@ func (l *lineReader) ask(ctx context.Context, env Env, question string) (string,
 // between two questions echo never comes back, so a secret typed or pasted as the yes is read isn't shown either (#243).
 // Ctrl-C (ctx) gives up; the caller's restore gives the terminal back as it was.
 func (l *lineReader) quiet(ctx context.Context, env Env, prompt string) (string, error) {
-	if f, ok := l.in.(*os.File); ok && l.terminal && l.saved == nil {
+	if f, ok := l.in.(*os.File); ok && l.terminal {
+		// Turned off again at every question, in case something gave echo back meanwhile (a Ctrl-Z and fg: the shell's
+		// own modes); the terminal as it was is kept from the first.
 		if t, err := unix.IoctlGetTermios(int(f.Fd()), unix.TCGETS); err == nil {
 			quiet := *t
 			quiet.Lflag &^= unix.ECHO
 			if err := unix.IoctlSetTermios(int(f.Fd()), unix.TCSETS, &quiet); err != nil {
 				return "", err
 			}
-			l.saved = t
+			if l.saved == nil {
+				l.saved = t
+			}
 		}
 	}
 	fmt.Fprint(env.Stderr, prompt)
