@@ -10,6 +10,7 @@ import (
 
 	"github.com/ArjunRachithcf/homeward/internal/idp"
 	"github.com/ArjunRachithcf/homeward/internal/idp/authentik"
+	"github.com/ArjunRachithcf/homeward/internal/idp/idptest"
 )
 
 // scopeMapping is a scope mapping as the suite reads it behind the adapter's back.
@@ -141,7 +142,7 @@ func guardDrift(w *world, a *authentik.Authentik) func(*testing.T) {
 		}
 		prepare := func() {
 			t.Helper()
-			if err := a.Prepare(ctx, household); err != nil {
+			if err := idptest.Prepare(ctx, a, household); err != nil {
 				t.Fatal(err)
 			}
 		}

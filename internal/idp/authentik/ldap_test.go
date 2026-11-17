@@ -17,6 +17,7 @@ import (
 
 	"github.com/ArjunRachithcf/homeward/internal/idp"
 	"github.com/ArjunRachithcf/homeward/internal/idp/authentik"
+	"github.com/ArjunRachithcf/homeward/internal/idp/idptest"
 	"github.com/ArjunRachithcf/homeward/internal/ldaps/ldaptest"
 )
 
@@ -135,7 +136,7 @@ func ldapDrift(w *world, a *authentik.Authentik) func(*testing.T) {
 			t.Errorf("a bind flow that takes passwords: %+v %v, want not passkey-only", r, err)
 		}
 		w.raw(t, w.own, "PATCH", "/api/v3/flows/instances/"+flow+"/", map[string]any{"authentication": "none"}, nil)
-		if err := a.Prepare(ctx, household); err != nil {
+		if err := idptest.Prepare(ctx, a, household); err != nil {
 			t.Fatal(err)
 		}
 		if r, err := a.Report(ctx); err != nil || !r.PasskeyOnlySignIn {
@@ -158,7 +159,7 @@ func ldapDrift(w *world, a *authentik.Authentik) func(*testing.T) {
 		if r, err := a.Report(ctx); err != nil || r.PasskeyOnlySignIn {
 			t.Errorf("a bind flow without its password stage: %+v %v, want not passkey-only", r, err)
 		}
-		if err := a.Prepare(ctx, household); err != nil {
+		if err := idptest.Prepare(ctx, a, household); err != nil {
 			t.Fatal(err)
 		}
 		if r, err := a.Report(ctx); err != nil || !r.PasskeyOnlySignIn {
@@ -186,7 +187,7 @@ func ldapDrift(w *world, a *authentik.Authentik) func(*testing.T) {
 		if r, err := a.Report(ctx); err != nil || r.PasskeyOnlySignIn {
 			t.Errorf("a bind flow with a policy on its password stage: %+v %v, want not passkey-only", r, err)
 		}
-		if err := a.Prepare(ctx, household); err != nil {
+		if err := idptest.Prepare(ctx, a, household); err != nil {
 			t.Fatal(err)
 		}
 		if r, err := a.Report(ctx); err != nil || !r.PasskeyOnlySignIn {
@@ -218,7 +219,7 @@ func ldapDrift(w *world, a *authentik.Authentik) func(*testing.T) {
 		if r, err := a.Report(ctx); err != nil || r.PasskeyOnlySignIn {
 			t.Errorf("a bind flow whose session stage takes any app password: %+v %v, want not passkey-only", r, err)
 		}
-		if err := a.Prepare(ctx, household); err != nil {
+		if err := idptest.Prepare(ctx, a, household); err != nil {
 			t.Fatal(err)
 		}
 		if r, err := a.Report(ctx); err != nil || !r.PasskeyOnlySignIn {
@@ -228,7 +229,7 @@ func ldapDrift(w *world, a *authentik.Authentik) func(*testing.T) {
 		if r, err := a.Report(ctx); err != nil || r.PasskeyOnlySignIn {
 			t.Errorf("a bind flow whose app-password policy lets everyone through: %+v %v, want not passkey-only", r, err)
 		}
-		if err := a.Prepare(ctx, household); err != nil {
+		if err := idptest.Prepare(ctx, a, household); err != nil {
 			t.Fatal(err)
 		}
 		if r, err := a.Report(ctx); err != nil || !r.PasskeyOnlySignIn {
@@ -346,7 +347,7 @@ func ldapOneStuck(t *testing.T, w *world, a *authentik.Authentik) {
 			w.raw(t, w.own, "DELETE", fmt.Sprintf("/api/v3/providers/ldap/%d/", prov.PK), nil, nil)
 		}
 	}()
-	err := a.Prepare(ctx, household)
+	err := idptest.Prepare(ctx, a, household)
 	if err == nil || !strings.Contains(err.Error(), "homerslab-stuck-ldap") {
 		t.Errorf("Prepare with one app's bind flow stuck: %v, want that app's error", err)
 	}
@@ -426,7 +427,7 @@ func ldapOrphan(w *world, a *authentik.Authentik) func(*testing.T) {
 		if r, err := a.Report(ctx); err != nil || r.PasskeyOnlySignIn {
 			t.Errorf("a provider at the outpost without its application: %+v %v, want not passkey-only", r, err)
 		}
-		if err := a.Prepare(ctx, household); err != nil {
+		if err := idptest.Prepare(ctx, a, household); err != nil {
 			t.Fatal(err)
 		}
 		for end := time.Now().Add(15 * time.Second); time.Now().Before(end); {
@@ -463,7 +464,7 @@ func ldapOrphan(w *world, a *authentik.Authentik) func(*testing.T) {
 		// The later pass: once off the outpost long enough (here at once), the closed application and its provider go.
 		authentik.SetLDAPRetire(a, 0)
 		defer authentik.SetLDAPRetire(a, 5*time.Minute)
-		if err := a.Prepare(ctx, household); err != nil {
+		if err := idptest.Prepare(ctx, a, household); err != nil {
 			t.Fatal(err)
 		}
 		if code := w.status(t, w.own, "/api/v3/core/applications/homerslab-orphan-ldap/"); code != http.StatusNotFound {
@@ -628,7 +629,7 @@ func ldapImpostors(w *world, a *authentik.Authentik) func(*testing.T) {
 				if r, err := a.Report(ctx); err != nil || r.PasskeyOnlySignIn {
 					t.Errorf("drift at the outpost: %+v %v, want not passkey-only", r, err)
 				}
-				if err := a.Prepare(ctx, household); err != nil {
+				if err := idptest.Prepare(ctx, a, household); err != nil {
 					t.Fatal(err)
 				}
 				_, ps := outpost()
@@ -700,7 +701,7 @@ func ldapImpostors(w *world, a *authentik.Authentik) func(*testing.T) {
 			if r, err := a.Report(ctx); err != nil || r.PasskeyOnlySignIn {
 				t.Errorf("the outpost's own application opened: %+v %v, want not passkey-only", r, err)
 			}
-			if err := a.Prepare(ctx, household); err != nil {
+			if err := idptest.Prepare(ctx, a, household); err != nil {
 				t.Fatal(err)
 			}
 			if r, err := a.Report(ctx); err != nil || !r.PasskeyOnlySignIn {
