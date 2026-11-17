@@ -322,7 +322,7 @@ func echoControl(t *testing.T, tty *os.File, answers map[string][2]string) (stri
 		t.Fatal(err)
 	}
 	var got []string
-	var echoAtPut atomic.Int32 // 0: no PUT, 1: echo on, 2: echo off
+	var echoAtPut atomic.Int32 // 0: no PUT, 1: echo on, 2: echo off, 3: on, but off after a SIGCONT
 	srv := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		b, _ := io.ReadAll(r.Body)
 		got = append(got, r.Method+" "+r.URL.Path+" "+string(b))
@@ -330,6 +330,18 @@ func echoControl(t *testing.T, tty *os.File, answers map[string][2]string) (stri
 			echoAtPut.Store(2)
 			if tio, err := unix.IoctlGetTermios(int(tty.Fd()), unix.TCGETS); err == nil && tio.Lflag&unix.ECHO != 0 {
 				echoAtPut.Store(1)
+				// A Ctrl-Z and fg during the request: the command has given echo back, so continuing it must not take
+				// echo away again (restore stopped its SIGCONT watch).
+				if err := unix.Kill(os.Getpid(), unix.SIGCONT); err != nil {
+					t.Error(err)
+				}
+				for range 40 {
+					if tio, err := unix.IoctlGetTermios(int(tty.Fd()), unix.TCGETS); err == nil && tio.Lflag&unix.ECHO == 0 {
+						echoAtPut.Store(3)
+						break
+					}
+					time.Sleep(5 * time.Millisecond)
+				}
 			}
 		}
 		a, ok := answers[r.Method+" "+r.URL.Path]
@@ -402,6 +414,8 @@ func TestSecretsOnATerminalGiveEchoBackBeforeSendingAndAfter(t *testing.T) {
 		switch e := echoAtPut.Load(); {
 		case c.ctrlC && (e != 0 || len(*got) != 1):
 			t.Errorf("%s: something was sent: %q", c.name, *got)
+		case !c.ctrlC && e == 3:
+			t.Errorf("%s: a Ctrl-Z and fg during the PUT turned echo off again: the SIGCONT watch outlived restore", c.name)
 		case !c.ctrlC && e != 1:
 			t.Errorf("%s: echo at the PUT: %d, want it back on (1) before the secret is sent", c.name, e)
 		}

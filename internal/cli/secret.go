@@ -380,6 +380,8 @@ func (l *lineReader) noEcho() error {
 		defer close(watched)
 		for range cont {
 			// Only in the foreground: a background job that sets its terminal is stopped again (SIGTTOU), after a bg.
+			// Untested: the tests' pty isn't their controlling terminal (TIOCGPGRP fails, so this re-applies), and
+			// one that is needs a child in its own session (Setsid, Setctty), a re-executed test binary.
 			if pg, err := unix.IoctlGetInt(fd, unix.TIOCGPGRP); err != nil || pg == unix.Getpgrp() {
 				_ = echoOff(fd)
 			}
